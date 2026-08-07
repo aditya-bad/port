@@ -1,0 +1,18 @@
+# Generic universe OHLCV data (large, fetched at runtime)
+universes/*/data/ohlcv/*.json
+# But track fetch logs
+!universes/*/data/ohlcv/_fetch_log.json
+
+# Backtest run outputs (generated, can be large)
+universes/*/data/runs/*/trade_log.jsonl
+universes/*/data/runs/*/daily_portfolio.jsonl
+universes/*/data/runs/*/summary.json
+
+# Temp config files from trigger/sweep
+universes/*/data/runs/_trigger_cfg_*.json
+universes/*/data/runs/_sweep_cfg_*.json
+
+# Per-universe backtest configs contain user parameters, not credentials,
+# but track them so universe setups are reproducible
+# (uncomment the line below to ignore them instead)
+# universes/*/configs/backtest_config.json
