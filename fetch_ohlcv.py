@@ -46,6 +46,39 @@ OHLCV_DIR = DATA_DIR / "ohlcv"
 UNIVERSE_FILE = DATA_DIR / "union_universe_2010_2026.json"
 FETCH_LOG_FILE = OHLCV_DIR / "_fetch_log.json"
 
+# Manual overrides — checked BEFORE the automated resolution chain.
+# These exist because the automated chain (exact → underscore-split →
+# prefix/substring → fuzzy) can resolve cleanly to the WRONG company for
+# symbols where a same-named-prefix or same-name-fragment live instrument
+# exists but is a genuinely different entity. Confirmed cases:
+#
+#   BHARTIARTL_INFRATEL — our placeholder for the separate, delisted Bharti
+#     Infratel (merged into Indus Towers, 2020). Underscore-split matches
+#     "BHARTIARTL" exactly, silently resolving to Bharti Airtel instead —
+#     a different company with continuously live, unrelated price history.
+#
+#   IDFC — the old "Infrastructure Development Finance Company" / IDFC Ltd,
+#     a Nifty 50 constituent 2009-2015. IDFC Ltd was suspended from trading
+#     and merged into IDFC First Bank effective 2024-10-01. The prefix step
+#     matches "IDFCFIRSTB".startswith("IDFC") and resolves to IDFC First
+#     Bank's instrument — a different, only-partially-related entity whose
+#     price history should NOT be used for IDFC's 2009-2015 Nifty stint.
+#
+# Both are marked "no_kite_data" here rather than guessed at, since neither
+# has a Kite-tradeable instrument that's actually the correct underlying
+# company for the historical window we need. If you later verify a correct
+# instrument_token for either (e.g. an old delisted-instrument token that
+# still returns historical_data), replace the entry with
+# {"instrument_token": <int>, "tradingsymbol": "...", "name": "..."}.
+#
+# Add any other confirmed-tricky symbol here as you find it during
+# --dry-run review — don't let the heuristic chain guess on names you
+# already know are ambiguous.
+SYMBOL_OVERRIDES: dict[str, dict | None] = {
+    "BHARTIARTL_INFRATEL": None,  # no_kite_data — see note above
+    "IDFC": None,                 # no_kite_data — see note above
+}
+
 
 # ── Config ─────────────────────────────────────────────────────────────
 
@@ -119,19 +152,23 @@ def _make_entry(inst: dict, match_type: str) -> dict:
 
 def resolve_symbols(
     kite: KiteConnect, target_symbols: list[str]
-) -> tuple[dict, list]:
+) -> tuple[dict, list, list]:
     """
     Resolve target symbols to Kite instrument tokens.
 
-    Strategy (applied uniformly to every symbol):
+    Strategy:
+      0. Manual override (SYMBOL_OVERRIDES) — checked first, always wins.
+         A None override means "known to have no valid Kite instrument for
+         this historical entity" and is reported separately, not guessed at.
       1. Exact match on tradingsymbol
       2. Underscore-separated symbols — try each part as exact match
       3. Prefix / substring overlap on tradingsymbol
       4. Fuzzy match on company name
 
-    Returns (resolved, unresolved):
-      resolved  — {original_symbol: {instrument_token, tradingsymbol, name, match_type}}
-      unresolved — [symbol, ...]
+    Returns (resolved, unresolved, no_data):
+      resolved   — {original_symbol: {instrument_token, tradingsymbol, name, match_type}}
+      unresolved — [symbol, ...]  (heuristics found nothing)
+      no_data    — [symbol, ...]  (explicitly overridden as no_kite_data)
     """
     print("Fetching NSE instrument list…")
     instruments = kite.instruments("NSE")
@@ -141,9 +178,19 @@ def resolve_symbols(
 
     resolved = {}
     unresolved = []
+    no_data = []
 
     for sym in target_symbols:
         key = sym.upper()
+
+        # 0 — manual override, always takes precedence over heuristics
+        if sym in SYMBOL_OVERRIDES:
+            override = SYMBOL_OVERRIDES[sym]
+            if override is None:
+                no_data.append(sym)
+            else:
+                resolved[sym] = {**override, "match_type": "manual_override"}
+            continue
 
         # 1 — exact tradingsymbol
         if key in by_sym:
@@ -176,7 +223,7 @@ def resolve_symbols(
 
         unresolved.append(sym)
 
-    return resolved, unresolved
+    return resolved, unresolved, no_data
 
 
 # ── OHLCV fetch ────────────────────────────────────────────────────────
@@ -247,6 +294,7 @@ def fetch_symbol(
 def write_fetch_log(
     resolved: dict,
     unresolved: list,
+    no_data: list,
     fetch_results: dict,
     today: date,
 ) -> None:
@@ -258,9 +306,10 @@ def write_fetch_log(
             "to":   today.isoformat(),
         },
         "summary": {
-            "total_symbols":  len(resolved) + len(unresolved),
+            "total_symbols":  len(resolved) + len(unresolved) + len(no_data),
             "resolved":       len(resolved),
             "unresolved":     len(unresolved),
+            "no_kite_data":   len(no_data),
             "fetched_ok":     sum(1 for r in fetch_results.values()
                                   if r.get("status") == "success"),
             "fetch_errors":   sum(1 for r in fetch_results.values()
@@ -287,6 +336,15 @@ def write_fetch_log(
             "status":           "unresolved",
             "instrument_token": None,
             "reason":           "No matching instrument found on NSE",
+        }
+
+    for sym in no_data:
+        log["symbols"][sym] = {
+            "status":           "no_kite_data",
+            "instrument_token": None,
+            "reason":           "Manually flagged in SYMBOL_OVERRIDES - no valid "
+                                 "Kite instrument represents this historical entity "
+                                 "(see comment in source for why).",
         }
 
     FETCH_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -330,15 +388,25 @@ def main() -> None:
     print(f"\nUniverse: {len(symbols)} symbols")
 
     # ── Resolve ────────────────────────────────────────────────────────
-    resolved, unresolved = resolve_symbols(kite, symbols)
-    print(f"\n  Resolved : {len(resolved)}")
-    print(f"  Unresolved: {len(unresolved)}")
+    resolved, unresolved, no_data = resolve_symbols(kite, symbols)
+    print(f"\n  Resolved   : {len(resolved)}")
+    print(f"  Unresolved : {len(unresolved)}")
+    print(f"  No Kite data (manual override): {len(no_data)}")
     if unresolved:
         print(f"    → {', '.join(unresolved)}")
+    if no_data:
+        print(f"    → {', '.join(no_data)}")
+
+    non_exact = {s: i for s, i in resolved.items() if i["match_type"] != "exact"}
+    if non_exact:
+        print(f"\n  ⚠ {len(non_exact)} symbol(s) resolved via non-exact match — "
+              f"review before trusting the fetch:")
+        for s, i in non_exact.items():
+            print(f"    {s} → {i['tradingsymbol']} ({i['match_type']})")
 
     if args.dry_run:
         print("\n--dry-run: skipping OHLCV fetch.\n")
-        write_fetch_log(resolved, unresolved, {}, today)
+        write_fetch_log(resolved, unresolved, no_data, {}, today)
         print(f"Fetch log → {FETCH_LOG_FILE}")
         return
 
@@ -380,7 +448,7 @@ def main() -> None:
             }
 
     # ── Log ────────────────────────────────────────────────────────────
-    write_fetch_log(resolved, unresolved, fetch_results, today)
+    write_fetch_log(resolved, unresolved, no_data, fetch_results, today)
 
     ok    = sum(1 for r in fetch_results.values() if r["status"] == "success")
     errs  = sum(1 for r in fetch_results.values() if r["status"] == "error")
