@@ -1240,20 +1240,27 @@ function renderSweepResults(results) {
   const ok = results.filter(r => r.status === 'ok');
   if (!ok.length) return '<span style="color:var(--red)">All combos failed</span>';
 
-  // Sort by CAGR
-  ok.sort((a, b) => b.cagr_pct - a.cagr_pct);
+  // Sort by XIRR (primary metric), fall back to CAGR if XIRR is null
+  ok.sort((a, b) => {
+    const ax = a.xirr_pct ?? -Infinity;
+    const bx = b.xirr_pct ?? -Infinity;
+    return bx - ax;
+  });
 
   let html = `<div style="margin-top:8px;">
     <strong style="color:var(--green)">✓ Sweep complete</strong>
     <span class="tag tag-is" style="margin-left:8px;">IN-SAMPLE ONLY</span>
     <table style="margin-top:8px;">
-      <thead><tr><th>Params</th><th>CAGR</th><th>Max DD</th><th>WR</th><th>Sells</th></tr></thead>
+      <thead><tr><th>Params</th><th>XIRR</th><th>CAGR</th><th>Max DD</th><th>WR</th><th>Sells</th></tr></thead>
       <tbody>`;
 
   for (const r of ok) {
     const paramStr = Object.entries(r.params).map(([k,v]) => `${k.split('.').pop()}=${v}`).join(', ');
+    const xirrVal = r.xirr_pct != null ? r.xirr_pct.toFixed(2) + '%' : '—';
+    const xirrClass = r.xirr_pct > 0 ? 'pnl-pos' : r.xirr_pct < 0 ? 'pnl-neg' : '';
     html += `<tr>
       <td style="font-size:11px">${paramStr}</td>
+      <td class="${xirrClass}" style="font-weight:600">${xirrVal}</td>
       <td class="${r.cagr_pct>0?'pnl-pos':'pnl-neg'}">${r.cagr_pct}%</td>
       <td class="pnl-neg">${r.max_dd_pct}%</td>
       <td>${r.win_rate_pct}%</td>

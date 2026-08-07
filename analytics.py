@@ -130,22 +130,19 @@ def compute_xirr_for_run(trade_log_path: Path, daily_portfolio_path: Path,
                 else:
                     oos_cfs.append((d, amt))
 
-    # Terminal value for open positions (mark-to-market at last day's close)
-    if last_snap and last_snap.get("positions"):
+    # Terminal value: open positions (mark-to-market) + remaining cash
+    if last_snap:
         d = date.fromisoformat(last_snap["date"])
-        terminal_val = sum(
-            p["current_value"] for p in last_snap["positions"].values()
+        positions_val = sum(
+            p["current_value"] for p in last_snap.get("positions", {}).values()
         )
+        terminal_val = positions_val + last_snap.get("cash", 0)
         if terminal_val > 0:
             all_cfs.append((d, terminal_val))
             if is_end_date and d > is_end_date:
                 oos_cfs.append((d, terminal_val))
             elif is_end_date:
                 is_cfs.append((d, terminal_val))
-
-    # Also add terminal cash if there's remaining cash (represents returned capital)
-    # Actually, cash is just the accumulation of sell proceeds minus buy costs,
-    # which are already captured. Terminal value for XIRR = open positions only.
 
     result = {"overall": None, "in_sample": None, "out_of_sample": None}
 
@@ -290,9 +287,17 @@ def _run_sweep_worker(job_id: str, base_config: dict, param_grid: dict,
             summary_path = RUNS_DIR / sweep_name / "summary.json"
             if summary_path.exists():
                 summary = json.loads(summary_path.read_text())
+                # Compute XIRR for this sweep combo (already IS-only since
+                # backtest_end was forced to in_sample_end — "overall" here
+                # IS the in-sample XIRR for this combo)
+                trade_log_path = RUNS_DIR / sweep_name / "trade_log.jsonl"
+                daily_portfolio_path = RUNS_DIR / sweep_name / "daily_portfolio.jsonl"
+                xirr_result = compute_xirr_for_run(
+                    trade_log_path, daily_portfolio_path)
                 results.append({
                     "params": dict(zip(keys, combo)),
                     "run_name": sweep_name,
+                    "xirr_pct": xirr_result["overall"],
                     "cagr_pct": summary["returns"]["cagr_pct"],
                     "max_dd_pct": summary["returns"]["max_drawdown_pct"],
                     "win_rate_pct": summary["trades"]["win_rate_pct"],
