@@ -1,0 +1,47 @@
+{
+  "run_name": "baseline",
+  "backtest_start": "2010-01-01",
+  "backtest_end": "2026-08-05",
+  "in_sample_end": "2021-12-31",
+
+  "capital": {
+    "initial": 300000,
+    "divisor": 30,
+    "max_lots": 30,
+    "throttle_after_lots": 22,
+    "throttle_to_lots_per_day": 1,
+    "recalc_anchor": "inception"
+  },
+
+  "entry": {
+    "dma_period": 20,
+    "min_pct_below_dma": 2.0,
+    "candidates_per_day": 5,
+    "max_new_positions_per_day": 2
+  },
+
+  "averaging": {
+    "trigger_pct_from_last_buy": 3.0,
+    "max_buys_per_day": 1,
+    "max_lots_per_stock": null,
+    "stop_loss_pct_from_avg_cost": null
+  },
+
+  "exit": {
+    "target_pct_above_avg_cost": 8.0,
+    "max_sells_per_day": 1,
+    "tie_break": "highest_capital_invested"
+  },
+
+  "corporate_actions": {
+    "hdfc_merger_handling": "force_exit"
+  },
+
+  "costs": {
+    "brokerage_pct": 0.0,
+    "stt_pct": 0.0,
+    "stcg_tax_pct": 0.0,
+    "ltcg_tax_pct": 0.0,
+    "ltcg_holding_period_days": 365
+  }
+}

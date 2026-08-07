@@ -72,15 +72,72 @@ universe symbols in order:
 Symbols that don't resolve to any current NSE instrument (delisted, merged,
 defunct) are logged in `_fetch_log.json` and skipped gracefully.
 
+## Stage 2/3 — Backtest Engine
+
+Config-driven backtest: buy below DMA, average down, exit at target — across
+point-in-time Nifty 50 constituents with survivorship-bias-free universe.
+
+### Setup
+
+```bash
+cp backtest_config.example.json backtest_config.json
+# Edit parameters as needed — every value is read from config, no hardcoded defaults
+```
+
+### Usage
+
+```bash
+python backtest.py                               # default config
+python backtest.py -c my_config.json             # custom config
+python backtest.py --validate                    # check config + data only
+```
+
+### Daily algorithm (exact order)
+
+1. **Build universe** — PIT constituent filter for today, excluding `no_kite_data`
+2. **Exits** — sell positions at/above `avg_cost × (1 + target%)`, tie-break by
+   highest capital invested, max `max_sells_per_day`
+3. **Entries** — stocks ≥ `min_pct_below_dma` below their DMA, top N candidates,
+   buy up to `max_new_positions_per_day` NOT already held (throttle/cap rules apply)
+4. **Averaging** — only if step 3 bought zero NEW stocks; average down on held
+   stocks based on drop from LAST BUY price (not avg cost, intentional)
+5. **Corporate actions** — HDFC merger force-exit or conversion
+6. **Capital recalc** — every 365 days from inception, lot size adjusts to
+   `(initial + cumulative realized P&L) / divisor`
+
+### Output per run
+
+```
+data/runs/{run_name}/
+├── trade_log.jsonl         # every buy, sell, skip, recalc
+├── daily_portfolio.jsonl   # end-of-day snapshots
+└── summary.json            # CAGR, max DD, win rate, IS/OOS split, BnH comparison
+```
+
+### Config reference
+
+See `backtest_config.example.json` for the full schema. Key sections:
+- `capital` — initial amount, lot divisor, max lots, throttle rules
+- `entry` — DMA period, min % below, candidates per day, max new per day
+- `averaging` — trigger %, max buys/day, optional per-stock lot cap + stop loss
+- `exit` — target % above avg cost, max sells/day, tie-break rule
+- `costs` — brokerage, STT, STCG/LTCG rates (default to 0 for baseline)
+
 ## Data files
 
 | File | Purpose |
 |------|---------|
 | `data/union_universe_2010_2026.json` | 95 symbols — union of every Nifty 50 constituent in the backtest window |
-| `data/pit_universe_intervals.json` | Point-in-time constituent intervals — used in Stage 2, not Stage 1 |
+| `data/pit_universe_intervals.json` | Point-in-time constituent intervals `[start, end)` for universe filtering |
 
-## Open decision (Stage 2)
+## Open items
 
-HDFC Ltd merged into HDFC Bank on 2023-07-13 (not a normal index replacement).
-Currently treated as a plain exclusion. Whether to model the actual share-swap
-conversion is undecided.
+1. **`max_lots_per_stock` / `stop_loss_pct_from_avg_cost`** — both `null` by
+   default (uncapped averaging). Run baseline first, inspect trade log for
+   concentration risk, then decide cap values as a config change.
+2. **Stop-loss vs daily sell cap** — if stop-loss is set later, confirm whether
+   it competes with `max_sells_per_day` or bypasses it.
+3. **Costs at zero** — must be set to real STT/brokerage/tax rates before
+   treating any run as final.
+4. **HDFC merger** — `force_exit` implemented and is the default.
+   `convert_to_hdfcbank` (share-swap) is flagged but not yet built.
