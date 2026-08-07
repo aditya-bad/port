@@ -1,0 +1,567 @@
+[
+  {
+    "symbol": "INDIGO",
+    "start_date": "2025-09-30",
+    "end_date": null
+  },
+  {
+    "symbol": "MAXHEALTH",
+    "start_date": "2025-09-30",
+    "end_date": null
+  },
+  {
+    "symbol": "JIOFIN",
+    "start_date": "2025-03-28",
+    "end_date": null
+  },
+  {
+    "symbol": "ETERNAL",
+    "start_date": "2025-03-28",
+    "end_date": null
+  },
+  {
+    "symbol": "BEL",
+    "start_date": "2024-09-30",
+    "end_date": null
+  },
+  {
+    "symbol": "TRENT",
+    "start_date": "2024-09-30",
+    "end_date": null
+  },
+  {
+    "symbol": "SHRIRAMFIN",
+    "start_date": "2024-03-28",
+    "end_date": null
+  },
+  {
+    "symbol": "LTIM",
+    "start_date": "2023-07-13",
+    "end_date": "2024-09-30"
+  },
+  {
+    "symbol": "ADANIENT",
+    "start_date": "2022-09-30",
+    "end_date": null
+  },
+  {
+    "symbol": "APOLLOHOSP",
+    "start_date": "2022-03-31",
+    "end_date": null
+  },
+  {
+    "symbol": "TATACONSUM",
+    "start_date": "2021-03-31",
+    "end_date": null
+  },
+  {
+    "symbol": "DIVISLAB",
+    "start_date": "2020-09-25",
+    "end_date": "2024-09-30"
+  },
+  {
+    "symbol": "SBILIFE",
+    "start_date": "2020-09-25",
+    "end_date": null
+  },
+  {
+    "symbol": "HDFCLIFE",
+    "start_date": "2020-07-31",
+    "end_date": null
+  },
+  {
+    "symbol": "SHREECEM",
+    "start_date": "2020-03-19",
+    "end_date": "2022-09-30"
+  },
+  {
+    "symbol": "NESTLEIND",
+    "start_date": "2019-09-27",
+    "end_date": null
+  },
+  {
+    "symbol": "BRITANNIA",
+    "start_date": "2019-03-29",
+    "end_date": "2025-03-28"
+  },
+  {
+    "symbol": "JSWSTEEL",
+    "start_date": "2018-09-28",
+    "end_date": null
+  },
+  {
+    "symbol": "BAJAJFINSV",
+    "start_date": "2018-04-02",
+    "end_date": null
+  },
+  {
+    "symbol": "GRASIM",
+    "start_date": "2018-04-02",
+    "end_date": null
+  },
+  {
+    "symbol": "TITAN",
+    "start_date": "2018-04-02",
+    "end_date": null
+  },
+  {
+    "symbol": "BAJFINANCE",
+    "start_date": "2017-09-29",
+    "end_date": null
+  },
+  {
+    "symbol": "HINDPETRO",
+    "start_date": "2017-09-29",
+    "end_date": "2019-03-29"
+  },
+  {
+    "symbol": "UPL",
+    "start_date": "2017-09-29",
+    "end_date": "2024-03-28"
+  },
+  {
+    "symbol": "VEDL",
+    "start_date": "2017-05-26",
+    "end_date": "2020-07-31"
+  },
+  {
+    "symbol": "IBHFL",
+    "start_date": "2017-03-31",
+    "end_date": "2019-09-27"
+  },
+  {
+    "symbol": "IOC",
+    "start_date": "2017-03-31",
+    "end_date": "2022-03-31"
+  },
+  {
+    "symbol": "AUROPHARMA",
+    "start_date": "2016-04-01",
+    "end_date": "2018-04-02"
+  },
+  {
+    "symbol": "BHARTIARTL_INFRATEL",
+    "start_date": "2016-04-01",
+    "end_date": "2020-09-25"
+  },
+  {
+    "symbol": "EICHERMOT",
+    "start_date": "2016-04-01",
+    "end_date": null
+  },
+  {
+    "symbol": "ADANIPORTS",
+    "start_date": "2015-09-28",
+    "end_date": null
+  },
+  {
+    "symbol": "BOSCHLTD",
+    "start_date": "2015-05-29",
+    "end_date": "2018-04-02"
+  },
+  {
+    "symbol": "IDEA",
+    "start_date": "2015-03-27",
+    "end_date": "2017-03-31"
+  },
+  {
+    "symbol": "YESBANK",
+    "start_date": "2015-03-27",
+    "end_date": "2020-03-19"
+  },
+  {
+    "symbol": "ZEEL",
+    "start_date": "2014-09-19",
+    "end_date": "2020-09-25"
+  },
+  {
+    "symbol": "TECHM",
+    "start_date": "2014-03-28",
+    "end_date": null
+  },
+  {
+    "symbol": "MCDOWELL-N",
+    "start_date": "2014-03-28",
+    "end_date": "2014-09-19"
+  },
+  {
+    "symbol": "WIPRO",
+    "start_date": "2013-09-27",
+    "end_date": null
+  },
+  {
+    "symbol": "INDUSINDBK",
+    "start_date": "2013-04-01",
+    "end_date": "2025-09-30"
+  },
+  {
+    "symbol": "NMDC",
+    "start_date": "2013-04-01",
+    "end_date": "2015-09-28"
+  },
+  {
+    "symbol": "LUPIN",
+    "start_date": "2012-09-28",
+    "end_date": "2018-09-28"
+  },
+  {
+    "symbol": "ULTRACEMCO",
+    "start_date": "2012-09-28",
+    "end_date": null
+  },
+  {
+    "symbol": "ASIANPAINT",
+    "start_date": "2012-04-27",
+    "end_date": null
+  },
+  {
+    "symbol": "BANKBARODA",
+    "start_date": "2012-04-27",
+    "end_date": "2017-09-29"
+  },
+  {
+    "symbol": "COALINDIA",
+    "start_date": "2011-10-10",
+    "end_date": null
+  },
+  {
+    "symbol": "GRASIM",
+    "start_date": "2011-03-25",
+    "end_date": "2017-05-26"
+  },
+  {
+    "symbol": "VEDL",
+    "start_date": "2010-10-01",
+    "end_date": "2016-04-01"
+  },
+  {
+    "symbol": "DRREDDY",
+    "start_date": "2010-10-01",
+    "end_date": null
+  },
+  {
+    "symbol": "BAJAJ-AUTO",
+    "start_date": "2010-10-01",
+    "end_date": null
+  },
+  {
+    "symbol": "KOTAKBANK",
+    "start_date": "2010-04-08",
+    "end_date": null
+  },
+  {
+    "symbol": "JPASSOCIAT",
+    "start_date": "2009-10-22",
+    "end_date": "2014-03-28"
+  },
+  {
+    "symbol": "IDFC",
+    "start_date": "2009-10-22",
+    "end_date": "2015-05-29"
+  },
+  {
+    "symbol": "JINDALSTEL",
+    "start_date": "2009-06-17",
+    "end_date": "2015-03-27"
+  },
+  {
+    "symbol": "AXISBANK",
+    "start_date": "2009-03-27",
+    "end_date": null
+  },
+  {
+    "symbol": "RELCAPITAL",
+    "start_date": "2009-01-12",
+    "end_date": "2011-10-10"
+  },
+  {
+    "symbol": "RPOWER",
+    "start_date": "2008-09-10",
+    "end_date": "2012-04-27"
+  },
+  {
+    "symbol": "DLF",
+    "start_date": "2008-03-14",
+    "end_date": "2015-03-27"
+  },
+  {
+    "symbol": "IDEA",
+    "start_date": "2007-12-12",
+    "end_date": "2010-10-01"
+  },
+  {
+    "symbol": "CAIRN",
+    "start_date": "2007-12-12",
+    "end_date": "2016-04-01"
+  },
+  {
+    "symbol": "UNITECH",
+    "start_date": "2007-10-05",
+    "end_date": "2010-10-01"
+  },
+  {
+    "symbol": "RPL",
+    "start_date": "2007-04-04",
+    "end_date": "2009-06-17"
+  },
+  {
+    "symbol": "STERLITIND",
+    "start_date": "2007-04-04",
+    "end_date": "2012-09-28"
+  },
+  {
+    "symbol": "RCOM",
+    "start_date": "2006-09-01",
+    "end_date": "2012-04-27"
+  },
+  {
+    "symbol": "SUZLON",
+    "start_date": "2006-06-27",
+    "end_date": "2011-03-25"
+  },
+  {
+    "symbol": "SIEMENS",
+    "start_date": "2006-06-27",
+    "end_date": "2013-04-01"
+  },
+  {
+    "symbol": "PNB",
+    "start_date": "2004-05-24",
+    "end_date": "2016-04-01"
+  },
+  {
+    "symbol": "SAIL",
+    "start_date": "2003-08-04",
+    "end_date": "2012-09-28"
+  },
+  {
+    "symbol": "NATIONALUM",
+    "start_date": "2003-05-02",
+    "end_date": "2009-10-22"
+  },
+  {
+    "symbol": "WIPRO",
+    "start_date": "2002-01-17",
+    "end_date": "2013-04-01"
+  },
+  {
+    "symbol": "BRITANNIA",
+    "start_date": "1999-09-08",
+    "end_date": "2004-12-10"
+  },
+  {
+    "symbol": "SATYAMCOMP",
+    "start_date": "1999-09-08",
+    "end_date": "2009-01-12"
+  },
+  {
+    "symbol": "DRREDDY",
+    "start_date": "1999-05-26",
+    "end_date": "2008-09-10"
+  },
+  {
+    "symbol": "BHEL",
+    "start_date": "1997-05-14",
+    "end_date": "2017-03-31"
+  },
+  {
+    "symbol": "HINDPETRO",
+    "start_date": "1997-05-14",
+    "end_date": "2007-12-12"
+  },
+  {
+    "symbol": "MTNL",
+    "start_date": "1997-05-07",
+    "end_date": "2007-12-12"
+  },
+  {
+    "symbol": "ABB",
+    "start_date": "1996-09-18",
+    "end_date": "2010-10-01"
+  },
+  {
+    "symbol": "ASIANPAINT",
+    "start_date": "1996-09-18",
+    "end_date": "2002-10-28"
+  },
+  {
+    "symbol": "LT",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "NTPC",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "SUNPHARMA",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "ONGC",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "MARUTI",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "TCS",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "SBIN",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "ACC",
+    "start_date": null,
+    "end_date": "2017-09-29"
+  },
+  {
+    "symbol": "M&M",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "BHARTIARTL",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "HINDUNILVR",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "RANBAXY",
+    "start_date": null,
+    "end_date": "2014-03-28"
+  },
+  {
+    "symbol": "HCLTECH",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "RELINFRA",
+    "start_date": null,
+    "end_date": "2013-09-27"
+  },
+  {
+    "symbol": "ITC",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "TATASTEEL",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "AMBUJACEM",
+    "start_date": null,
+    "end_date": "2018-04-02"
+  },
+  {
+    "symbol": "RELCAPITAL",
+    "start_date": null,
+    "end_date": "1999-05-26"
+  },
+  {
+    "symbol": "DRREDDY",
+    "start_date": null,
+    "end_date": "1997-05-14"
+  },
+  {
+    "symbol": "HEROMOTOCO",
+    "start_date": null,
+    "end_date": "2025-09-30"
+  },
+  {
+    "symbol": "HINDALCO",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "GAIL",
+    "start_date": null,
+    "end_date": "2021-03-31"
+  },
+  {
+    "symbol": "TATAPOWER",
+    "start_date": null,
+    "end_date": "2017-09-29"
+  },
+  {
+    "symbol": "GRASIM",
+    "start_date": null,
+    "end_date": "2010-04-08"
+  },
+  {
+    "symbol": "BPCL",
+    "start_date": null,
+    "end_date": "2025-03-28"
+  },
+  {
+    "symbol": "CIPLA",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "ZEEL",
+    "start_date": null,
+    "end_date": "2009-03-27"
+  },
+  {
+    "symbol": "HDFC",
+    "start_date": null,
+    "end_date": "2023-07-13"
+  },
+  {
+    "symbol": "POWERGRID",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "RPL",
+    "start_date": null,
+    "end_date": "2002-10-10"
+  },
+  {
+    "symbol": "HDFCBANK",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "TMPV",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "INFY",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "TATACOMM",
+    "start_date": null,
+    "end_date": "2009-10-22"
+  },
+  {
+    "symbol": "RELIANCE",
+    "start_date": null,
+    "end_date": null
+  },
+  {
+    "symbol": "ICICIBANK",
+    "start_date": null,
+    "end_date": null
+  }
+]

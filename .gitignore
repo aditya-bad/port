@@ -1,0 +1,17 @@
+# Credentials
+config.json
+
+# OHLCV data files (large, fetched at runtime)
+data/ohlcv/*.json
+# But track the fetch log
+!data/ohlcv/_fetch_log.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
