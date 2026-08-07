@@ -123,6 +123,59 @@ See `backtest_config.example.json` for the full schema. Key sections:
 - `exit` — target % above avg cost, max sells/day, tie-break rule
 - `costs` — brokerage, STT, STCG/LTCG rates (default to 0 for baseline)
 
+## Stage 4 — Analytics UI
+
+Local web app for inspecting runs, visualizing results, triggering backtests,
+and running parameter sweeps.
+
+### Setup
+
+```bash
+pip install -r requirements.txt    # adds flask
+```
+
+### Usage
+
+```bash
+python analytics.py                # http://127.0.0.1:5000
+python analytics.py --port 8080    # custom port
+python analytics.py --debug        # Flask debug mode
+```
+
+### Views
+
+| Tab | What it shows |
+|-----|--------------|
+| Overview | CAGR, max DD, win rate, realized P&L, IS/OOS split, BnH comparison |
+| Equity Curve | Portfolio value over time, IS/OOS color-coded |
+| Drawdown | Drawdown % from peak |
+| Trade List | Paginated, filterable trade log (buy/sell/skip/recalc) |
+| XIRR | Cash-flow-based IRR (Newton's method) — overall, IS, OOS |
+| Durations | Trade duration histogram + scatter (quantity-weighted per-lot, not first-lot-to-exit) |
+| Stats | Profit factor, avg win/loss, max consecutive losses, largest trades |
+| Returns | Monthly heatmap + yearly bar chart |
+| Exposure | Open lots over time + invested-vs-cash stacked area |
+
+### Run trigger
+
+The UI can spawn `backtest.py` as a subprocess — paste a config JSON and click
+Run. Stage 1 (Kite fetch) is **not** wired into this trigger.
+
+### Parameter sweep
+
+Sweeps are **in-sample only** — `backtest_end` is forced to `in_sample_end`.
+Out-of-sample data is structurally unavailable to the sweep. The UI warns when
+the grid exceeds 25 combinations.
+
+Sweep outputs go to `data/runs/{run_name}_sweep_{param}={val}_…/`.
+
+### XIRR computation
+
+XIRR uses Newton's method on actual cash-flow dates (buys = negative outflows,
+sells = positive inflows, open positions = terminal mark-to-market). It does
+**not** reuse the CAGR function — CAGR assumes a single lump-sum, XIRR handles
+irregular cash flows.
+
 ## Data files
 
 | File | Purpose |

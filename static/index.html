@@ -1,0 +1,1268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NiftyShop Analytics</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<style>
+:root {
+  --bg: #0f1117;
+  --bg2: #1a1d28;
+  --bg3: #242838;
+  --fg: #e1e4eb;
+  --fg2: #8b90a0;
+  --accent: #4f8cff;
+  --green: #22c55e;
+  --red: #ef4444;
+  --yellow: #f59e0b;
+  --border: #2d3148;
+  --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: var(--font); background: var(--bg); color: var(--fg);
+  line-height: 1.5; min-height: 100vh;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* Layout */
+.app { display: flex; min-height: 100vh; }
+.sidebar {
+  width: 260px; background: var(--bg2); border-right: 1px solid var(--border);
+  padding: 20px 16px; flex-shrink: 0; overflow-y: auto; max-height: 100vh;
+  position: sticky; top: 0;
+}
+.main { flex: 1; padding: 24px 32px; overflow-x: hidden; max-width: calc(100vw - 260px); }
+
+/* Sidebar */
+.sidebar h1 { font-size: 18px; margin-bottom: 4px; color: var(--accent); }
+.sidebar .subtitle { font-size: 12px; color: var(--fg2); margin-bottom: 20px; }
+.sidebar h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+  color: var(--fg2); margin: 16px 0 8px; }
+.run-list { list-style: none; }
+.run-list li {
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+  font-size: 13px; margin-bottom: 2px; transition: background 0.15s;
+}
+.run-list li:hover { background: var(--bg3); }
+.run-list li.active { background: var(--accent); color: #fff; }
+.run-list li .run-meta {
+  font-size: 11px; color: var(--fg2); margin-top: 2px;
+}
+.run-list li.active .run-meta { color: rgba(255,255,255,0.7); }
+
+.sidebar-btn {
+  display: block; width: 100%; padding: 8px; border: 1px solid var(--border);
+  background: var(--bg3); color: var(--fg); border-radius: 6px;
+  cursor: pointer; font-size: 13px; margin-top: 8px; text-align: center;
+}
+.sidebar-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Tabs */
+.tabs {
+  display: flex; gap: 2px; border-bottom: 1px solid var(--border);
+  margin-bottom: 20px; overflow-x: auto; flex-wrap: nowrap;
+}
+.tab {
+  padding: 8px 14px; font-size: 13px; cursor: pointer; border: none;
+  background: none; color: var(--fg2); border-bottom: 2px solid transparent;
+  white-space: nowrap; transition: all 0.15s;
+}
+.tab:hover { color: var(--fg); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Cards */
+.card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 20px; margin-bottom: 16px;
+}
+.card h2 { font-size: 15px; margin-bottom: 12px; color: var(--fg); }
+.card h3 { font-size: 13px; color: var(--fg2); margin-bottom: 8px; }
+
+/* Stat grid */
+.stat-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.stat {
+  background: var(--bg3); border-radius: 6px; padding: 12px 14px;
+}
+.stat .label { font-size: 11px; color: var(--fg2); text-transform: uppercase;
+  letter-spacing: 0.5px; }
+.stat .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+.stat .value.positive { color: var(--green); }
+.stat .value.negative { color: var(--red); }
+
+/* Charts */
+.chart-container {
+  position: relative; width: 100%; max-height: 400px;
+}
+.chart-row {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 16px;
+}
+@media (max-width: 1200px) { .chart-row { grid-template-columns: 1fr; } }
+
+/* Tables */
+.table-wrap { overflow-x: auto; }
+table {
+  width: 100%; border-collapse: collapse; font-size: 13px;
+}
+th {
+  text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border);
+  color: var(--fg2); font-weight: 500; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  position: sticky; top: 0; background: var(--bg2);
+}
+td {
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  font-family: var(--mono); font-size: 12px;
+}
+tr:hover td { background: var(--bg3); }
+.pnl-pos { color: var(--green); }
+.pnl-neg { color: var(--red); }
+
+/* Virtual scroll container for trade table */
+.trade-table-container {
+  max-height: 500px; overflow-y: auto;
+}
+
+/* Filter bar */
+.filter-bar {
+  display: flex; gap: 8px; margin-bottom: 12px; align-items: center;
+  flex-wrap: wrap;
+}
+.filter-bar select, .filter-bar input {
+  background: var(--bg3); border: 1px solid var(--border); color: var(--fg);
+  padding: 6px 10px; border-radius: 4px; font-size: 13px;
+}
+
+/* Heatmap */
+.heatmap-grid {
+  display: grid; gap: 2px; font-size: 11px; font-family: var(--mono);
+}
+.heatmap-cell {
+  padding: 6px 4px; text-align: center; border-radius: 3px; cursor: default;
+}
+
+/* Modal */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100; display: none;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 24px; max-width: 700px; width: 95%; max-height: 80vh;
+  overflow-y: auto;
+}
+.modal h2 { margin-bottom: 16px; }
+.modal textarea {
+  width: 100%; min-height: 300px; background: var(--bg); border: 1px solid var(--border);
+  color: var(--fg); font-family: var(--mono); font-size: 12px;
+  padding: 12px; border-radius: 6px; resize: vertical;
+}
+.modal .btn-row { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+.btn {
+  padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer;
+  font-size: 13px; font-weight: 500;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #3d7aee; }
+.btn-secondary { background: var(--bg3); color: var(--fg); border: 1px solid var(--border); }
+.btn-secondary:hover { border-color: var(--fg2); }
+
+/* Loading */
+.spinner {
+  display: inline-block; width: 16px; height: 16px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.empty-state {
+  text-align: center; padding: 60px 20px; color: var(--fg2);
+}
+.empty-state h2 { font-size: 18px; color: var(--fg); margin-bottom: 8px; }
+
+/* Sweep modal extras */
+.sweep-param-row {
+  display: flex; gap: 8px; margin-bottom: 8px; align-items: center;
+}
+.sweep-param-row input, .sweep-param-row select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--fg);
+  padding: 6px 8px; border-radius: 4px; font-size: 13px;
+}
+.sweep-param-row label { font-size: 13px; min-width: 180px; }
+.sweep-warning {
+  background: rgba(245, 158, 11, 0.15); border: 1px solid var(--yellow);
+  padding: 8px 12px; border-radius: 6px; font-size: 13px; color: var(--yellow);
+  margin-top: 8px;
+}
+.tag {
+  display: inline-block; padding: 2px 6px; border-radius: 3px;
+  font-size: 11px; font-weight: 500;
+}
+.tag-is { background: rgba(79,140,255,0.2); color: var(--accent); }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <h1>📊 NiftyShop</h1>
+    <div class="subtitle">Backtest Analytics</div>
+
+    <h3>Runs</h3>
+    <ul class="run-list" id="runList">
+      <li style="color:var(--fg2);font-size:12px;">Loading…</li>
+    </ul>
+
+    <button class="sidebar-btn" onclick="openTriggerModal()">▶ New Run</button>
+    <button class="sidebar-btn" onclick="openSweepModal()">⊞ Param Sweep</button>
+    <button class="sidebar-btn" onclick="loadRuns()">↻ Refresh</button>
+  </div>
+
+  <!-- Main content -->
+  <div class="main" id="mainContent">
+    <div class="empty-state" id="emptyState">
+      <h2>Select a run</h2>
+      <p>Choose a backtest run from the sidebar, or trigger a new one.</p>
+    </div>
+
+    <!-- Run dashboard (hidden until run selected) -->
+    <div id="runDashboard" style="display:none;">
+      <h2 id="runTitle" style="margin-bottom:4px;"></h2>
+      <div id="runPeriod" style="font-size:13px;color:var(--fg2);margin-bottom:16px;"></div>
+
+      <!-- Tabs -->
+      <div class="tabs" id="tabBar"></div>
+
+      <!-- Tab panels -->
+      <div id="tabContent"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Trigger Modal -->
+<div class="modal-overlay" id="triggerModal">
+  <div class="modal">
+    <h2>▶ Trigger New Run</h2>
+    <p style="font-size:13px;color:var(--fg2);margin-bottom:12px;">
+      Paste a full backtest config JSON. The run spawns <code>backtest.py</code> as a subprocess.
+      <em>Stage 1 (Kite fetch) is not wired here.</em>
+    </p>
+    <textarea id="triggerConfig"></textarea>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeTriggerModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="doTrigger()">Run Backtest</button>
+    </div>
+    <div id="triggerStatus" style="margin-top:12px;font-size:13px;"></div>
+  </div>
+</div>
+
+<!-- Sweep Modal -->
+<div class="modal-overlay" id="sweepModal">
+  <div class="modal">
+    <h2>⊞ Parameter Sweep <span class="tag tag-is">IN-SAMPLE ONLY</span></h2>
+    <p style="font-size:13px;color:var(--fg2);margin-bottom:8px;">
+      Sweep runs are forced to end at <code>in_sample_end</code>.
+      Out-of-sample data is structurally unavailable to the sweep — this is intentional.
+    </p>
+    <div style="margin-bottom:12px;">
+      <label style="font-size:13px;">Base config:</label>
+      <textarea id="sweepBaseConfig" style="width:100%;min-height:150px;background:var(--bg);
+        border:1px solid var(--border);color:var(--fg);font-family:var(--mono);
+        font-size:12px;padding:8px;border-radius:4px;resize:vertical;margin-top:4px;"></textarea>
+    </div>
+    <h3 style="font-size:13px;margin-bottom:8px;">Sweep Parameters</h3>
+    <div id="sweepParams">
+      <div class="sweep-param-row">
+        <label>Parameter (dot-path):</label>
+        <input type="text" placeholder="entry.dma_period" class="sweep-key" style="flex:1;">
+        <label style="min-width:auto;">Values (comma-sep):</label>
+        <input type="text" placeholder="10,20,30" class="sweep-vals" style="flex:1;">
+      </div>
+    </div>
+    <button class="btn btn-secondary" style="font-size:12px;padding:4px 10px;margin:8px 0;"
+      onclick="addSweepRow()">+ Add Parameter</button>
+    <div id="sweepWarning"></div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeSweepModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="doSweep()">Run Sweep</button>
+    </div>
+    <div id="sweepStatus" style="margin-top:12px;font-size:13px;"></div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────
+let currentRun = null;
+let runData = {};   // cached per-tab data
+let charts = {};    // Chart.js instances for cleanup
+
+const TABS = [
+  { id: 'overview',   label: 'Overview' },
+  { id: 'equity',     label: 'Equity Curve' },
+  { id: 'drawdown',   label: 'Drawdown' },
+  { id: 'trades',     label: 'Trade List' },
+  { id: 'xirr',       label: 'XIRR' },
+  { id: 'durations',  label: 'Durations' },
+  { id: 'stats',      label: 'Stats' },
+  { id: 'monthly',    label: 'Returns' },
+  { id: 'lots',       label: 'Exposure' },
+];
+let activeTab = 'overview';
+
+// ── Init ───────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadRuns();
+  loadExampleConfig();
+});
+
+async function loadRuns() {
+  try {
+    const res = await fetch('/api/runs');
+    const runs = await res.json();
+    const list = document.getElementById('runList');
+    if (!runs.length) {
+      list.innerHTML = '<li style="color:var(--fg2);font-size:12px;">No runs yet</li>';
+      return;
+    }
+    list.innerHTML = runs.map(r => `
+      <li onclick="selectRun('${r.run_name}')"
+          class="${currentRun === r.run_name ? 'active' : ''}"
+          id="run-${r.run_name}">
+        ${r.run_name}
+        <div class="run-meta">
+          CAGR ${r.cagr_pct}% · DD ${r.max_dd_pct}% · WR ${r.win_rate_pct}%
+        </div>
+      </li>
+    `).join('');
+  } catch(e) {
+    console.error('Failed to load runs:', e);
+  }
+}
+
+async function loadExampleConfig() {
+  try {
+    const res = await fetch('/api/example-config');
+    const cfg = await res.json();
+    document.getElementById('triggerConfig').value = JSON.stringify(cfg, null, 2);
+    document.getElementById('sweepBaseConfig').value = JSON.stringify(cfg, null, 2);
+  } catch(e) {}
+}
+
+// ── Run selection ──────────────────────────────────────────────────
+async function selectRun(name) {
+  currentRun = name;
+  runData = {};
+  Object.values(charts).forEach(c => c.destroy());
+  charts = {};
+
+  // Update sidebar active state
+  document.querySelectorAll('.run-list li').forEach(li => li.classList.remove('active'));
+  const el = document.getElementById('run-' + name);
+  if (el) el.classList.add('active');
+
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('runDashboard').style.display = 'block';
+  document.getElementById('runTitle').textContent = name;
+
+  // Load summary for period info
+  try {
+    const res = await fetch(`/api/runs/${name}/summary`);
+    runData.summary = await res.json();
+    const p = runData.summary.period;
+    document.getElementById('runPeriod').textContent =
+      `${p.start} → ${p.end} · ${p.years}y · ${p.trading_days} days`;
+  } catch(e) {
+    document.getElementById('runPeriod').textContent = '';
+  }
+
+  renderTabs();
+  showTab('overview');
+}
+
+function renderTabs() {
+  const bar = document.getElementById('tabBar');
+  bar.innerHTML = TABS.map(t => `
+    <button class="tab ${t.id === activeTab ? 'active' : ''}"
+            onclick="showTab('${t.id}')">${t.label}</button>
+  `).join('');
+}
+
+async function showTab(id) {
+  activeTab = id;
+  renderTabs();
+  const content = document.getElementById('tabContent');
+  content.innerHTML = '<div style="padding:20px;"><span class="spinner"></span> Loading…</div>';
+
+  // Destroy old charts
+  Object.values(charts).forEach(c => c.destroy());
+  charts = {};
+
+  try {
+    switch(id) {
+      case 'overview':  await renderOverview(content); break;
+      case 'equity':    await renderEquity(content); break;
+      case 'drawdown':  await renderDrawdown(content); break;
+      case 'trades':    await renderTrades(content); break;
+      case 'xirr':      await renderXirr(content); break;
+      case 'durations': await renderDurations(content); break;
+      case 'stats':     await renderStats(content); break;
+      case 'monthly':   await renderMonthly(content); break;
+      case 'lots':      await renderExposure(content); break;
+    }
+  } catch(e) {
+    content.innerHTML = `<div class="card"><p style="color:var(--red)">Error loading tab: ${e.message}</p></div>`;
+  }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+function fmt(n, dec=2) {
+  if (n == null) return '—';
+  return Number(n).toLocaleString('en-IN', {
+    minimumFractionDigits: dec, maximumFractionDigits: dec
+  });
+}
+function fmtPct(n) { return n != null ? fmt(n) + '%' : '—'; }
+function fmtInr(n) { return n != null ? '₹' + fmt(n, 0) : '—'; }
+function pnlClass(n) { return n > 0 ? 'positive' : n < 0 ? 'negative' : ''; }
+function pnlTd(n) { return `<td class="${n>0?'pnl-pos':n<0?'pnl-neg':''}">${fmt(n)}</td>`; }
+
+async function fetchJson(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+function makeChart(canvasId, cfg) {
+  const ctx = document.getElementById(canvasId);
+  if (!ctx) return null;
+  const c = new Chart(ctx, cfg);
+  charts[canvasId] = c;
+  return c;
+}
+
+// ── Tab: Overview ──────────────────────────────────────────────────
+async function renderOverview(el) {
+  const s = runData.summary;
+  if (!s) { el.innerHTML = '<div class="card">No summary data</div>'; return; }
+
+  const r = s.returns;
+  const t = s.trades;
+  const is = s.in_sample;
+  const oos = s.out_of_sample;
+  const bnh = s.buy_and_hold;
+  const fs = s.final_state;
+
+  el.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="label">Final Value</div>
+        <div class="value ${pnlClass(r.total_return_pct)}">${fmtInr(r.final_value)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">CAGR</div>
+        <div class="value ${pnlClass(r.cagr_pct)}">${fmtPct(r.cagr_pct)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Max Drawdown</div>
+        <div class="value negative">${fmtPct(r.max_drawdown_pct)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Win Rate</div>
+        <div class="value">${fmtPct(t.win_rate_pct)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Total Sells</div>
+        <div class="value">${t.total_sells}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Realized P&L</div>
+        <div class="value ${pnlClass(t.cumulative_rpnl)}">${fmtInr(t.cumulative_rpnl)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">BnH CAGR</div>
+        <div class="value">${fmtPct(bnh.cagr_pct)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Open Positions</div>
+        <div class="value">${fs.open_positions} (${fs.open_lots} lots)</div>
+      </div>
+    </div>
+
+    <div class="chart-row" style="margin-top:16px;">
+      <div class="card">
+        <h3>In-Sample</h3>
+        <div class="stat-grid" style="grid-template-columns:repeat(3,1fr);">
+          <div class="stat"><div class="label">CAGR</div><div class="value ${pnlClass(is.cagr_pct)}">${fmtPct(is.cagr_pct)}</div></div>
+          <div class="stat"><div class="label">Max DD</div><div class="value negative">${fmtPct(is.max_drawdown_pct)}</div></div>
+          <div class="stat"><div class="label">Win Rate</div><div class="value">${fmtPct(is.win_rate_pct)}</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Out-of-Sample</h3>
+        <div class="stat-grid" style="grid-template-columns:repeat(3,1fr);">
+          <div class="stat"><div class="label">CAGR</div><div class="value ${pnlClass(oos.cagr_pct)}">${fmtPct(oos.cagr_pct)}</div></div>
+          <div class="stat"><div class="label">Max DD</div><div class="value negative">${fmtPct(oos.max_drawdown_pct)}</div></div>
+          <div class="stat"><div class="label">Win Rate</div><div class="value">${fmtPct(oos.win_rate_pct)}</div></div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Tab: Equity Curve ──────────────────────────────────────────────
+async function renderEquity(el) {
+  if (!runData.equity) {
+    runData.equity = await fetchJson(`/api/runs/${currentRun}/equity`);
+  }
+  const eq = runData.equity;
+
+  const isEnd = runData.summary?.config?.in_sample_end;
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>Equity Curve</h2>
+      <div class="chart-container" style="height:380px;">
+        <canvas id="equityChart"></canvas>
+      </div>
+    </div>
+  `;
+
+  const labels = eq.map(p => p.date);
+  const values = eq.map(p => p.value);
+
+  // Find IS/OOS split index
+  let splitIdx = labels.length;
+  if (isEnd) {
+    splitIdx = labels.findIndex(d => d > isEnd);
+    if (splitIdx < 0) splitIdx = labels.length;
+  }
+
+  // Color segments
+  const isColor = 'rgba(79, 140, 255, 0.8)';
+  const oosColor = 'rgba(34, 197, 94, 0.8)';
+  const segColors = labels.map((_, i) => i < splitIdx ? isColor : oosColor);
+
+  makeChart('equityChart', {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Portfolio Value',
+        data: values,
+        borderColor: isColor,
+        backgroundColor: 'rgba(79, 140, 255, 0.05)',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: true,
+        segment: {
+          borderColor: ctx => {
+            const i = ctx.p0DataIndex;
+            return i < splitIdx ? isColor : oosColor;
+          }
+        }
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `₹${Number(ctx.parsed.y).toLocaleString('en-IN', {maximumFractionDigits:0})}`
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12, color: '#8b90a0' }, grid: { color: '#2d3148' } },
+        y: {
+          ticks: {
+            color: '#8b90a0',
+            callback: v => '₹' + (v >= 100000 ? (v/100000).toFixed(1) + 'L' : v.toLocaleString())
+          },
+          grid: { color: '#2d3148' }
+        }
+      }
+    }
+  });
+}
+
+// ── Tab: Drawdown ──────────────────────────────────────────────────
+async function renderDrawdown(el) {
+  if (!runData.equity) {
+    runData.equity = await fetchJson(`/api/runs/${currentRun}/equity`);
+  }
+  const eq = runData.equity;
+
+  // Compute drawdown series
+  let peak = 0;
+  const dd = eq.map(p => {
+    if (p.value > peak) peak = p.value;
+    return peak > 0 ? -((peak - p.value) / peak * 100) : 0;
+  });
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>Drawdown</h2>
+      <div class="chart-container" style="height:350px;">
+        <canvas id="ddChart"></canvas>
+      </div>
+    </div>
+  `;
+
+  makeChart('ddChart', {
+    type: 'line',
+    data: {
+      labels: eq.map(p => p.date),
+      datasets: [{
+        label: 'Drawdown %',
+        data: dd,
+        borderColor: 'rgba(239, 68, 68, 0.8)',
+        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12, color: '#8b90a0' }, grid: { color: '#2d3148' } },
+        y: {
+          ticks: { color: '#8b90a0', callback: v => v.toFixed(0) + '%' },
+          grid: { color: '#2d3148' }
+        }
+      }
+    }
+  });
+}
+
+// ── Tab: Trade List ────────────────────────────────────────────────
+async function renderTrades(el) {
+  el.innerHTML = `
+    <div class="card">
+      <h2>Trade Log</h2>
+      <div class="filter-bar">
+        <select id="tradeFilter" onchange="loadTradesPage()">
+          <option value="">All actions</option>
+          <option value="buy">Buys</option>
+          <option value="sell">Sells</option>
+          <option value="skip">Skips</option>
+          <option value="recalc">Recalcs</option>
+        </select>
+        <button class="btn btn-secondary" onclick="tradePagePrev()">← Prev</button>
+        <span id="tradePageInfo" style="font-size:12px;color:var(--fg2);"></span>
+        <button class="btn btn-secondary" onclick="tradePageNext()">Next →</button>
+      </div>
+      <div class="trade-table-container">
+        <table id="tradeTable">
+          <thead>
+            <tr>
+              <th>Date</th><th>Action</th><th>Symbol</th><th>Price</th>
+              <th>Qty</th><th>Reason</th><th>P&L</th><th>Gain%</th>
+              <th>Lots After</th><th>Cash After</th>
+            </tr>
+          </thead>
+          <tbody id="tradeBody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  window._tradeOffset = 0;
+  loadTradesPage();
+}
+
+async function loadTradesPage() {
+  const offset = window._tradeOffset || 0;
+  const limit = 200;
+  const filter = document.getElementById('tradeFilter')?.value || '';
+  let url = `/api/runs/${currentRun}/trades?offset=${offset}&limit=${limit}`;
+  if (filter) url += `&action=${filter}`;
+
+  const data = await fetchJson(url);
+  window._tradeTotal = data.total;
+
+  document.getElementById('tradePageInfo').textContent =
+    `${offset + 1}–${Math.min(offset + limit, data.total)} of ${data.total}`;
+
+  const tbody = document.getElementById('tradeBody');
+  tbody.innerHTML = data.trades.map(t => `
+    <tr>
+      <td>${t.date}</td>
+      <td><span style="color:${t.action==='buy'?'var(--accent)':t.action==='sell'?'var(--yellow)':'var(--fg2)'}">${t.action}</span></td>
+      <td>${t.symbol || ''}</td>
+      <td>${t.price != null ? fmt(t.price) : ''}</td>
+      <td>${t.qty || ''}</td>
+      <td style="font-size:11px;color:var(--fg2)">${t.reason || ''}</td>
+      ${pnlTd(t.realized_pnl_post_cost)}
+      <td class="${(t.gain_pct||0)>0?'pnl-pos':(t.gain_pct||0)<0?'pnl-neg':''}">${t.gain_pct != null ? fmt(t.gain_pct)+'%' : ''}</td>
+      <td>${t.lots_open_after ?? ''}</td>
+      <td>${t.cash_after != null ? fmt(t.cash_after, 0) : ''}</td>
+    </tr>
+  `).join('');
+}
+
+function tradePageNext() {
+  const limit = 200;
+  if ((window._tradeOffset || 0) + limit < (window._tradeTotal || 0)) {
+    window._tradeOffset = (window._tradeOffset || 0) + limit;
+    loadTradesPage();
+  }
+}
+function tradePagePrev() {
+  window._tradeOffset = Math.max(0, (window._tradeOffset || 0) - 200);
+  loadTradesPage();
+}
+
+// ── Tab: XIRR ──────────────────────────────────────────────────────
+async function renderXirr(el) {
+  const data = await fetchJson(`/api/runs/${currentRun}/xirr`);
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>XIRR — Cash-Flow-Based IRR</h2>
+      <p style="font-size:12px;color:var(--fg2);margin-bottom:16px;">
+        Computed via Newton's method on actual buy/sell timing.
+        Not a reuse of the CAGR function — XIRR accounts for irregular cash-flow timing.
+      </p>
+      <div class="stat-grid" style="grid-template-columns:repeat(3,1fr);">
+        <div class="stat">
+          <div class="label">Overall XIRR</div>
+          <div class="value ${pnlClass(data.overall)}">${data.overall != null ? fmtPct(data.overall) : '—'}</div>
+        </div>
+        <div class="stat">
+          <div class="label">In-Sample XIRR</div>
+          <div class="value ${pnlClass(data.in_sample)}">${data.in_sample != null ? fmtPct(data.in_sample) : '—'}</div>
+        </div>
+        <div class="stat">
+          <div class="label">Out-of-Sample XIRR</div>
+          <div class="value ${pnlClass(data.out_of_sample)}">${data.out_of_sample != null ? fmtPct(data.out_of_sample) : '—'}</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Tab: Trade Durations ───────────────────────────────────────────
+async function renderDurations(el) {
+  const data = await fetchJson(`/api/runs/${currentRun}/durations`);
+
+  // Build histogram buckets
+  const buckets = [0, 7, 14, 30, 60, 90, 180, 365, 730, Infinity];
+  const labels = ['<7d', '7-14d', '14-30d', '30-60d', '60-90d', '90-180d', '180-365d', '1-2y', '2y+'];
+  const counts = new Array(labels.length).fill(0);
+  const avgDur = data.length ? (data.reduce((s,d)=>s+d.duration_days, 0) / data.length) : 0;
+
+  for (const d of data) {
+    for (let i = 0; i < buckets.length - 1; i++) {
+      if (d.duration_days >= buckets[i] && d.duration_days < buckets[i+1]) {
+        counts[i]++;
+        break;
+      }
+    }
+  }
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>Trade Duration Distribution</h2>
+      <p style="font-size:12px;color:var(--fg2);margin-bottom:4px;">
+        Quantity-weighted per-lot holding period (not first-lot-to-exit).
+      </p>
+      <p style="font-size:13px;margin-bottom:16px;">
+        Avg duration: <strong>${fmt(avgDur, 1)} days</strong> across ${data.length} trades
+      </p>
+      <div class="chart-container" style="height:300px;">
+        <canvas id="durChart"></canvas>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <h3>Duration vs Return</h3>
+      <div class="chart-container" style="height:300px;">
+        <canvas id="durScatter"></canvas>
+      </div>
+    </div>
+  `;
+
+  makeChart('durChart', {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Trade count',
+        data: counts,
+        backgroundColor: 'rgba(79, 140, 255, 0.6)',
+        borderColor: 'rgba(79, 140, 255, 1)',
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8b90a0' }, grid: { color: '#2d3148' } },
+        y: { ticks: { color: '#8b90a0' }, grid: { color: '#2d3148' }, beginAtZero: true }
+      }
+    }
+  });
+
+  // Scatter: duration vs gain%
+  makeChart('durScatter', {
+    type: 'scatter',
+    data: {
+      datasets: [{
+        label: 'Duration vs Gain%',
+        data: data.map(d => ({ x: d.duration_days, y: d.gain_pct })),
+        backgroundColor: data.map(d => d.gain_pct >= 0
+          ? 'rgba(34, 197, 94, 0.5)' : 'rgba(239, 68, 68, 0.5)'),
+        pointRadius: 3,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          title: { display: true, text: 'Duration (days)', color: '#8b90a0' },
+          ticks: { color: '#8b90a0' }, grid: { color: '#2d3148' }
+        },
+        y: {
+          title: { display: true, text: 'Gain %', color: '#8b90a0' },
+          ticks: { color: '#8b90a0', callback: v => v + '%' }, grid: { color: '#2d3148' }
+        }
+      }
+    }
+  });
+}
+
+// ── Tab: Stats ─────────────────────────────────────────────────────
+async function renderStats(el) {
+  const data = await fetchJson(`/api/runs/${currentRun}/stats`);
+
+  el.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat">
+        <div class="label">Profit Factor</div>
+        <div class="value ${data.profit_factor > 1 ? 'positive' : 'negative'}">
+          ${data.profit_factor === 'Inf' ? '∞' : fmt(data.profit_factor)}
+        </div>
+      </div>
+      <div class="stat">
+        <div class="label">Gross Profit</div>
+        <div class="value positive">${fmtInr(data.gross_profit)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Gross Loss</div>
+        <div class="value negative">${fmtInr(data.gross_loss)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Avg Win</div>
+        <div class="value positive">${fmtInr(data.avg_win)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Avg Loss</div>
+        <div class="value negative">${fmtInr(data.avg_loss)}</div>
+      </div>
+      <div class="stat">
+        <div class="label">Max Consec. Losses</div>
+        <div class="value negative">${data.max_consecutive_losses}</div>
+      </div>
+    </div>
+
+    <div class="chart-row" style="margin-top:16px;">
+      <div class="card">
+        <h3>Largest Winning Trades</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Symbol</th><th>Date</th><th>P&L</th><th>Gain%</th></tr></thead>
+            <tbody>
+              ${data.largest_wins.map(t => `
+                <tr>
+                  <td>${t.symbol}</td><td>${t.date}</td>
+                  <td class="pnl-pos">${fmtInr(t.pnl)}</td>
+                  <td class="pnl-pos">${fmtPct(t.gain_pct)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Largest Losing Trades</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Symbol</th><th>Date</th><th>P&L</th><th>Gain%</th></tr></thead>
+            <tbody>
+              ${data.largest_losses.map(t => `
+                <tr>
+                  <td>${t.symbol}</td><td>${t.date}</td>
+                  <td class="pnl-neg">${fmtInr(t.pnl)}</td>
+                  <td class="pnl-neg">${fmtPct(t.gain_pct)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ── Tab: Monthly/Yearly Returns ────────────────────────────────────
+async function renderMonthly(el) {
+  const data = await fetchJson(`/api/runs/${currentRun}/monthly`);
+
+  // Monthly heatmap: rows = years, cols = months
+  const monthly = data.monthly;
+  const years = [...new Set(monthly.map(m => m.month.slice(0, 4)))].sort();
+  const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+  // Build lookup
+  const lookup = {};
+  for (const m of monthly) lookup[m.month] = m.return_pct;
+
+  // Color function
+  function heatColor(v) {
+    if (v == null) return 'var(--bg3)';
+    if (v >= 5) return 'rgba(34, 197, 94, 0.6)';
+    if (v >= 2) return 'rgba(34, 197, 94, 0.35)';
+    if (v >= 0) return 'rgba(34, 197, 94, 0.15)';
+    if (v >= -2) return 'rgba(239, 68, 68, 0.15)';
+    if (v >= -5) return 'rgba(239, 68, 68, 0.35)';
+    return 'rgba(239, 68, 68, 0.6)';
+  }
+
+  let heatHtml = `<div class="heatmap-grid" style="grid-template-columns: 50px repeat(12, 1fr);">`;
+  heatHtml += `<div></div>` + monthNames.map(m => `<div style="text-align:center;color:var(--fg2);font-size:10px;">${m}</div>`).join('');
+
+  for (const y of years) {
+    heatHtml += `<div style="color:var(--fg2);font-size:11px;padding:6px 4px;">${y}</div>`;
+    for (let m = 1; m <= 12; m++) {
+      const key = `${y}-${String(m).padStart(2, '0')}`;
+      const v = lookup[key];
+      heatHtml += `<div class="heatmap-cell" style="background:${heatColor(v)}"
+        title="${key}: ${v != null ? v.toFixed(2) + '%' : 'N/A'}">
+        ${v != null ? v.toFixed(1) : ''}
+      </div>`;
+    }
+  }
+  heatHtml += '</div>';
+
+  // Yearly bar chart
+  el.innerHTML = `
+    <div class="card">
+      <h2>Monthly Returns Heatmap</h2>
+      ${heatHtml}
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <h2>Yearly Returns</h2>
+      <div class="chart-container" style="height:300px;">
+        <canvas id="yearlyChart"></canvas>
+      </div>
+    </div>
+  `;
+
+  const yLabels = data.yearly.map(y => y.year);
+  const yValues = data.yearly.map(y => y.return_pct);
+
+  makeChart('yearlyChart', {
+    type: 'bar',
+    data: {
+      labels: yLabels,
+      datasets: [{
+        label: 'Annual Return %',
+        data: yValues,
+        backgroundColor: yValues.map(v => v >= 0
+          ? 'rgba(34, 197, 94, 0.6)' : 'rgba(239, 68, 68, 0.6)'),
+        borderColor: yValues.map(v => v >= 0
+          ? 'rgba(34, 197, 94, 1)' : 'rgba(239, 68, 68, 1)'),
+        borderWidth: 1,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8b90a0' }, grid: { color: '#2d3148' } },
+        y: {
+          ticks: { color: '#8b90a0', callback: v => v + '%' },
+          grid: { color: '#2d3148' }
+        }
+      }
+    }
+  });
+}
+
+// ── Tab: Capital Exposure / Lot Count ──────────────────────────────
+async function renderExposure(el) {
+  if (!runData.equity) {
+    runData.equity = await fetchJson(`/api/runs/${currentRun}/equity`);
+  }
+  const eq = runData.equity;
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>Open Lots Over Time</h2>
+      <div class="chart-container" style="height:300px;">
+        <canvas id="lotsChart"></canvas>
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      <h2>Capital Exposure (Invested vs Cash)</h2>
+      <div class="chart-container" style="height:300px;">
+        <canvas id="exposureChart"></canvas>
+      </div>
+    </div>
+  `;
+
+  makeChart('lotsChart', {
+    type: 'line',
+    data: {
+      labels: eq.map(p => p.date),
+      datasets: [{
+        label: 'Open Lots',
+        data: eq.map(p => p.open_lots),
+        borderColor: 'rgba(245, 158, 11, 0.8)',
+        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12, color: '#8b90a0' }, grid: { color: '#2d3148' } },
+        y: { ticks: { color: '#8b90a0' }, grid: { color: '#2d3148' }, beginAtZero: true }
+      }
+    }
+  });
+
+  // Exposure: invested = value - cash, vs cash
+  makeChart('exposureChart', {
+    type: 'line',
+    data: {
+      labels: eq.map(p => p.date),
+      datasets: [
+        {
+          label: 'Invested',
+          data: eq.map(p => p.value - p.cash),
+          borderColor: 'rgba(79, 140, 255, 0.8)',
+          backgroundColor: 'rgba(79, 140, 255, 0.1)',
+          borderWidth: 1.5, pointRadius: 0, fill: true,
+        },
+        {
+          label: 'Cash',
+          data: eq.map(p => p.cash),
+          borderColor: 'rgba(34, 197, 94, 0.6)',
+          backgroundColor: 'rgba(34, 197, 94, 0.05)',
+          borderWidth: 1.5, pointRadius: 0, fill: true,
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { labels: { color: '#8b90a0' } } },
+      scales: {
+        x: { ticks: { maxTicksLimit: 12, color: '#8b90a0' }, grid: { color: '#2d3148' } },
+        y: {
+          stacked: true,
+          ticks: {
+            color: '#8b90a0',
+            callback: v => '₹' + (v >= 100000 ? (v/100000).toFixed(0) + 'L' : v.toLocaleString())
+          },
+          grid: { color: '#2d3148' }
+        }
+      }
+    }
+  });
+}
+
+// ── Trigger Modal ──────────────────────────────────────────────────
+function openTriggerModal() {
+  document.getElementById('triggerModal').classList.add('open');
+  document.getElementById('triggerStatus').textContent = '';
+}
+function closeTriggerModal() {
+  document.getElementById('triggerModal').classList.remove('open');
+}
+
+async function doTrigger() {
+  const textarea = document.getElementById('triggerConfig');
+  const status = document.getElementById('triggerStatus');
+  let cfg;
+  try {
+    cfg = JSON.parse(textarea.value);
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">Invalid JSON: ${e.message}</span>`;
+    return;
+  }
+
+  status.innerHTML = '<span class="spinner"></span> Starting backtest…';
+
+  try {
+    const res = await fetch('/api/trigger', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.innerHTML = `<span style="color:var(--red)">Error: ${data.error}</span>`;
+      return;
+    }
+
+    // Poll for completion
+    const jobId = data.job_id;
+    status.innerHTML = `<span class="spinner"></span> Running "${data.run_name}"… (${jobId})`;
+
+    const poll = setInterval(async () => {
+      const r = await fetch(`/api/trigger/${jobId}`);
+      const d = await r.json();
+      if (d.status === 'success') {
+        clearInterval(poll);
+        status.innerHTML = `<span style="color:var(--green)">✓ Run "${d.run_name}" completed</span>`;
+        loadRuns();
+      } else if (d.status === 'failed') {
+        clearInterval(poll);
+        status.innerHTML = `<span style="color:var(--red)">✗ Run failed: ${d.stderr}</span>`;
+      }
+    }, 2000);
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+  }
+}
+
+// ── Sweep Modal ────────────────────────────────────────────────────
+function openSweepModal() {
+  document.getElementById('sweepModal').classList.add('open');
+  document.getElementById('sweepStatus').textContent = '';
+  document.getElementById('sweepWarning').innerHTML = '';
+}
+function closeSweepModal() {
+  document.getElementById('sweepModal').classList.remove('open');
+}
+function addSweepRow() {
+  const container = document.getElementById('sweepParams');
+  const row = document.createElement('div');
+  row.className = 'sweep-param-row';
+  row.innerHTML = `
+    <label>Parameter (dot-path):</label>
+    <input type="text" placeholder="exit.target_pct_above_avg_cost" class="sweep-key" style="flex:1;">
+    <label style="min-width:auto;">Values (comma-sep):</label>
+    <input type="text" placeholder="5,8,12" class="sweep-vals" style="flex:1;">
+  `;
+  container.appendChild(row);
+}
+
+async function doSweep() {
+  const status = document.getElementById('sweepStatus');
+  const warning = document.getElementById('sweepWarning');
+  let baseCfg;
+  try {
+    baseCfg = JSON.parse(document.getElementById('sweepBaseConfig').value);
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">Invalid base config JSON</span>`;
+    return;
+  }
+
+  // Collect params
+  const rows = document.querySelectorAll('.sweep-param-row');
+  const params = {};
+  for (const row of rows) {
+    const key = row.querySelector('.sweep-key').value.trim();
+    const vals = row.querySelector('.sweep-vals').value.trim();
+    if (!key || !vals) continue;
+    params[key] = vals.split(',').map(v => {
+      const n = Number(v.trim());
+      return isNaN(n) ? v.trim() : n;
+    });
+  }
+
+  if (Object.keys(params).length === 0) {
+    status.innerHTML = `<span style="color:var(--red)">Add at least one parameter</span>`;
+    return;
+  }
+
+  // Count combos
+  let combos = 1;
+  for (const v of Object.values(params)) combos *= v.length;
+  if (combos > 25) {
+    warning.innerHTML = `<div class="sweep-warning">⚠ Grid has ${combos} combinations — this will take a while.</div>`;
+  }
+
+  status.innerHTML = '<span class="spinner"></span> Starting sweep (IN-SAMPLE ONLY)…';
+
+  try {
+    const res = await fetch('/api/sweep', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_config: baseCfg, params }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      status.innerHTML = `<span style="color:var(--red)">${data.error}</span>`;
+      return;
+    }
+
+    // Poll
+    const jobId = data.job_id;
+    const poll = setInterval(async () => {
+      const r = await fetch(`/api/sweep/${jobId}`);
+      const d = await r.json();
+      status.innerHTML = `<span class="spinner"></span> ${d.completed}/${d.total} combos…`;
+      if (d.done) {
+        clearInterval(poll);
+        status.innerHTML = renderSweepResults(d.results);
+        loadRuns();
+      }
+    }, 3000);
+  } catch(e) {
+    status.innerHTML = `<span style="color:var(--red)">Error: ${e.message}</span>`;
+  }
+}
+
+function renderSweepResults(results) {
+  if (!results || !results.length) return '<span style="color:var(--fg2)">No results</span>';
+
+  const ok = results.filter(r => r.status === 'ok');
+  if (!ok.length) return '<span style="color:var(--red)">All combos failed</span>';
+
+  // Sort by CAGR
+  ok.sort((a, b) => b.cagr_pct - a.cagr_pct);
+
+  let html = `<div style="margin-top:8px;">
+    <strong style="color:var(--green)">✓ Sweep complete</strong>
+    <span class="tag tag-is" style="margin-left:8px;">IN-SAMPLE ONLY</span>
+    <table style="margin-top:8px;">
+      <thead><tr><th>Params</th><th>CAGR</th><th>Max DD</th><th>WR</th><th>Sells</th></tr></thead>
+      <tbody>`;
+
+  for (const r of ok) {
+    const paramStr = Object.entries(r.params).map(([k,v]) => `${k.split('.').pop()}=${v}`).join(', ');
+    html += `<tr>
+      <td style="font-size:11px">${paramStr}</td>
+      <td class="${r.cagr_pct>0?'pnl-pos':'pnl-neg'}">${r.cagr_pct}%</td>
+      <td class="pnl-neg">${r.max_dd_pct}%</td>
+      <td>${r.win_rate_pct}%</td>
+      <td>${r.total_sells}</td>
+    </tr>`;
+  }
+  html += '</tbody></table></div>';
+  return html;
+}
+</script>
+</body>
+</html>
