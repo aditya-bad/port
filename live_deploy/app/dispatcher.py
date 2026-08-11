@@ -68,6 +68,12 @@ class LiveDataDispatcher:
         self.reconnect_count = 0
         self.last_error: str | None = None
 
+        # instrument_token -> most recent last_price seen. Lets deployment
+        # position/report reads (and force-close-on-stop) mark positions
+        # to market without a separate REST round-trip to Kite — the tick
+        # stream already carries this.
+        self.last_prices: dict[int, float] = {}
+
     def start(self, loop: asyncio.AbstractEventLoop) -> None:
         """Start the single upstream Kite connection in its own thread."""
         self._loop = loop
@@ -115,6 +121,11 @@ class LiveDataDispatcher:
         """
         self.ticks_received += len(ticks)
         self.last_tick_at = datetime.now(timezone.utc)
+        for t in ticks:
+            token = t.get("instrument_token")
+            price = t.get("last_price")
+            if token is not None and price is not None:
+                self.last_prices[token] = price
         if self._loop is not None and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(
                 self.broadcaster.broadcast(ticks), self._loop

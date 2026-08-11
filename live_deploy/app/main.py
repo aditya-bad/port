@@ -1,15 +1,21 @@
 """
 live_deploy — FastAPI service.
 
-Step 1 (this file): the live data dispatcher — a single Kite Connect
-WebSocket connection, fanned out to any number of downstream consumers
-via /ws/ticks. No matter how many clients connect there, Kite only ever
-sees one connection from this process.
+Step 1: the live data dispatcher — a single Kite Connect WebSocket
+connection, fanned out to any number of downstream consumers.
 
-Step 2 (later, per instructions — not built yet): live strategies running
-on top of that same tick stream. See app/strategies/ for the placeholder.
+Step 2 (this revision): persistent, resumable paper-trading
+deployments. Every deployment (one strategy + one config = one
+isolated, independently-tracked "instance") gets its own DeploymentRunner,
+its own positions/cash/trade history in Postgres (Neon), and survives
+the server being turned off overnight — on startup, every deployment
+still marked 'active' in the DB is reloaded with its last-known
+positions and resumes reacting to live ticks, no replay needed, because
+every fill was durably committed before the process ever stopped.
 
-For now, beyond the dispatcher itself, this only exposes /health.
+Step 3 (later, per instructions — not built yet): actual strategy logic.
+See app/deployments/strategy_base.py for the interface strategies will
+implement, and app/strategies/ for where they'll live.
 """
 
 import asyncio
@@ -19,12 +25,20 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from .broadcaster import TickBroadcaster
 from .config import load_config, load_tokens
+from .db.migrate import run_migrations
+from .db.pool import close_pool, create_pool
+from .deployments.manager import DeploymentManager
 from .dispatcher import LiveDataDispatcher
+from .routers import deployments as deployments_router
+from .routers import health as health_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("live_deploy")
 
-app = FastAPI(title="NiftyShop Live Deploy — Data Dispatcher")
+app = FastAPI(title="NiftyShop Live Deploy — Data Dispatcher + Paper Trading")
+
+app.include_router(health_router.router)
+app.include_router(deployments_router.router)
 
 
 @app.on_event("startup")
@@ -32,6 +46,14 @@ async def startup() -> None:
     config = load_config()
     tokens = load_tokens()
 
+    # ── Database: connect, migrate (idempotent — safe on every boot) ──
+    db_pool = await create_pool(config["database_url"])
+    applied = await run_migrations(db_pool)
+    if applied:
+        logger.info("Applied migrations: %s", applied)
+    app.state.db_pool = db_pool
+
+    # ── Live data dispatcher (unchanged from step 1) ──────────────────
     broadcaster = TickBroadcaster()
     dispatcher = LiveDataDispatcher(
         api_key=config["api_key"],
@@ -40,27 +62,36 @@ async def startup() -> None:
         tick_mode=config["tick_mode"],
         broadcaster=broadcaster,
     )
-
     loop = asyncio.get_running_loop()
     dispatcher.start(loop)
-
     app.state.broadcaster = broadcaster
     app.state.dispatcher = dispatcher
-    logger.info("live_deploy started — %d token(s) configured, mode=%s",
-               len(tokens), config["tick_mode"])
+
+    # ── Deployment lifecycle: resume everything still 'active' ────────
+    manager = DeploymentManager(db_pool, broadcaster, dispatcher)
+    resumed = await manager.load_active_on_startup()
+    app.state.deployment_manager = manager
+
+    logger.info(
+        "live_deploy started — %d token(s), mode=%s, %d deployment(s) resumed",
+        len(tokens), config["tick_mode"], resumed,
+    )
 
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    # Stop deployment runner tasks first (they hold broadcaster
+    # subscriptions and DB connections) — this does NOT change any
+    # deployment's status in the DB, so 'active' ones resume
+    # automatically on next startup.
+    manager: DeploymentManager = app.state.deployment_manager
+    await manager.shutdown_all()
+
     dispatcher: LiveDataDispatcher = app.state.dispatcher
     dispatcher.stop()
+
+    await close_pool(app.state.db_pool)
     logger.info("live_deploy stopped")
-
-
-@app.get("/health")
-async def health():
-    dispatcher: LiveDataDispatcher = app.state.dispatcher
-    return {"status": "ok", **dispatcher.status}
 
 
 @app.websocket("/ws/ticks")

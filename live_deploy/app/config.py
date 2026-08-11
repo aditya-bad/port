@@ -12,7 +12,7 @@ LIVE_DEPLOY_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = LIVE_DEPLOY_DIR / "config.json"
 TOKENS_PATH = LIVE_DEPLOY_DIR / "tokens.json"
 
-REQUIRED_CONFIG_KEYS = ("api_key", "api_secret", "access_token")
+REQUIRED_CONFIG_KEYS = ("api_key", "api_secret", "access_token", "database_url")
 VALID_TICK_MODES = ("ltp", "quote", "full")
 
 
