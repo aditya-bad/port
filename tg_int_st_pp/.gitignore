@@ -1,0 +1,6 @@
+# Credentials — never commit these
+config.json
+
+# Python
+__pycache__/
+*.pyc
