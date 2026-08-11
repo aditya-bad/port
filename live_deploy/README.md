@@ -179,6 +179,96 @@ trigger. (`mode` itself is just a label at the infra level, same as
 every other deployment — see "Mode: intraday vs positional" below;
 `force_exit_time` is what actually controls this.)
 
+## What's here (Step 5: options utils)
+
+Before wiring up an actual options strategy, `app/options/` gives it
+everything needed to turn a plain-English leg description into a
+concrete, tradeable contract — reusing the **exact same Kite session**
+the dispatcher's WebSocket already holds (built from the dispatcher's
+publicly-exposed `api_key`/`access_token`, see `app/options/client.py`),
+no separate login.
+
+This package is **resolution-only** — it never places a trade itself. A
+strategy resolves an `OptionLeg` and then calls the same
+`runner.buy()`/`runner.sell()` every other strategy already uses:
+
+```python
+from ..options import OptionsResolver
+
+resolver = OptionsResolver(runner.dispatcher)
+
+# "THIS_WEEK ATM CE"
+leg = await resolver.get_atm_leg("NIFTY", "THIS_WEEK", "CE")
+
+# "NEXT_WEEK ATM-10 CE"  (10 strike-steps below the ATM strike)
+leg = await resolver.get_leg_by_offset("NIFTY", "NEXT_WEEK", "CE", -10)
+
+# "THIS_WEEK CE with price closest to 40"
+leg = await resolver.get_leg_by_premium("NIFTY", "THIS_WEEK", "CE", 40)
+
+await runner.buy(leg.tradingsymbol, leg.instrument_token, leg.lot_size, leg.last_price)
+```
+
+Every method is `async` — resolving anything here can require an
+instrument-master fetch or a live quote, both blocking HTTP calls in
+`kiteconnect` (it's built on `requests`, not `httpx`/`aiohttp`) — so they
+always run off the event loop via `asyncio.to_thread`, never blocking
+every other deployment's tick processing on the same loop.
+
+**Expiry selectors** (`resolve_expiry` and every leg method that takes
+one): `"THIS_WEEK"`, `"NEXT_WEEK"`, `"THIS_MONTH"`, `"NEXT_MONTH"`, an
+`int` (`0` = nearest upcoming expiry = `THIS_WEEK`, `1` = next, ...), a
+`date`, or an ISO date string. `THIS_MONTH`/`NEXT_MONTH` resolve to the
+*last* expiry listed within that calendar month — for NIFTY-style
+underlyings that's the same contract the monthly series has always been
+(the last weekly of the month); for a stock with no weeklies at all,
+it's simply that month's one listed expiry.
+
+**Strike/leg resolution:**
+
+| Method | What it answers |
+|---|---|
+| `list_strikes` / `get_strike_step` | Real listed strikes and the actual gap between them — derived from the live instrument master, not a hardcoded per-underlying constant (strike spacing has changed over time, e.g. NIFTY has used both 50 and 100) |
+| `get_atm_strike` / `get_atm_leg` | Nearest **listed** strike to the current spot price |
+| `get_leg_by_offset(..., offset_steps)` | ATM ± N *strike-steps* (not rupees) — `-10` is "ATM-10" in chain jargon |
+| `get_otm_leg` / `get_itm_leg(..., steps)` | OTM/ITM, **direction-aware per option type** so callers never have to think about it: a CE is OTM *above* spot and ITM *below*; a PE is the mirror image. Explicitly tested both ways for both types — this is the one detail in options code that's easy to get backwards |
+| `get_leg_by_premium(..., target_price)` | The leg whose current LTP is closest to a target premium, searched over a bounded window around ATM (`strike_window`, default 15 steps each side) rather than the whole chain — correct for realistic targets and far cheaper than scanning 150+ strikes |
+| `get_max_oi_strike(..., option_type=None)` | Highest-open-interest leg — a common support/resistance signal (max CE OI ≈ resistance, max PE OI ≈ support); returns `(leg, oi)` |
+| `list_option_chain(underlying, expiry_selector)` | The whole chain for one expiry as `{strike: {"CE": leg, "PE": leg}}` |
+
+**Futures, pricing, and misc:** `get_futures_leg`/`get_futures_price`
+(defaults to `THIS_MONTH`), `get_ltp`/`get_quote` (take either an
+`OptionLeg` or a raw `"EXCHANGE:TRADINGSYMBOL"` string), `get_spot_price`
+(prefers the dispatcher's **live tick cache** — zero REST calls if the
+underlying happens to already be subscribed — falling back to a REST
+`ltp()` call only on a cache miss), `get_lot_size`, `round_to_lot`
+(nearest whole-lot quantity, minimum 1 lot), `list_underlyings`.
+
+**Index spot symbol mapping.** A handful of indices' options are listed
+under a `name` that doesn't match their own spot tradingsymbol (e.g.
+NIFTY's options are named `"NIFTY"` but the spot index trades as
+`"NIFTY 50"`). `INDEX_SPOT_SYMBOL` in `resolver.py` maps the ones
+actually listed on Kite today (NIFTY, BANKNIFTY, FINNIFTY, MIDCPNIFTY,
+SENSEX, BANKEX); anything not in that table is assumed to be a stock,
+where the options `name` and the spot tradingsymbol are identical. If
+Kite lists a new index this table doesn't know about, `get_spot_price`
+for it falls back to `(NSE, underlying)`, which will resolve to the
+wrong symbol — add an entry here if that ever comes up.
+
+**Instrument master caching.** The full NFO instrument list (tens of
+thousands of rows) is fetched once per calendar day and shared
+**process-wide**, not per-deployment or per-resolver-instance — multiple
+options strategies running at once don't each pay for their own fetch.
+An `asyncio.Lock` per exchange prevents a redundant concurrent refetch if
+two resolvers race on a cold cache at the same moment.
+
+`get_kite_connect(dispatcher)` (`app/options/client.py`) caches the REST
+client keyed by `(api_key, access_token)` — so a daily re-login
+(`dispatcher.reconnect()`, same as the WebSocket hot-swap) transparently
+produces a fresh REST client on the next call too, with nothing to
+manually invalidate. Calling any options util before the first-ever Kite
+login raises a clean `NoKiteSession`, not a crash.
+
 ## Setup
 
 ```bash
@@ -652,6 +742,62 @@ Not yet run against a real Kite tick stream — the tick-shape assumptions
 from `kiteconnect`'s own source and documented tick-structure example,
 not guessed.
 
+**`app/options/` (options utils)** was verified with a synthetic NFO
+instrument chain — a realistic multi-expiry, multi-strike NIFTY chain
+(weeklies + monthly futures) plus a stock (`RELIANCE`) with a
+monthly-only chain and a different lot size, so the strategies-agnostic
+logic couldn't accidentally special-case "just NIFTY". All expiries were
+computed relative to `date.today()` (not hardcoded dates), so the test
+stays valid regardless of what day it's actually run:
+
+- **Expiry resolution**: `THIS_WEEK`/`NEXT_WEEK` correctly pick the 1st/
+  2nd upcoming expiry; int offsets `0`/`1` match them exactly;
+  `THIS_MONTH`/`NEXT_MONTH` correctly resolve to the last expiry within
+  the target calendar month; explicit `date` and ISO-string selectors
+  work; an unknown selector, an unlisted explicit date, and an unknown
+  underlying are all rejected with a clean `ValueError`, not a crash
+- **Strike step**: derived from the real listed strikes (not hardcoded)
+  and matched the synthetic chain's actual ₹50 spacing
+- **ATM resolution**: snapped correctly to the nearest *listed* strike,
+  including a case where the raw spot price wasn't itself a multiple of
+  the strike step
+- **`get_leg_by_offset`**: "NEXT_WEEK ATM-10 CE" landed on exactly
+  `ATM - 10 × step`, on the correct (next week) expiry
+- **OTM/ITM directionality — checked explicitly, both option types**:
+  CE OTM landed *above* spot, CE ITM *below*; PE OTM landed *below*
+  spot, PE ITM *above* — the exact mirror-image relationship the
+  implementation claims, not just "it returned something"
+- **`get_leg_by_premium`** ("THIS_WEEK CE closest to premium 40"): its
+  answer was checked against an **independent brute-force scan** — the
+  test fetched quotes for the same strike window directly from the fake
+  broker itself (bypassing the resolver's own code entirely) and
+  confirmed the resolver picked the genuine arg-min, not merely *a*
+  plausible-looking leg
+- **`get_max_oi_strike`**: a single strike was deliberately given an
+  outlier OI value 10 strikes away from ATM; the resolver found exactly
+  that strike, proving it actually scans by OI rather than defaulting to
+  ATM
+- **`get_spot_price`**: verified both paths — a live-tick-cache hit made
+  **zero** REST calls (asserted via a call counter on the fake
+  `ltp()`), and a cache miss fell back to exactly one REST call,
+  correctly resolving `"NIFTY"` → `"NSE:NIFTY 50"` via
+  `INDEX_SPOT_SYMBOL`
+- **REST client reuse**: two calls with the same `access_token` reused
+  the identical `KiteConnect` instance; changing the token (simulating a
+  daily re-login) produced a genuinely new client, not a stale one
+- **Futures, lot size, `round_to_lot`, `list_option_chain`,
+  `list_underlyings`**, and calling any util before a Kite login
+  (`NoKiteSession`, not a crash) were all exercised too
+- **Full existing regression suite re-run** (DB layer, full deployment
+  lifecycle, dynamic subscription, onboarding/UI, pivot_supertrend math
+  + live) against the dispatcher's credential-exposure change —
+  zero regressions
+
+Not yet run against real Kite instrument/quote data — the instrument-row
+and `quote()`/`ltp()` response shapes are taken directly from
+`kiteconnect`'s own source (`_parse_instruments`, `quote()`, `ltp()`),
+not guessed.
+
 ## Folder layout
 
 ```
@@ -684,10 +830,15 @@ live_deploy/
     │   ├── instruments.py                   # manual subscribe/unsubscribe control
     │   ├── kite_auth.py                      # login-url / callback / status
     │   └── strategies.py                      # GET /strategies
-    └── strategies/
-        ├── __init__.py                         # import list — triggers registration
-        ├── registry.py                          # @register_strategy
-        └── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
+    ├── strategies/
+    │   ├── __init__.py                         # import list — triggers registration
+    │   ├── registry.py                          # @register_strategy
+    │   └── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
+    └── options/
+        ├── __init__.py                          # step 5 — public exports
+        ├── models.py                             # OptionLeg
+        ├── client.py                              # get_kite_connect() — reuses the dispatcher's session
+        └── resolver.py                             # OptionsResolver — expiry/strike/leg/pricing utils
 ```
 
 ## Relationship to the rest of the repo

@@ -107,7 +107,16 @@ class LiveDataDispatcher:
         self.tick_mode = tick_mode
         self._kite_mode = MODE_MAP[tick_mode]
 
-        self._api_key = api_key
+        # Public — so other code (e.g. app/options/'s REST client) can
+        # build its own KiteConnect using the SAME session this
+        # dispatcher's WebSocket is authenticated with, instead of
+        # needing a separate login/credential path. access_token is
+        # None until the first successful bind_loop()/reconnect() —
+        # always read it fresh rather than caching it elsewhere, since
+        # it changes on every daily re-login.
+        self.api_key = api_key
+        self.access_token: str | None = None
+
         self._kite_ticker_cls = kite_ticker_cls
         self._schedule_on_ticker_thread = (
             schedule_on_ticker_thread or _default_ticker_thread_scheduler()
@@ -171,7 +180,8 @@ class LiveDataDispatcher:
             logger.exception("Error closing Kite WebSocket")
 
     def _connect_with(self, access_token: str) -> None:
-        self._kws = self._kite_ticker_cls(self._api_key, access_token)
+        self.access_token = access_token
+        self._kws = self._kite_ticker_cls(self.api_key, access_token)
         self._kws.on_ticks = self._on_ticks
         self._kws.on_connect = self._on_connect
         self._kws.on_close = self._on_close
