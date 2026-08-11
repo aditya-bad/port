@@ -269,6 +269,102 @@ produces a fresh REST client on the next call too, with nothing to
 manually invalidate. Calling any options util before the first-ever Kite
 login raises a clean `NoKiteSession`, not a crash.
 
+## What's here (Step 6: pivot + SuperTrend, but selling options)
+
+`app/strategies/pivot_supertrend_options.py` — the exact same signal
+engine as `pivot_supertrend` (pivots, SuperTrend(7,3), candle
+aggregation, seeding — literally imported from that module, not
+reimplemented, so both strategies share one tested source of truth for
+the numerically-sensitive parts), but instead of going long/short the
+underlying, it **sells options**:
+
+- **Long signal** (5-min close above R1/R2/R3, ST green) → **SELL
+  THIS_WEEK ATM PE**
+- **Short signal** (5-min close below S1/S2/S3, ST red) → **SELL
+  THIS_WEEK ATM CE**
+- **Exit** (ST flip, or force-exit time) → **BUY BACK** whichever leg is
+  open
+
+This is live paper-trading only — there's no backtested version of this
+variant in `tg_int_st_pp`, since options weren't part of that engine at
+all. It's registered separately as `"pivot_supertrend_options"` (the
+original `"pivot_supertrend"` is untouched and still trades the
+underlying) rather than a config flag on one class, since the execution
+side — leg resolution, dynamic per-trade option-token subscription,
+sell-to-open/buy-to-close instead of buy-to-open/sell-to-close — is
+different enough to deserve its own file.
+
+**Why always SELL, never BUY, regardless of signal direction:** this
+strategy is always writing premium — a long signal just picks *which*
+leg to write (the PE, since a put seller profits as long as NIFTY stays
+above the strike, a defined-premium way to express "bullish") — never
+buys options outright. That maps directly onto the existing paper ledger
+with zero schema or query changes: `record_fill` already treats
+"sell first, buy later" as a short position with `realized_pnl =
+qty * (sell_price - buy_price)` — exactly premium collected minus
+premium paid to close. Same simplification the rest of live_deploy
+already makes for the underlying: **no margin model** — selling a leg
+always succeeds cash-wise (premium is a pure credit), buying back to
+close is still cash-checked for real like any other buy.
+
+**Deploy example:**
+
+```bash
+curl -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '{
+  "deployment_name": "pst_options_live_1",
+  "strategy_name": "pivot_supertrend_options",
+  "mode": "intraday",
+  "initial_capital": 500000,
+  "config": {
+    "instrument_tokens": [256265],
+    "symbol": "NIFTY 50",
+    "options_underlying": "NIFTY",
+    "expiry_selector": "THIS_WEEK",
+    "lots_per_trade": 1,
+    "pivot_type": "classic",
+    "atr_smoothing": "wilder",
+    "force_exit_time": "15:00",
+    "prev_day_ohlc": {"high": 24850, "low": 24650, "close": 24800},
+    "seed_candles": [
+      {"date": "2026-08-11 09:15:00", "open": 24700, "high": 24720, "low": 24690, "close": 24710}
+    ]
+  }
+}'
+```
+
+Config keys not already covered by `pivot_supertrend`'s seeding options
+(identical here — `prev_day_ohlc`/`seed_candles`/`supertrend_seed`, see
+Step 4 above):
+
+| Key | Meaning |
+|---|---|
+| `instrument_tokens` | The **underlying's** token (e.g. NIFTY 50's `256265`) — used ONLY to generate the pivot/SuperTrend signal from its own tick stream. The options actually traded are resolved dynamically and are never this token. |
+| `options_underlying` | **Required.** The options chain's own `name`, e.g. `"NIFTY"` — NOT the spot tradingsymbol `"NIFTY 50"` (see Step 5's `INDEX_SPOT_SYMBOL` note). |
+| `expiry_selector` | `"THIS_WEEK"` (default) — any selector `OptionsResolver` accepts. |
+| `lots_per_trade` | `1` (default) — options only trade in whole lots; each entry sells this many lots of whatever `options_underlying`'s current lot size is. There's no `capital_per_trade` equivalent here — selling a leg doesn't consume capital the way buying the underlying does, so sizing is naturally lot-based instead. |
+
+**Execution details worth knowing:**
+
+- Entry/exit timing is identical to `pivot_supertrend` — signals are
+  detected on a candle's close and executed at the *next* candle's open
+  — but the **price** used for the fill comes from the option's own live
+  LTP (`OptionsResolver.get_ltp`) at that moment, not from the
+  underlying's OHLC — the underlying candle only decides *when* to act.
+- A fresh ATM leg is resolved on every single entry (a new week almost
+  certainly means a different strike, sometimes a different expiry
+  contract entirely) — nothing about which option gets traded is fixed
+  at deploy time.
+- The strategy dynamically subscribes the dispatcher to whichever
+  option leg is currently open (so its live ticks feed
+  `dispatcher.last_prices` for mark-to-market / force-close-on-stop) and
+  releases that subscription the moment the leg closes — including on
+  pause (re-subscribed automatically by `on_start` on resume if the
+  position is still open) and on a genuine stop, so nothing leaks.
+- If resolving or pricing a leg fails (e.g. no Kite session yet, a
+  transient API error), the entry is skipped with a logged warning
+  rather than crashing the deployment — the next entry signal gets a
+  fresh attempt.
+
 ## Setup
 
 ```bash
@@ -798,6 +894,55 @@ and `quote()`/`ltp()` response shapes are taken directly from
 `kiteconnect`'s own source (`_parse_instruments`, `quote()`, `ltp()`),
 not guessed.
 
+**`pivot_supertrend_options`** was verified with the SAME synthetic
+day1/day2 tick sequence used for `pivot_supertrend`'s own live
+integration test, fed through the real API/dispatcher/broadcaster/
+runner pipeline, plus a synthetic NFO options chain (fake `ltp()`
+pricing legs relative to whatever the live underlying price actually is
+at that instant, read the same way `get_spot_price`'s live-cache path
+does):
+
+- **Refactor safety first**: extracting `apply_seed_to_state` out of
+  `PivotSupertrendStrategy` into a shared function (so this strategy
+  could reuse it without duplicating it) was verified to be a pure
+  extraction, not a behavior change — `pivot_supertrend`'s own math and
+  live integration tests were re-run **unchanged** afterward and
+  produced byte-identical trade timestamps/prices/P&L to before the
+  refactor.
+- **Same signal timing as pivot_supertrend**, different execution: fed
+  the identical seeded day1 + live day2 sequence and got the same two
+  entry/exit cycles at the same candle timestamps as the underlying
+  version — direct proof the shared signal engine really is shared, not
+  a look-alike reimplementation.
+- **Correct leg per signal, checked on the actual trade records, not
+  just logs**: the long signal's entry/exit pair was a PE (same
+  tradingsymbol both times — sold then bought back, not some other
+  contract); the short signal's pair was a CE.
+- **Sell-to-open / buy-to-close, never the reverse** — asserted on
+  every one of the 4 recorded fills' `action` field directly.
+- **Resolved ATM strike tracks the live underlying price** at each
+  entry instant (checked against the known signal-candle price from the
+  seeded sequence).
+- **Dynamic subscription lifecycle**: the option leg's token is
+  subscribed on entry and unsubscribed the moment it closes — confirmed
+  by reading `dispatcher.status` directly after each cycle, not
+  inferred from log lines.
+- **Resume-safety**: deployed, let it enter a position (sell a PE) but
+  stopped short of the exit, then simulated a full process restart
+  (fresh `app.*` module reimport, same DB) — the still-open option
+  position survived intact, and — the actual point — `on_start()`
+  correctly **re-subscribed the dispatcher to that specific option's
+  token** on resume, confirmed directly against `dispatcher.status`.
+- Full existing regression suite re-run one more time after these
+  changes (DB layer, full deployment lifecycle, dynamic subscription,
+  onboarding/UI, pivot_supertrend math + live, options resolver) —
+  zero regressions.
+
+Not yet run against a real Kite tick stream or real option premiums —
+same caveat as everywhere else in this README: the tick/quote shapes are
+taken from `kiteconnect`'s own source, not guessed, but this hasn't been
+pointed at a live market.
+
 ## Folder layout
 
 ```
@@ -833,7 +978,8 @@ live_deploy/
     ├── strategies/
     │   ├── __init__.py                         # import list — triggers registration
     │   ├── registry.py                          # @register_strategy
-    │   └── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
+    │   ├── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
+    │   └── pivot_supertrend_options.py            # step 6 — same signal engine, sells options instead
     └── options/
         ├── __init__.py                          # step 5 — public exports
         ├── models.py                             # OptionLeg

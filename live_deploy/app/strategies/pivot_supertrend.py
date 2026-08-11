@@ -366,6 +366,87 @@ def _derive_prev_day_ohlc(candles: list[dict]) -> Optional[dict]:
     }
 
 
+def apply_seed_to_state(
+    deployment_name: str, st: "SuperTrendState", atr_method: str, cfg: dict,
+    current_prev_day_ohlc: Optional[dict], log: Optional[logging.Logger] = None,
+) -> tuple[Optional[str], Optional[dict]]:
+    """
+    Shared seeding logic — extracted so pivot_supertrend_options.py can
+    seed its own SuperTrendState identically without duplicating this
+    (non-numeric, but easy-to-drift) orchestration. Behavior is exactly
+    what PivotSupertrendStrategy._apply_seed used to do inline; that
+    method is now a thin wrapper around this function.
+
+    Mutates `st` in place (same as before). Returns
+    (prev_trend, derived_prev_day_ohlc):
+      - prev_trend is st.trend after seeding — None if nothing was seeded
+        (cold start; caller keeps whatever prev_trend it already had,
+        which is None at this point on every call site).
+      - derived_prev_day_ohlc is only non-None when seed_candles spanned
+        a full previous day AND current_prev_day_ohlc was falsy — the
+        caller decides whether/how to store it (never overwrites an
+        explicit prev_day_ohlc the caller already has).
+
+    `log` defaults to this module's own logger; pass a caller-specific
+    one (e.g. pivot_supertrend_options passing its own) so log lines
+    read as coming from whichever strategy actually seeded, not always
+    "pivot_supertrend".
+    """
+    log = log or logger
+    seed_candles = cfg.get("seed_candles")
+    seed_state = cfg.get("supertrend_seed")
+    derived_prev_day_ohlc = None
+
+    if seed_candles:
+        for raw in seed_candles:
+            c = dict(raw)
+            c["date"] = _parse_dt(raw["date"])
+            st.update(c)
+        log.info(
+            "%s: SuperTrend seeded from %d candle(s) -> trend=%s atr=%s",
+            deployment_name, len(seed_candles), st.trend,
+            round(st.atr, 2) if st.atr else None,
+        )
+        if not current_prev_day_ohlc:
+            derived_prev_day_ohlc = _derive_prev_day_ohlc(seed_candles)
+            if derived_prev_day_ohlc:
+                log.info("%s: prev_day_ohlc derived from seed_candles -> %s",
+                        deployment_name, derived_prev_day_ohlc)
+        return st.trend, derived_prev_day_ohlc
+
+    elif seed_state:
+        if atr_method == "sma":
+            log.warning(
+                "%s: supertrend_seed given but atr_smoothing='sma' needs a "
+                "rolling TR window, not a single ATR value — ignoring the "
+                "seed, cold-starting SuperTrend instead. Use seed_candles "
+                "for an SMA-compatible seed.", deployment_name,
+            )
+            return None, None
+        as_of = dict(seed_state["as_of_candle"])
+        as_of["date"] = _parse_dt(as_of["date"])
+        atr = seed_state["atr"]
+        trend = seed_state["trend"]
+        value = seed_state["value"]
+        if trend == "up":
+            final_lower = value
+            final_upper = approx_missing_band(as_of, atr, ST_MULTIPLIER, "upper")
+        else:
+            final_upper = value
+            final_lower = approx_missing_band(as_of, atr, ST_MULTIPLIER, "lower")
+        st.seed_from_state(
+            trend=trend, final_upper=final_upper, final_lower=final_lower,
+            atr=atr, prev_close=as_of["close"],
+        )
+        log.info(
+            "%s: SuperTrend seeded from explicit state -> trend=%s "
+            "(inactive band approximated)", deployment_name, trend,
+        )
+        return trend, None
+
+    return None, None
+
+
 # ═════════════════════════════════════════════════════════════════════
 # STRATEGY
 # ═════════════════════════════════════════════════════════════════════
@@ -439,56 +520,13 @@ class PivotSupertrendStrategy(StrategyBase):
             )
 
     def _apply_seed(self, runner, cfg: dict) -> None:
-        seed_candles = cfg.get("seed_candles")
-        seed_state = cfg.get("supertrend_seed")
-
-        if seed_candles:
-            for raw in seed_candles:
-                c = dict(raw)
-                c["date"] = _parse_dt(raw["date"])
-                self.st.update(c)
-            self.prev_trend = self.st.trend
-            logger.info(
-                "%s: SuperTrend seeded from %d candle(s) -> trend=%s atr=%s",
-                runner.deployment_name, len(seed_candles), self.st.trend,
-                round(self.st.atr, 2) if self.st.atr else None,
-            )
-            if not self.prev_day_ohlc:
-                derived = _derive_prev_day_ohlc(seed_candles)
-                if derived:
-                    self.prev_day_ohlc = derived
-                    logger.info("%s: prev_day_ohlc derived from seed_candles -> %s",
-                               runner.deployment_name, derived)
-
-        elif seed_state:
-            if self.atr_method == "sma":
-                logger.warning(
-                    "%s: supertrend_seed given but atr_smoothing='sma' needs a "
-                    "rolling TR window, not a single ATR value — ignoring the "
-                    "seed, cold-starting SuperTrend instead. Use seed_candles "
-                    "for an SMA-compatible seed.", runner.deployment_name,
-                )
-                return
-            as_of = dict(seed_state["as_of_candle"])
-            as_of["date"] = _parse_dt(as_of["date"])
-            atr = seed_state["atr"]
-            trend = seed_state["trend"]
-            value = seed_state["value"]
-            if trend == "up":
-                final_lower = value
-                final_upper = approx_missing_band(as_of, atr, ST_MULTIPLIER, "upper")
-            else:
-                final_upper = value
-                final_lower = approx_missing_band(as_of, atr, ST_MULTIPLIER, "lower")
-            self.st.seed_from_state(
-                trend=trend, final_upper=final_upper, final_lower=final_lower,
-                atr=atr, prev_close=as_of["close"],
-            )
-            self.prev_trend = trend
-            logger.info(
-                "%s: SuperTrend seeded from explicit state -> trend=%s "
-                "(inactive band approximated)", runner.deployment_name, trend,
-            )
+        prev_trend, derived = apply_seed_to_state(
+            runner.deployment_name, self.st, self.atr_method, cfg, self.prev_day_ohlc,
+        )
+        if prev_trend is not None:
+            self.prev_trend = prev_trend
+        if derived:
+            self.prev_day_ohlc = derived
 
     async def on_tick(self, runner, tick: dict) -> None:
         ts = tick.get("exchange_timestamp")

@@ -19,3 +19,4 @@ silently misleading.
 """
 
 from . import pivot_supertrend  # noqa: F401  (registers on import)
+from . import pivot_supertrend_options  # noqa: F401  (registers on import)
