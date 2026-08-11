@@ -79,8 +79,7 @@ which are strategy logic:
 2. **A strategy registry**, so "show me the list of strategies, let me
    deploy one" has something to list. `app/strategies/registry.py`'s
    `@register_strategy(...)` decorator is how a strategy announces
-   itself; `GET /strategies` and the UI read from it. Nothing is
-   registered yet.
+   itself; `GET /strategies` and the UI read from it.
 3. **A single-page UI** (`static/index.html`) tying it together:
    connection status + login button, the strategy list with a deploy
    form, the deployment list with pause/resume/stop and a
@@ -88,15 +87,97 @@ which are strategy logic:
    subscription. Served at `/` by the same FastAPI app — no separate
    frontend process.
 
-Step 4 (**not built yet** — "once infra is ready, I'll tell you the
-strategies"): actual strategy decision logic. `app/deployments/
-strategy_base.py` is the interface a strategy will implement; `app/
-strategies/` is where they'll live and register themselves. Until then,
-**deploying any strategy_name is allowed** (the UI's deploy form doesn't
-require the strategy to already exist — you can set up name/capital/
-config/tokens ahead of time) — the deployment just observes ticks
-without trading, and every API response flags it clearly via
-`strategy_registered: false` so this is never silently misleading.
+Deploying an unregistered `strategy_name` is still allowed — you can
+set up a deployment's name/capital/tokens/config before its strategy
+code exists, it just won't trade until a matching `@register_strategy`
+exists, and every API response flags this clearly via
+`strategy_registered: false` so it's never silently misleading.
+
+## What's here (Step 4: pivot points + SuperTrend(7,3) — live)
+
+The first real strategy, `app/strategies/pivot_supertrend.py` —
+ports the exact rules already backtested and validated in
+`tg_int_st_pp/strategy_pivot_supertrend.py` (long above resistance with
+SuperTrend green, short below support with SuperTrend red, exit on a
+SuperTrend flip or a force-exit time, both entries and exits at the
+*next* candle's open, only 1 open position at a time) to live streaming
+ticks. Re-implemented here rather than imported — this repo's convention
+is every top-level folder stays standalone.
+
+**What's genuinely new vs. the backtest** (a batch file vs. a live tick
+stream are different problems):
+
+- **Ticks → 5-min candles.** `CandleAggregator` buckets incoming ticks
+  by their `exchange_timestamp` (only present in Kite's `"full"` tick
+  mode — this strategy needs `tick_mode: "full"` in `config.json`) into
+  5-minute OHLC candles, floored to the same `:00/:05/:10…` boundaries
+  Kite's own candles use, emitting a candle exactly once, the moment it
+  closes.
+- **SuperTrend computed incrementally**, one candle at a time (carrying
+  forward just the previous ATR/bands/trend), instead of one batch pass
+  over a pre-loaded array. **Proven identical to the batch math**, not
+  just "should be the same": a test replays the same synthetic candle
+  sequence through both implementations and asserts bit-for-bit
+  identical trend/ATR/band output at every single step, across all 3 ATR
+  smoothing methods.
+- **Seeding.** A live deployment starts with no history at all — pivots
+  need the *previous day's* H/L/C, and SuperTrend's ATR needs `period`
+  candles of warmup. Everything below is optional; omitting all of it
+  means a genuine cold start (no entries until ATR warms up from live
+  ticks, ~35 minutes, AND a full trading day has been observed for
+  pivots — the live equivalent of the backtest's "day 1 excluded"):
+
+  | Config key | What it's for | Accuracy |
+  |---|---|---|
+  | `prev_day_ohlc: {high, low, close}` | Correct pivots from minute one | Exact — 3 numbers off any chart |
+  | `seed_candles: [{date, open, high, low, close}, ...]` | **Recommended.** SuperTrend state, run through the exact same algorithm as live ticks — no approximation | Exact, given enough candles (7+ for ATR, 20-30+ for the trend/bands to have "settled") |
+  | `supertrend_seed: {trend, value, atr, as_of_candle}` | Fallback for when you only have what your chart currently shows (the ST line + its color + a separately-added ATR(7) reading) | Approximate — only the *active* band is known this way; the inactive one is derived from `as_of_candle`'s own H/L. Not valid with `atr_smoothing: "sma"` (needs a rolling TR window, not one ATR number) — that combination is rejected with a clear warning and cold-starts instead of silently producing wrong numbers |
+
+- **Position sizing is a genuinely new dimension.** The backtest reported
+  raw index points per trade with no capital model — the NIFTY 50 index
+  itself isn't a tradeable instrument. This paper-trading engine tracks
+  real cash, so an entry is sized as `floor(cash / price)` "units" of
+  the index price, as if it were directly tradeable — a deliberate
+  simplification consistent with how the strategy was originally
+  designed (point-based), not a claim you can literally buy the index.
+  `capital_per_trade` caps this to a fixed amount instead of using all
+  available cash; there's no averaging — exactly one lot in, one lot out,
+  matching the backtest.
+
+**Deploy example** (seeded — most accurate):
+
+```bash
+curl -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '{
+  "deployment_name": "pivot_st_live_1",
+  "strategy_name": "pivot_supertrend",
+  "mode": "intraday",
+  "initial_capital": 500000,
+  "config": {
+    "instrument_tokens": [256265],
+    "symbol": "NIFTY 50",
+    "pivot_type": "classic",
+    "atr_smoothing": "wilder",
+    "force_exit_time": "15:00",
+    "prev_day_ohlc": {"high": 24850, "low": 24650, "close": 24800},
+    "seed_candles": [
+      {"date": "2026-08-11 09:15:00", "open": 24700, "high": 24720, "low": 24690, "close": 24710}
+    ]
+  }
+}'
+```
+
+`instrument_tokens` (plural — matches the key every other deployment's
+config uses for the same reason: `DeploymentRunner` filters the shared
+tick stream by this key, and `DeploymentManager` reads it for dynamic
+dispatcher subscription) must be a **one-element** list — this strategy
+only ever trades a single instrument.
+
+For a `"positional"`-style deployment that lets winners run past one
+day instead of force-flattening at a fixed time, set
+`"force_exit_time": null` — SuperTrend flips become the *only* exit
+trigger. (`mode` itself is just a label at the infra level, same as
+every other deployment — see "Mode: intraday vs positional" below;
+`force_exit_time` is what actually controls this.)
 
 ## Setup
 
@@ -225,10 +306,11 @@ distinction to decide whether to show "Login with Kite" or a
   "default_config": {"instrument_tokens": [256265], "pivot_type": "classic"}}]
 ```
 
-Backed by `app/strategies/registry.py` — empty until a strategy module
-calls `@register_strategy(...)` and is imported (see that file's
-docstring, and `app/strategies/__init__.py`'s import list). The UI's
-deploy form pre-fills `config` from `default_config` when one is given.
+Backed by `app/strategies/registry.py` — a strategy module registers by
+calling `@register_strategy(...)` and being imported (see that file's
+docstring, and `app/strategies/__init__.py`'s import list; `pivot_supertrend`
+is the first one). The UI's deploy form pre-fills `config` from
+`default_config` when one is given.
 
 ### `WS /ws/ticks`
 
@@ -532,6 +614,44 @@ itself rather than trusting the third-party library's behavior. Verified:
   (`access_token` → `initial_access_token`, `start()` → `bind_loop()`)
   — zero regressions
 
+**`pivot_supertrend`** was verified at three levels:
+
+1. **Math**: pivot formulas re-checked against the same hand-computed
+   values used in `tg_int_st_pp`'s own tests. The critical one —
+   `SuperTrendState` (incremental) vs. a fresh batch reference
+   implementation, fed the identical 145-candle synthetic sequence used
+   throughout this whole project's testing — produced **bit-for-bit
+   identical trend and ATR values at every single step, across all 3
+   ATR smoothing methods**. `CandleAggregator` correctly buckets
+   multi-tick sequences into OHLC candles on the same `:00/:05/:10…`
+   boundaries Kite itself uses (confirmed a tick at `09:17:32` floors to
+   the `09:15` bucket, not `09:20`). The `sma` + `supertrend_seed`
+   rejection was confirmed to actually fall back to a not-ready cold
+   start rather than silently seeding with wrong numbers.
+2. **Live integration, seeded**: deployed through the real API with
+   `prev_day_ohlc` + `seed_candles` derived from a synthetic "day 1",
+   then fed a full "day 2" (rally, crash, drift) as realistic
+   open+close tick pairs through the actual dispatcher →
+   broadcaster → `DeploymentRunner` → strategy → `runner.buy()`/
+   `sell()` → Postgres pipeline — no shortcuts, no direct DB writes
+   from the test. Produced a long entry, a SuperTrend-flip exit, a
+   same-day short re-entry, and a force-exit at 15:00, with real
+   `realized_pnl` in the DB-backed report. **The exact entry/exit
+   timestamps and prices matched what the original backtest produced
+   on this same synthetic data** — a strong independent cross-check
+   that the live port didn't drift from the validated strategy.
+3. **Live integration, cold start**: deployed with zero seed data at
+   all — confirmed **zero trades during day 1** (no pivots exist yet,
+   matching the backtest's "day 1 excluded" behavior translated to
+   live operation), then confirmed entries correctly fire on day 2 once
+   pivots were self-derived from day 1's live-observed OHLC and ATR
+   self-warmed from live ticks.
+
+Not yet run against a real Kite tick stream — the tick-shape assumptions
+(`exchange_timestamp`, `last_price` in `"full"` mode) are taken directly
+from `kiteconnect`'s own source and documented tick-structure example,
+not guessed.
+
 ## Folder layout
 
 ```
@@ -566,7 +686,8 @@ live_deploy/
     │   └── strategies.py                      # GET /strategies
     └── strategies/
         ├── __init__.py                         # import list — triggers registration
-        └── registry.py                          # @register_strategy, empty until step 4
+        ├── registry.py                          # @register_strategy
+        └── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
 ```
 
 ## Relationship to the rest of the repo
