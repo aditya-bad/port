@@ -1,7 +1,7 @@
 {
   "api_key": "your_kite_api_key",
   "api_secret": "your_kite_api_secret",
-  "access_token": "your_daily_access_token",
   "tick_mode": "full",
-  "database_url": "postgresql://user:password@ep-xxxxx.neon.tech/dbname?sslmode=require"
+  "database_url": "postgresql://user:password@ep-xxxxx.neon.tech/dbname?sslmode=require",
+  "_access_token_note": "access_token is OPTIONAL here and can be omitted entirely. It expires daily and is normally obtained via the UI's 'Login with Kite' button (see /kite/login-url + /kite/callback), which stores it in the database and survives restarts. A value here is only used as a one-time bootstrap if the database has no session yet."
 }

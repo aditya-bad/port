@@ -1,23 +1,21 @@
 """
-Placeholder for live strategy modules — not implemented yet.
+Live strategy modules — not implemented yet.
 
-When strategies are added here, each one implements the
-`StrategyBase` interface in `app.deployments.strategy_base`:
+When a strategy is added here, it implements `StrategyBase`
+(app.deployments.strategy_base) and registers itself via
+`@register_strategy(...)` from `app.strategies.registry` — see that
+module's docstring for the exact pattern.
 
-    class MyStrategy(StrategyBase):
-        async def on_start(self, runner): ...
-        async def on_tick(self, runner, tick): ...
-        async def on_stop(self, runner): ...
+IMPORTANT: a strategy file being registered requires it to actually be
+imported somewhere, or the decorator never runs. Add an import line
+below for each strategy module as it's added, e.g.:
 
-A DeploymentRunner (app.deployments.runner) owns one strategy instance
-per deployment — it already subscribes to the shared TickBroadcaster,
-filters ticks down to the deployment's configured instrument_tokens,
-and calls the strategy's on_tick() for each relevant one. The strategy
-never touches the broadcaster, Kite, or the database directly — it
-reacts to ticks and calls back into `runner.buy(...)` / `runner.sell(...)`,
-which is what actually persists a paper fill (position, lot, cash) to
-Postgres.
+    from . import pivot_supertrend  # noqa: F401  (registers on import)
 
-Nothing is implemented in this package yet — "once infra is ready,
-I'll tell you the strategies."
+DeploymentManager looks up strategy_name in the registry when starting
+a deployment's runner — an unregistered name is rejected at
+POST /deployments time (400), not silently accepted as a no-op.
+
+Nothing is registered yet — "once infra is ready, I'll tell you the
+strategies."
 """

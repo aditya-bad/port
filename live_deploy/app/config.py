@@ -12,13 +12,21 @@ LIVE_DEPLOY_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = LIVE_DEPLOY_DIR / "config.json"
 TOKENS_PATH = LIVE_DEPLOY_DIR / "tokens.json"
 
-REQUIRED_CONFIG_KEYS = ("api_key", "api_secret", "access_token", "database_url")
+REQUIRED_CONFIG_KEYS = ("api_key", "api_secret", "database_url")
 VALID_TICK_MODES = ("ltp", "quote", "full")
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
     """
     Load Kite credentials + service settings.
+
+    access_token is deliberately NOT required here — it expires daily,
+    so the DB (kite_sessions table, updated via the /kite/login-url +
+    /kite/callback flow) is the primary source of truth for it. A value
+    in config.json is honored only as a one-time bootstrap fallback if
+    the DB doesn't have one yet (see main.py's startup). api_key/
+    api_secret are the actual long-lived app credentials and stay
+    required.
 
     Raises RuntimeError with a clear message on any problem — this runs
     inside a FastAPI startup event, where a bare sys.exit() doesn't shut

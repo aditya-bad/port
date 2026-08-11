@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>live_deploy</title>
+<style>
+:root {
+  --bg: #0f1117; --bg2: #1a1d28; --bg3: #242838;
+  --fg: #e1e4eb; --fg2: #8b90a0;
+  --accent: #4f8cff; --green: #22c55e; --red: #ef4444; --yellow: #f59e0b;
+  --border: #2d3148;
+  --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: var(--font); background: var(--bg); color: var(--fg); line-height: 1.5; }
+a { color: var(--accent); }
+
+.wrap { max-width: 1200px; margin: 0 auto; padding: 20px 24px 60px; }
+
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--border);
+  flex-wrap: wrap; gap: 12px;
+}
+header h1 { font-size: 18px; color: var(--accent); }
+header .subtitle { font-size: 12px; color: var(--fg2); margin-top: 2px; }
+
+.status-bar { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.badge {
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
+  border-radius: 20px; font-size: 12px; font-weight: 500;
+}
+.badge.ok { background: rgba(34,197,94,0.15); color: var(--green); }
+.badge.bad { background: rgba(239,68,68,0.15); color: var(--red); }
+.badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+.btn {
+  padding: 7px 14px; border-radius: 6px; border: none; cursor: pointer;
+  font-size: 13px; font-weight: 500; transition: all 0.15s;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: #3d7aee; }
+.btn-secondary { background: var(--bg3); color: var(--fg); border: 1px solid var(--border); }
+.btn-secondary:hover { border-color: var(--fg2); }
+.btn-danger { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+.btn-danger:hover { background: rgba(239,68,68,0.25); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+section { margin-bottom: 28px; }
+section h2 {
+  font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--fg2); margin-bottom: 12px; display: flex; align-items: center;
+  justify-content: space-between;
+}
+
+.card {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 16px; margin-bottom: 10px;
+}
+.card-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.card-title { font-size: 14px; font-weight: 600; }
+.card-sub { font-size: 12px; color: var(--fg2); margin-top: 2px; }
+.card-meta { display: flex; gap: 16px; font-size: 12px; color: var(--fg2); margin-top: 8px; flex-wrap: wrap; }
+.card-meta b { color: var(--fg); font-weight: 500; }
+.card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.tag {
+  display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+.tag-active { background: rgba(34,197,94,0.15); color: var(--green); }
+.tag-paused { background: rgba(245,158,11,0.15); color: var(--yellow); }
+.tag-stopped { background: rgba(239,68,68,0.15); color: var(--red); }
+.tag-warn { background: rgba(245,158,11,0.15); color: var(--yellow); }
+
+.empty { color: var(--fg2); font-size: 13px; padding: 20px; text-align: center;
+  border: 1px dashed var(--border); border-radius: 8px; }
+
+.detail-panel { margin-top: 10px; padding: 14px; background: var(--bg3); border-radius: 6px; font-size: 13px; }
+.detail-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
+.detail-tabs button {
+  padding: 4px 10px; font-size: 12px; background: none; border: 1px solid var(--border);
+  color: var(--fg2); border-radius: 4px; cursor: pointer;
+}
+.detail-tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th { text-align: left; padding: 6px 8px; color: var(--fg2); font-weight: 500;
+  border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; }
+td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+.pos { color: var(--green); } .neg { color: var(--red); }
+
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none;
+  align-items: center; justify-content: center; z-index: 100;
+}
+.modal-overlay.open { display: flex; }
+.modal {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+  padding: 22px; max-width: 560px; width: 95%; max-height: 85vh; overflow-y: auto;
+}
+.modal h2 { font-size: 16px; margin-bottom: 14px; text-transform: none; }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; color: var(--fg2); margin-bottom: 4px; }
+.field input, .field select, .field textarea {
+  width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg);
+  padding: 8px 10px; border-radius: 6px; font-size: 13px; font-family: inherit;
+}
+.field textarea { font-family: var(--mono); min-height: 120px; resize: vertical; }
+.modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.modal-msg { margin-top: 10px; font-size: 13px; }
+
+.spinner {
+  display: inline-block; width: 13px; height: 13px; border: 2px solid var(--border);
+  border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>⚡ live_deploy</h1>
+      <div class="subtitle">Data dispatcher · paper-trading deployments</div>
+    </div>
+    <div class="status-bar" id="statusBar">
+      <span class="badge bad"><span class="dot"></span> checking…</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>
+      Strategies
+      <button class="btn btn-secondary btn-sm" onclick="loadStrategies()">↻ Refresh</button>
+    </h2>
+    <div id="strategiesList"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>
+      Deployments
+      <button class="btn btn-secondary btn-sm" onclick="loadDeployments()">↻ Refresh</button>
+    </h2>
+    <div id="deploymentsList"><div class="empty">Loading…</div></div>
+  </section>
+
+  <section>
+    <h2>
+      Subscribed Instruments
+      <button class="btn btn-secondary btn-sm" onclick="openInstrumentModal()">+ Subscribe</button>
+    </h2>
+    <div id="instrumentsList"><div class="empty">Loading…</div></div>
+  </section>
+</div>
+
+<!-- Deploy modal -->
+<div class="modal-overlay" id="deployModal">
+  <div class="modal">
+    <h2 id="deployModalTitle">Deploy strategy</h2>
+    <div class="field">
+      <label>Deployment name (unique)</label>
+      <input type="text" id="deployName" placeholder="pivot_st_conservative">
+    </div>
+    <div class="field">
+      <label>Mode</label>
+      <select id="deployMode">
+        <option value="intraday">intraday</option>
+        <option value="positional">positional</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Initial capital (₹)</label>
+      <input type="number" id="deployCapital" value="100000" min="1">
+    </div>
+    <div class="field">
+      <label>Config (JSON — must include instrument_tokens)</label>
+      <textarea id="deployConfig"></textarea>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeDeployModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitDeploy()">Deploy</button>
+    </div>
+    <div class="modal-msg" id="deployMsg"></div>
+  </div>
+</div>
+
+<!-- Manual instrument subscribe modal -->
+<div class="modal-overlay" id="instrumentModal">
+  <div class="modal">
+    <h2>Subscribe to an instrument</h2>
+    <div class="field">
+      <label>Instrument token</label>
+      <input type="number" id="instToken" placeholder="260105">
+    </div>
+    <div class="field">
+      <label>Symbol (optional, for display)</label>
+      <input type="text" id="instSymbol" placeholder="NIFTY BANK">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeInstrumentModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitInstrument()">Subscribe</button>
+    </div>
+    <div class="modal-msg" id="instrumentMsg"></div>
+  </div>
+</div>
+
+<script>
+let currentStrategyDefault = {};
+
+// ── Status polling ───────────────────────────────────────────────────
+async function pollHealth() {
+  try {
+    const r = await fetch('/health');
+    const h = await r.json();
+    const bar = document.getElementById('statusBar');
+    if (h.kite_connected) {
+      bar.innerHTML = `
+        <span class="badge ok"><span class="dot"></span> Kite connected</span>
+        <span style="color:var(--fg2)">${h.running_deployments} running · ${h.downstream_subscribers} ws client(s)</span>
+        <button class="btn btn-secondary btn-sm" onclick="loginWithKite()">Re-login</button>
+      `;
+    } else {
+      const label = h.needs_login ? 'Not connected — login required' : 'Disconnected — reconnecting…';
+      bar.innerHTML = `
+        <span class="badge bad"><span class="dot"></span> ${label}</span>
+        <button class="btn btn-primary btn-sm" onclick="loginWithKite()">Login with Kite</button>
+      `;
+    }
+  } catch (e) {
+    document.getElementById('statusBar').innerHTML =
+      '<span class="badge bad"><span class="dot"></span> server unreachable</span>';
+  }
+}
+
+async function loginWithKite() {
+  const r = await fetch('/kite/login-url');
+  const { login_url } = await r.json();
+  const popup = window.open(login_url, 'kite_login', 'width=520,height=720');
+  // Poll /health more aggressively while the popup is open so the
+  // status bar updates the moment /kite/callback finishes.
+  const interval = setInterval(async () => {
+    if (popup.closed) { clearInterval(interval); pollHealth(); return; }
+    await pollHealth();
+  }, 1500);
+}
+
+// ── Strategies ───────────────────────────────────────────────────────
+async function loadStrategies() {
+  const el = document.getElementById('strategiesList');
+  el.innerHTML = '<div class="empty"><span class="spinner"></span> Loading…</div>';
+  const r = await fetch('/strategies');
+  const strategies = await r.json();
+  if (!strategies.length) {
+    el.innerHTML = '<div class="empty">No strategies registered yet — nothing to deploy until one is added to app/strategies/.</div>';
+    return;
+  }
+  el.innerHTML = strategies.map(s => `
+    <div class="card">
+      <div class="card-row">
+        <div>
+          <div class="card-title">${s.name}</div>
+          <div class="card-sub">${s.description || 'no description'}</div>
+        </div>
+        <div class="card-actions">
+          <button class="btn btn-primary btn-sm" onclick='openDeployModal(${JSON.stringify(s.name)}, ${JSON.stringify(s.default_config)})'>Deploy</button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function openDeployModal(strategyName, defaultConfig) {
+  currentStrategyDefault = { strategyName, defaultConfig };
+  document.getElementById('deployModalTitle').textContent = `Deploy: ${strategyName}`;
+  document.getElementById('deployName').value = '';
+  document.getElementById('deployCapital').value = '100000';
+  document.getElementById('deployConfig').value = JSON.stringify(defaultConfig || {}, null, 2);
+  document.getElementById('deployMsg').textContent = '';
+  document.getElementById('deployModal').classList.add('open');
+}
+function closeDeployModal() {
+  document.getElementById('deployModal').classList.remove('open');
+}
+
+async function submitDeploy() {
+  const msg = document.getElementById('deployMsg');
+  let config;
+  try {
+    config = JSON.parse(document.getElementById('deployConfig').value || '{}');
+  } catch (e) {
+    msg.innerHTML = `<span style="color:var(--red)">Invalid config JSON: ${e.message}</span>`;
+    return;
+  }
+  const body = {
+    deployment_name: document.getElementById('deployName').value.trim(),
+    strategy_name: currentStrategyDefault.strategyName,
+    mode: document.getElementById('deployMode').value,
+    initial_capital: Number(document.getElementById('deployCapital').value),
+    config,
+  };
+  if (!body.deployment_name) {
+    msg.innerHTML = '<span style="color:var(--red)">Deployment name is required</span>';
+    return;
+  }
+  msg.innerHTML = '<span class="spinner"></span> Deploying…';
+  const r = await fetch('/deployments', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await r.json();
+  if (!r.ok) {
+    msg.innerHTML = `<span style="color:var(--red)">${data.detail || 'Failed'}</span>`;
+    return;
+  }
+  msg.innerHTML = `<span style="color:var(--green)">✓ Deployed "${data.deployment_name}"</span>`;
+  setTimeout(() => { closeDeployModal(); loadDeployments(); }, 800);
+}
+
+// ── Deployments ──────────────────────────────────────────────────────
+function fmtMoney(n) { return '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
+
+async function loadDeployments() {
+  const el = document.getElementById('deploymentsList');
+  el.innerHTML = '<div class="empty"><span class="spinner"></span> Loading…</div>';
+  const r = await fetch('/deployments');
+  const deployments = await r.json();
+  if (!deployments.length) {
+    el.innerHTML = '<div class="empty">No deployments yet. Deploy a strategy above to create one.</div>';
+    return;
+  }
+  el.innerHTML = deployments.map(d => `
+    <div class="card" id="dep-${d.id}">
+      <div class="card-row">
+        <div>
+          <div class="card-title">
+            ${d.deployment_name}
+            <span class="tag tag-${d.status}">${d.status}</span>
+            ${!d.strategy_registered ? '<span class="tag tag-warn">strategy not registered</span>' : ''}
+          </div>
+          <div class="card-sub">${d.strategy_name} · ${d.mode}</div>
+          <div class="card-meta">
+            <span>Capital: <b>${fmtMoney(d.initial_capital)}</b></span>
+            <span>Cash: <b>${fmtMoney(d.current_cash)}</b></span>
+          </div>
+        </div>
+        <div class="card-actions">
+          ${d.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="pauseDep('${d.id}')">Pause</button>` : ''}
+          ${d.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="resumeDep('${d.id}')">Resume</button>` : ''}
+          ${d.status !== 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="stopDep('${d.id}')">Stop</button>` : ''}
+          <button class="btn btn-secondary btn-sm" onclick="toggleDetail('${d.id}')">Details</button>
+        </div>
+      </div>
+      <div id="detail-${d.id}" style="display:none;"></div>
+    </div>
+  `).join('');
+}
+
+async function pauseDep(id) {
+  await fetch(`/deployments/${id}/pause`, { method: 'POST' });
+  loadDeployments();
+}
+async function resumeDep(id) {
+  await fetch(`/deployments/${id}/resume`, { method: 'POST' });
+  loadDeployments();
+}
+async function stopDep(id) {
+  const forceClose = confirm(
+    'Stop this deployment.\n\nOK = force-close any open position at the last known price.\nCancel = only stop if already flat.'
+  );
+  const r = await fetch(`/deployments/${id}/stop?force_close=${forceClose}`, { method: 'POST' });
+  if (!r.ok) {
+    const data = await r.json();
+    alert(data.detail || 'Could not stop — it may have open positions. Try again and confirm force-close.');
+  }
+  loadDeployments();
+}
+
+async function toggleDetail(id) {
+  const panel = document.getElementById(`detail-${id}`);
+  if (panel.style.display === 'block') { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  await showDetailTab(id, 'positions');
+}
+
+async function showDetailTab(id, tab) {
+  const panel = document.getElementById(`detail-${id}`);
+  panel.innerHTML = `
+    <div class="detail-panel">
+      <div class="detail-tabs">
+        <button class="${tab==='positions'?'active':''}" onclick="showDetailTab('${id}','positions')">Positions</button>
+        <button class="${tab==='trades'?'active':''}" onclick="showDetailTab('${id}','trades')">Trades</button>
+        <button class="${tab==='report'?'active':''}" onclick="showDetailTab('${id}','report')">Report</button>
+      </div>
+      <div id="detail-body-${id}"><span class="spinner"></span></div>
+    </div>
+  `;
+  const body = document.getElementById(`detail-body-${id}`);
+
+  if (tab === 'positions') {
+    const r = await fetch(`/deployments/${id}/positions?status=open`);
+    const rows = await r.json();
+    body.innerHTML = rows.length ? `
+      <table><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Avg</th><th>Price</th><th>Unrealized</th></tr></thead>
+      <tbody>${rows.map(p => `<tr>
+        <td>${p.symbol}</td><td>${p.side}</td><td>${p.qty}</td>
+        <td>${p.avg_entry_price}</td><td>${p.current_price ?? '—'}</td>
+        <td class="${(p.unrealized_pnl||0)>=0?'pos':'neg'}">${p.unrealized_pnl != null ? p.unrealized_pnl.toFixed(2) : '—'}</td>
+      </tr>`).join('')}</tbody></table>
+    ` : '<div class="empty">No open positions</div>';
+  } else if (tab === 'trades') {
+    const r = await fetch(`/deployments/${id}/trades?limit=50`);
+    const data = await r.json();
+    body.innerHTML = data.lots.length ? `
+      <table><thead><tr><th>Time</th><th>Action</th><th>Qty</th><th>Price</th><th>Reason</th></tr></thead>
+      <tbody>${data.lots.map(l => `<tr>
+        <td>${l.executed_at}</td><td>${l.action}</td><td>${l.qty}</td><td>${l.price}</td><td>${l.reason||''}</td>
+      </tr>`).join('')}</tbody></table>
+      <div style="color:var(--fg2);font-size:11px;margin-top:6px;">${data.total} total</div>
+    ` : '<div class="empty">No trades yet</div>';
+  } else if (tab === 'report') {
+    const r = await fetch(`/deployments/${id}/report`);
+    const rep = await r.json();
+    body.innerHTML = `
+      <div class="card-meta" style="font-size:13px;">
+        <span>Realized P&L: <b class="${rep.total_realized_pnl>=0?'pos':'neg'}">${fmtMoney(rep.total_realized_pnl)}</b></span>
+        <span>Win rate: <b>${rep.win_rate_pct}%</b></span>
+        <span>Closed: <b>${rep.closed_positions}</b></span>
+        <span>Open: <b>${rep.open_positions}</b></span>
+        <span>Avg win: <b class="pos">${fmtMoney(rep.avg_win)}</b></span>
+        <span>Avg loss: <b class="neg">${fmtMoney(rep.avg_loss)}</b></span>
+      </div>
+    `;
+  }
+}
+
+// ── Instruments ──────────────────────────────────────────────────────
+async function loadInstruments() {
+  const el = document.getElementById('instrumentsList');
+  el.innerHTML = '<div class="empty"><span class="spinner"></span> Loading…</div>';
+  const r = await fetch('/instruments');
+  const data = await r.json();
+  if (!data.subscribed.length) {
+    el.innerHTML = '<div class="empty">Nothing subscribed</div>';
+    return;
+  }
+  el.innerHTML = `<table><thead><tr><th>Symbol</th><th>Token</th><th>Source</th></tr></thead><tbody>
+    ${data.subscribed.map(i => `<tr>
+      <td>${i.symbol}</td><td>${i.instrument_token}</td>
+      <td>${i.static ? 'tokens.json' : 'dynamic'}</td>
+    </tr>`).join('')}
+  </tbody></table>`;
+}
+
+function openInstrumentModal() {
+  document.getElementById('instToken').value = '';
+  document.getElementById('instSymbol').value = '';
+  document.getElementById('instrumentMsg').textContent = '';
+  document.getElementById('instrumentModal').classList.add('open');
+}
+function closeInstrumentModal() {
+  document.getElementById('instrumentModal').classList.remove('open');
+}
+async function submitInstrument() {
+  const msg = document.getElementById('instrumentMsg');
+  const token = Number(document.getElementById('instToken').value);
+  const symbol = document.getElementById('instSymbol').value.trim();
+  if (!token) { msg.innerHTML = '<span style="color:var(--red)">Instrument token is required</span>'; return; }
+  const r = await fetch('/instruments', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify([{ instrument_token: token, symbol: symbol || null }]),
+  });
+  const data = await r.json();
+  if (!r.ok) { msg.innerHTML = `<span style="color:var(--red)">${data.detail || 'Failed'}</span>`; return; }
+  msg.innerHTML = '<span style="color:var(--green)">✓ Subscribed</span>';
+  setTimeout(() => { closeInstrumentModal(); loadInstruments(); }, 600);
+}
+
+// ── Init ─────────────────────────────────────────────────────────────
+pollHealth();
+loadStrategies();
+loadDeployments();
+loadInstruments();
+setInterval(pollHealth, 5000);
+</script>
+</body>
+</html>

@@ -26,6 +26,7 @@ class DeploymentOut(BaseModel):
     config: dict
     created_at: datetime
     updated_at: datetime
+    strategy_registered: bool = True   # False = created, but no code will ever run for it (yet)
 
     class Config:
         from_attributes = True

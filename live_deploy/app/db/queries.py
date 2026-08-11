@@ -410,3 +410,27 @@ async def build_report(pool: asyncpg.Pool, deployment_id: UUID) -> dict[str, Any
             "avg_win": round(sum(wins) / len(wins), 2) if wins else 0.0,
             "avg_loss": round(sum(losses) / len(losses), 2) if losses else 0.0,
         }
+
+
+# ═════════════════════════════════════════════════════════════════════
+# KITE SESSION — the one place the daily access_token is persisted
+# ═════════════════════════════════════════════════════════════════════
+
+async def get_kite_session(pool: asyncpg.Pool) -> Optional[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM kite_sessions WHERE id = 1")
+
+
+async def set_kite_session(
+    pool: asyncpg.Pool, access_token: str, login_time: Optional[datetime] = None,
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO kite_sessions (id, access_token, login_time, updated_at)
+            VALUES (1, $1, $2, now())
+            ON CONFLICT (id) DO UPDATE
+                SET access_token = $1, login_time = $2, updated_at = now()
+            """,
+            access_token, login_time,
+        )

@@ -17,8 +17,15 @@ from ..db import queries
 from ..deployments.schemas import (
     DeploymentCreate, DeploymentOut, EventOut, LotsPage, PositionOut, ReportOut,
 )
+from ..strategies.registry import is_registered
 
 router = APIRouter(prefix="/deployments", tags=["deployments"])
+
+
+def _annotate(row: dict) -> dict:
+    row = dict(row)
+    row["strategy_registered"] = is_registered(row["strategy_name"])
+    return row
 
 
 @router.post("", response_model=DeploymentOut, status_code=201)
@@ -30,16 +37,16 @@ async def create_deployment(payload: DeploymentCreate, request: Request):
     if existing is not None:
         raise HTTPException(409, f"deployment_name {payload.deployment_name!r} already exists")
     try:
-        row = await manager.create_deployment(payload)
+        row, _strategy_registered = await manager.create_deployment(payload)
     except Exception as e:
         raise HTTPException(400, str(e))
-    return dict(row)
+    return _annotate(row)
 
 
 @router.get("", response_model=list[DeploymentOut])
 async def list_deployments(request: Request, status: str | None = None):
     rows = await queries.list_deployments(request.app.state.db_pool, status=status)
-    return [dict(r) for r in rows]
+    return [_annotate(r) for r in rows]
 
 
 @router.get("/{deployment_id}", response_model=DeploymentOut)
@@ -47,7 +54,7 @@ async def get_deployment(deployment_id: UUID, request: Request):
     row = await queries.get_deployment(request.app.state.db_pool, deployment_id)
     if row is None:
         raise HTTPException(404, "No such deployment")
-    return dict(row)
+    return _annotate(row)
 
 
 @router.get("/{deployment_id}/positions", response_model=list[PositionOut])
@@ -124,7 +131,7 @@ async def resume_deployment(deployment_id: UUID, request: Request):
         raise HTTPException(404, "No such deployment")
     except ValueError as e:
         raise HTTPException(409, str(e))
-    return dict(row)
+    return _annotate(row)
 
 
 @router.post("/{deployment_id}/stop")

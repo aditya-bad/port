@@ -5,33 +5,46 @@ LiveDataDispatcher — owns the ONE upstream Kite Connect WebSocket
 KiteTicker runs its connection in its own background thread when started
 with connect(threaded=True) — its on_ticks/on_connect/on_close/on_error
 callbacks all fire from THAT thread, not from FastAPI's asyncio event
-loop. Two bridges cross that thread boundary, in opposite directions:
+loop. Three things cross that thread boundary:
 
   1. Kite thread -> asyncio loop (incoming ticks): _on_ticks() hands
      each batch to the broadcaster via asyncio.run_coroutine_threadsafe.
   2. asyncio loop -> Kite thread (outgoing subscribe/unsubscribe/set_mode
      control messages, e.g. when a new deployment needs a token that
      isn't already subscribed): add_instruments()/release_instruments()
-     schedule the actual KiteTicker call onto Kite's own thread via
-     Twisted's reactor.callFromThread.
+     schedule the actual KiteTicker call via _schedule_on_ticker_thread.
+  3. asyncio loop -> Kite thread (closing a connection, e.g. during a
+     reconnect() hot-swap or final shutdown): also goes through
+     _schedule_on_ticker_thread.
 
-Bridge #2 is NOT optional. kiteconnect's KiteTicker.subscribe()/
-unsubscribe()/set_mode() call self.ws.sendMessage(...) directly, with no
-internal thread-safety of their own (confirmed by reading kiteconnect's
-source — they're plain synchronous calls, not wrapped in
-reactor.callFromThread). Calling them straight from the FastAPI/asyncio
+None of these are optional. kiteconnect's KiteTicker.subscribe()/
+unsubscribe()/set_mode()/close() all write straight to the WebSocket
+transport with no internal thread-safety of their own (confirmed by
+reading kiteconnect's source — plain synchronous calls, not wrapped in
+reactor.callFromThread). Calling any of them from the FastAPI/asyncio
 thread while Kite's reactor thread is concurrently reading/writing the
-same socket is a genuine race on the underlying transport, not a style
-nitpick — it just happens to not show up in a quick test because nothing
-is fighting over the socket at that exact moment. Every dynamic
-subscribe/unsubscribe in this file goes through
-_schedule_on_ticker_thread for this reason.
+same socket is a genuine race on the transport, not a style nitpick —
+it just happens to not show up in a quick test because nothing is
+fighting over the socket at that exact moment. Every one of them goes
+through _schedule_on_ticker_thread (Twisted's reactor.callFromThread in
+production) for this reason — the only exception is _on_connect calling
+ws.subscribe()/set_mode() directly, which is safe because _on_connect
+itself already runs ON the reactor thread.
 
-No matter how many downstream consumers subscribe to `broadcaster`,
-exactly one KiteTicker instance, and therefore one Kite WebSocket
-session, exists for the lifetime of this service — dynamic
-subscribe/unsubscribe changes what THAT one connection is subscribed
-to; it never opens a second one.
+Kite's access_token expires daily and needs re-issuing through a login
+flow a human has to complete in a browser (see routers/kite_auth.py).
+reconnect(access_token) hot-swaps the underlying KiteTicker with a fresh
+token WITHOUT restarting the FastAPI process — the broadcaster, the
+subscribed-token set (static + dynamic refcounts), and every downstream
+consumer (WS clients, deployment runners) are completely undisturbed;
+only the Kite connection itself is replaced. The dispatcher can also
+start with NO token at all (first boot, before anyone has ever logged
+in) — bind_loop() just records the event loop and leaves the service in
+a "needs_login" state until reconnect() is called for the first time.
+
+No matter how many downstream consumers subscribe to `broadcaster`, and
+no matter how many times the token gets refreshed over the service's
+life, exactly one KiteTicker instance is ever live at once.
 """
 
 import asyncio
@@ -69,10 +82,10 @@ class LiveDataDispatcher:
     def __init__(
         self,
         api_key: str,
-        access_token: str,
         tokens: list[dict],
         tick_mode: str,
         broadcaster: TickBroadcaster,
+        initial_access_token: Optional[str] = None,
         kite_ticker_cls=KiteTicker,   # injectable for testing without real Kite
         schedule_on_ticker_thread: Optional[Callable] = None,   # injectable for tests
     ):
@@ -94,18 +107,14 @@ class LiveDataDispatcher:
         self.tick_mode = tick_mode
         self._kite_mode = MODE_MAP[tick_mode]
 
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._kws = kite_ticker_cls(api_key, access_token)
-        self._kws.on_ticks = self._on_ticks
-        self._kws.on_connect = self._on_connect
-        self._kws.on_close = self._on_close
-        self._kws.on_error = self._on_error
-        self._kws.on_reconnect = self._on_reconnect
-        self._kws.on_noreconnect = self._on_noreconnect
-
+        self._api_key = api_key
+        self._kite_ticker_cls = kite_ticker_cls
         self._schedule_on_ticker_thread = (
             schedule_on_ticker_thread or _default_ticker_thread_scheduler()
         )
+
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._kws = None   # no connection at all until bind_loop()/reconnect()
 
         self.connected = False
         self.ticks_received = 0
@@ -119,18 +128,59 @@ class LiveDataDispatcher:
         # stream already carries this.
         self.last_prices: dict[int, float] = {}
 
-    def start(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Start the single upstream Kite connection in its own thread."""
+        self._pending_initial_token = initial_access_token
+
+    def bind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """
+        Call exactly once, at startup, regardless of whether a Kite
+        access_token is available yet. If one was passed as
+        initial_access_token, connects immediately; otherwise the
+        dispatcher just sits idle (status.needs_login == True) until
+        reconnect() is called for the first time (from the /kite/callback
+        login flow).
+        """
         self._loop = loop
-        self._kws.connect(threaded=True)
+        if self._pending_initial_token:
+            self._connect_with(self._pending_initial_token)
+        self._pending_initial_token = None
+
+    def reconnect(self, access_token: str) -> None:
+        """
+        Hot-swap the Kite connection with a fresh access_token — e.g.
+        after the user completes the daily login flow — WITHOUT
+        restarting the FastAPI process. Safe to call whether or not a
+        connection currently exists (first-ever login, or a same-day
+        re-login after a token got revoked).
+        """
+        old_kws = self._kws
+        if old_kws is not None:
+            try:
+                self._schedule_on_ticker_thread(old_kws.close)
+            except Exception:
+                logger.exception("Error closing previous Kite WebSocket during reconnect")
+        self.connected = False
+        self._connect_with(access_token)
+        logger.info("Reconnected to Kite with a fresh access_token")
 
     def stop(self) -> None:
+        if self._kws is None:
+            return
         try:
-            self._kws.close()
+            self._schedule_on_ticker_thread(self._kws.close)
         except Exception:
             logger.exception("Error closing Kite WebSocket")
 
-    # ── Dynamic subscription — the actual point of this file ───────────
+    def _connect_with(self, access_token: str) -> None:
+        self._kws = self._kite_ticker_cls(self._api_key, access_token)
+        self._kws.on_ticks = self._on_ticks
+        self._kws.on_connect = self._on_connect
+        self._kws.on_close = self._on_close
+        self._kws.on_error = self._on_error
+        self._kws.on_reconnect = self._on_reconnect
+        self._kws.on_noreconnect = self._on_noreconnect
+        self._kws.connect(threaded=True)
+
+    # ── Dynamic subscription ────────────────────────────────────────────
 
     def add_instruments(self, tokens: list[dict]) -> list[int]:
         """
@@ -144,7 +194,8 @@ class LiveDataDispatcher:
         the moment ONE of them stops — see release_instruments). A
         genuinely new token gets subscribed live if connected, or is
         simply registered to go out with the next on_connect's full
-        subscribe if we're not connected yet (e.g. still reconnecting).
+        subscribe if we're not connected yet (e.g. still reconnecting,
+        or no one has logged in yet at all).
 
         Returns the instrument_tokens that were newly subscribed on the
         wire this call (empty if every token was already covered).
@@ -166,7 +217,7 @@ class LiveDataDispatcher:
                 self.token_labels[token] = label
                 newly_live.append(token)
 
-        if newly_live and self.connected:
+        if newly_live and self.connected and self._kws is not None:
             self._schedule_on_ticker_thread(self._kws.subscribe, newly_live)
             self._schedule_on_ticker_thread(self._kws.set_mode, self._kite_mode, newly_live)
             logger.info(
@@ -174,9 +225,10 @@ class LiveDataDispatcher:
                 len(newly_live), [self.token_labels[t] for t in newly_live],
             )
         elif newly_live:
-            # Not connected right now (startup race, or mid-reconnect) —
-            # the next on_connect subscribes the full self.instrument_tokens
-            # list, which already includes these, so nothing is lost.
+            # Not connected right now (no login yet, startup race, or
+            # mid-reconnect) — the next on_connect subscribes the full
+            # self.instrument_tokens list, which already includes these,
+            # so nothing is lost.
             logger.info(
                 "Registered %d new token(s), will subscribe once (re)connected: %s",
                 len(newly_live), [self.token_labels[t] for t in newly_live],
@@ -208,7 +260,7 @@ class LiveDataDispatcher:
                     self.instrument_tokens.remove(token)
                 newly_removed.append(token)
 
-        if newly_removed and self.connected:
+        if newly_removed and self.connected and self._kws is not None:
             self._schedule_on_ticker_thread(self._kws.unsubscribe, newly_removed)
             logger.info(
                 "Dynamically unsubscribed %d token(s) (no longer needed): %s",
@@ -222,6 +274,7 @@ class LiveDataDispatcher:
 
     def _on_connect(self, ws, response):
         self.connected = True
+        self.last_error = None
         logger.info(
             "Kite WebSocket connected — subscribing %d token(s): %s",
             len(self.instrument_tokens),
@@ -231,8 +284,9 @@ class LiveDataDispatcher:
         # reactor thread), so calling subscribe()/set_mode() directly
         # here — unlike from add_instruments() — is safe, no marshaling
         # needed.
-        ws.subscribe(self.instrument_tokens)
-        ws.set_mode(self._kite_mode, self.instrument_tokens)
+        if self.instrument_tokens:
+            ws.subscribe(self.instrument_tokens)
+            ws.set_mode(self._kite_mode, self.instrument_tokens)
 
     def _on_close(self, ws, code, reason):
         self.connected = False
@@ -272,6 +326,7 @@ class LiveDataDispatcher:
     def status(self) -> dict:
         return {
             "kite_connected": self.connected,
+            "needs_login": self._kws is None,
             "subscribed_tokens": [
                 {
                     "instrument_token": t,

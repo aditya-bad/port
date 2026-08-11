@@ -61,13 +61,42 @@ ticks — a live paper-trading engine reacts to the *current* live tick
 stream once it's back up, the same way it would if you'd just deployed
 it fresh with an already-open position.
 
-Step 3 (**not built yet** — "once infra is ready, I'll tell you the
+## What's here (Step 3: onboarding — Kite login, strategy registry, UI)
+
+Three things needed before this is actually usable day-to-day, none of
+which are strategy logic:
+
+1. **Daily Kite re-login, without a restart.** Kite's `access_token`
+   expires every day, and can only be reissued through a login flow a
+   human completes in a browser — that part can't be automated. What's
+   automated is everything *around* it: a "Login with Kite" button opens
+   Kite's login page in a popup; after the human logs in, Kite redirects
+   to `GET /kite/callback` on this service, which exchanges the
+   `request_token` for a fresh `access_token`, persists it to Postgres,
+   and **hot-swaps the live dispatcher's connection** — no process
+   restart, every downstream consumer (WS clients, running deployments)
+   completely undisturbed.
+2. **A strategy registry**, so "show me the list of strategies, let me
+   deploy one" has something to list. `app/strategies/registry.py`'s
+   `@register_strategy(...)` decorator is how a strategy announces
+   itself; `GET /strategies` and the UI read from it. Nothing is
+   registered yet.
+3. **A single-page UI** (`static/index.html`) tying it together:
+   connection status + login button, the strategy list with a deploy
+   form, the deployment list with pause/resume/stop and a
+   positions/trades/report drill-down, and manual instrument
+   subscription. Served at `/` by the same FastAPI app — no separate
+   frontend process.
+
+Step 4 (**not built yet** — "once infra is ready, I'll tell you the
 strategies"): actual strategy decision logic. `app/deployments/
 strategy_base.py` is the interface a strategy will implement; `app/
-strategies/` is where they'll live. Until then, deployments exist, hold
-positions, and can be traded via `runner.buy()`/`runner.sell()` calls
-(which is exactly what a strategy will call), but nothing decides *when*
-to call them yet.
+strategies/` is where they'll live and register themselves. Until then,
+**deploying any strategy_name is allowed** (the UI's deploy form doesn't
+require the strategy to already exist — you can set up name/capital/
+config/tokens ahead of time) — the deployment just observes ticks
+without trading, and every API response flags it clearly via
+`strategy_registered: false` so this is never silently misleading.
 
 ## Setup
 
@@ -84,17 +113,21 @@ cp config.example.json config.json
 {
   "api_key": "your_kite_api_key",
   "api_secret": "your_kite_api_secret",
-  "access_token": "your_daily_access_token",
   "tick_mode": "full",
   "database_url": "postgresql://user:password@ep-xxxxx.neon.tech/dbname?sslmode=require"
 }
 ```
 
-The `access_token` expires daily — refresh it each session. `tick_mode`
-is one of Kite's three tick verbosity levels: `"ltp"`, `"quote"`, or
-`"full"` (default — includes market depth). `database_url` is your Neon
-connection string, exactly as Neon gives it to you (it already includes
-`sslmode=require`, which asyncpg honors automatically).
+`access_token` is **deliberately not in this template anymore** — it
+expires daily and is now obtained via the UI's "Login with Kite" flow
+(see below), which stores it in Postgres. It's still accepted as an
+optional field here purely as a one-time bootstrap if the database has
+no session yet; leave it out entirely and just log in through the UI on
+first run. `tick_mode` is one of Kite's three tick verbosity levels:
+`"ltp"`, `"quote"`, or `"full"` (default — includes market depth).
+`database_url` is your Neon connection string, exactly as Neon gives it
+to you (it already includes `sslmode=require`, which asyncpg honors
+automatically).
 
 **Schema setup is automatic.** On every startup, the app applies any
 `app/db/migrations/*.sql` file not yet recorded as applied (tracked in a
@@ -102,6 +135,23 @@ connection string, exactly as Neon gives it to you (it already includes
 database and the schema builds itself on first boot. No manual `psql`
 step, no Alembic. Safe to leave running on every restart — already-applied
 migrations are skipped.
+
+### One-time manual step: register the Kite redirect URL
+
+Kite's login flow redirects the browser to a URL **you configure once**
+in the [Kite Developer Console](https://developers.kite.trade/apps),
+under the app's "Redirect URL" setting — this can't be done from here,
+Kite doesn't expose it via API. Set it to:
+
+```
+http://<your-host>:8000/kite/callback
+```
+
+(`http://localhost:8000/kite/callback` for local dev; your real domain
+once this is deployed somewhere reachable.) If this doesn't match
+exactly, Kite will refuse the redirect after login and the flow breaks
+at the very last step — this is the single most common reason "Login
+with Kite" would appear to do nothing.
 
 `tokens.json` (already committed, not a secret) lists which instrument
 tokens the dispatcher subscribes to on Kite's behalf:
@@ -126,6 +176,13 @@ uvicorn app.main:app --reload --port 8000
 `python app/main.py` directly does not; use `python -m app.main` if you
 need a direct-execution fallback instead of uvicorn's CLI.)
 
+Open **`http://localhost:8000/`** for the UI. On first run (or any
+morning after the server was off overnight) it'll show "Not connected —
+login required" — click **Login with Kite**, complete the login in the
+popup, and the status flips to connected within a couple seconds with no
+restart. Everything below is also reachable directly as an API if you'd
+rather script it.
+
 ### `GET /health`
 
 ```json
@@ -134,7 +191,8 @@ need a direct-execution fallback instead of uvicorn's CLI.)
   "database_connected": true,
   "running_deployments": 3,
   "kite_connected": true,
-  "subscribed_tokens": [{"instrument_token": 256265, "symbol": "NIFTY 50"}],
+  "needs_login": false,
+  "subscribed_tokens": [{"instrument_token": 256265, "symbol": "NIFTY 50", "static": true}],
   "tick_mode": "full",
   "ticks_received": 148213,
   "last_tick_at": "2026-08-11T09:42:03.512+00:00",
@@ -143,6 +201,34 @@ need a direct-execution fallback instead of uvicorn's CLI.)
   "downstream_subscribers": 3
 }
 ```
+
+`needs_login: true` means no Kite session exists at all yet (fresh
+deploy, or the daily token was never refreshed) — distinct from
+`kite_connected: false` with `needs_login: false`, which means a session
+exists but the connection is currently down (network hiccup,
+mid-reconnect) and should recover on its own. The UI uses this
+distinction to decide whether to show "Login with Kite" or a
+"reconnecting…" state.
+
+### Kite login flow
+
+| Method & path | What it does |
+|---|---|
+| `GET /kite/login-url` | Returns the URL to send the user to (the UI opens this in a popup) |
+| `GET /kite/callback` | Kite redirects here after login — exchanges `request_token` for a fresh `access_token`, persists it, hot-swaps the dispatcher. Returns an HTML confirmation page, not JSON — the browser lands here directly |
+| `GET /kite/status` | `{kite_connected, needs_login, last_error}` — a narrower view of the same info in `/health` |
+
+### `GET /strategies`
+
+```json
+[{"name": "pivot_supertrend", "description": "Pivot points + SuperTrend(7,3) intraday",
+  "default_config": {"instrument_tokens": [256265], "pivot_type": "classic"}}]
+```
+
+Backed by `app/strategies/registry.py` — empty until a strategy module
+calls `@register_strategy(...)` and is imported (see that file's
+docstring, and `app/strategies/__init__.py`'s import list). The UI's
+deploy form pre-fills `config` from `default_config` when one is given.
 
 ### `WS /ws/ticks`
 
@@ -187,6 +273,13 @@ curl -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '
   "config": {"instrument_tokens": [256265], "pivot_type": "classic"}
 }'
 ```
+
+The response (and every `GET` on a deployment) includes
+`strategy_registered: bool` — `false` means `strategy_name` doesn't
+match anything in the registry yet. The deployment is still created and
+still shows up everywhere; it just won't trade until a matching
+`@register_strategy` exists and the deployment restarts (pause+resume
+also re-attaches against the current registry state).
 
 `config` is free-form JSONB — whatever a strategy needs. The one key the
 infra itself reads is `instrument_tokens`: the runner filters the shared
@@ -397,33 +490,83 @@ specifically, or against a real Kite WebSocket — those require your
    /instruments` endpoints were exercised the same way, including
    confirming a static token survives a manual `DELETE`.
 
+**The Kite onboarding + registry layer** (fake `KiteConnect`/`KiteTicker`,
+real local Postgres) was verified end-to-end, including a real bug this
+testing caught before it shipped: the fake `generate_session()` returned
+`login_time` as a plain string, and `/kite/callback` crashed trying to
+insert it into a `TIMESTAMPTZ` column — because the real `kiteconnect`
+library only parses that field into a `datetime` under a fragile
+string-length condition, and the callback handler had implicitly trusted
+that it always would. Fixed by parsing defensively in `/kite/callback`
+itself rather than trusting the third-party library's behavior. Verified:
+
+- **Cold start, no Kite session anywhere** (no DB row, no `config.json`
+  token): `/health` correctly shows `needs_login: true`; every other
+  endpoint (deployments, etc.) works normally regardless
+- `GET /kite/login-url` returns a real Kite login URL with the
+  configured `api_key`
+- `GET /kite/callback` with a simulated successful redirect: exchanges
+  the token, persists it, **hot-swaps the dispatcher's connection with
+  no restart** — confirmed by checking the live dispatcher object
+  directly, not just the HTTP response — and `/health` reflects
+  `kite_connected: true` on the very next poll
+- A failed-login callback (`status=failure`) is rejected with a clean
+  400, not silently accepted
+- **A second, completely fresh app instance, with `config.json`
+  deliberately holding no `access_token` at all**, connects to Kite
+  automatically on startup — proving the DB, not the file, is what
+  carried the session across the restart
+- **Strategy registry**: a test strategy registered via
+  `@register_strategy` is listed by `GET /strategies`; deploying it
+  attaches a real, live instance to the runner, and a broadcasted tick
+  demonstrably reaches its `on_tick()`; deploying an *unregistered*
+  `strategy_name` is allowed (not rejected) but comes back flagged
+  `strategy_registered: false`, and its runner's `strategy` stays `None`
+- `GET /` serves the UI's `index.html`, confirmed not shadowed by the
+  API routes registered before it (Starlette route-matching order
+  verified directly, separately from the app test)
+- The UI's embedded JavaScript was extracted and checked with
+  `node --check` — syntactically valid, not just "looked right"
+- Full regression pass: every test from the previous two build steps
+  re-run against the changed `LiveDataDispatcher` constructor
+  (`access_token` → `initial_access_token`, `start()` → `bind_loop()`)
+  — zero regressions
+
 ## Folder layout
 
 ```
 live_deploy/
-├── config.example.json        # copy -> config.json (gitignored)
+├── config.example.json        # copy -> config.json (gitignored). access_token now optional.
 ├── tokens.json                 # committed — which instruments to subscribe to
 ├── requirements.txt
+├── static/
+│   └── index.html               # the UI — served at "/" by the FastAPI app itself
 └── app/
-    ├── main.py                  # FastAPI app, startup/shutdown wiring
+    ├── main.py                  # FastAPI app, startup/shutdown wiring, static mount
     ├── config.py                  # config.json / tokens.json loading
     ├── broadcaster.py              # TickBroadcaster (step 1)
-    ├── dispatcher.py                # LiveDataDispatcher (step 1) + last_prices cache
+    ├── dispatcher.py                # LiveDataDispatcher — connection + hot-swap (steps 1 & 3)
     ├── db/
     │   ├── pool.py                   # asyncpg pool + JSONB codec
     │   ├── migrate.py                 # migration runner
-    │   ├── queries.py                  # every DB read/write
-    │   └── migrations/0001_init.sql     # schema
+    │   ├── queries.py                  # every DB read/write, incl. kite_sessions
+    │   └── migrations/
+    │       ├── 0001_init.sql            # deployments/positions/lots/events/snapshots
+    │       └── 0002_kite_sessions.sql    # single-row table for the daily access_token
     ├── deployments/
     │   ├── schemas.py                   # Pydantic request/response models
     │   ├── strategy_base.py              # interface future strategies implement
     │   ├── runner.py                      # DeploymentRunner — one per deployment
-    │   └── manager.py                      # DeploymentManager — lifecycle orchestration
+    │   └── manager.py                      # DeploymentManager — lifecycle + registry wiring
     ├── routers/
     │   ├── health.py
     │   ├── deployments.py
-    │   └── instruments.py                   # manual subscribe/unsubscribe control
-    └── strategies/                          # empty — step 3, not built yet
+    │   ├── instruments.py                   # manual subscribe/unsubscribe control
+    │   ├── kite_auth.py                      # login-url / callback / status
+    │   └── strategies.py                      # GET /strategies
+    └── strategies/
+        ├── __init__.py                         # import list — triggers registration
+        └── registry.py                          # @register_strategy, empty until step 4
 ```
 
 ## Relationship to the rest of the repo

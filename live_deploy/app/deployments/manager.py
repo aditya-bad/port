@@ -40,6 +40,7 @@ from uuid import UUID
 import asyncpg
 
 from ..db import queries
+from ..strategies.registry import get_strategy_class, is_registered
 from .runner import DeploymentRunner
 from .schemas import DeploymentCreate
 
@@ -71,13 +72,23 @@ class DeploymentManager:
 
     # ── CRUD / control ───────────────────────────────────────────────
 
-    async def create_deployment(self, payload: DeploymentCreate) -> asyncpg.Record:
+    async def create_deployment(self, payload: DeploymentCreate) -> tuple[asyncpg.Record, bool]:
+        """
+        Returns (row, strategy_registered). strategy_registered is
+        informational, not enforced — creating a deployment for a
+        strategy_name nothing has registered yet is ALLOWED (you can
+        set up the deployment — name, capital, tokens, config — before
+        the strategy code exists), it just won't trade: the runner's
+        strategy stays None until a matching @register_strategy exists
+        AND the server restarts (or this deployment is paused/resumed,
+        which also re-attaches against the current registry state).
+        """
         row = await queries.create_deployment(
             self.pool, payload.deployment_name, payload.strategy_name,
             payload.mode, payload.initial_capital, payload.config,
         )
         await self._start_runner(row)
-        return row
+        return row, is_registered(payload.strategy_name)
 
     async def pause(self, deployment_id: UUID) -> None:
         row = await queries.get_deployment(self.pool, deployment_id)
@@ -158,7 +169,21 @@ class DeploymentManager:
         # on the already-live Kite connection if one exists, no restart.
         self.dispatcher.add_instruments(self._deployment_tokens(row))
 
-        runner = DeploymentRunner(row, self.pool, self.broadcaster, self.dispatcher)
+        # Attach a real strategy instance if one is registered under this
+        # name; otherwise the runner just observes ticks without trading
+        # (today's behavior for every deployment, since nothing is
+        # registered yet at all).
+        strategy_cls = get_strategy_class(row["strategy_name"])
+        strategy = strategy_cls() if strategy_cls else None
+        if strategy is None:
+            logger.warning(
+                "Deployment %s: strategy %r is not registered — it will "
+                "observe ticks but never trade until a matching "
+                "@register_strategy exists and this deployment restarts",
+                row["deployment_name"], row["strategy_name"],
+            )
+
+        runner = DeploymentRunner(row, self.pool, self.broadcaster, self.dispatcher, strategy)
         await runner.start()
         self.runners[str(row["id"])] = runner
         return runner
