@@ -190,10 +190,10 @@ curl -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '
 
 `config` is free-form JSONB — whatever a strategy needs. The one key the
 infra itself reads is `instrument_tokens`: the runner filters the shared
-tick stream down to just those tokens for this deployment. (Every token
-a deployment trades must already be in the dispatcher's `tokens.json` —
-that list is loaded once at startup; adding a new token currently means
-adding it to `tokens.json` and restarting.)
+tick stream down to just those tokens for this deployment. **A token
+doesn't need to already be in `tokens.json`** — if it's new, creating the
+deployment dynamically subscribes it on the already-live Kite connection,
+no restart (see "Dynamic instrument subscription" below).
 
 **One strategy, multiple deployments:** `strategy_name` is just a label.
 Create two deployments with the same `strategy_name`, different
@@ -203,6 +203,50 @@ positions, and a DB-level constraint (a partial unique index on
 `positions(deployment_id, instrument_token) WHERE status='open'`)
 guarantees they can never collide even if both trade the identical
 instrument at the identical time.
+
+### Dynamic instrument subscription
+
+`tokens.json` is a **permanent baseline**, loaded once at startup — never
+auto-removed, editable only by hand-editing the file and restarting.
+Anything needed beyond that baseline is subscribed **at runtime, on the
+already-live Kite connection, no restart required**, two ways:
+
+1. **Automatic, via deployments.** `POST /deployments` reads the new
+   deployment's `config.instrument_tokens` and subscribes any that
+   aren't already covered. `POST /deployments/{id}/stop` releases that
+   deployment's claim on its tokens when it's done. Tokens are
+   **reference-counted**, not just added/removed 1:1 — if two
+   deployments both trade NIFTY BANK, stopping one leaves it subscribed
+   for the other; only the last deployment relying on a token actually
+   triggers an unsubscribe. Pausing does *not* release tokens — it's
+   meant to be a lightweight, reversible halt, not a teardown.
+
+2. **Manually, via the API** — for subscribing ahead of a deployment, or
+   just watching a token's ticks over `/ws/ticks` with nothing deployed
+   against it at all:
+
+   | Method & path | What it does |
+   |---|---|
+   | `GET /instruments` | List everything currently subscribed, flagged `static` (from `tokens.json`) vs dynamic |
+   | `POST /instruments` | `[{"instrument_token": 260105, "symbol": "NIFTY BANK"}]` — subscribe, ref-counted the same as a deployment's claim |
+   | `DELETE /instruments/{token}` | Release one manual claim. A token stays subscribed as long as *any* claim on it remains; `tokens.json` entries can never be removed this way |
+
+**Why this needed a real fix, not just a new method.** `kiteconnect`'s
+`KiteTicker.subscribe()`/`unsubscribe()`/`set_mode()` write straight to
+the WebSocket (`self.ws.sendMessage(...)`) with no thread-safety of
+their own — confirmed by reading the installed library's source, not
+assumed. `KiteTicker.connect(threaded=True)` runs Kite's connection on
+Twisted's reactor, in its own background thread; calling those methods
+directly from FastAPI's asyncio thread while that reactor thread is
+concurrently reading/writing the same socket is a genuine data race on
+the transport, not a style nitpick — it just wouldn't necessarily show up
+in casual testing. Every dynamic subscribe/unsubscribe in
+`LiveDataDispatcher.add_instruments()`/`release_instruments()` is
+marshaled onto the reactor's own thread via Twisted's documented
+mechanism for exactly this, `reactor.callFromThread(...)` — the mirror
+image of the existing tick-ingestion bridge, which already went the
+other way (Kite's thread → asyncio loop) via
+`asyncio.run_coroutine_threadsafe`.
 
 ### Mode: intraday vs positional
 
@@ -328,6 +372,31 @@ against real Postgres semantics. It has not been run against Neon
 specifically, or against a real Kite WebSocket — those require your
 `config.json`.
 
+**Dynamic instrument subscription** was verified two ways:
+
+1. **The thread-safety fix itself, against the real Twisted reactor** —
+   not the fake ticker. Started `reactor.run()` in a background thread
+   exactly as `KiteTicker.connect(threaded=True)` does in production,
+   scheduled a probe function via the dispatcher's actual default
+   scheduler (`_default_ticker_thread_scheduler()`, which resolves to
+   `reactor.callFromThread`), and confirmed it executed on the
+   *reactor's* thread, not the calling thread — proving the marshaling
+   is real, not just plumbing that looks right.
+2. **Ref-counting logic and full deployment-lifecycle wiring** (fake
+   ticker, real Postgres): a static (`tokens.json`) token is a complete
+   no-op for both `add_instruments`/`release_instruments`; a genuinely
+   new token gets a live `subscribe`+`set_mode` call on the
+   already-connected fake ticker; a second claim on the same token
+   bumps the refcount with *no* duplicate wire call; releasing one of
+   two claims leaves it subscribed; releasing the last one genuinely
+   unsubscribes. End-to-end through the real API: two deployments
+   created with the identical new `instrument_token` triggered exactly
+   one `subscribe` call between them; stopping the first left the token
+   subscribed (the second deployment still needed it); stopping the
+   second actually unsubscribed it. The manual `POST`/`DELETE
+   /instruments` endpoints were exercised the same way, including
+   confirming a static token survives a manual `DELETE`.
+
 ## Folder layout
 
 ```
@@ -352,7 +421,8 @@ live_deploy/
     │   └── manager.py                      # DeploymentManager — lifecycle orchestration
     ├── routers/
     │   ├── health.py
-    │   └── deployments.py
+    │   ├── deployments.py
+    │   └── instruments.py                   # manual subscribe/unsubscribe control
     └── strategies/                          # empty — step 3, not built yet
 ```
 

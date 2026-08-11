@@ -31,6 +31,7 @@ from .deployments.manager import DeploymentManager
 from .dispatcher import LiveDataDispatcher
 from .routers import deployments as deployments_router
 from .routers import health as health_router
+from .routers import instruments as instruments_router
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("live_deploy")
@@ -38,6 +39,7 @@ logger = logging.getLogger("live_deploy")
 app = FastAPI(title="NiftyShop Live Deploy — Data Dispatcher + Paper Trading")
 
 app.include_router(health_router.router)
+app.include_router(instruments_router.router)
 app.include_router(deployments_router.router)
 
 

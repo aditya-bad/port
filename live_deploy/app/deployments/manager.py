@@ -15,6 +15,16 @@ Owns the lifecycle of every DeploymentRunner in the process:
     change any deployment's DB status — 'active' stays 'active', so the
     next startup resumes it automatically without anyone touching the
     API.
+  - Dynamic subscription: whenever a runner starts (fresh create,
+    resume, or startup reload), its config's instrument_tokens are
+    registered with the dispatcher via add_instruments() — subscribing
+    on the ALREADY-LIVE Kite connection if a token isn't already
+    covered, no restart needed. When a deployment stops for good,
+    release_instruments() drops its claim on those tokens (a
+    reference count under the hood — a token used by two deployments
+    stays subscribed as long as either one is still active/paused).
+    Pausing does NOT release tokens — it's meant to be a lightweight,
+    reversible halt, not a full teardown.
 
 Multiple deployments of the SAME strategy_name are just multiple rows
 with different deployment_name/config — the manager holds one
@@ -132,6 +142,7 @@ class DeploymentManager:
         runner = self.runners.pop(str(deployment_id), None)
         if runner is not None:
             await runner.stop()
+        self.dispatcher.release_instruments(self._deployment_tokens(row))
         await queries.set_status(self.pool, deployment_id, "stopped")
         await queries.record_event(
             self.pool, deployment_id, "stopped",
@@ -142,10 +153,28 @@ class DeploymentManager:
     # ── Internal ─────────────────────────────────────────────────────
 
     async def _start_runner(self, row: asyncpg.Record) -> DeploymentRunner:
+        # Ensure the dispatcher is (or will be, on next connect) actually
+        # subscribed to whatever this deployment trades — dynamically,
+        # on the already-live Kite connection if one exists, no restart.
+        self.dispatcher.add_instruments(self._deployment_tokens(row))
+
         runner = DeploymentRunner(row, self.pool, self.broadcaster, self.dispatcher)
         await runner.start()
         self.runners[str(row["id"])] = runner
         return runner
+
+    @staticmethod
+    def _deployment_tokens(row: asyncpg.Record) -> list[dict]:
+        """
+        A deployment's config only stores bare instrument_token ints
+        (see DeploymentRunner.tokens) — wrap them in the
+        {"instrument_token":..., "symbol":...} shape add_instruments()/
+        release_instruments() expect, matching tokens.json's shape.
+        Falls back to the token number itself as the label since the
+        deployment config has no symbol name to offer.
+        """
+        tokens = row["config"].get("instrument_tokens", [])
+        return [{"instrument_token": t, "symbol": str(t)} for t in tokens]
 
     def get_runner(self, deployment_id: UUID) -> Optional[DeploymentRunner]:
         return self.runners.get(str(deployment_id))
