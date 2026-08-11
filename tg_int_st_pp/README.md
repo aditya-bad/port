@@ -113,39 +113,48 @@ strategy code can be built on top of it later without refetching. Only
 
 - **Long entry** — 5-min close above any of R1/R2/R3, AND SuperTrend(7,3) green.
 - **Short entry** — 5-min close below any of S1/S2/S3, AND SuperTrend(7,3) red.
-- **Exit** — SuperTrend flips color → exit at the *next* candle's open, OR
-  force-exit at the end-of-day cutoff — whichever comes first.
+- **Both entries and exits execute at the *next* candle's open** — never
+  on the signal candle's own close. You can't place a real-time order on
+  a close price the instant it prints, so a signal detected on candle *i*
+  (an entry condition met, or SuperTrend flipping color) always executes
+  at candle *i+1*'s open.
+- Force-exit at 3:00 PM, at that candle's open — same convention.
 - Only 1 open position at a time. Multiple trades/day are allowed — a new
   entry (either direction) can fire immediately after an exit, same candle
   or later, exactly as in your own example (long exits on ST flip, a few
   candles later price closes below S1 with ST red → short entry).
 
-### Assumptions made (spec had a few gaps — flagged here, not guessed silently)
+### Configurable settings (confirmed to move the numbers — CLI flags, not baked in)
 
-The clarifying question about these got dismissed rather than answered, so
-these are the **defaults actually implemented**. All are easy to change —
-see the constants at the top of `strategy_pivot_supertrend.py`.
+| Flag | Options | Default | Why it's a param |
+|---|---|---|---|
+| `--pivot-type` | `classic`, `fibonacci`, `camarilla`, `woodie` | `classic` | "R1/R2/R3" doesn't name one formula — these 4 produce materially different price levels from the same day's H/L/C |
+| `--atr-smoothing` | `wilder`, `sma`, `ema` | `wilder` | Shifts SuperTrend's ATR bands and therefore exactly when it flips color — confirmed to matter |
+| `--force-exit` | `HH:MM` | `15:00` | In case the cutoff time itself needs to change (the "exit at candle open" convention is fixed either way) |
 
-| Gap | Default used | Where to change it |
-|---|---|---|
-| Pivot formula | **Classic/Standard** (`P=(H+L+C)/3`, `R1=2P-L`, `S1=2P-H`, etc.) | `compute_classic_pivots()` |
-| Previous-day OHLC source | Derived from that day's 5-min candles (max high, min low, **last 5-min close as EOD proxy**) — this dataset has no separate daily bar | `daily_ohlc()` |
-| First day in dataset | **Excluded from trading** — no prior-day OHLC exists inside the window to compute its pivots | `build_pivots_by_day()` |
-| SuperTrend ATR smoothing | **Wilder (RMA)**, the standard on every charting platform | `_atr_wilder()` |
-| SuperTrend reset | **Continuous across days** (not reset each morning) — matches TradingView/Kite chart default | `compute_supertrend()` |
-| Force-exit time | **3:00 PM (15:00)** | `DEFAULT_FORCE_EXIT_TIME`, or `--force-exit HH:MM` |
-| Force-exit price | **Open of the 15:00 candle** — same "exit at candle open" convention as the ST-flip exit | `run_strategy()` step 2 |
-| Entry price | **Close of the signal candle** — the spec's "next candle" language only applies to exits | `run_strategy()` step 4 |
-| Re-entry cooldown | **None** — a new entry can fire the same candle as an exit | `run_strategy()` |
+### Confirmed (not configurable — checked, not guessed)
 
-If any of these don't match what you intended, say so and they're a
-one-line change each — nothing here is architecturally locked in.
+- SuperTrend(7,3) runs **continuously across days**, not reset each morning
+  (matches TradingView/Kite chart default).
+- Force-exit price = **open of the cutoff candle**, same convention as the
+  ST-flip exit.
+- Entry price = **next candle's open**, matching the exit convention —
+  changed from an earlier draft that used the signal candle's own close,
+  which isn't realistically tradeable.
+- Previous-day OHLC (for pivots) is derived from that day's 5-min candles
+  (max high, min low, last 5-min close as EOD proxy) — this dataset has no
+  separate daily bar. The **first day in any dataset is excluded from
+  trading** — no prior day exists inside the window to compute its pivots.
+- Re-entry cooldown: **none** — a new entry can fire the same candle as
+  an exit.
 
 ### Usage
 
 ```bash
-python strategy_pivot_supertrend.py                   # reads data/NIFTY50_5minute.json
+python strategy_pivot_supertrend.py                          # classic pivots, wilder ATR, 15:00 cutoff
 python strategy_pivot_supertrend.py --input other.json
+python strategy_pivot_supertrend.py --pivot-type fibonacci
+python strategy_pivot_supertrend.py --atr-smoothing ema
 python strategy_pivot_supertrend.py --force-exit 15:15
 ```
 
@@ -169,15 +178,21 @@ no Kite credentials in this environment), the strategy engine was verified
 end-to-end against a hand-constructed 2-day synthetic candle series
 designed to exercise every rule:
 
-- Pivot formula checked against a hand-computed example
+- All 4 pivot formulas checked: monotonic (R1<R2<R3, S1>S2>S3) and
+  genuinely distinct from each other on the same H/L/C
+- All 3 ATR smoothing methods checked: correctly seeded at the warmup
+  boundary, correctly `None` before it, and diverge from each other
+  downstream (confirming the choice actually changes results)
 - Day 1 correctly excluded (no prior-day pivots)
-- A rally through R1 correctly triggered a long entry at the signal
-  candle's close, with SuperTrend green
+- A rally through R1 correctly triggered a long entry — verified the
+  entry price equals the **next** candle's open, not the signal candle's
+  own close (the signal candle's close crossing R1 was confirmed
+  separately, one candle earlier than the actual fill)
 - The subsequent crash correctly flipped SuperTrend and exited the long
   at the *next* candle's open (`exit_reason: "st_flip"`)
 - A short entered a few candles later once price closed below S1 with
-  SuperTrend red — same-day re-entry after an exit, mirroring your own
-  example
+  SuperTrend red, filled at the following candle's open — same-day
+  re-entry after an exit, mirroring your own example
 - The short ran until the 15:00 cutoff and was force-exited at that
   candle's open (`exit_reason: "force_exit"`)
 - No overlapping positions at any point; points math (sign per side)
