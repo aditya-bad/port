@@ -521,6 +521,77 @@ curl -X POST localhost:8000/deployments \
 already treats sell-first/buy-later as a short position with
 `realized_pnl = qty*(sell_price - buy_price)` per leg.
 
+## What's here (Step 9: pivot_supertrend_options_inverse)
+
+`app/strategies/pivot_supertrend_options_inverse.py` — deliberately the
+mirror image of `pivot_supertrend_options`. Live paper-trading only, no
+backtested version. No pivot levels at all — this one only cares about
+SuperTrend flips:
+
+- **Entry = every SuperTrend flip** (exactly where the original strategy
+  used to *exit*): flip to red → **buy** THIS_WEEK ATM **PE**; flip to
+  green → **buy** THIS_WEEK ATM **CE**.
+- **Exit = purely time-based**: hold for `hold_candles` complete 5-min
+  candles after entry (config, default `1`), then sell to close at the
+  next candle's open — no more SuperTrend dependency on the way out,
+  since the flip already *was* the entry trigger. A `force_exit_time`
+  safety net (default 15:00, nullable to disable, same as
+  `pivot_supertrend`) still applies in case a late-day flip's hold
+  period would otherwise run past close.
+- **Buying, not selling** — standard long-option mechanics (buy to
+  open, sell to close), the opposite fill direction from
+  `pivot_supertrend_options`.
+- **Re-arms after every exit** — a flip can happen several times in a
+  session; this isn't a one-trade-a-day strategy. Only one open position
+  at a time — a flip that occurs *while already holding* one is simply
+  missed, not queued for later.
+
+**`hold_candles` timing**: entry executes at the open of the candle
+right after the flip is detected (same "decide on close, act on next
+open" convention every strategy in this family uses). From there,
+`hold_candles` counts full candle-close events *including the entry
+candle's own close* — `hold_candles: 1` exits at the very next candle's
+open after entry; `hold_candles: 2` exits one candle further out.
+
+**Resume-safety for the hold counter** is the interesting part here: the
+candle count isn't stored anywhere durable, so it's reconstructed on
+resume from the entry candle's own timestamp (stashed in the opening
+fill's metadata) compared against whatever candle is actually observed
+first, live, after resuming. If that reconstruction finds the hold
+period has already fully elapsed during the pause, it exits immediately
+rather than waiting around further — a deliberate one-directional
+asymmetry (a resume can make this exit up to one candle *earlier* than
+an uninterrupted run would have at the exact threshold candle, but never
+later, since over-holding an options position is the worse failure
+mode).
+
+**Deploy example:**
+
+```bash
+curl -X POST localhost:8000/deployments \
+  -H 'Content-Type: application/json' -H "X-API-Key: $APP_AUTH_SECRET" -d '{
+  "deployment_name": "psoi_live_1",
+  "strategy_name": "pivot_supertrend_options_inverse",
+  "mode": "intraday",
+  "initial_capital": 500000,
+  "config": {
+    "instrument_tokens": [256265],
+    "symbol": "NIFTY 50",
+    "options_underlying": "NIFTY",
+    "expiry_selector": "THIS_WEEK",
+    "atr_smoothing": "wilder",
+    "hold_candles": 1,
+    "force_exit_time": "15:00",
+    "lots_per_trade": 1
+  }
+}'
+```
+
+No `prev_day_ohlc` or `pivot_type` config keys here — this strategy
+never computes pivots, so seeding is SuperTrend-only
+(`seed_candles`/`supertrend_seed`, identical meaning to
+`pivot_supertrend`).
+
 ## Setup
 
 ```bash
@@ -1229,6 +1300,50 @@ with a synthetic NFO chain and a fake underlying tick feed:
 Not yet run against a real Kite tick stream or real option premiums —
 same caveat as every other strategy in this README.
 
+**`pivot_supertrend_options_inverse`** was verified with candle
+sequences checked against the *real* `SuperTrendState` class directly
+(via a scratch script) before being used in the integration test — so
+the exact candle each flip fires on, and that the following flat candles
+don't accidentally re-flip, is known with certainty rather than assumed:
+
+- **Direction correctness, both ways**: a flip to red bought the ATM PE;
+  a later flip to green (after the first position had already exited)
+  bought the ATM CE — confirmed on the actual DB position rows
+  (`side: "long"`, correct symbol, correct qty), not inferred from logs.
+- **`hold_candles` timing, both values**: `hold_candles: 1` exits
+  exactly 1 candle after entry; `hold_candles: 2` exits exactly one
+  candle later than that — checked candle-by-candle (still open after
+  N-1 candles, closed after N).
+- **A flip while already holding is genuinely missed**: forced a
+  flip-back-up in the middle of a `hold_candles: 2` PE hold — confirmed
+  no second (CE) position ever opened, the original PE closed
+  exactly on its own original schedule, and — the sharper check —
+  becoming flat afterward did *not* auto-open a new position just
+  because the "current" trend now happened to differ from entry; only a
+  genuinely fresh flip re-arms it.
+- **`force_exit_time` safety net**: with `hold_candles` deliberately set
+  high enough that it wouldn't naturally expire until well past 15:00,
+  confirmed the force-exit fires and reports `reason: "force_exit"`
+  instead.
+- **Resume-safety caught a real off-by-one bug before it shipped**: the
+  first version of the hold-counter reconciliation formula
+  under-counted by exactly one candle (it didn't count the entry
+  candle's own close, which always counts as "1 held" immediately
+  during uninterrupted operation) — a resumed deployment would have held
+  every position one candle longer than intended. The integration test
+  caught this by comparing the reconstructed count against the same
+  scenario's non-resumed trace; fixed, then re-verified: a resume mid-hold
+  reconstructs the exact right count and hands off seamlessly to normal
+  per-candle counting, and a resume after a long pause (hold period
+  already well elapsed) exits immediately rather than waiting further.
+- Full existing regression suite (auth, DB layer, deployment lifecycle,
+  dynamic subscription, onboarding/UI, pivot_supertrend math + live,
+  pivot_supertrend_options live, intraday_dtt_simple live, options
+  resolver) re-run — zero regressions.
+
+Not yet run against a real Kite tick stream or real option premiums —
+same caveat as every other strategy in this README.
+
 ## Folder layout
 
 ```
@@ -1269,7 +1384,8 @@ live_deploy/
     │   ├── registry.py                          # @register_strategy
     │   ├── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
     │   ├── pivot_supertrend_options.py            # step 6 — same signal engine, sells options instead
-    │   └── intraday_dtt_simple.py                 # step 8 — short straddle, decay/spike/time exits
+    │   ├── intraday_dtt_simple.py                 # step 8 — short straddle, decay/spike/time exits
+    │   └── pivot_supertrend_options_inverse.py    # step 9 — buys on ST flip, holds N candles
     └── options/
         ├── __init__.py                          # step 5 — public exports
         ├── models.py                             # OptionLeg

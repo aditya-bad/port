@@ -21,3 +21,4 @@ silently misleading.
 from . import pivot_supertrend  # noqa: F401  (registers on import)
 from . import pivot_supertrend_options  # noqa: F401  (registers on import)
 from . import intraday_dtt_simple  # noqa: F401  (registers on import)
+from . import pivot_supertrend_options_inverse  # noqa: F401  (registers on import)
