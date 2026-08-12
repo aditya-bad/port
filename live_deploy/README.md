@@ -467,6 +467,16 @@ live-premium threshold logic:
      this strategy's three defining rules.
 - **Exactly one entry per day.** Once exited for any of the 3 reasons,
   no same-day re-entry — it waits for the next day's `entry_time`.
+- **No entry on the resolved contract's own expiry day** (config:
+  `allow_expiry_day_entry`, default `false`): selling options that
+  expire that same afternoon is a fast-decay, sharp-gamma scenario this
+  strategy isn't designed for. Checked against the *actual resolved*
+  expiry date (`expiry == ts.date()`, right after `resolve_expiry()` —
+  before strike/leg resolution, before pricing, before subscribing
+  anything), not a hardcoded weekday, since the weekly expiry day has
+  changed before and isn't guaranteed to stay put. Set
+  `allow_expiry_day_entry: true` to opt back into selling the straddle
+  even on the contract's own expiry day.
 
 **How continuous exit monitoring works without REST polling.** Once
 sold, both legs' `instrument_token`s are dynamically subscribed on the
@@ -509,7 +519,8 @@ curl -X POST localhost:8000/deployments \
     "decay_pct": 0.10,
     "spike_pct": 0.40,
     "lots_per_trade": 1,
-    "catch_up_late_entry": true
+    "catch_up_late_entry": true,
+    "allow_expiry_day_entry": false
   }
 }'
 ```
@@ -1292,10 +1303,23 @@ with a synthetic NFO chain and a fake underlying tick feed:
   point — a decay exit fed *after* the restart still fired correctly,
   proving the resumed instance reconstructed each leg's `avg_entry_price`
   from the DB correctly, not just "noticed a position exists."
+- **No entry on the contract's own expiry day, plus the override**: a
+  synthetic chain whose *only* listed expiry is today's real date
+  (deliberately not tied to any particular weekday, so this proves the
+  check is date-based rather than a hardcoded "skip Thursdays") — with
+  `allow_expiry_day_entry` at its default `false`, confirmed no
+  position opens and *neither* leg is even resolved, priced, or
+  subscribed (checked directly against `dispatcher.status`, not just
+  "no position in the DB"); confirmed the skip latches for the rest of
+  that day, not just the triggering tick; confirmed
+  `allow_expiry_day_entry: true` on the identical expiry-today setup
+  sells the straddle normally instead; and, back on the original
+  THIS_WEEK chain (expiring later in the week, not today), confirmed a
+  normal day's entry is completely unaffected by the new check.
 - Full existing regression suite (auth, DB layer, deployment lifecycle,
   dynamic subscription, onboarding/UI, pivot_supertrend math + live,
-  pivot_supertrend_options live, options resolver) re-run — zero
-  regressions from adding a third strategy to the registry.
+  pivot_supertrend_options live, pivot_supertrend_options_inverse live,
+  options resolver) re-run — zero regressions.
 
 Not yet run against a real Kite tick stream or real option premiums —
 same caveat as every other strategy in this README.

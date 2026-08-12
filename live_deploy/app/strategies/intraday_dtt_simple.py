@@ -26,6 +26,15 @@ RULES:
        rules.
   Exactly ONE entry per day. Once exited (any of the 3 reasons above), no
   same-day re-entry — it waits for the next day's `entry_time`.
+  No entry on the resolved contract's OWN expiry day (config:
+  `allow_expiry_day_entry`, default False): selling options that expire
+  that same afternoon is a fast-decay, sharp-gamma scenario this
+  strategy isn't designed for. Checked against the ACTUAL resolved
+  expiry date, not a hardcoded weekday — the weekly expiry day has
+  changed before and isn't guaranteed to stay put, so nothing here
+  assumes it lands on any particular day of the week. Set
+  `allow_expiry_day_entry: true` to opt back into the old
+  no-check behavior.
 
 WHY NO CANDLE AGGREGATION (unlike pivot_supertrend): there's no OHLC-
 based signal here at all — entry is a plain time-of-day check against the
@@ -79,6 +88,11 @@ CONFIG:
       fraction (0.40 = 40%).
   "lots_per_trade": 1 (default) — lots sold per leg (same for both).
   "catch_up_late_entry": true (default) — see "LATE START" above.
+  "allow_expiry_day_entry": false (default) — set true to allow selling
+      the straddle even when the resolved contract expires today (see
+      "Exactly ONE entry per day" above). Off by default because this
+      strategy's decay/spike exit logic isn't designed for same-day-
+      expiry gamma risk.
 
 No margin model, same simplification as pivot_supertrend_options — a
 short straddle's two SELL fills both credit premium (record_fill already
@@ -116,6 +130,7 @@ logger = logging.getLogger("live_deploy.strategies.intraday_dtt_simple")
         "spike_pct": 0.40,
         "lots_per_trade": 1,
         "catch_up_late_entry": True,
+        "allow_expiry_day_entry": False,
     },
 )
 class IntradayDTTSimpleStrategy(StrategyBase):
@@ -160,6 +175,7 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         if self.lots_per_trade < 1:
             raise ValueError(f"lots_per_trade must be >= 1, got {self.lots_per_trade}")
         self.catch_up_late_entry = bool(cfg.get("catch_up_late_entry", True))
+        self.allow_expiry_day_entry = bool(cfg.get("allow_expiry_day_entry", False))
 
         self.resolver = OptionsResolver(runner.dispatcher)
 
@@ -266,6 +282,19 @@ class IntradayDTTSimpleStrategy(StrategyBase):
     async def _enter(self, runner, ts) -> None:
         try:
             expiry = await self.resolver.resolve_expiry(self.options_underlying, self.expiry_selector)
+            if expiry == ts.date() and not self.allow_expiry_day_entry:
+                # Checked as early as possible -- right after resolving
+                # the expiry itself, before touching strike/legs at all
+                # -- so a same-day-expiry skip never resolves, prices, or
+                # subscribes to either leg first.
+                logger.info(
+                    "%s: skipping entry — resolved %s contract expires "
+                    "today (%s). Per strategy rule, no new straddle on "
+                    "the contract's own expiry day (set "
+                    "allow_expiry_day_entry=true to override).",
+                    runner.deployment_name, self.expiry_selector, expiry,
+                )
+                return
             strike = await self.resolver.get_atm_strike(self.options_underlying, expiry)
             ce_leg = await self.resolver.get_leg(self.options_underlying, expiry, strike, "CE")
             pe_leg = await self.resolver.get_leg(self.options_underlying, expiry, strike, "PE")
