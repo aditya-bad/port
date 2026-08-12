@@ -10,12 +10,16 @@ RULES:
       same lot count both legs.
   Exit — checked continuously once both legs are open, in this priority
       order:
-    1. Profit target: combined premium (CE price + PE price) has decayed
+    1. Stop loss: EITHER leg's own premium has risen `spike_pct` (default
+       40%) from ITS OWN entry premium -> exit BOTH legs, even though
+       only one leg breached. Checked first — a sharp one-sided move
+       that spikes one leg while the other leg's decay drags the
+       COMBINED premium past decay_pct too (on the same tick) is real
+       one-sided directional exposure, not calm two-sided decay, and the
+       risk stop should win that tie.
+    2. Profit target: combined premium (CE price + PE price) has decayed
        `decay_pct` (default 10%) from the combined ENTRY premium -> exit
        both legs.
-    2. Stop loss: EITHER leg's own premium has risen `spike_pct` (default
-       40%) from ITS OWN entry premium -> exit BOTH legs, even though
-       only one leg breached.
     3. Time stop: if neither has fired, force-exit both legs at
        `force_exit_time` (default 15:00) — required for this strategy,
        not optional, since the hard exit is one of its three defining
@@ -98,8 +102,8 @@ logger = logging.getLogger("live_deploy.strategies.intraday_dtt_simple")
 @register_strategy(
     "intraday_dtt_simple",
     description="Intraday short straddle — sell THIS_WEEK ATM CE+PE at "
-               "entry_time, exit both on 10% combined-premium decay "
-               "(profit) or either leg up 40% (stop), else hard exit at "
+               "entry_time, exit both if either leg is up 40% (stop) or "
+               "10% combined-premium decay (profit), else hard exit at "
                "force_exit_time. Live paper-trading only.",
     default_config={
         "instrument_tokens": [256265],
@@ -332,15 +336,21 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         if ce_now is None or pe_now is None:
             return   # no live tick yet for one of the legs — check again next tick
 
+        # Risk stop checked BEFORE the profit target: if a sharp
+        # one-sided move spikes one leg past spike_pct while the other
+        # leg collapses enough that the combined sum ALSO nets past
+        # decay_pct on the same tick, that's real one-sided directional
+        # exposure, not calm two-sided decay — the risk stop should win
+        # that tie, not the profit target.
+        if (ce_now >= self.ce_entry_price * (1 + self.spike_pct)
+                or pe_now >= self.pe_entry_price * (1 + self.spike_pct)):
+            await self._exit_both(runner, ts, "leg_spike_stop", ce_now, pe_now)
+            return
+
         combined_entry = self.ce_entry_price + self.pe_entry_price
         combined_now = ce_now + pe_now
         if combined_now <= combined_entry * (1 - self.decay_pct):
             await self._exit_both(runner, ts, "profit_target_decay", ce_now, pe_now)
-            return
-
-        if (ce_now >= self.ce_entry_price * (1 + self.spike_pct)
-                or pe_now >= self.pe_entry_price * (1 + self.spike_pct)):
-            await self._exit_both(runner, ts, "leg_spike_stop", ce_now, pe_now)
             return
 
     async def _exit_both(

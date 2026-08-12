@@ -451,12 +451,16 @@ live-premium threshold logic:
   **sell** the ATM PE at that same strike — same lot count both legs.
 - **Exit** — checked continuously once both legs are open, in priority
   order:
-  1. **Profit target**: combined premium (CE + PE) has decayed
+  1. **Stop loss**: *either* leg's own premium has risen `spike_pct`
+     (default 40%) from *its own* entry premium → exit **both** legs,
+     even though only one leg breached. Checked first — a sharp
+     one-sided move that spikes one leg while the other leg's decay
+     drags the *combined* premium past `decay_pct` too, on the same
+     tick, is real one-sided directional exposure, not calm two-sided
+     decay, and the risk stop wins that tie.
+  2. **Profit target**: combined premium (CE + PE) has decayed
      `decay_pct` (default 10%) from the combined *entry* premium → exit
      both legs.
-  2. **Stop loss**: *either* leg's own premium has risen `spike_pct`
-     (default 40%) from *its own* entry premium → exit **both** legs,
-     even though only one leg breached.
   3. **Time stop**: if neither fired, force-exit both legs at
      `force_exit_time` (default 15:00) — required here, not optional
      the way it is for `pivot_supertrend`, since the hard exit is one of
