@@ -34,7 +34,8 @@ class StrategyBase(ABC):
 
     Strategies never touch the DB directly — they call back into the
     runner (`await runner.buy(...)`, `await runner.sell(...)`,
-    `runner.open_positions`, `runner.cash`, ...), and the runner is what
+    `runner.open_positions`, `runner.cash`,
+    `await runner.list_closed_positions()`, ...), and the runner is what
     actually persists everything.
     """
 

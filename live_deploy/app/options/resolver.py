@@ -38,7 +38,8 @@ Full method list:
     get_leg_by_offset(underlying, expiry_selector, option_type, offset_steps)
     get_otm_leg(underlying, expiry_selector, option_type, steps=1)
     get_itm_leg(underlying, expiry_selector, option_type, steps=1)
-    get_leg_by_premium(underlying, expiry_selector, option_type, target_price)
+    get_leg_by_premium(underlying, expiry_selector, option_type, target_price,
+                       exclude_strikes=None)   -- ties broken toward the lower strike
     get_max_oi_strike(underlying, expiry_selector, option_type=None)  -> (leg, oi)
     list_option_chain(underlying, expiry_selector)      -> {strike: {"CE": leg, "PE": leg}}
   Futures:
@@ -58,7 +59,7 @@ import asyncio
 import logging
 from dataclasses import replace
 from datetime import date, datetime
-from typing import Optional, Union
+from typing import Iterable, Optional, Union
 
 from .client import get_kite_connect
 from .models import OptionLeg
@@ -333,10 +334,29 @@ class OptionsResolver:
     async def get_leg_by_premium(
         self, underlying: str, expiry_selector: Union[str, int, date], option_type: str,
         target_price: float, strike_window: int = 15, exchange: Optional[str] = None,
+        exclude_strikes: Optional[Iterable[float]] = None,
     ) -> OptionLeg:
         """
         The leg (of `option_type`) whose current LTP is closest to
         `target_price` — "THIS_WEEK CE with price closest to 40".
+
+        "Closest" = smallest absolute difference between the strike's
+        live LTP and `target_price`. On an exact tie between two or more
+        strikes, the LOWEST strike wins — candidates are scanned in
+        ascending-strike order (`list_strikes` returns them sorted) and
+        the running best is only replaced on a STRICTLY smaller diff, so
+        the first (lowest) strike to reach a given diff keeps it. This is
+        deliberate and documented, not an accident of iteration order —
+        callers relying on tie behavior should not assume the opposite.
+
+        `exclude_strikes` optionally removes specific strikes from
+        consideration entirely (e.g. "find the closest match, but not a
+        strike I already hold a leg at" — used by strategies that stack
+        multiple legs of the same option_type at different strikes). Not
+        just a post-filter on the winner: an excluded strike is dropped
+        from the candidate pool BEFORE the closest-match search, so the
+        result is the closest AMONG THE REMAINING strikes, never "closest
+        overall, then reject and return nothing."
 
         Only searches a bounded window of `strike_window` strike-steps on
         either side of ATM (not the whole chain) — premiums move roughly
@@ -346,6 +366,7 @@ class OptionsResolver:
         150+ strikes for NIFTY).
         """
         option_type = option_type.upper()
+        exclude = {float(s) for s in exclude_strikes} if exclude_strikes else set()
         expiry = await self.resolve_expiry(underlying, expiry_selector, exchange)
         atm = await self.get_atm_strike(underlying, expiry, exchange)
         step = await self.get_strike_step(underlying, expiry, exchange)
@@ -353,11 +374,17 @@ class OptionsResolver:
 
         window = [s for s in all_strikes if abs(s - atm) <= strike_window * step + step / 2]
         candidates = window or all_strikes   # fallback: window too tight for this chain
+        candidates = [s for s in candidates if s not in exclude]
+        if not candidates:
+            # The window (or even the whole chain) was entirely excluded
+            # — widen to "every listed strike minus the exclusions" as a
+            # last resort rather than raising outright.
+            candidates = [s for s in all_strikes if s not in exclude]
         legs = [await self.get_leg(underlying, expiry, s, option_type, exchange) for s in candidates]
 
         kite = self._kite()
         keys = [leg.key for leg in legs]
-        ltp_resp = await asyncio.to_thread(kite.ltp, keys)
+        ltp_resp = await asyncio.to_thread(kite.ltp, keys) if keys else {}
 
         best_leg, best_diff, best_price = None, None, None
         for leg in legs:
@@ -373,6 +400,7 @@ class OptionsResolver:
             raise ValueError(
                 f"Could not fetch quotes for any {option_type} leg near ATM "
                 f"for {underlying} {expiry}"
+                + (f" (excluding strikes {sorted(exclude)})" if exclude else "")
             )
         return replace(best_leg, last_price=best_price)
 

@@ -94,6 +94,24 @@ class DeploymentRunner:
         rows = await queries.list_open_positions(self.pool, self.deployment_id)
         self.open_positions = {int(r["instrument_token"]): dict(r) for r in rows}
 
+    async def list_closed_positions(self) -> list[dict]:
+        """
+        Every CLOSED position ever recorded for this deployment, most-
+        recently-closed first — for strategies whose resume-safety needs
+        more than "what's currently open" (e.g. reconstructing today's
+        already-realized P&L, or how many of a capped resource were
+        already used, from legs that were opened AND closed earlier the
+        same day, before a restart). `open_positions` alone can't answer
+        that — a fully-closed leg isn't in it at all.
+
+        Same sanctioned-access-point principle as buy()/sell(): a
+        strategy calls this rather than touching `self.pool`/`queries`
+        directly, keeping "strategies never touch the DB directly" true
+        even for this read-only, resume-safety-only need.
+        """
+        rows = await queries.list_positions(self.pool, self.deployment_id, status="closed")
+        return [dict(r) for r in rows]
+
     # ── Tick consumption ─────────────────────────────────────────────
 
     async def _run(self) -> None:

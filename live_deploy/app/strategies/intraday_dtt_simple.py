@@ -113,6 +113,44 @@ from .registry import register_strategy
 logger = logging.getLogger("live_deploy.strategies.intraday_dtt_simple")
 
 
+async def resolve_atm_straddle_legs(
+    resolver: OptionsResolver, options_underlying: str, expiry_selector,
+    ts, allow_expiry_day_entry: bool, deployment_name: str,
+) -> Optional[tuple]:
+    """
+    Shared by intraday_dtt_simple AND intraday_dtt_adjusted — both sell
+    an ATM CE + ATM PE straddle at entry_time with the identical
+    expiry-day exclusion rule, so this is the ONE place that logic lives
+    rather than being duplicated (and potentially drifting) across both
+    strategy files.
+
+    Resolves THIS_WEEK (or whatever expiry_selector says) ATM CE/PE legs
+    for an entry. Returns `(ce_leg, pe_leg, expiry, strike)` on success,
+    or `None` if entry should be skipped because the resolved contract
+    expires TODAY (`ts.date()`) and `allow_expiry_day_entry` is False —
+    checked as early as possible, right after resolve_expiry() and
+    before strike/leg resolution or pricing, so a same-day-expiry skip
+    never touches either leg.
+
+    Does NOT catch NoKiteSession or any other exception — callers wrap
+    this in their own try/except (both currently log and skip today's
+    entry the same way, but that's a caller decision, not baked in here).
+    """
+    expiry = await resolver.resolve_expiry(options_underlying, expiry_selector)
+    if expiry == ts.date() and not allow_expiry_day_entry:
+        logger.info(
+            "%s: skipping entry — resolved %s contract expires today "
+            "(%s). Per strategy rule, no new straddle on the contract's "
+            "own expiry day (set allow_expiry_day_entry=true to "
+            "override).", deployment_name, expiry_selector, expiry,
+        )
+        return None
+    strike = await resolver.get_atm_strike(options_underlying, expiry)
+    ce_leg = await resolver.get_leg(options_underlying, expiry, strike, "CE")
+    pe_leg = await resolver.get_leg(options_underlying, expiry, strike, "PE")
+    return ce_leg, pe_leg, expiry, strike
+
+
 @register_strategy(
     "intraday_dtt_simple",
     description="Intraday short straddle — sell THIS_WEEK ATM CE+PE at "
@@ -281,23 +319,13 @@ class IntradayDTTSimpleStrategy(StrategyBase):
 
     async def _enter(self, runner, ts) -> None:
         try:
-            expiry = await self.resolver.resolve_expiry(self.options_underlying, self.expiry_selector)
-            if expiry == ts.date() and not self.allow_expiry_day_entry:
-                # Checked as early as possible -- right after resolving
-                # the expiry itself, before touching strike/legs at all
-                # -- so a same-day-expiry skip never resolves, prices, or
-                # subscribes to either leg first.
-                logger.info(
-                    "%s: skipping entry — resolved %s contract expires "
-                    "today (%s). Per strategy rule, no new straddle on "
-                    "the contract's own expiry day (set "
-                    "allow_expiry_day_entry=true to override).",
-                    runner.deployment_name, self.expiry_selector, expiry,
-                )
-                return
-            strike = await self.resolver.get_atm_strike(self.options_underlying, expiry)
-            ce_leg = await self.resolver.get_leg(self.options_underlying, expiry, strike, "CE")
-            pe_leg = await self.resolver.get_leg(self.options_underlying, expiry, strike, "PE")
+            resolved = await resolve_atm_straddle_legs(
+                self.resolver, self.options_underlying, self.expiry_selector,
+                ts, self.allow_expiry_day_entry, runner.deployment_name,
+            )
+            if resolved is None:
+                return   # expiry-day skip already logged inside resolve_atm_straddle_legs
+            ce_leg, pe_leg, expiry, strike = resolved
             ce_price = await self.resolver.get_ltp(ce_leg)
             pe_price = await self.resolver.get_ltp(pe_leg)
         except NoKiteSession:

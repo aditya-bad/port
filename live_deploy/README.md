@@ -603,6 +603,95 @@ never computes pivots, so seeding is SuperTrend-only
 (`seed_candles`/`supertrend_seed`, identical meaning to
 `pivot_supertrend`).
 
+## What's here (Step 10: intraday_dtt_adjusted — dynamic rebalancing)
+
+`app/strategies/intraday_dtt_adjusted.py` — `intraday_dtt_simple`'s ATM
+straddle, but with a dynamic rebalancing layer instead of a fixed
+40%/10% per-leg stop. Identical entry (10:00 ATM CE+PE, same
+expiry-day exclusion, same "once per day" rule — literally reused via
+a new shared `resolve_atm_straddle_legs()` function in
+`intraday_dtt_simple.py`, not reimplemented) and identical 3:00 PM hard
+exit. Everything between entry and 3pm is a real redesign — variable-
+length legs per side (up to 3 on one side while the other stays at 1),
+a running realized-P&L total, and five checks in a fixed priority order
+every tick:
+
+1. **Force-exit (3pm)** — closes everything, always wins.
+2. **Break-even fallback** — `entry_spot ∓ combined_entry_premium`,
+   checked against the live UNDERLYING price (not any option's
+   premium). The true worst-case exit; closes everything.
+3. **Profit target** (`decay_pct`, default 10%) — NOT replaced by the
+   rebalancing layer, kept running the whole time. Compares
+   `realized_pnl_today` (every leg closed earlier today via reversal-
+   unwind) + unrealized P&L of every currently-open leg against
+   `decay_pct × combined_entry_premium` — the ORIGINAL 2-leg entry
+   premium only, deliberately NOT growing as adjustment legs add more
+   premium (confirmed explicitly before writing any code — the
+   alternative reading was real and is called out in the module
+   docstring). Closes everything on hit.
+4. **Adjustment trigger** — symmetric, either side can be "bigger":
+   `smaller_side_total <= adjustment_trigger_ratio × bigger_side_current`
+   (default ratio 0.5). Sells one more leg of the smaller side's option
+   type at whichever strike's live premium is closest to
+   `adjustment_size_pct × bigger_side_current` (default 25%) — via a
+   new `OptionsResolver.get_leg_by_premium(..., exclude_strikes=...)`
+   parameter (see Step 5) that keeps it off any strike already held on
+   that side. Side identity is STICKY once the first adjustment fires;
+   `max_adjustments` (default 2) is a LIFETIME cap for the day, not a
+   concurrently-open count — it doesn't reset even if every adjustment
+   leg later gets fully unwound.
+5. **Reversal / unwind** — once the adjusted side has more than 1 leg:
+   `smaller_side_total >= bigger_side_current` closes exactly the
+   single CHEAPEST leg on that side (original leg included, competing
+   on equal footing), re-evaluated fresh each time — ties break toward
+   the EARLIEST-OPENED leg.
+
+**Deploy example:**
+
+```bash
+curl -X POST localhost:8000/deployments \
+  -H 'Content-Type: application/json' -H "X-API-Key: $APP_AUTH_SECRET" -d '{
+  "deployment_name": "dtt_adjusted_live_1",
+  "strategy_name": "intraday_dtt_adjusted",
+  "mode": "intraday",
+  "initial_capital": 1000000,
+  "config": {
+    "instrument_tokens": [256265],
+    "symbol": "NIFTY 50",
+    "options_underlying": "NIFTY",
+    "expiry_selector": "THIS_WEEK",
+    "entry_time": "10:00",
+    "force_exit_time": "15:00",
+    "decay_pct": 0.10,
+    "adjustment_trigger_ratio": 0.5,
+    "adjustment_size_pct": 0.25,
+    "max_adjustments": 2,
+    "adjustment_strike_window": 40,
+    "lots_per_trade": 1,
+    "catch_up_late_entry": true,
+    "allow_expiry_day_entry": false
+  }
+}'
+```
+
+**Resume-safety** here is the hard part: on restart, `on_start()`
+reattaches every open leg (role — `"original"` or `"adjustment_N"` —
+read back from that leg's own stored fill metadata), and if any leg is
+open, that leg's own `opened_at` date IS "today" for reconciliation —
+no need to wait for a live tick. `runner.list_closed_positions()` (a
+new sanctioned DB-access method on `DeploymentRunner`, alongside
+`buy()`/`sell()`/`open_positions` — see Step 2) is then used to
+reconstruct `realized_pnl_today` (summed from every position closed
+*earlier the same day*) and `adjustments_used` (the highest adjustment
+index seen across open AND closed-today legs — open-only would
+under-count a leg that was already unwound before the restart). Getting
+either of these wrong is a real correctness bug, not a cosmetic one —
+see the module docstring and the "Verified" section below for how this
+was tested: not by peeking at internal state, but by choosing post-
+restart price moves whose own unrealized P&L is deliberately too small
+to explain a result on its own, so the outcome is only correct if the
+reconstructed value was genuinely carried forward.
+
 ## Setup
 
 ```bash
@@ -1368,6 +1457,68 @@ don't accidentally re-flip, is known with certainty rather than assumed:
 Not yet run against a real Kite tick stream or real option premiums —
 same caveat as every other strategy in this README.
 
+**`intraday_dtt_adjusted`** — every numeric scenario was worked out BY
+HAND against the spec's own worked example (Call 600, Put 600, entry
+spot 35000) before being turned into ticks, using a synthetic chain with
+an independent, controllable per-strike premium model (so
+`get_leg_by_premium`'s strike search could be pointed at an EXACT target
+premium deterministically, not approximated):
+
+- **Both adjustment triggers, matching the spec's own numbers exactly**:
+  Call 600→800/Put 600→400 → adjustment #1 (target 200, resolved to an
+  exact-match strike); Call→900/combined Put→450 → adjustment #2
+  (target 225, a genuinely DIFFERENT strike than adjustment #1 —
+  confirming `exclude_strikes` actually excludes, not just "closest
+  match, coincidentally different").
+- **Hard cap**: an extreme, obviously-would-trigger condition right
+  after both adjustments does NOT add a 5th leg.
+- **Reversal-unwind with an EXPLICIT tie**: two of three Put legs
+  deliberately priced identically at the moment of trigger — confirmed
+  the EARLIER-opened one closes, not the later one, matching the
+  documented tiebreak (not left to fall out of whichever order happened
+  to iterate first). A second, non-tied reversal then closes a further
+  leg, and correctly stops checking once back down to 1 leg per side.
+- **Profit target firing WHILE an adjustment leg is open**: a full
+  3-leg flatten with `reason=profit_target_total`, confirmed to
+  correctly outrank a reversal condition that was ALSO true on the same
+  tick (priority order actually enforced, not just documented).
+- **Break-even with multiple legs open**: isolated so no other check's
+  condition was also true that tick — the underlying trading past the
+  upper break-even level is the ONLY thing that explains the resulting
+  full flatten.
+- **force_exit_time** still closes everything regardless of how many
+  adjustment legs are open.
+- **The expiry-day exclusion**, reused from `intraday_dtt_simple` —
+  confirmed the shared function is actually wired into this strategy,
+  not just that it exists.
+- **Resume-safety, the main event**: restarted mid-3-leg-position with a
+  nonzero (deliberately profitable, +375) `realized_pnl_today` from an
+  earlier same-day reversal-unwind close. Confirmed (a) all 3 remaining
+  legs reattach with correct entry prices; (b) `adjustments_used`
+  reconstructs as 2, not 0 — an extreme post-restart trigger does NOT
+  add a 5th leg; (c) `realized_pnl_today` reconstructs as +375, not
+  reset to 0 — proved with a DISCRIMINATING price move whose own
+  unrealized P&L (50) falls well short of the 120-point target on its
+  own, so the resulting flatten is only explainable if the +375 was
+  correctly carried forward — which also transitively proves
+  `combined_entry_premium`/`entry_spot`/break-even were reconstructed
+  too, since the profit-target check is gated on them being set at all.
+- Two new resolver-level tests added to `test_options_resolver.py`
+  alongside the rest of `get_leg_by_premium`'s coverage:
+  `exclude_strikes` actually removes a strike from the search (falls
+  back to the runner-up, verified against an independent brute-force
+  re-scan), and an exact-tie target premium breaks toward the lower
+  strike, matching the tiebreak now spelled out in that method's own
+  docstring (previously true but undocumented — "whatever the sort
+  happened to produce").
+- Full existing regression suite (every strategy above, plus
+  `intraday_dtt_simple` re-run after its own refactor to share
+  `resolve_atm_straddle_legs()` with this strategy) re-run — zero
+  regressions.
+
+Not yet run against a real Kite tick stream or real option premiums —
+same caveat as every other strategy in this README.
+
 ## Folder layout
 
 ```
@@ -1409,7 +1560,8 @@ live_deploy/
     │   ├── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
     │   ├── pivot_supertrend_options.py            # step 6 — same signal engine, sells options instead
     │   ├── intraday_dtt_simple.py                 # step 8 — short straddle, decay/spike/time exits
-    │   └── pivot_supertrend_options_inverse.py    # step 9 — buys on ST flip, holds N candles
+    │   ├── pivot_supertrend_options_inverse.py    # step 9 — buys on ST flip, holds N candles
+    │   └── intraday_dtt_adjusted.py               # step 10 — straddle + dynamic rebalancing
     └── options/
         ├── __init__.py                          # step 5 — public exports
         ├── models.py                             # OptionLeg
