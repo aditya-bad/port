@@ -439,6 +439,84 @@ to a separate `/login.html` URL, which would itself need to be on the
 allowlist. This keeps the allowlist at exactly the two paths above while
 still making the login form reachable.
 
+## What's here (Step 8: intraday_dtt_simple — a short straddle)
+
+`app/strategies/intraday_dtt_simple.py` — a plain intraday short
+straddle. Live paper-trading only, no backtested version. No pivots, no
+SuperTrend, no candle aggregation — this one is pure time-of-day +
+live-premium threshold logic:
+
+- **Entry** (once per day, at `entry_time`, default 10:00): resolve
+  THIS_WEEK ATM strike from the live spot price, **sell** the ATM CE and
+  **sell** the ATM PE at that same strike — same lot count both legs.
+- **Exit** — checked continuously once both legs are open, in priority
+  order:
+  1. **Profit target**: combined premium (CE + PE) has decayed
+     `decay_pct` (default 10%) from the combined *entry* premium → exit
+     both legs.
+  2. **Stop loss**: *either* leg's own premium has risen `spike_pct`
+     (default 40%) from *its own* entry premium → exit **both** legs,
+     even though only one leg breached.
+  3. **Time stop**: if neither fired, force-exit both legs at
+     `force_exit_time` (default 15:00) — required here, not optional
+     the way it is for `pivot_supertrend`, since the hard exit is one of
+     this strategy's three defining rules.
+- **Exactly one entry per day.** Once exited for any of the 3 reasons,
+  no same-day re-entry — it waits for the next day's `entry_time`.
+
+**How continuous exit monitoring works without REST polling.** Once
+sold, both legs' `instrument_token`s are dynamically subscribed on the
+dispatcher (same mechanism `pivot_supertrend_options` uses for
+mark-to-market), so their live ticks continuously update
+`dispatcher.last_prices`. Every subsequent *underlying* tick then checks
+both legs' current prices via a plain in-memory dict lookup — REST
+(`OptionsResolver.get_ltp`) is only ever called once per leg, at the
+entry instant, to establish the entry price. No polling interval to
+tune, no rate-limit risk from checking on every tick.
+
+**"Late start" / catch-up entry** (config: `catch_up_late_entry`,
+default `true`): if this strategy instance's *very first* observed tick
+already shows a time-of-day past `entry_time` — deployed, or resumed,
+after 10:00 with no entry yet today — this flag decides what happens:
+`true` enters immediately on that first tick at the current spot price,
+same as any other entry; `false` skips entry for the rest of *that day
+only* — the next day's `entry_time` behaves completely normally, since
+the flag only ever gates a fresh start/resume's very first tick, never a
+normal day-to-day crossing. Deploying *before* `entry_time` (e.g. at
+9:30 for a 10:00 entry) is never "late" — it just waits for 10:00 like
+any other day, regardless of this flag.
+
+**Deploy example:**
+
+```bash
+curl -X POST localhost:8000/deployments \
+  -H 'Content-Type: application/json' -H "X-API-Key: $APP_AUTH_SECRET" -d '{
+  "deployment_name": "dtt_simple_live_1",
+  "strategy_name": "intraday_dtt_simple",
+  "mode": "intraday",
+  "initial_capital": 500000,
+  "config": {
+    "instrument_tokens": [256265],
+    "symbol": "NIFTY 50",
+    "options_underlying": "NIFTY",
+    "expiry_selector": "THIS_WEEK",
+    "entry_time": "10:00",
+    "force_exit_time": "15:00",
+    "decay_pct": 0.10,
+    "spike_pct": 0.40,
+    "lots_per_trade": 1,
+    "catch_up_late_entry": true
+  }
+}'
+```
+
+`options_underlying` is required (the options chain's own `name`, e.g.
+`"NIFTY"` — not the spot tradingsymbol `"NIFTY 50"`, see Step 5's
+`INDEX_SPOT_SYMBOL` note). Same no-margin-model simplification as
+`pivot_supertrend_options`: both SELL fills credit premium, `record_fill`
+already treats sell-first/buy-later as a short position with
+`realized_pnl = qty*(sell_price - buy_price)` per leg.
+
 ## Setup
 
 ```bash
@@ -1103,6 +1181,50 @@ actually determines whether it's secure, but a manual click-through is
 still worth doing before relying on this for anything with real money
 behind it.
 
+**`intraday_dtt_simple`** was verified end-to-end through the real
+API/dispatcher/broadcaster/runner/`OptionsResolver`/Postgres pipeline,
+with a synthetic NFO chain and a fake underlying tick feed:
+
+- **Entry timing**: no position opens before `entry_time`; the straddle
+  sells at 10:00 with the correct ATM strike, correct CE+PE
+  tradingsymbols, correct qty (`lots_per_trade × lot_size`) and correct
+  entry prices on both legs, both recorded with `side: "short"`.
+- **Profit-target decay**: combined premium pushed down 31.6% (past the
+  10% default threshold) via simulated option ticks — both legs
+  correctly exited with `reason=profit_target_decay`, at the exact
+  prices the simulated ticks carried.
+- **Single-leg spike stop, and NOT mistaken for decay**: one leg pushed
+  up 46% (past the 40% threshold) while the *combined* premium
+  simultaneously **increased** (no decay at all) — confirmed the exit
+  fired on `leg_spike_stop`, not `profit_target_decay`, proving the two
+  checks are independently correct, not one masking the other.
+- **Hard time stop**: mild moves that trip neither threshold, followed
+  by a tick at/after 15:00 — both legs correctly force-exited with
+  `reason=force_exit`.
+- **No same-day re-entry**: fed more ticks the same day after an exit —
+  confirmed no new position opens.
+- **`catch_up_late_entry`, both settings**: a deployment whose first-ever
+  observed tick is already at 11:30 (well past 10:00) enters immediately
+  when `true`; skips entry for the rest of that day when `false` — and,
+  critically, a **fresh day's normal 10:00 crossing on that SAME still-
+  running instance is confirmed unaffected** by `false` from the day
+  before, proving the flag only ever gates a fresh start's very first
+  tick, not ordinary day-to-day operation.
+- **Resume-safety**: entered a straddle, simulated a full process
+  restart (fresh `app.*` reimport, same DB) — both legs' positions
+  survived, `on_start` correctly re-subscribed **both** legs' tokens
+  (checked directly against `dispatcher.status`), and — the actual
+  point — a decay exit fed *after* the restart still fired correctly,
+  proving the resumed instance reconstructed each leg's `avg_entry_price`
+  from the DB correctly, not just "noticed a position exists."
+- Full existing regression suite (auth, DB layer, deployment lifecycle,
+  dynamic subscription, onboarding/UI, pivot_supertrend math + live,
+  pivot_supertrend_options live, options resolver) re-run — zero
+  regressions from adding a third strategy to the registry.
+
+Not yet run against a real Kite tick stream or real option premiums —
+same caveat as every other strategy in this README.
+
 ## Folder layout
 
 ```
@@ -1142,7 +1264,8 @@ live_deploy/
     │   ├── __init__.py                         # import list — triggers registration
     │   ├── registry.py                          # @register_strategy
     │   ├── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
-    │   └── pivot_supertrend_options.py            # step 6 — same signal engine, sells options instead
+    │   ├── pivot_supertrend_options.py            # step 6 — same signal engine, sells options instead
+    │   └── intraday_dtt_simple.py                 # step 8 — short straddle, decay/spike/time exits
     └── options/
         ├── __init__.py                          # step 5 — public exports
         ├── models.py                             # OptionLeg
