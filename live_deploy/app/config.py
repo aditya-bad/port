@@ -12,7 +12,7 @@ LIVE_DEPLOY_DIR = Path(__file__).resolve().parent.parent
 CONFIG_PATH = LIVE_DEPLOY_DIR / "config.json"
 TOKENS_PATH = LIVE_DEPLOY_DIR / "tokens.json"
 
-REQUIRED_CONFIG_KEYS = ("api_key", "api_secret", "database_url")
+REQUIRED_CONFIG_KEYS = ("api_key", "api_secret", "database_url", "app_auth_secret")
 VALID_TICK_MODES = ("ltp", "quote", "full")
 
 
@@ -28,9 +28,17 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     api_secret are the actual long-lived app credentials and stay
     required.
 
+    app_auth_secret is unrelated to Kite entirely — it's THIS app's own
+    front door (see app/auth.py): a password you set yourself, doubling
+    as this app's session-cookie signing key. Required, not optional —
+    "protect everything by default" only holds if the service refuses
+    to start without something to protect it with, rather than falling
+    back to running unauthenticated.
+
     Raises RuntimeError with a clear message on any problem — this runs
-    inside a FastAPI startup event, where a bare sys.exit() doesn't shut
-    the ASGI server down cleanly, so a normal exception is used instead.
+    at import time / inside a FastAPI startup event, where a bare
+    sys.exit() doesn't shut the ASGI server down cleanly, so a normal
+    exception is used instead.
     """
     if not path.exists():
         raise RuntimeError(

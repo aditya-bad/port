@@ -133,6 +133,7 @@ td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-family: var(
     <div class="status-bar" id="statusBar">
       <span class="badge bad"><span class="dot"></span> checking…</span>
     </div>
+    <button class="btn btn-secondary btn-sm" onclick="logout()">Logout</button>
   </header>
 
   <section>
@@ -237,6 +238,11 @@ async function pollHealth() {
     document.getElementById('statusBar').innerHTML =
       '<span class="badge bad"><span class="dot"></span> server unreachable</span>';
   }
+}
+
+async function logout() {
+  await fetch('/auth/logout', { method: 'POST' });
+  window.location.href = '/';
 }
 
 async function loginWithKite() {

@@ -147,7 +147,8 @@ stream are different problems):
 **Deploy example** (seeded — most accurate):
 
 ```bash
-curl -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '{
+curl -X POST localhost:8000/deployments \
+  -H 'Content-Type: application/json' -H "X-API-Key: $APP_AUTH_SECRET" -d '{
   "deployment_name": "pivot_st_live_1",
   "strategy_name": "pivot_supertrend",
   "mode": "intraday",
@@ -310,7 +311,8 @@ close is still cash-checked for real like any other buy.
 **Deploy example:**
 
 ```bash
-curl -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '{
+curl -X POST localhost:8000/deployments \
+  -H 'Content-Type: application/json' -H "X-API-Key: $APP_AUTH_SECRET" -d '{
   "deployment_name": "pst_options_live_1",
   "strategy_name": "pivot_supertrend_options",
   "mode": "intraday",
@@ -365,6 +367,78 @@ Step 4 above):
   rather than crashing the deployment — the next entry signal gets a
   fresh attempt.
 
+## What's here (Step 7: application-level authentication)
+
+This is a single-user personal tool, not a multi-tenant service — so
+instead of a user/password table, ONE shared secret
+(`app_auth_secret` in `config.json`) protects the entire service: every
+router, `/ws/ticks`, and the UI at `/`.
+
+**Implemented as ASGI middleware** (`app/auth.py`'s `AuthMiddleware`),
+not per-route `Depends()`, on purpose: middleware fails **closed** —
+anything not explicitly allowlisted needs auth, including any router
+added later and forgotten about — a `Depends()`-based check fails
+**open** (unprotected until someone remembers to add the dependency to
+the new router). "Protect everything by default" only actually holds
+with the fail-closed shape.
+
+**Exactly two paths are allowlisted**, both for the same underlying
+reason — neither can carry our own auth on the request that reaches it:
+
+- **`GET /kite/callback`** — Kite's own servers redirect the user's
+  browser here after a successful login; Kite doesn't and can't attach
+  our session cookie or API key to that redirect. Still safe without our
+  auth layer: it only does anything with a `request_token` that Kite
+  itself validates server-side during the token exchange — hitting this
+  URL without a real token from an actual Kite login is a clean failure,
+  not a way in.
+- **`POST /auth/login`** — the login endpoint itself obviously can't
+  require being already logged in to reach it.
+
+Everything else, **including `/health`**, is protected — low-sensitivity
+today, but "protect everything by default" means not carving out silent
+exceptions; if a future monitoring setup needs it open, that's a
+deliberate change to make explicitly, not something that should already
+be true by omission.
+
+**Two ways to authenticate, either is accepted:**
+
+1. **A session cookie**, for the browser UI. `POST /auth/login` with
+   `{"password": "..."}`; on match (checked with `secrets.compare_digest`,
+   not `==`, to avoid a timing side-channel on the comparison itself),
+   sets a signed `httponly`, `samesite=lax` cookie via Starlette's own
+   `SessionMiddleware` — no new package needed for the signing
+   (`itsdangerous`, which it depends on, is now in `requirements.txt`).
+   `POST /auth/logout` clears it; there's a **Logout** button in the
+   main UI's header once logged in.
+2. **An `X-API-Key` header**, for scripted/curl use — compared against
+   `app_auth_secret` the same `compare_digest` way. See the updated curl
+   examples above.
+
+**The `Secure` cookie flag is a per-request decision, not a fixed one**
+— `HostAwareSessionMiddleware` runs TWO `SessionMiddleware` instances
+(both signing with the identical secret, so a cookie either one issues
+is valid to the other) and picks between them based on whether the
+request's `Host` header looks like localhost. Plain Starlette
+`SessionMiddleware` only supports a fixed `https_only` flag set once at
+construction, which can't express "Secure in production, plain http on
+localhost during dev" for the same running process.
+
+**`/ws/ticks` and the browser UI need no extra work** — a same-origin
+browser WebSocket connection carries the session cookie automatically,
+so the UI's own tick view just works once logged in. A script connecting
+directly (see the updated example above) can't always set a custom
+header on the WS handshake, so it passes the API key as a query param
+instead (`?api_key=...`) — the **one** deliberate exception to "never
+put the key in a URL" (query params on GET requests get logged by most
+reverse proxies; everywhere else uses the header or cookie).
+
+**The login page** (`static/login.html`) is served *inline* by
+`AuthMiddleware` itself for any unauthenticated `GET /` — not a redirect
+to a separate `/login.html` URL, which would itself need to be on the
+allowlist. This keeps the allowlist at exactly the two paths above while
+still making the login form reachable.
+
 ## Setup
 
 ```bash
@@ -381,7 +455,8 @@ cp config.example.json config.json
   "api_key": "your_kite_api_key",
   "api_secret": "your_kite_api_secret",
   "tick_mode": "full",
-  "database_url": "postgresql://user:password@ep-xxxxx.neon.tech/dbname?sslmode=require"
+  "database_url": "postgresql://user:password@ep-xxxxx.neon.tech/dbname?sslmode=require",
+  "app_auth_secret": "pick-a-real-password-here"
 }
 ```
 
@@ -395,6 +470,12 @@ first run. `tick_mode` is one of Kite's three tick verbosity levels:
 `database_url` is your Neon connection string, exactly as Neon gives it
 to you (it already includes `sslmode=require`, which asyncpg honors
 automatically).
+
+`app_auth_secret` is **unrelated to Kite entirely** — it's this app's
+own front door (see "Step 7" below), required, no default. Pick a real
+password; it doubles as both the UI login password and the value you
+pass as `X-API-Key` for scripted access. The service refuses to start
+without it.
 
 **Schema setup is automatic.** On every startup, the app applies any
 `app/db/migrations/*.sql` file not yet recorded as applied (tracked in a
@@ -504,11 +585,21 @@ Connect and receive every tick batch Kite pushes for the subscribed
 tokens, as JSON, in real time. Connecting here never opens a new Kite
 session — you're subscribing to the broadcaster, not to Kite.
 
+**Protected like everything else** (see "Step 7" below) — the browser
+UI's own tick view needs no extra work (its session cookie is sent
+automatically, same-origin), but a script connecting directly, like the
+example below, can't always set a custom header on a WebSocket handshake
+— pass the API key as a query param instead, the one deliberate
+exception to "never put the key in a URL":
+
 ```python
 import asyncio, websockets, json
 
+APP_AUTH_SECRET = "..."   # same value as config.json's app_auth_secret
+
 async def main():
-    async with websockets.connect("ws://localhost:8000/ws/ticks") as ws:
+    url = f"ws://localhost:8000/ws/ticks?api_key={APP_AUTH_SECRET}"
+    async with websockets.connect(url) as ws:
         async for message in ws:
             print(json.loads(message))
 
@@ -533,7 +624,8 @@ asyncio.run(main())
 **Create example:**
 
 ```bash
-curl -X POST localhost:8000/deployments -H 'Content-Type: application/json' -d '{
+curl -X POST localhost:8000/deployments \
+  -H 'Content-Type: application/json' -H "X-API-Key: $APP_AUTH_SECRET" -d '{
   "deployment_name": "pivot_st_conservative",
   "strategy_name": "pivot_supertrend",
   "mode": "intraday",
@@ -943,6 +1035,74 @@ same caveat as everywhere else in this README: the tick/quote shapes are
 taken from `kiteconnect`'s own source, not guessed, but this hasn't been
 pointed at a live market.
 
+**Application-level auth (`app/auth.py` + `app/routers/auth.py`)** was
+verified with Starlette's `TestClient` — the one client that can drive
+both plain HTTP *and* WebSocket connections against the same running app
+with a real shared cookie jar (simulating an actual browser), against
+the real local Postgres instance:
+
+- **Every protected route 401s with no cookie and no `X-API-Key`** —
+  checked directly across `/health`, `/deployments`, `/instruments`,
+  `/strategies`, `/kite/login-url`, `/kite/status`, and `/auth/logout`
+  in one pass, then confirmed each one passes again once authenticated —
+  exactly the before/after check the spec asked for.
+- **`GET /kite/callback` stays reachable with ZERO auth** — the one
+  deliberate exception, tested explicitly (not just "not on the 401
+  list") since it's the single easiest thing to accidentally lock down
+  along with everything else: it correctly returns Kite's own
+  status=failure page (400), never our 401.
+- **`GET /` unauthenticated serves the login page's actual markup**, not
+  a peek at the real UI (asserted the real UI's own markup is *absent*
+  from that response, not just that *some* HTML came back) — and after a
+  correct login, the exact same URL serves the real UI instead, with the
+  login form gone.
+- **Wrong password**: rejected with 401, and confirmed it grants
+  **nothing** — a follow-up request with no other credentials still
+  401s, not silently authenticated.
+- **X-API-Key**: wrong value rejected, correct value accepted, checked
+  against the identical routes as the cookie path.
+- **A forged/tampered session cookie value is rejected** — manually
+  injected a garbage cookie value (never issued by `/auth/login`) and
+  confirmed it does NOT authorize anything, proving the signature check
+  is actually doing something, not just present.
+- **WebSocket `/ws/ticks`**: an unauthenticated connection is rejected
+  (raises on connect, never accepts); a genuine session cookie's value —
+  the same one the browser UI already holds after logging in — is
+  accepted with no extra work; a wrong `?api_key=` query value is
+  rejected; the correct one is accepted — covering the documented
+  script-client path.
+- **`Secure` cookie flag is genuinely per-request**, not just
+  configured-and-hoped: logging in against a `localhost` host produces a
+  cookie with **no** `Secure` flag (so plain-http local dev keeps
+  working); logging in against a non-localhost host produces one WITH
+  the `Secure` flag — checked directly on the raw `Set-Cookie` response
+  header in both cases, on two separate app instances.
+- **Logout genuinely clears the session** — after `POST /auth/logout`,
+  the same cookie no longer authorizes anything, and `GET /` shows the
+  login page again.
+- **Full existing regression suite re-run** (DB layer, full deployment
+  lifecycle, dynamic subscription, onboarding/UI, pivot_supertrend math
+  + live, pivot_supertrend_options live, options resolver) — all updated
+  to carry `app_auth_secret` in their config and an `X-API-Key` header
+  on every request, all still pass — zero regressions from adding a
+  required, fail-closed auth layer in front of the entire service.
+
+One quirk surfaced *by* this testing, not a bug in the app: Starlette's
+`TestClient.websocket_connect()` hardcodes its WebSocket request host to
+`testserver` regardless of the client's configured `base_url` — a real
+browser's WS connection is always same-origin with the page, so this
+mismatch can't happen outside a test harness, but it did mean the
+"browser-style" WS cookie check above passes the already-obtained signed
+cookie value explicitly rather than relying on `TestClient`'s cookie jar
+to cross-attach it across that host mismatch on its own.
+
+Not yet run against a real reverse proxy / real TLS termination, or with
+a real browser exercising the login/logout UI by hand — the behavior
+above is verified at the HTTP/WebSocket protocol level, which is what
+actually determines whether it's secure, but a manual click-through is
+still worth doing before relying on this for anything with real money
+behind it.
+
 ## Folder layout
 
 ```
@@ -951,10 +1111,12 @@ live_deploy/
 ├── tokens.json                 # committed — which instruments to subscribe to
 ├── requirements.txt
 ├── static/
-│   └── index.html               # the UI — served at "/" by the FastAPI app itself
+│   ├── index.html                # the UI — served at "/" by the FastAPI app itself
+│   └── login.html                 # step 7 — served inline by AuthMiddleware, unauthenticated "/"
 └── app/
-    ├── main.py                  # FastAPI app, startup/shutdown wiring, static mount
+    ├── main.py                  # FastAPI app, startup/shutdown wiring, static mount, middleware order
     ├── config.py                  # config.json / tokens.json loading
+    ├── auth.py                     # step 7 — AuthMiddleware + HostAwareSessionMiddleware
     ├── broadcaster.py              # TickBroadcaster (step 1)
     ├── dispatcher.py                # LiveDataDispatcher — connection + hot-swap (steps 1 & 3)
     ├── db/
@@ -974,7 +1136,8 @@ live_deploy/
     │   ├── deployments.py
     │   ├── instruments.py                   # manual subscribe/unsubscribe control
     │   ├── kite_auth.py                      # login-url / callback / status
-    │   └── strategies.py                      # GET /strategies
+    │   ├── strategies.py                      # GET /strategies
+    │   └── auth.py                             # step 7 — POST /auth/login, /auth/logout
     ├── strategies/
     │   ├── __init__.py                         # import list — triggers registration
     │   ├── registry.py                          # @register_strategy

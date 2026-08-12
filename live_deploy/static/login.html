@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>live_deploy — Login</title>
+<style>
+  :root {
+    --bg: #0f1117; --bg2: #1a1d28; --fg: #e1e4eb; --fg2: #8b90a0;
+    --accent: #4f8cff; --red: #ef4444; --border: #2d3148;
+    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--font); background: var(--bg); color: var(--fg);
+    height: 100vh; display: flex; align-items: center; justify-content: center;
+  }
+  .card {
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 32px; width: 100%; max-width: 340px;
+  }
+  h1 { font-size: 18px; color: var(--accent); margin-bottom: 4px; }
+  .sub { font-size: 12px; color: var(--fg2); margin-bottom: 20px; }
+  label { display: block; font-size: 12px; color: var(--fg2); margin-bottom: 6px; }
+  input {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg);
+    padding: 10px 12px; border-radius: 6px; font-size: 14px; font-family: inherit;
+  }
+  button {
+    width: 100%; margin-top: 14px; padding: 10px 14px; border-radius: 6px; border: none;
+    background: var(--accent); color: #fff; font-size: 14px; font-weight: 500; cursor: pointer;
+  }
+  button:hover { background: #3d7aee; }
+  button:disabled { opacity: 0.6; cursor: not-allowed; }
+  .msg { margin-top: 12px; font-size: 13px; min-height: 18px; }
+  .msg.error { color: var(--red); }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>⚡ live_deploy</h1>
+  <div class="sub">This app's own login — unrelated to your Kite credentials.</div>
+  <form id="loginForm">
+    <label for="password">Password</label>
+    <input type="password" id="password" name="password" autocomplete="current-password" autofocus required>
+    <button type="submit" id="submitBtn">Login</button>
+    <div class="msg" id="msg"></div>
+  </form>
+</div>
+
+<script>
+document.getElementById('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('submitBtn');
+  const msg = document.getElementById('msg');
+  const password = document.getElementById('password').value;
+  btn.disabled = true;
+  msg.className = 'msg';
+  msg.textContent = '';
+  try {
+    const r = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (r.ok) {
+      window.location.href = '/';
+      return;
+    }
+    const data = await r.json().catch(() => ({}));
+    msg.className = 'msg error';
+    msg.textContent = data.detail || 'Login failed';
+  } catch (err) {
+    msg.className = 'msg error';
+    msg.textContent = 'Server unreachable';
+  } finally {
+    btn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

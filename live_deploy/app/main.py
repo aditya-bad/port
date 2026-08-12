@@ -21,6 +21,15 @@ name (app/strategies/registry.py), and a single-page UI
 (static/index.html) tying all of it together: connection status, deploy
 a strategy, watch running deployments, positions, trades, reports.
 
+Step 7 (this revision): application-level authentication — this whole
+service (every router, /ws/ticks, and the UI) now sits behind a single
+shared secret (config.json's app_auth_secret), enforced by ASGI
+middleware (see app/auth.py) rather than per-route dependencies, so
+anything added later is protected by default instead of needing to
+remember to opt in. Kite's own /kite/callback redirect and the
+/auth/login endpoint itself are the only two paths that stay reachable
+unauthenticated — see app/auth.py's module docstring for exactly why.
+
 Actual strategy TRADING LOGIC is still not built — "once infra is
 ready, I'll tell you the strategies." Deployments can be created against
 any strategy_name right now; they just won't trade until something
@@ -35,6 +44,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from . import strategies  # noqa: F401 — importing runs every @register_strategy in it
+from .auth import AuthMiddleware, HostAwareSessionMiddleware
 from .broadcaster import TickBroadcaster
 from .config import load_config, load_tokens
 from .db import queries
@@ -42,6 +52,7 @@ from .db.migrate import run_migrations
 from .db.pool import close_pool, create_pool
 from .deployments.manager import DeploymentManager
 from .dispatcher import LiveDataDispatcher
+from .routers import auth as auth_router
 from .routers import deployments as deployments_router
 from .routers import health as health_router
 from .routers import instruments as instruments_router
@@ -53,6 +64,15 @@ logger = logging.getLogger("live_deploy")
 
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
+# Loaded at IMPORT time, not inside the startup event, on purpose:
+# add_middleware() must run before Starlette builds its middleware
+# stack (the first ASGI message this app ever handles, including the
+# lifespan startup event itself) — and AuthMiddleware/
+# HostAwareSessionMiddleware both need app_auth_secret right away.
+# Reused (not re-read) inside startup() below for everything else
+# load_config() provides.
+config = load_config()
+
 app = FastAPI(title="NiftyShop Live Deploy — Data Dispatcher + Paper Trading")
 
 app.include_router(health_router.router)
@@ -60,11 +80,20 @@ app.include_router(instruments_router.router)
 app.include_router(deployments_router.router)
 app.include_router(kite_auth_router.router)
 app.include_router(strategies_router.router)
+app.include_router(auth_router.router)
+
+# Middleware order matters: add_middleware() makes the MOST RECENTLY
+# added one OUTERMOST (it runs first on the way in, last on the way
+# out) — see app/auth.py's HostAwareSessionMiddleware docstring. Adding
+# AuthMiddleware first, then HostAwareSessionMiddleware, means a
+# request's session cookie is decoded (by HostAwareSessionMiddleware)
+# BEFORE AuthMiddleware inspects it.
+app.add_middleware(AuthMiddleware, secret=config["app_auth_secret"], static_dir=STATIC_DIR)
+app.add_middleware(HostAwareSessionMiddleware, secret_key=config["app_auth_secret"])
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    config = load_config()
     tokens = load_tokens()
 
     # ── Database: connect, migrate (idempotent — safe on every boot) ──
@@ -74,6 +103,7 @@ async def startup() -> None:
         logger.info("Applied migrations: %s", applied)
     app.state.db_pool = db_pool
     app.state.kite_config = config   # api_key/api_secret, for the login/callback router
+    app.state.app_auth_secret = config["app_auth_secret"]   # this app's own front door — see auth router
 
     # ── Kite session: DB (freshest, survives a same-day restart) wins,
     # config.json's access_token (if any) is only a first-ever-boot
