@@ -811,13 +811,17 @@ directly. No backtested version exists; live paper-trading only.
    config specifically so it can be turned off deliberately) force-
    closes a position that's still open at its own contract's expiry.
 2. **Checkpoint-triggered re-entry.** `checkpoint_pct` (default 0.5% of
-   *current* cash, checked every tick — not `monthly_target_pct`, which
-   is informational only, logged so progress against it is visible but
+   `runner.initial_capital` — FIXED for the deployment's entire
+   lifetime, checked every tick — not `monthly_target_pct`, which is
+   informational only, logged so progress against it is visible but
    never itself a hard stop) closing the whole position and
    IMMEDIATELY selling a fresh CE+PE pair, independently RE-APPLYING
    the rotation rule against today's date — a checkpoint that fires on
    day 20 can re-enter in next month's contract even though the
-   position it just closed was this month's.
+   position it just closed was this month's. The bar itself does NOT
+   rise as the account compounds — REVISED from an earlier version of
+   this file, which used the current, compounding `runner.cash` here;
+   see "Fixes applied after initial build" below.
 3. **Two independent rebalancing mechanisms, generalized over 1 or 2
    legs per side**: a continuous 50%-of-bigger-side trigger that always
    REPLACES the cheapest leg on the decayed side in place (never grows
@@ -836,9 +840,16 @@ directly. No backtested version exists; live paper-trading only.
    the position decays favorably; `"active_management"` hands post-
    convergence rebalancing entirely to `intraday_dtt_adjusted`'s own
    methods (bound onto this instance, not reimplemented — see the
-   module docstring's "ACTIVE-MANAGEMENT DELEGATION"). The daily 80%
-   check and the checkpoint check both keep running, unmodified, in
-   every mode, before AND after convergence.
+   module docstring's "ACTIVE-MANAGEMENT DELEGATION"). The checkpoint
+   check keeps running, unmodified, in every mode, before AND after
+   convergence — but the daily 80% check and the continuous 50% trigger
+   do NOT: under `fixed_stop`/`trailing_stop` specifically, BOTH freeze
+   entirely the instant convergence is detected, leaving the position at
+   exactly the 2 legs it converged with until the stop fires (or
+   checkpoint/contract-expiry closes it out); `active_management` is the
+   one mode where both keep running post-convergence exactly as before
+   (Section 6 unmodified, Section 5 replaced by the delegation). See
+   "Fixes applied after initial build" below for why the freeze exists.
 5. **Optional protective-leg hedging** (`enable_hedging`, default
    `false` — new mechanics, never combined with the rest of this
    strategy's logic before, so it's kept in its own clearly-separated
@@ -857,13 +868,12 @@ NIFTY (lot_size 50) at ₹1,20,000 capital that's exactly **36**; for
 BANKNIFTY (lot_size 25), **72**. "Capital" here is
 `runner.initial_capital` (a new fixed-for-the-deployment's-lifetime
 accessor added to `DeploymentRunner` alongside the existing
-compounding `runner.cash`, specifically so a strategy can size a single
-unit against a stable reference instead of an ever-moving one) — as
-`runner.cash` compounds from favorable checkpoints, this strategy scales
-QUANTITY (`qty_multiplier = round(runner.cash / runner.initial_capital)`,
-whole additional lots), never the per-pair premium target itself, per
-the spec's own explicit anti-pattern warning against inflating a single
-pair's premium target as capital grows.
+compounding `runner.cash`) — and, as of the fix described below,
+quantity is fixed too: `qty = lots_per_trade * lot_size`, for every
+leg this deployment ever opens (entry, rolls, EOD-accumulation legs,
+hedges alike), for its entire lifetime. `runner.cash` is read by
+NEITHER the sizing formula NOR the checkpoint target — see "Fixes
+applied after initial build" below.
 
 **Trade-reason logging** extends the same one-fill-per-action pattern
 already established for `intraday_dtt_adjusted`/`intraday_dtt_advanced`
@@ -927,6 +937,51 @@ confirm both independently before relying on SENSEX/BANKEX in
 production. Everything else about BFO support (spot routing, dynamic
 lot-size/strike-step derivation, the resolver's `exchange` plumbing)
 was verified by reading the actual resolver code, not assumed.
+
+**Fixes applied after initial build** — two correctness fixes to
+already-built behavior, requested after the strategy first shipped:
+
+1. **Post-convergence freeze for `fixed_stop`/`trailing_stop`.**
+   Originally, the daily 80% check (Section 6) and the continuous 50%
+   trigger (Section 5) kept running, unmodified, in EVERY
+   `convergence_mode`, even after convergence — correct for
+   `active_management` (which explicitly wants EOD to keep running and
+   replaces Section 5 with its own delegation), but wrong for
+   `fixed_stop`/`trailing_stop`: a post-convergence Section 5 roll could
+   silently turn a converged straddle back into a strangle, and a
+   post-convergence Section 6 leg-add injects that leg's own premium
+   into `combined_now`, corrupting the stop calculation with an
+   artifact that has nothing to do with real market movement (converge
+   at 600, stop at 660, drift to a harmless 630 — then an EOD-added leg
+   worth ~82.5 pushes `combined_now` to 712.5, tripping the stop on zero
+   real loss). Fixed: for `fixed_stop`/`trailing_stop` specifically,
+   BOTH Section 5 and Section 6 go fully dormant the instant
+   `self.converged` becomes `True` — the position sits at exactly the 2
+   legs it converged with until the stop fires or checkpoint/
+   contract-expiry closes it out. `active_management` is unaffected.
+2. **`initial_capital` only, never `runner.cash`, for sizing AND the
+   checkpoint target.** Originally, `qty_multiplier =
+   round(runner.cash / runner.initial_capital)` let quantity silently
+   grow as checkpoints compounded the account, and the checkpoint
+   target itself (`checkpoint_pct * runner.cash`) rose along with it —
+   both now read `runner.initial_capital` exclusively.
+   `qty_multiplier` is gone entirely; quantity is simply `lots_per_trade
+   * lot_size`, identical for every leg this deployment ever opens.
+   `checkpoint_pct * runner.initial_capital` is the fixed bar for the
+   deployment's whole lifetime, unmoved by realized P&L or cash growth.
+   Scaling to more size is now a deliberate `lots_per_trade` config
+   change, never automatic behavior. `runner.cash` is still logged
+   (`capital_now` in Section 12's trigger_values) as a genuinely useful
+   record of what cash happened to be at that moment — it just no
+   longer feeds either calculation.
+
+Both fixes are verified end-to-end (see "Verified" below): a dedicated
+scenario reproduces the exact converge-600/stop-660/drift-630 worked
+example, feeding numbers that would have tripped a leg-add or a roll
+under the old behavior and confirming neither happens; and a checkpoint
+fired twice, on cycles with deliberately different realized-P&L/cash
+history, confirming the logged `checkpoint_target` is identical both
+times even though `capital_now` demonstrably isn't.
 
 ## Setup
 
@@ -1911,12 +1966,29 @@ above:
   that realized +300. Confirmed both legs reattach with correct
   symbols/entry prices, and — the discriminating check — a post-restart
   price move whose own unrealized P&L (2325) falls STRICTLY SHORT of
-  the checkpoint target (2529.5) on its own still correctly fired the
-  checkpoint, because `cycle_realized_pnl` was correctly reconstructed
-  as the carried-forward +300 (2325+300=2625 ≥ 2529.5) — a reset-to-0
-  bug would have left the position open. `cycle_id` confirmed
-  reconstructed as 1 (unchanged since no fresh entry has happened since
-  restart).
+  the checkpoint target (`checkpoint_pct=0.02 * initial_capital = 2400`)
+  on its own still correctly fired the checkpoint, because
+  `cycle_realized_pnl` was correctly reconstructed as the carried-
+  forward +300 (2325+300=2625 ≥ 2400) — a reset-to-0 bug would have left
+  the position open. `cycle_id` confirmed reconstructed as 1 (unchanged
+  since no fresh entry has happened since restart).
+- **Fix 1 (post-convergence freeze), the exact worked example**:
+  converged at a combined premium of exactly 600 (stop_level = 660),
+  then fed a genuine 80%-gap breach (PE/CE = 0.575) directly at
+  `eod_check_time` — confirmed NO leg was added; fed a genuine 50%
+  trigger (PE/CE = 0.375) at a separate tick — confirmed NO roll
+  happened either, both under `fixed_stop`. Only then did a further move
+  to a combined premium of 661 correctly fire the stop, flattening
+  EXACTLY the 2 legs that had been open since convergence — never more,
+  proving nothing was silently added during the frozen period.
+- **Fix 2 (`initial_capital`-only sizing/checkpoint)**: a checkpoint-
+  triggered re-entry's quantity and premium target confirmed IDENTICAL
+  to the original entry (no more `qty_multiplier` drift from the first
+  cycle's own +1750 profit); a SECOND checkpoint, fired on a cycle with
+  deliberately different `cycle_realized_pnl`/cash history than the
+  first, logged the EXACT SAME `checkpoint_target` (600) both times —
+  discriminating because `capital_now` (still logged, informational
+  only) demonstrably DID move between the two.
 - **Config validation** at deployment-creation time: `instrument`
   membership, `adjustment_trigger_ratio` strictly between 0 and 1,
   `adjustment_band_min < adjustment_band_max`, `eod_gap_floor` strictly
@@ -1924,8 +1996,9 @@ above:
   >= 1` all rejected with HTTP 400; the default config still deploys
   normally.
 - Full existing regression suite (every strategy above) re-run after
-  the `DeploymentRunner.initial_capital` addition and the `tokens.json`
-  SENSEX-token addition — zero regressions.
+  the `DeploymentRunner.initial_capital` addition, the `tokens.json`
+  SENSEX-token addition, and again after both fixes above — zero
+  regressions each time.
 
 Two things flagged explicitly rather than silently assumed, per the
 spec's own anticipation of this limitation: (1) SENSEX/BANKEX support

@@ -64,24 +64,22 @@ checkpoint firing right at market open on day 2).
     per-leg strike-selection premium target =
         (capital * strike_selection_capital_pct) / lot_size / 2
 
-"capital" here is `runner.initial_capital` — the FIXED reference value,
-never the compounding `runner.cash` — precisely to satisfy the
-anti-pattern this section explicitly warns against ("never inflate a
-single pair's premium target above the reference unit"). As
-`runner.cash` compounds from favorable checkpoints, this strategy scales
-QUANTITY (whole additional standard-sized pairs), not the per-pair
-premium target:
-    qty_multiplier = max(1, round(runner.cash / runner.initial_capital))
-    qty = qty_multiplier * lots_per_trade * lot_size
-This keeps every entry resolving the SAME reference-sized strike (via
+"capital" here is `runner.initial_capital` — the FIXED reference value
+for the deployment's ENTIRE lifetime. `runner.cash` (the compounding
+balance) is read by NEITHER this formula NOR the quantity calculation
+below — REVISED from an earlier version of this file that scaled
+`qty_multiplier` off `runner.cash`, which let quantity silently drift
+upward as checkpoints compounded the account. Quantity is now simply:
+    qty = lots_per_trade * lot_size
+— fixed for as long as `lots_per_trade` itself isn't changed in config.
+Every entry, roll, EOD-accumulation leg, and hedge across the entire
+deployment resolves the SAME reference-sized strike (via
 `get_leg_by_premium`, reused directly — see Step 3's own worked
-examples: NIFTY capital=120000 -> target=36, BANKNIFTY -> target=72),
-just sized in bigger lots as capital grows, rather than drifting toward
-progressively deeper, less liquid strikes. DESIGN DECISION, not
-explicitly spelled out as a formula in the spec, but the only reading
-consistent with "never inflate a single pair's premium target" while
-still allowing "scaling to larger capital" to mean something concrete —
-documented here so it can be corrected if it doesn't match intent.
+examples: NIFTY capital=120000 -> target=36, BANKNIFTY -> target=72) at
+the SAME quantity, with zero drift from account growth. Scaling to more
+size is a deliberate config change (`lots_per_trade`), never automatic
+behavior — this is the literal, no-longer-ambiguous reading of "never
+inflate a single pair's premium target above the reference unit."
 
 Both legs naked by default. Optional hedging: see "HEDGING" below —
 kept in its own clearly-separated section since (per the spec) this
@@ -100,12 +98,13 @@ already proven in `intraday_dtt_adjusted`:
 
     total_cycle_profit = self.cycle_realized_pnl
                         + unrealized P&L of every leg currently open
-    target = checkpoint_pct * runner.cash   (current, compounding capital
-                                              -- NOT initial_capital; the
-                                              checkpoint bar itself should
-                                              rise as the account grows,
-                                              unlike Section 3's per-pair
-                                              sizing reference)
+    target = checkpoint_pct * runner.initial_capital
+
+REVISED from an earlier version of this file, which used the
+compounding `runner.cash` here — the bar to clear each cycle is now
+FIXED for the deployment's entire lifetime, the same reference value
+Section 3's sizing already uses, not something that rises as the
+account grows.
 
 On hit: full flatten (both sides, all legs, same mechanism as
 force-exit elsewhere in this family), THEN a fresh CE+PE pair opens
@@ -693,8 +692,12 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             )
             return
 
-        qty_multiplier = max(1, round(runner.cash / runner.initial_capital))
-        qty = qty_multiplier * self.lots_per_trade * lot_size
+        # Fixed for as long as `lots_per_trade` itself isn't changed in
+        # config — never scales automatically off `runner.cash` (see
+        # module docstring's Section 3, "REVISED"). Scaling to more size
+        # is a deliberate config change, not something that drifts on
+        # its own as checkpoints compound the account.
+        qty = self.lots_per_trade * lot_size
 
         self.entered_ever = True
         self.cycle_id += 1
@@ -707,7 +710,12 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self.adjustments_used = 0
 
         trigger_values = {
-            "target_premium": target_premium, "qty_multiplier": qty_multiplier,
+            "target_premium": target_premium,
+            # `capital_ref` is what actually DRIVES sizing (fixed for
+            # the deployment's lifetime); `capital_now` is a genuinely
+            # useful record of what `runner.cash` happened to be at this
+            # moment, kept for visibility only — it is NOT an input to
+            # `qty` (see module docstring's Section 3, "REVISED").
             "capital_ref": runner.initial_capital, "capital_now": runner.cash,
             "day_of_month": ts.date().day, "rotation_selector": selector,
         }
@@ -737,9 +745,9 @@ class StrangleMonthlyV2Strategy(StrategyBase):
 
         logger.info(
             "%s: entered strangle (%s) — CE %s@%.2f, PE %s@%.2f, contract=%s, "
-            "qty_multiplier=%d, cycle_id=%d", runner.deployment_name, trigger,
+            "qty=%d, cycle_id=%d", runner.deployment_name, trigger,
             ce_leg.tradingsymbol, ce_leg.last_price, pe_leg.tradingsymbol, pe_leg.last_price,
-            expiry, qty_multiplier, self.cycle_id,
+            expiry, qty, self.cycle_id,
         )
 
     # ── Priority dispatcher — Section 8 ─────────────────────────────────
@@ -770,23 +778,32 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # unlike intraday_dtt_adjusted's own analogous check (which stays
         # self-consistent by comparing a points-sum against a points-
         # based target derived from combined_entry_premium), this
-        # strategy's target (`checkpoint_pct * runner.cash`) is an
-        # explicit RUPEE figure, so the two sides of the comparison would
-        # otherwise be in mismatched units whenever qty != 1 (i.e.
-        # always, since qty = qty_multiplier * lots_per_trade * lot_size).
+        # strategy's target (`checkpoint_pct * runner.initial_capital`)
+        # is an explicit RUPEE figure, so the two sides of the comparison
+        # would otherwise be in mismatched units whenever qty != 1 (i.e.
+        # always, since qty = lots_per_trade * lot_size).
+        #
+        # `checkpoint_target` is fixed off `runner.initial_capital`, NOT
+        # the compounding `runner.cash` — REVISED from an earlier version
+        # of this file; see module docstring's Section 4, "REVISED".
         unrealized = sum(
             (leg["entry_price"] - prices[leg["token"]]) * leg["qty"]
             for side_legs in self.legs.values() for leg in side_legs
         )
         total_cycle_profit = self.cycle_realized_pnl + unrealized
-        checkpoint_target = self.checkpoint_pct * runner.cash
+        checkpoint_target = self.checkpoint_pct * runner.initial_capital
         if total_cycle_profit >= checkpoint_target:
             await self._flatten_all(
                 runner, ts, "checkpoint_target",
                 {
                     "cycle_realized_pnl": self.cycle_realized_pnl, "unrealized": unrealized,
                     "total_cycle_profit": total_cycle_profit, "checkpoint_target": checkpoint_target,
-                    "monthly_target_value": self.monthly_target_pct * runner.cash,
+                    # Informational only, same reasoning as `capital_now`
+                    # in the entry trigger_values -- NOT an input to
+                    # `checkpoint_target` itself, which is fixed off
+                    # `runner.initial_capital` above.
+                    "capital_now": runner.cash,
+                    "monthly_target_value": self.monthly_target_pct * runner.initial_capital,
                 },
             )
             # "Immediately" per the spec means "same tick if already past
@@ -827,13 +844,41 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 )
                 return
 
-        # 4 — EOD 80% check (both pre- and post-convergence)
-        if not self._eod_fired_today and t >= self.eod_check_time:
+        # Post-convergence FREEZE, fixed_stop/trailing_stop ONLY: once
+        # converged under one of these two modes, the position is meant
+        # to sit at EXACTLY the 2 legs it converged with until the stop
+        # fires or checkpoint/contract-expiry closes it out — neither of
+        # which is scoped to convergence state, so both are correctly
+        # left alone by this guard. Letting Section 5 keep rolling would
+        # silently turn the straddle back into a strangle, defeating the
+        # whole point of a converged state; letting Section 6 keep
+        # growing a side injects that new leg's own premium into
+        # `combined_now`, corrupting the stop calculation with an
+        # artifact that has nothing to do with real market movement
+        # (e.g. converged at 600/stop 660, drifts to a harmless 630 —
+        # then an EOD-added leg worth ~82.5 pushes combined_now to
+        # 712.5, tripping the stop on zero real loss). active_management
+        # is DELIBERATELY EXCLUDED from this freeze — it already governs
+        # its own post-convergence leg changes via delegation (Section 5
+        # replaced by `_active_management_tick`), and Section 6 (EOD) is
+        # meant to keep running unmodified under it per that section's
+        # own "both pre- and post-convergence" heading.
+        frozen_post_convergence = self.converged and self.convergence_mode in ("fixed_stop", "trailing_stop")
+
+        # 4 — EOD 80% check (frozen post-convergence under fixed_stop/
+        # trailing_stop — see the freeze note above; otherwise runs both
+        # pre- and post-convergence, unmodified, exactly as before)
+        if not frozen_post_convergence and not self._eod_fired_today and t >= self.eod_check_time:
             self._eod_fired_today = True
             await self._eod_check(runner, ts, prices)
             return
 
-        # 5 — continuous 50% adjustment trigger (or delegated equivalent post-convergence/active_management)
+        # 5 — continuous 50% adjustment trigger (or delegated equivalent
+        # post-convergence/active_management) — frozen (does nothing at
+        # all) post-convergence under fixed_stop/trailing_stop, per the
+        # same freeze note above.
+        if frozen_post_convergence:
+            return
         if self.converged and self.convergence_mode == "active_management":
             await self._active_management_tick(runner, ts, prices)
         else:
@@ -928,8 +973,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self.adjustments_used += 1
         role = f"adjustment_{self.adjustments_used}"
         self._leg_seq += 1
-        qty_multiplier = max(1, round(runner.cash / runner.initial_capital))
-        qty = qty_multiplier * self.lots_per_trade * leg.lot_size
+        # Fixed, same as every other leg this deployment ever opens —
+        # never scales off `runner.cash` (see module docstring's
+        # Section 3, "REVISED").
+        qty = self.lots_per_trade * leg.lot_size
         leg_dict = {
             "token": leg.instrument_token, "symbol": leg.tradingsymbol, "exchange": leg.exchange,
             "entry_price": price, "strike": leg.strike, "role": role, "seq": self._leg_seq,
@@ -1245,8 +1292,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 runner.deployment_name, side,
             )
             return
-        qty_multiplier = max(1, round(runner.cash / runner.initial_capital))
-        qty = qty_multiplier * self.lots_per_trade * hedge.lot_size
+        # Fixed, same as every other leg this deployment ever opens --
+        # never scales off `runner.cash` (see module docstring's
+        # Section 3, "REVISED").
+        qty = self.lots_per_trade * hedge.lot_size
         runner.dispatcher.add_instruments([{"instrument_token": hedge.instrument_token, "symbol": hedge.tradingsymbol}])
         await runner.buy(
             hedge.tradingsymbol, hedge.instrument_token, qty, price, ts,
