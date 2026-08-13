@@ -15,6 +15,30 @@ underlying-price stop as the true worst case. The 10% combined-premium
 profit target from the simple version is NOT replaced — it keeps running
 the whole time, see "PROFIT TARGET" below.
 
+SUBCLASSED BY intraday_dtt_advanced: that strategy shares this one's
+entry, profit-target check, break-even check, and reversal-unwind
+mechanics UNCHANGED, differing only in (a) what happens when the
+adjustment trigger fires while already at the leg cap (a rejection here
+vs. a "close cheapest, then reopen" roll there) and (b) an optional
+break-even band multiplier. To make that a clean subclass rather than a
+fork of this whole file, two small seams exist here specifically for
+that reuse:
+  - `self.breakeven_multiplier` (defaulted to 1.0, i.e. a no-op, and NOT
+    part of THIS strategy's own documented config) is what both
+    break-even computation sites (`_enter`, `_resume_from_db`) actually
+    multiply by — intraday_dtt_advanced sets it from its own
+    `breakeven_multiplier` config key and gets a working configurable
+    band for free, with no override of either method needed.
+  - `_handle_adjustment_trigger(runner, ts, side, bigger_now, prices)`
+    is what actually runs once the trigger condition is confirmed true
+    (`_maybe_manage` no longer inlines the cap check itself) — THIS
+    class's implementation is the lifetime-cap "reject once spent"
+    behavior described in Section 4 below; intraday_dtt_advanced
+    overrides just this one method for its rolling behavior. `_adjust`
+    and `_unwind_one` both took an optional `reason` parameter for the
+    same purpose — intraday_dtt_advanced's roll calls them directly with
+    "roll_close"/"roll_open" instead of duplicating either method.
+
 RULES:
 
 1. ENTRY — see intraday_dtt_simple's docstring; behavior is identical
@@ -299,6 +323,13 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         if self.max_adjustments < 0:
             raise ValueError(f"max_adjustments must be >= 0, got {self.max_adjustments}")
         self.adjustment_strike_window = int(cfg.get("adjustment_strike_window", 40))
+        # Not part of THIS strategy's own documented config surface (its
+        # break-even is always exactly entry_spot +/- combined_entry_premium)
+        # -- exists here, defaulted to a no-op 1.0, purely so
+        # intraday_dtt_advanced can subclass this class and get a
+        # configurable break-even band without duplicating _enter() or
+        # _resume_from_db(). See that module's docstring.
+        self.breakeven_multiplier = float(cfg.get("breakeven_multiplier", 1.0))
 
         self.lots_per_trade = int(cfg.get("lots_per_trade") or 1)
         if self.lots_per_trade < 1:
@@ -407,8 +438,9 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             entry_spot = self._find_entry_spot(runner, closed_today)
             if entry_spot is not None:
                 self.entry_spot = entry_spot
-                self.breakeven_lower = entry_spot - self.combined_entry_premium
-                self.breakeven_upper = entry_spot + self.combined_entry_premium
+                band = self.breakeven_multiplier * self.combined_entry_premium
+                self.breakeven_lower = entry_spot - band
+                self.breakeven_upper = entry_spot + band
 
         if self.entry_spot is None:
             logger.warning(
@@ -565,8 +597,9 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
 
         self.entry_spot = entry_spot
         self.combined_entry_premium = ce_price + pe_price
-        self.breakeven_lower = entry_spot - self.combined_entry_premium
-        self.breakeven_upper = entry_spot + self.combined_entry_premium
+        band = self.breakeven_multiplier * self.combined_entry_premium
+        self.breakeven_lower = entry_spot - band
+        self.breakeven_upper = entry_spot + band
 
         logger.info(
             "%s: sold straddle — CE %s@%.2f, PE %s@%.2f (combined=%.2f), "
@@ -624,9 +657,8 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                     bigger_side, smaller_side, bigger_now, smaller_total = "CE", "PE", ce_now, pe_now
                 else:
                     bigger_side, smaller_side, bigger_now, smaller_total = "PE", "CE", pe_now, ce_now
-                if (self.adjustments_used < self.max_adjustments
-                        and smaller_total <= self.adjustment_trigger_ratio * bigger_now):
-                    await self._adjust(runner, ts, smaller_side, bigger_now)
+                if smaller_total <= self.adjustment_trigger_ratio * bigger_now:
+                    await self._handle_adjustment_trigger(runner, ts, smaller_side, bigger_now, prices)
                     return
         else:
             anchor_side = OTHER_SIDE[self.adjusted_side]
@@ -634,18 +666,34 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                 bigger_now = prices[self.legs[anchor_side][0]["token"]]
                 smaller_total = sum(prices[l["token"]] for l in self.legs[self.adjusted_side])
 
-                if (self.adjustments_used < self.max_adjustments
-                        and smaller_total <= self.adjustment_trigger_ratio * bigger_now):
-                    await self._adjust(runner, ts, self.adjusted_side, bigger_now)
+                if smaller_total <= self.adjustment_trigger_ratio * bigger_now:
+                    await self._handle_adjustment_trigger(runner, ts, self.adjusted_side, bigger_now, prices)
                     return
 
                 if len(self.legs[self.adjusted_side]) > 1 and smaller_total >= bigger_now:
                     await self._unwind_one(runner, ts, prices)
                     return
 
+    # ── What happens when the adjustment trigger fires — this is the
+    # extension point intraday_dtt_advanced overrides. Base behavior:
+    # the LIFETIME cap (Section 4) gates whether an add happens at all;
+    # once spent, the trigger firing again does nothing (`prices` is
+    # accepted for signature parity with the override, unused here). ──
+
+    async def _handle_adjustment_trigger(
+        self, runner, ts, side: str, bigger_now: float, prices: dict[int, float],
+    ) -> None:
+        if self.adjustments_used < self.max_adjustments:
+            await self._adjust(runner, ts, side, bigger_now)
+        # else: hard cap already spent for the day -- see module
+        # docstring's "HARD CAP". Nothing else to do; reversal-unwind
+        # (checked right after this in _maybe_manage) can't ALSO fire on
+        # this same tick regardless (its own trigger, >=1.0x, is mutually
+        # exclusive with this one, <=adjustment_trigger_ratio).
+
     # ── Adjustment: sell one more leg on the smaller side ──────────────
 
-    async def _adjust(self, runner, ts, side: str, bigger_now: float) -> None:
+    async def _adjust(self, runner, ts, side: str, bigger_now: float, reason: str = "adjustment") -> None:
         target = self.adjustment_size_pct * bigger_now
         exclude = {leg["strike"] for leg in self.legs[side]}
         try:
@@ -657,15 +705,15 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         except NoKiteSession:
             logger.warning(
                 "%s: adjustment trigger fired but no Kite session yet — "
-                "skipping this adjustment (will re-check next tick)",
-                runner.deployment_name,
+                "skipping this %s (will re-check next tick)",
+                runner.deployment_name, reason,
             )
             return
         except Exception:
             logger.exception(
                 "%s: failed to resolve/price the adjustment leg (%s, target "
-                "premium %.2f) — skipping this adjustment", runner.deployment_name,
-                side, target,
+                "premium %.2f) — skipping this %s", runner.deployment_name,
+                side, target, reason,
             )
             return
 
@@ -679,7 +727,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         )
         await runner.sell(
             leg.tradingsymbol, leg.instrument_token, qty, price, ts,
-            reason="adjustment",
+            reason=reason,
             metadata={
                 "leg_role": role, "leg": side, "strike": leg.strike,
                 "expiry": leg.expiry.isoformat(), "exchange": leg.exchange,
@@ -691,14 +739,18 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             "strike": leg.strike, "role": role,
         })
         logger.info(
-            "%s: adjustment #%d — sold %s %s@%.2f (target was %.2f) — %s "
-            "side now %d leg(s)", runner.deployment_name, self.adjustments_used,
+            "%s: %s #%d — sold %s %s@%.2f (target was %.2f) — %s "
+            "side now %d leg(s)", runner.deployment_name, reason, self.adjustments_used,
             side, leg.tradingsymbol, price, target, side, len(self.legs[side]),
         )
 
     # ── Reversal: close the single cheapest leg on the adjusted side ───
+    # (also reused, unmodified, as the "close" half of intraday_dtt_
+    # advanced's roll — see that module's docstring)
 
-    async def _unwind_one(self, runner, ts, prices: dict[int, float]) -> None:
+    async def _unwind_one(
+        self, runner, ts, prices: dict[int, float], reason: str = "reversal_unwind",
+    ) -> None:
         side = self.adjusted_side
         # Lowest current premium wins; ties broken toward the
         # EARLIEST-OPENED leg (list order == open order, since legs are
@@ -709,15 +761,15 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         if pos is not None:
             result = await runner.buy(
                 cheapest["symbol"], cheapest["token"], float(pos["qty"]), price, ts,
-                reason="reversal_unwind",
+                reason=reason,
             )
             if result.get("realized_pnl") is not None:
                 self.realized_pnl_today += result["realized_pnl"]
         runner.dispatcher.release_instruments([cheapest["token"]])
         self.legs[side].remove(cheapest)
         logger.info(
-            "%s: reversal — closed %s %s@%.2f (%s side now %d leg(s), "
-            "realized_pnl_today=%.2f)", runner.deployment_name, side,
+            "%s: %s — closed %s %s@%.2f (%s side now %d leg(s), "
+            "realized_pnl_today=%.2f)", runner.deployment_name, reason, side,
             cheapest["symbol"], price, side, len(self.legs[side]), self.realized_pnl_today,
         )
 

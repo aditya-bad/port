@@ -692,6 +692,90 @@ restart price moves whose own unrealized P&L is deliberately too small
 to explain a result on its own, so the outcome is only correct if the
 reconstructed value was genuinely carried forward.
 
+## What's here (Step 11: intraday_dtt_advanced — rolling adjustments)
+
+`app/strategies/intraday_dtt_advanced.py` — `intraday_dtt_adjusted`, but
+as an actual **Python subclass** (`IntradayDTTAdvancedStrategy(IntradayDTTAdjustedStrategy)`),
+not a fork of that ~760-line file. Entry, the profit-target check, the
+break-even check, and reversal-unwind are all inherited unchanged. Two
+real behavioral differences:
+
+1. **Adjustments roll instead of permanently stopping.**
+   `max_adjustments` here caps how many adjustment legs may be
+   *concurrently* open on the adjusted side (never more than
+   `1 + max_adjustments` legs total) — not a lifetime total the way it
+   is in `intraday_dtt_adjusted`. Once at that cap, a further trigger
+   **rolls**: closes the single cheapest currently-open leg on that side
+   (original leg competes on equal footing, exactly as it already does
+   for ordinary reversal-unwind — nothing here treats it as
+   permanently reserved), then immediately reopens one new leg sized off
+   the *current* bigger-side premium at the moment of the roll. No
+   lifetime ceiling on how many times this can happen in a day.
+2. **`breakeven_multiplier`** (default `1.0`, matching
+   `intraday_dtt_adjusted` exactly): `entry_spot ± breakeven_multiplier
+   × combined_entry_premium`, instead of a fixed 1.0× band.
+
+**The seams that make this a clean subclass rather than a fork** live
+in `intraday_dtt_adjusted.py` itself: `self.breakeven_multiplier`
+(defaulted to a no-op `1.0`, not part of that strategy's own documented
+config) is what both break-even computation sites already multiply by,
+so no override is needed there at all; and `_handle_adjustment_trigger`
+is a new extension point — `_maybe_manage` no longer inlines the
+lifetime-cap check itself, it just calls this method once the trigger
+condition is confirmed true. `intraday_dtt_advanced` overrides only
+that one method; its roll implementation is literally
+`_unwind_one(..., reason="roll_close")` followed by
+`_adjust(..., reason="roll_open")` — both already-tested base-class
+methods, reused directly, with a `reason` parameter added to each so a
+roll's two fills are distinguishable from an ordinary adjustment or
+reversal-unwind in the trade history.
+
+**Resume-safety is simpler here than in the adjust version**: since the
+concurrent cap only ever needs "how many non-original legs are open on
+the adjusted side *right now*" (`len(self.legs[side]) - 1`), and that's
+already exactly what leg reattachment from `runner.open_positions`
+rebuilds, no extra reconstruction step is needed for it — unlike
+`intraday_dtt_adjusted`'s lifetime `adjustments_used` counter, which
+does need closed-today history (a since-unwound leg still counts toward
+a lifetime total, but not toward a live count). `_resume_from_db` is
+inherited unchanged and needs no override.
+
+**Deploy example:**
+
+```bash
+curl -X POST localhost:8000/deployments \
+  -H 'Content-Type: application/json' -H "X-API-Key: $APP_AUTH_SECRET" -d '{
+  "deployment_name": "dtt_advanced_live_1",
+  "strategy_name": "intraday_dtt_advanced",
+  "mode": "intraday",
+  "initial_capital": 1000000,
+  "config": {
+    "instrument_tokens": [256265],
+    "symbol": "NIFTY 50",
+    "options_underlying": "NIFTY",
+    "expiry_selector": "THIS_WEEK",
+    "entry_time": "10:00",
+    "force_exit_time": "15:00",
+    "decay_pct": 0.10,
+    "adjustment_trigger_ratio": 0.5,
+    "adjustment_size_pct": 0.25,
+    "max_adjustments": 2,
+    "adjustment_strike_window": 40,
+    "breakeven_multiplier": 1.0,
+    "lots_per_trade": 1,
+    "catch_up_late_entry": true,
+    "allow_expiry_day_entry": false
+  }
+}'
+```
+
+Note `max_adjustments` means something structurally different here
+(concurrent cap) than in `intraday_dtt_adjusted` (lifetime cap) — same
+config key name, deliberately, since it plays the same role, but the
+semantics genuinely differ between the two strategies; called out
+explicitly in both modules' docstrings rather than left to be noticed
+by diffing the two files.
+
 ## Setup
 
 ```bash
@@ -1519,6 +1603,55 @@ premium deterministically, not approximated):
 Not yet run against a real Kite tick stream or real option premiums —
 same caveat as every other strategy in this README.
 
+**`intraday_dtt_advanced`** — first, refactoring `intraday_dtt_adjusted`
+into a subclassable base (the `breakeven_multiplier` seam and the
+`_handle_adjustment_trigger` extension point) was verified to change
+NOTHING about that strategy's own behavior: its full existing test suite
+was re-run immediately after the refactor, before writing a single line
+of the new file, and passed unchanged. Then, for `intraday_dtt_advanced`
+itself:
+
+- **Below the concurrent cap behaves identically to `intraday_dtt_adjusted`**:
+  the same two adjustment triggers, same numbers, same plain
+  `reason=adjustment` fills — confirming the subclass doesn't
+  accidentally change anything for the "not yet at cap" case.
+- **A trigger AT the concurrent cap rolls**: exactly one leg closed
+  (the correct cheapest one) and exactly one new leg opened in the same
+  step, sized off the bigger side's premium *at the moment of that
+  specific roll* (1150 → target 287.5) rather than reusing a stale value
+  from the trigger before — checked by asserting the new leg's actual
+  entry price, not just that "something opened". Leg count on that side
+  confirmed unchanged (3 before, 3 after) and the two fills' `reason`s
+  (`roll_close`/`roll_open`) confirmed distinct from ordinary
+  `adjustment`/`reversal_unwind`.
+- **A second roll where the ORIGINAL leg happens to be cheapest**:
+  confirmed it gets rolled away exactly like any adjustment-role leg —
+  the "1 original + N adjustments" framing is a leg-count ceiling, not
+  a protected role, and the test proves the code doesn't quietly
+  special-case the original.
+- **`breakeven_multiplier` isolation, three separate checks**: the
+  adjustment trigger still fires at exactly the unchanged 0.5 ratio; the
+  profit target still fires at exactly `decay_pct × combined_entry_premium`
+  (120, boundary-exact — NOT 132, which is what the multiplier leaking
+  into the wrong formula would incorrectly require); and the break-even
+  band itself is confirmed genuinely wider — a price (36250) that would
+  have breached the default 1.0× bound stays open under 1.1×, and only
+  flattens once a further price (36350) breaches the widened bound too.
+- **Resume-safety mid-rolls**: restarted with 1 CE + 3 PE legs open
+  (after one prior roll), confirmed all 4 reattach correctly, then fed a
+  further extreme trigger post-restart and confirmed it correctly
+  ROLLS — leg count stays at 3, not 4 (would mean "cap not recognized,
+  treated as a plain add") and not 3-unchanged-with-no-new-leg (would
+  mean "rejected, lifetime-cap logic leaked in from the base class") —
+  proving the concurrent count really is being read live off
+  `runner.open_positions`-derived state with no separate counter to
+  reconstruct, as the design claims.
+- Full existing regression suite (every strategy in this README,
+  `intraday_dtt_adjusted` included) re-run — zero regressions.
+
+Not yet run against a real Kite tick stream or real option premiums —
+same caveat as every other strategy in this README.
+
 ## Folder layout
 
 ```
@@ -1561,7 +1694,8 @@ live_deploy/
     │   ├── pivot_supertrend_options.py            # step 6 — same signal engine, sells options instead
     │   ├── intraday_dtt_simple.py                 # step 8 — short straddle, decay/spike/time exits
     │   ├── pivot_supertrend_options_inverse.py    # step 9 — buys on ST flip, holds N candles
-    │   └── intraday_dtt_adjusted.py               # step 10 — straddle + dynamic rebalancing
+    │   ├── intraday_dtt_adjusted.py               # step 10 — straddle + dynamic rebalancing
+    │   └── intraday_dtt_advanced.py               # step 11 — subclass: rolling adjustments
     └── options/
         ├── __init__.py                          # step 5 — public exports
         ├── models.py                             # OptionLeg
