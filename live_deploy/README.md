@@ -788,6 +788,146 @@ semantics genuinely differ between the two strategies; called out
 explicitly in both modules' docstrings rather than left to be noticed
 by diffing the two files.
 
+## What's here (Step 12: strangle_monthly_v2 — a monthly checkpoint-cycling strangle)
+
+`app/strategies/strangle_monthly_v2.py` — the most complex strategy in
+this family: a **monthly** (not intraday) short strangle on
+NIFTY/BANKNIFTY (NSE) or SENSEX/BANKEX (BSE), locked to one specific
+option **contract** for its entire life, that keeps re-entering itself
+every time a capital-based checkpoint fires, rebalances continuously
+AND on a fixed daily schedule, and can converge from a strangle into a
+straddle with three selectable behaviors for what happens next — one of
+which reuses `intraday_dtt_adjusted`'s own adjustment machinery
+directly. No backtested version exists; live paper-trading only.
+
+1. **Contract lock, not just a signal state.** Rotation (day 1-15 of
+   the month → that month's own contract; day 16-end → next month's) is
+   applied ONLY at the moment of a fresh entry — initial, or the very
+   next entry after a checkpoint flatten. Once locked in,
+   `self.contract_expiry` (an actual `date`) is used for every roll,
+   every EOD adjustment, and every hedge placement for that position's
+   entire life, even if the calendar crosses day 16 while it's still
+   open. `force_close_at_contract_expiry` (default `true`, visible in
+   config specifically so it can be turned off deliberately) force-
+   closes a position that's still open at its own contract's expiry.
+2. **Checkpoint-triggered re-entry.** `checkpoint_pct` (default 0.5% of
+   *current* cash, checked every tick — not `monthly_target_pct`, which
+   is informational only, logged so progress against it is visible but
+   never itself a hard stop) closing the whole position and
+   IMMEDIATELY selling a fresh CE+PE pair, independently RE-APPLYING
+   the rotation rule against today's date — a checkpoint that fires on
+   day 20 can re-enter in next month's contract even though the
+   position it just closed was this month's.
+3. **Two independent rebalancing mechanisms, generalized over 1 or 2
+   legs per side**: a continuous 50%-of-bigger-side trigger that always
+   REPLACES the cheapest leg on the decayed side in place (never grows
+   leg count), and a fixed-time (default 15:13, deliberately just
+   before NSE/BSE's 15:15 closing-auction transition) daily 80% check
+   that GROWS a side from 1→2 legs on its first breach, then REPLACES
+   the cheapest of the (at most two) extra legs on every breach after
+   that — the side's longest-held ("protected") leg is never a
+   replacement candidate for this daily check specifically, tracked via
+   an explicit open-order sequence stamp rather than list position.
+4. **Convergence** (`convergence_mode`): once repeated rolls bring both
+   strikes to the same strike, `"fixed_stop"` (default) snapshots the
+   combined premium and stops `convergence_stop_pct` (default 10%)
+   above it, never recalculated; `"trailing_stop"` recalculates that
+   stop continuously off the CURRENT combined premium, trailing down as
+   the position decays favorably; `"active_management"` hands post-
+   convergence rebalancing entirely to `intraday_dtt_adjusted`'s own
+   methods (bound onto this instance, not reimplemented — see the
+   module docstring's "ACTIVE-MANAGEMENT DELEGATION"). The daily 80%
+   check and the checkpoint check both keep running, unmodified, in
+   every mode, before AND after convergence.
+5. **Optional protective-leg hedging** (`enable_hedging`, default
+   `false` — new mechanics, never combined with the rest of this
+   strategy's logic before, so it's kept in its own clearly-separated
+   section of the code and tested in isolation first): a long leg per
+   short, sized at ~10% of the short's premium for BANKNIFTY/BANKEX or
+   a flat `hedge_flat_premium` (default ₹4) for NIFTY/SENSEX, rolling
+   in lockstep with its short to maintain a fixed POINT distance (not
+   premium). Every roll/replace executes in REVERSED order from entry's
+   own CE-then-PE ordering: close old short → close old protective →
+   open new protective → open new short, so short exposure never exists
+   without its hedge already in place.
+
+**Position sizing** follows the spec's own worked example exactly:
+`(capital × strike_selection_capital_pct) / lot_size / 2` — for
+NIFTY (lot_size 50) at ₹1,20,000 capital that's exactly **36**; for
+BANKNIFTY (lot_size 25), **72**. "Capital" here is
+`runner.initial_capital` (a new fixed-for-the-deployment's-lifetime
+accessor added to `DeploymentRunner` alongside the existing
+compounding `runner.cash`, specifically so a strategy can size a single
+unit against a stable reference instead of an ever-moving one) — as
+`runner.cash` compounds from favorable checkpoints, this strategy scales
+QUANTITY (`qty_multiplier = round(runner.cash / runner.initial_capital)`,
+whole additional lots), never the per-pair premium target itself, per
+the spec's own explicit anti-pattern warning against inflating a single
+pair's premium target as capital grows.
+
+**Trade-reason logging** extends the same one-fill-per-action pattern
+already established for `intraday_dtt_adjusted`/`intraday_dtt_advanced`
+(`runner.sell()`/`buy()`'s own `metadata` parameter) with a richer,
+consistently-shaped payload on every single fill: `trigger` (which of
+the five priority-ordered paths caused it), `action`, `leg`, `strike`,
+`trigger_values` (the actual numbers that made the condition true —
+enough to independently re-verify it without cross-referencing other
+log lines), `target_basis` (target premium / selected strike / fill
+premium), and `resulting_state` (both sides' leg counts/strikes/roles
+immediately after that fill). One flagged, documented exception: fills
+placed by the `active_management` delegation path carry
+`intraday_dtt_adjusted`'s own (simpler) metadata shape instead, since
+those `runner.sell()` calls are reused completely unmodified — see the
+module docstring's own "KNOWN LIMITATION" note.
+
+**Deploy example:**
+
+```bash
+curl -X POST localhost:8000/deployments \
+  -H 'Content-Type: application/json' -H "X-API-Key: $APP_AUTH_SECRET" -d '{
+  "deployment_name": "strangle_monthly_v2_live_1",
+  "strategy_name": "strangle_monthly_v2",
+  "mode": "positional",
+  "initial_capital": 120000,
+  "config": {
+    "instrument_tokens": [256265],
+    "symbol": "NIFTY 50",
+    "instrument": "NIFTY",
+    "strike_selection_capital_pct": 0.03,
+    "monthly_target_pct": 0.02,
+    "checkpoint_pct": 0.005,
+    "entry_time": "10:00",
+    "enter_immediately_on_deploy": false,
+    "enable_hedging": false,
+    "adjustment_trigger_ratio": 0.5,
+    "adjustment_band_min": 0.80,
+    "adjustment_band_max": 0.95,
+    "eod_check_time": "15:13",
+    "eod_gap_floor": 0.80,
+    "convergence_mode": "fixed_stop",
+    "convergence_stop_pct": 0.10,
+    "max_adjustments": 2,
+    "force_close_at_contract_expiry": true
+  }
+}'
+```
+
+For SENSEX/BANKEX, set `"instrument"` accordingly and
+`"instrument_tokens"`/`"symbol"` to the SENSEX spot token added to
+`tokens.json` (see Setup, below) — the resolver is then constructed
+with `exchange="BFO"` automatically; no other config changes needed.
+
+**What this session flagged rather than silently assumed** (see the
+module docstring's own Section 9 and the "Verified" section below for
+the full detail): whether `kite.instruments("BFO")` really returns
+SENSEX/BANKEX rows with the expected shape, and whether the underlying
+Kite Connect account actually has BSE F&O market data permissions, are
+both **external facts this sandboxed environment cannot check** —
+confirm both independently before relying on SENSEX/BANKEX in
+production. Everything else about BFO support (spot routing, dynamic
+lot-size/strike-step derivation, the resolver's `exchange` plumbing)
+was verified by reading the actual resolver code, not assumed.
+
 ## Setup
 
 ```bash
@@ -855,12 +995,20 @@ tokens the dispatcher subscribes to on Kite's behalf:
 
 ```json
 [
-  {"symbol": "NIFTY 50", "instrument_token": 256265}
+  {"symbol": "NIFTY 50", "instrument_token": 256265},
+  {"symbol": "SENSEX", "instrument_token": 265}
 ]
 ```
 
 Add more entries here as needed — every token in this file gets
-subscribed with the same `tick_mode` when the dispatcher connects.
+subscribed with the same `tick_mode` when the dispatcher connects. The
+`SENSEX` entry (step 12, `strangle_monthly_v2`) is needed so
+`get_spot_price("SENSEX")` can hit the dispatcher's live tick cache
+instead of falling back to a REST call every time — the `265` token
+value is from general knowledge of Zerodha's published instrument list,
+**not independently re-verified against a live dump in this
+environment**; confirm it before relying on the cache path in
+production (the REST fallback works either way if it's ever wrong).
 
 ## Usage
 
@@ -1674,6 +1822,124 @@ itself:
 Not yet run against a real Kite tick stream or real option premiums —
 same caveat as every other strategy in this README.
 
+**`strangle_monthly_v2`** — a synthetic NFO chain spanning TWO monthly
+expiries (so the day-15/16 rotation rule has something real to switch
+between) plus a small synthetic BFO chain, driven through the real API/
+runner/resolver/Postgres pipeline exactly like every other strategy
+above:
+
+- **Entry sizing matches the spec's own worked example exactly**:
+  capital=120000, NIFTY lot_size=50 → resolved target premium 36.0,
+  confirmed against the actual filled price, not just the formula in
+  isolation.
+- **Every fill's full Section-12 metadata schema**, spot-checked
+  directly against `position_lots` (the read API deliberately doesn't
+  expose `metadata`, so this was queried straight from Postgres): both
+  entry fills carry `trigger`, `action`, `leg`, `strike`, `cycle_id`,
+  `contract_expiry`, `seq`, `trigger_values` (target premium, qty
+  multiplier, capital reference, day-of-month, rotation selector — all
+  checked against hand-computed expected values) and `target_basis`;
+  `resulting_state` confirmed to reflect the snapshot AT THE MOMENT of
+  each specific fill (the CE fill's own snapshot correctly shows PE not
+  yet open, since CE is sold first).
+- **Rotation, both sides of day 15/16, and the contract LOCK**: a fresh
+  deploy on day 16 resolves NEXT_MONTH directly; a day-10 entry (THIS_MONTH)
+  held open THROUGH day 20 stayed in its original contract — crossing
+  day 16 while a position is open does not switch it; a checkpoint
+  firing on day 20 then flattened and re-entered SAME TICK, independently
+  re-applying rotation against day 20 → landed in NEXT_MONTH even though
+  the position it just closed was THIS_MONTH's contract, with `cycle_id`
+  incremented.
+- **Section 5 (continuous 50%), both the 1-leg and 2-leg sum cases,
+  pre-convergence**: a 1-leg trigger REPLACED the single leg in place
+  (net count unchanged); after a genuine Section-6 accumulation grew
+  that side to 2 legs, a further Section-5 trigger correctly summed
+  both legs, replaced only the CHEAPEST of the two, and left the side
+  at 2 legs — proving the sum-based generalization, not just "works for
+  1 leg, assumed to work for 2."
+- **Section 6 (daily 80% check, 15:13)**: a first breach GREW the side
+  1→2 with the original/protected leg left untouched; a second breach
+  REPLACED the (only) extra rather than growing to 3; and a dedicated
+  check confirmed the PROTECTED-LEG guarantee directly — even when the
+  side's longest-held leg was made deliberately the CHEAPEST leg on
+  that side (which would make it the obvious pick under a naive
+  "replace the cheapest" rule), Section 6 never selected it, only ever
+  replacing among the extras, via the explicit `seq` stamp rather than
+  list position.
+- **All three `convergence_mode` values**, each built off a genuine
+  Section-5 roll landing one side's leg on the OTHER side's own strike
+  (not an artificial same-strike entry, since this strategy's entry
+  itself never converges by construction): `fixed_stop` confirmed to
+  hold its stop level fixed at the exact snapshot moment (a combined
+  premium just below the stop left the position open, one just above
+  it flattened); `trailing_stop` confirmed to trail the stop DOWN as
+  premium decayed favorably and then correctly fire against the
+  TRAILED level on a later rise that stayed well under the ORIGINAL
+  snapshot-based stop; `active_management` confirmed to genuinely call
+  `IntradayDTTAdjustedStrategy`'s own methods — the resulting leg's
+  entry price matched THAT strategy's own 25%-of-bigger sizing formula
+  exactly (50.0), not this strategy's 80-95% band (which would have
+  produced 175) — and Section 6 (EOD) was confirmed to keep running,
+  UNCHANGED, post-convergence even in this mode, correctly REPLACING
+  (not growing) the delegated leg using this strategy's own band/
+  protected-leg rule. A real bug was caught and fixed here during
+  testing: `IntradayDTTAdjustedStrategy._handle_adjustment_trigger`'s
+  own body calls `self._adjust(...)` internally, which only resolves
+  correctly if `_adjust` is bound onto this instance too (not just the
+  outermost call) — fixed by binding all three borrowed methods as
+  genuine instance attributes via `.__get__(self)` in `on_start`,
+  documented in the module docstring's "ACTIVE-MANAGEMENT DELEGATION".
+- **Hedging, isolated first, then combined with a checkpoint**: entry
+  confirmed 2 shorts + 2 protective longs at the correct flat NIFTY
+  premium; a roll's full REVERSED fill sequence was verified directly
+  against the actual ordered fills (close old short → close old
+  protective → open new protective → open new short), with the new
+  hedge confirmed at the SAME 2000-point distance from the NEW short
+  strike; a checkpoint firing shortly after correctly flattened all 4
+  legs (both shorts AND both hedges) and re-entered fresh with hedging
+  still enabled.
+- **SENSEX/BFO wiring** — synthetic chain only, explicitly NOT the
+  real-Kite-BFO-data verification the spec itself asks for (impossible
+  in this sandboxed environment, flagged rather than silently assumed):
+  confirmed the resolver is constructed with `exchange="BFO"`, the spot
+  price correctly routes through `INDEX_SPOT_SYMBOL` to the SENSEX
+  token, `lot_size` is dynamically derived from the synthetic
+  instrument master (20) rather than hardcoded, and a strangle enters
+  correctly end-to-end against the synthetic BFO chain.
+- **Resume-safety mid-position**: restarted with 1 original CE + 1
+  adjustment PE leg open, after an earlier same-cycle Section-5 roll
+  that realized +300. Confirmed both legs reattach with correct
+  symbols/entry prices, and — the discriminating check — a post-restart
+  price move whose own unrealized P&L (2325) falls STRICTLY SHORT of
+  the checkpoint target (2529.5) on its own still correctly fired the
+  checkpoint, because `cycle_realized_pnl` was correctly reconstructed
+  as the carried-forward +300 (2325+300=2625 ≥ 2529.5) — a reset-to-0
+  bug would have left the position open. `cycle_id` confirmed
+  reconstructed as 1 (unchanged since no fresh entry has happened since
+  restart).
+- **Config validation** at deployment-creation time: `instrument`
+  membership, `adjustment_trigger_ratio` strictly between 0 and 1,
+  `adjustment_band_min < adjustment_band_max`, `eod_gap_floor` strictly
+  between 0 and 1, `convergence_mode` membership, and `max_adjustments
+  >= 1` all rejected with HTTP 400; the default config still deploys
+  normally.
+- Full existing regression suite (every strategy above) re-run after
+  the `DeploymentRunner.initial_capital` addition and the `tokens.json`
+  SENSEX-token addition — zero regressions.
+
+Two things flagged explicitly rather than silently assumed, per the
+spec's own anticipation of this limitation: (1) SENSEX/BANKEX support
+depends on `kite.instruments("BFO")` actually returning the expected
+row shape and the underlying Kite account holding BSE F&O market-data
+permissions — both are **external facts this sandboxed environment has
+no way to verify**, confirm independently before production use;
+(2) fills placed by the `active_management` delegation path carry
+`intraday_dtt_adjusted`'s own metadata shape rather than this
+strategy's richer Section-12 schema, and hedging has zero interaction
+with `active_management` in this version — both documented as known
+limitations in the module's own docstring rather than silently
+inconsistent.
+
 ## Folder layout
 
 ```
@@ -1717,7 +1983,8 @@ live_deploy/
     │   ├── intraday_dtt_simple.py                 # step 8 — short straddle, decay/spike/time exits
     │   ├── pivot_supertrend_options_inverse.py    # step 9 — buys on ST flip, holds N candles
     │   ├── intraday_dtt_adjusted.py               # step 10 — straddle + dynamic rebalancing
-    │   └── intraday_dtt_advanced.py               # step 11 — subclass: rolling adjustments
+    │   ├── intraday_dtt_advanced.py               # step 11 — subclass: rolling adjustments
+    │   └── strangle_monthly_v2.py                 # step 12 — monthly checkpoint-cycling strangle
     └── options/
         ├── __init__.py                          # step 5 — public exports
         ├── models.py                             # OptionLeg

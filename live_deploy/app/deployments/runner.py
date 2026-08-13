@@ -50,6 +50,12 @@ class DeploymentRunner:
 
         self.open_positions: dict[int, dict] = {}   # instrument_token -> position row (as dict)
         self.cash: float = float(deployment["current_cash"])
+        # Fixed for the deployment's lifetime (unlike `cash`, which moves
+        # with every fill) — for strategies that need a stable reference
+        # value distinct from the compounding cash balance (e.g. sizing a
+        # single unit's premium target against the ORIGINAL capital, then
+        # scaling unit COUNT rather than per-unit size as cash compounds).
+        self.initial_capital: float = float(deployment["initial_capital"])
 
         self._queue: Optional[asyncio.Queue] = None
         self._task: Optional[asyncio.Task] = None
