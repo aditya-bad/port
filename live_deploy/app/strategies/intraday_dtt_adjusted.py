@@ -318,6 +318,21 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
 
         self.decay_pct = float(cfg.get("decay_pct", 0.10))
         self.adjustment_trigger_ratio = float(cfg.get("adjustment_trigger_ratio", 0.5))
+        if not 0 < self.adjustment_trigger_ratio < 1:
+            # The adjustment trigger (smaller <= ratio * bigger) and the
+            # reversal-unwind trigger (smaller >= bigger) are only
+            # guaranteed mutually exclusive -- never both true on the
+            # same tick -- when ratio < 1.0. _maybe_manage's control flow
+            # relies on that: it returns right after handling the
+            # adjustment trigger, without falling through to also check
+            # reversal-unwind that same tick. At ratio >= 1.0 the two can
+            # overlap, silently skipping a reversal-unwind that should
+            # have fired. ratio <= 0 is separately nonsensical (never
+            # fires, or compares against a premium that can't be <= 0).
+            raise ValueError(
+                f"adjustment_trigger_ratio must be strictly between 0 and 1, "
+                f"got {self.adjustment_trigger_ratio}"
+            )
         self.adjustment_size_pct = float(cfg.get("adjustment_size_pct", 0.25))
         self.max_adjustments = int(cfg.get("max_adjustments", 2))
         if self.max_adjustments < 0:

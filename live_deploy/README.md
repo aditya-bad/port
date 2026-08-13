@@ -631,8 +631,9 @@ every tick:
    docstring). Closes everything on hit.
 4. **Adjustment trigger** — symmetric, either side can be "bigger":
    `smaller_side_total <= adjustment_trigger_ratio × bigger_side_current`
-   (default ratio 0.5). Sells one more leg of the smaller side's option
-   type at whichever strike's live premium is closest to
+   (default ratio 0.5, validated strictly between 0 and 1 at deployment
+   creation — see below). Sells one more leg of the smaller side's
+   option type at whichever strike's live premium is closest to
    `adjustment_size_pct × bigger_side_current` (default 25%) — via a
    new `OptionsResolver.get_leg_by_premium(..., exclude_strikes=...)`
    parameter (see Step 5) that keeps it off any strike already held on
@@ -645,6 +646,17 @@ every tick:
    single CHEAPEST leg on that side (original leg included, competing
    on equal footing), re-evaluated fresh each time — ties break toward
    the EARLIEST-OPENED leg.
+
+`adjustment_trigger_ratio` is rejected at deployment creation (HTTP 400)
+unless it's strictly between 0 and 1. The adjustment trigger (step 4,
+`<= ratio`) and the reversal trigger (step 5, `>=`) are only guaranteed
+mutually exclusive — never both true on the same tick — when
+`ratio < 1.0`; the tick-handling code relies on that guarantee to return
+immediately after acting on the adjustment trigger, without also
+checking reversal-unwind that same tick. A ratio `>= 1.0` would let the
+two overlap and silently skip a reversal-unwind that should have fired.
+`ratio <= 0` is separately nonsensical (never fires, or compares against
+a premium that can't be zero or negative).
 
 **Deploy example:**
 
@@ -1595,10 +1607,20 @@ premium deterministically, not approximated):
   strike, matching the tiebreak now spelled out in that method's own
   docstring (previously true but undocumented — "whatever the sort
   happened to produce").
+- **`adjustment_trigger_ratio` validated strictly between 0 and 1**:
+  the adjustment and reversal-unwind triggers are only guaranteed
+  mutually exclusive on the same tick when the ratio is under 1.0 — the
+  tick-handling code relies on that to skip re-checking reversal-unwind
+  right after acting on an adjustment trigger. Confirmed 1.0, 1.5, 0.0,
+  and -0.5 are all rejected with HTTP 400 at deployment creation (not
+  discovered later as a silently-broken assumption), and that a valid
+  interior ratio (0.75) still deploys normally — inherited by
+  `intraday_dtt_advanced` with no separate validation needed there.
 - Full existing regression suite (every strategy above, plus
   `intraday_dtt_simple` re-run after its own refactor to share
-  `resolve_atm_straddle_legs()` with this strategy) re-run — zero
-  regressions.
+  `resolve_atm_straddle_legs()` with this strategy, and
+  `intraday_dtt_advanced` re-run after this validation was added to the
+  base class) re-run — zero regressions.
 
 Not yet run against a real Kite tick stream or real option premiums —
 same caveat as every other strategy in this README.
