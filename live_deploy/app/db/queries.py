@@ -110,6 +110,86 @@ async def list_open_positions(pool: asyncpg.Pool, deployment_id: UUID) -> list[a
 
 
 # ═════════════════════════════════════════════════════════════════════
+# CROSS-DEPLOYMENT AGGREGATES — the Dashboard's consolidated views.
+# Every query above this point is scoped to one deployment_id; these
+# two deliberately are NOT, so the frontend doesn't have to do N+1
+# client-side fetching across every deployment to build a combined
+# table. Both join back to `deployments` for deployment_name/
+# strategy_name, since a bare position/lot row doesn't carry either.
+# ═════════════════════════════════════════════════════════════════════
+
+async def list_all_positions(
+    pool: asyncpg.Pool, status: Optional[str] = "open",
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        if status:
+            return await conn.fetch(
+                """
+                SELECT p.*, d.deployment_name, d.strategy_name
+                FROM positions p
+                JOIN deployments d ON d.id = p.deployment_id
+                WHERE p.status = $1
+                ORDER BY p.opened_at DESC
+                """,
+                status,
+            )
+        return await conn.fetch(
+            """
+            SELECT p.*, d.deployment_name, d.strategy_name
+            FROM positions p
+            JOIN deployments d ON d.id = p.deployment_id
+            ORDER BY p.opened_at DESC
+            """
+        )
+
+
+async def list_recent_trades(pool: asyncpg.Pool, limit: int = 20) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT pl.*, p.symbol, d.deployment_name, d.strategy_name
+            FROM position_lots pl
+            JOIN positions p ON p.id = pl.position_id
+            JOIN deployments d ON d.id = pl.deployment_id
+            ORDER BY pl.executed_at DESC
+            LIMIT $1
+            """,
+            limit,
+        )
+
+
+async def realized_pnl_by_deployment(pool: asyncpg.Pool) -> dict[str, float]:
+    """{deployment_id (str) -> cumulative realized P&L}, every deployment
+    that has at least one closed position — used to enrich the
+    deployment LIST endpoint in one query instead of one-per-row."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT deployment_id, COALESCE(SUM(realized_pnl), 0) AS total
+            FROM positions
+            WHERE status = 'closed'
+            GROUP BY deployment_id
+            """
+        )
+        return {str(r["deployment_id"]): float(r["total"]) for r in rows}
+
+
+async def realized_pnl_total(pool: asyncpg.Pool, deployment_id: UUID) -> float:
+    """Single-deployment version of realized_pnl_by_deployment, for
+    endpoints already scoped to one deployment_id (cheaper than fetching
+    every deployment's total just to look up one)."""
+    async with pool.acquire() as conn:
+        val = await conn.fetchval(
+            """
+            SELECT COALESCE(SUM(realized_pnl), 0) FROM positions
+            WHERE deployment_id = $1 AND status = 'closed'
+            """,
+            deployment_id,
+        )
+        return float(val)
+
+
+# ═════════════════════════════════════════════════════════════════════
 # FILLS — the one place position/cash/lot state changes
 # ═════════════════════════════════════════════════════════════════════
 
@@ -285,11 +365,24 @@ async def list_lots(
         total = await conn.fetchval(
             "SELECT count(*) FROM position_lots WHERE deployment_id = $1", deployment_id
         )
+        # `symbol` via a correlated SUBQUERY, not a JOIN -- a lot row
+        # itself doesn't carry it (only its position does), and the
+        # Trades tab needs it as a visible column (see LotOut). A JOIN
+        # here would still be logically correct, but changes the query
+        # plan enough to perturb Postgres's (never actually guaranteed,
+        # but previously stable in practice) row order for two fills
+        # sharing the exact same `executed_at` -- e.g. a roll's
+        # close-then-open pair, timestamped identically by the strategy
+        # that placed them. The subquery form leaves the PRIMARY scan
+        # (position_lots alone, filtered + ordered) structurally
+        # unchanged from before this column was added, keeping that
+        # ordering exactly as stable as it already was.
         rows = await conn.fetch(
             """
-            SELECT * FROM position_lots
-            WHERE deployment_id = $1
-            ORDER BY executed_at DESC
+            SELECT pl.*, (SELECT symbol FROM positions WHERE id = pl.position_id) AS symbol
+            FROM position_lots pl
+            WHERE pl.deployment_id = $1
+            ORDER BY pl.executed_at DESC
             OFFSET $2 LIMIT $3
             """,
             deployment_id, offset, limit,

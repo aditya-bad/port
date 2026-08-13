@@ -17,17 +17,33 @@
 body { font-family: var(--font); background: var(--bg); color: var(--fg); line-height: 1.5; }
 a { color: var(--accent); }
 
-.wrap { max-width: 1200px; margin: 0 auto; padding: 20px 24px 60px; }
-
-header {
-  display: flex; justify-content: space-between; align-items: center;
-  padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--border);
-  flex-wrap: wrap; gap: 12px;
+/* ── App shell: persistent sidebar + scrolling main content ────────── */
+.app-shell { display: flex; min-height: 100vh; }
+.sidebar {
+  width: 220px; flex-shrink: 0; background: var(--bg2); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; padding: 18px 0; position: sticky; top: 0; height: 100vh;
 }
-header h1 { font-size: 18px; color: var(--accent); }
-header .subtitle { font-size: 12px; color: var(--fg2); margin-top: 2px; }
+.sidebar-brand { font-size: 16px; font-weight: 700; color: var(--accent); padding: 0 20px 18px; }
+.sidebar-brand .subtitle { font-size: 11px; color: var(--fg2); font-weight: 400; margin-top: 2px; }
+.nav-item {
+  display: block; padding: 10px 20px; color: var(--fg2); text-decoration: none;
+  font-size: 13px; font-weight: 500; border-left: 3px solid transparent; cursor: pointer;
+}
+.nav-item:hover { color: var(--fg); background: var(--bg3); }
+.nav-item.active { color: var(--fg); background: var(--bg3); border-left-color: var(--accent); }
+.sidebar-footer {
+  margin-top: auto; padding: 16px 20px 0; border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 10px;
+}
 
-.status-bar { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.main { flex: 1; min-width: 0; padding: 24px 28px 60px; max-width: 1300px; }
+.view { display: none; }
+.view.active { display: block; }
+.view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
+.view-header h1 { font-size: 19px; }
+.view-header .view-sub { font-size: 12px; color: var(--fg2); margin-top: 2px; }
+
+.status-bar { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-size: 12px; }
 .badge {
   display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
   border-radius: 20px; font-size: 12px; font-weight: 500;
@@ -49,9 +65,9 @@ header .subtitle { font-size: 12px; color: var(--fg2); margin-top: 2px; }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-section { margin-bottom: 28px; }
+section { margin-bottom: 26px; }
 section h2 {
-  font-size: 14px; text-transform: uppercase; letter-spacing: 0.5px;
+  font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;
   color: var(--fg2); margin-bottom: 12px; display: flex; align-items: center;
   justify-content: space-between;
 }
@@ -79,19 +95,73 @@ section h2 {
 .empty { color: var(--fg2); font-size: 13px; padding: 20px; text-align: center;
   border: 1px dashed var(--border); border-radius: 8px; }
 
-.detail-panel { margin-top: 10px; padding: 14px; background: var(--bg3); border-radius: 6px; font-size: 13px; }
-.detail-tabs { display: flex; gap: 4px; margin-bottom: 10px; }
-.detail-tabs button {
-  padding: 4px 10px; font-size: 12px; background: none; border: 1px solid var(--border);
-  color: var(--fg2); border-radius: 4px; cursor: pointer;
-}
-.detail-tabs button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
-
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { text-align: left; padding: 6px 8px; color: var(--fg2); font-weight: 500;
   border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; }
-td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
+td { padding: 6px 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
 .pos { color: var(--green); } .neg { color: var(--red); }
+.table-wrap { overflow-x: auto; }
+.table-note { color: var(--fg2); font-size: 11px; margin-top: 6px; }
+
+/* ── Stat cards (Dashboard) ──────────────────────────────────────── */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 24px; }
+.stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.stat-card .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--fg2); margin-bottom: 8px; }
+.stat-card .stat-value { font-size: 22px; font-weight: 700; font-family: var(--mono); }
+.stat-card .stat-sub { font-size: 11px; color: var(--fg2); margin-top: 8px; line-height: 1.6; }
+.stat-card .stat-sub .row { display: flex; justify-content: space-between; gap: 10px; }
+
+/* ── Filters (Deployed Strategies) ───────────────────────────────── */
+.filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+.filters select {
+  background: var(--bg2); border: 1px solid var(--border); color: var(--fg);
+  padding: 6px 10px; border-radius: 6px; font-size: 12px; font-family: inherit;
+}
+.clickable-row { cursor: pointer; }
+.clickable-row:hover { background: var(--bg3); }
+
+/* ── Strategy Detail ──────────────────────────────────────────────── */
+.detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
+.detail-header h1 { font-size: 20px; }
+.back-link { display: inline-block; font-size: 12px; color: var(--fg2); text-decoration: none; margin-bottom: 12px; cursor: pointer; }
+.back-link:hover { color: var(--fg); }
+
+.tabs { display: flex; gap: 4px; margin: 18px 0 14px; border-bottom: 1px solid var(--border); }
+.tabs button {
+  padding: 8px 14px; font-size: 13px; background: none; border: none;
+  color: var(--fg2); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
+.tabs button:hover { color: var(--fg); }
+
+.kv-table td:first-child { color: var(--fg2); width: 240px; }
+
+/* ── Trigger badges ───────────────────────────────────────────────── */
+.trigger-badge {
+  display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.3px; margin-left: 6px; white-space: nowrap;
+}
+.trig-stop { background: rgba(239,68,68,0.15); color: var(--red); }
+.trig-profit { background: rgba(34,197,94,0.15); color: var(--green); }
+.trig-adjust { background: rgba(245,158,11,0.15); color: var(--yellow); }
+.trig-entry { background: rgba(79,140,255,0.15); color: var(--accent); }
+.trig-other { background: rgba(139,144,160,0.18); color: var(--fg2); }
+
+/* ── Expandable trade rows ───────────────────────────────────────── */
+tr.trade-row { cursor: pointer; }
+tr.trade-row:hover { background: var(--bg3); }
+tr.trade-row td:first-child::before { content: '▸ '; color: var(--fg2); font-family: var(--font); }
+tr.trade-row.open td:first-child::before { content: '▾ '; }
+tr.trade-detail-row td { background: var(--bg3); padding: 12px 14px; font-family: var(--font); }
+.trade-json { font-family: var(--mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--fg2); }
+.trade-json .k { color: var(--accent); }
+.trade-json-block { margin-bottom: 10px; }
+.trade-json-block:last-child { margin-bottom: 0; }
+.trade-json-block .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--fg2); margin-bottom: 4px; }
+
+/* ── Equity curve ─────────────────────────────────────────────────── */
+.equity-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.equity-chart { width: 100%; height: 160px; display: block; }
 
 .modal-overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none;
@@ -124,41 +194,98 @@ td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-family: var(
 </head>
 <body>
 
-<div class="wrap">
-  <header>
-    <div>
-      <h1>⚡ live_deploy</h1>
-      <div class="subtitle">Data dispatcher · paper-trading deployments</div>
+<div class="app-shell">
+  <nav class="sidebar">
+    <div class="sidebar-brand">⚡ live_deploy
+      <div class="subtitle">Data dispatcher · paper trading</div>
     </div>
-    <div class="status-bar" id="statusBar">
-      <span class="badge bad"><span class="dot"></span> checking…</span>
+    <a class="nav-item" data-nav="dashboard" href="#/dashboard">Dashboard</a>
+    <a class="nav-item" data-nav="catalog" href="#/catalog">Strategy Catalog</a>
+    <a class="nav-item" data-nav="deployments" href="#/deployments">Deployed Strategies</a>
+    <div class="sidebar-footer">
+      <div class="status-bar" id="statusBar">
+        <span class="badge bad"><span class="dot"></span> checking…</span>
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="logout()">Logout</button>
     </div>
-    <button class="btn btn-secondary btn-sm" onclick="logout()">Logout</button>
-  </header>
+  </nav>
 
-  <section>
-    <h2>
-      Strategies
-      <button class="btn btn-secondary btn-sm" onclick="loadStrategies()">↻ Refresh</button>
-    </h2>
-    <div id="strategiesList"><div class="empty">Loading…</div></div>
-  </section>
+  <main class="main">
 
-  <section>
-    <h2>
-      Deployments
-      <button class="btn btn-secondary btn-sm" onclick="loadDeployments()">↻ Refresh</button>
-    </h2>
-    <div id="deploymentsList"><div class="empty">Loading…</div></div>
-  </section>
+    <!-- ═══ Dashboard ═══ -->
+    <div id="view-dashboard" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Dashboard</h1>
+          <div class="view-sub">Cross-strategy overview — everything combined</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="Dashboard.load()">↻ Refresh</button>
+      </div>
+      <div id="dashStats" class="stat-grid"><div class="empty"><span class="spinner"></span> Loading…</div></div>
 
-  <section>
-    <h2>
-      Subscribed Instruments
-      <button class="btn btn-secondary btn-sm" onclick="openInstrumentModal()">+ Subscribe</button>
-    </h2>
-    <div id="instrumentsList"><div class="empty">Loading…</div></div>
-  </section>
+      <section>
+        <h2>Open Positions (all deployments)</h2>
+        <div id="dashPositions"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      </section>
+
+      <section>
+        <h2>Recent Activity</h2>
+        <div id="dashActivity"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      </section>
+
+      <section>
+        <h2>
+          Subscribed Instruments
+          <button class="btn btn-secondary btn-sm" onclick="openInstrumentModal()">+ Subscribe</button>
+        </h2>
+        <div id="dashInstruments"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      </section>
+    </div>
+
+    <!-- ═══ Strategy Catalog ═══ -->
+    <div id="view-catalog" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Strategy Catalog</h1>
+          <div class="view-sub">Every strategy registered in app/strategies/</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="Catalog.load()">↻ Refresh</button>
+      </div>
+      <div id="catalogList"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+    </div>
+
+    <!-- ═══ Deployed Strategies ═══ -->
+    <div id="view-deployments" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Deployed Strategies</h1>
+          <div class="view-sub">Every deployment, filterable by status and strategy</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="Deployments.load()">↻ Refresh</button>
+      </div>
+      <div class="filters">
+        <select id="filterStatus" onchange="Deployments.render()">
+          <option value="">All statuses</option>
+          <option value="active">Active</option>
+          <option value="paused">Paused</option>
+          <option value="stopped">Stopped</option>
+        </select>
+        <select id="filterStrategy" onchange="Deployments.render()">
+          <option value="">All strategies</option>
+        </select>
+      </div>
+      <div id="deploymentsTable"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+    </div>
+
+    <!-- ═══ Strategy Detail ═══ -->
+    <div id="view-detail" class="view">
+      <a class="back-link" href="#/deployments">← Back to Deployed Strategies</a>
+      <div id="detailHeader"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      <div class="tabs" id="detailTabs"></div>
+      <div id="detailBody"><span class="spinner"></span></div>
+    </div>
+
+  </main>
 </div>
 
 <!-- Deploy modal -->
@@ -212,10 +339,17 @@ td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-family: var(
   </div>
 </div>
 
+<script src="/js/api.js"></script>
+<script src="/js/dashboard.js"></script>
+<script src="/js/catalog.js"></script>
+<script src="/js/deployments.js"></script>
+<script src="/js/detail.js"></script>
 <script>
-let currentStrategyDefault = {};
+// ── App shell: auth status polling + hash-based view routing ─────────
+// Deliberately no frontend framework — same vanilla-JS style as the
+// rest of this UI, just split across static/js/*.js instead of one
+// ever-growing inline <script> (see README's Step 13).
 
-// ── Status polling ───────────────────────────────────────────────────
 async function pollHealth() {
   try {
     const r = await fetch('/health');
@@ -249,250 +383,46 @@ async function loginWithKite() {
   const r = await fetch('/kite/login-url');
   const { login_url } = await r.json();
   const popup = window.open(login_url, 'kite_login', 'width=520,height=720');
-  // Poll /health more aggressively while the popup is open so the
-  // status bar updates the moment /kite/callback finishes.
   const interval = setInterval(async () => {
     if (popup.closed) { clearInterval(interval); pollHealth(); return; }
     await pollHealth();
   }, 1500);
 }
 
-// ── Strategies ───────────────────────────────────────────────────────
-async function loadStrategies() {
-  const el = document.getElementById('strategiesList');
-  el.innerHTML = '<div class="empty"><span class="spinner"></span> Loading…</div>';
-  const r = await fetch('/strategies');
-  const strategies = await r.json();
-  if (!strategies.length) {
-    el.innerHTML = '<div class="empty">No strategies registered yet — nothing to deploy until one is added to app/strategies/.</div>';
-    return;
-  }
-  el.innerHTML = strategies.map(s => `
-    <div class="card">
-      <div class="card-row">
-        <div>
-          <div class="card-title">${s.name}</div>
-          <div class="card-sub">${s.description || 'no description'}</div>
-        </div>
-        <div class="card-actions">
-          <button class="btn btn-primary btn-sm" onclick='openDeployModal(${JSON.stringify(s.name)}, ${JSON.stringify(s.default_config)})'>Deploy</button>
-        </div>
-      </div>
-    </div>
-  `).join('');
-}
+// ── Router ────────────────────────────────────────────────────────────
+// Four real views + one drill-down (detail, reached only by navigating
+// to #/deployments/{id}, never a sidebar destination of its own).
+const VIEWS = ['dashboard', 'catalog', 'deployments', 'detail'];
 
-function openDeployModal(strategyName, defaultConfig) {
-  currentStrategyDefault = { strategyName, defaultConfig };
-  document.getElementById('deployModalTitle').textContent = `Deploy: ${strategyName}`;
-  document.getElementById('deployName').value = '';
-  document.getElementById('deployCapital').value = '100000';
-  document.getElementById('deployConfig').value = JSON.stringify(defaultConfig || {}, null, 2);
-  document.getElementById('deployMsg').textContent = '';
-  document.getElementById('deployModal').classList.add('open');
-}
-function closeDeployModal() {
-  document.getElementById('deployModal').classList.remove('open');
-}
+function router() {
+  const hash = (window.location.hash || '#/dashboard').replace(/^#\/?/, '');
+  const [route, param] = hash.split('/');
+  // "deployments" is ALSO a valid bare view name (the list), so a plain
+  // VIEWS.includes(route) check alone can never distinguish
+  // #/deployments (list) from #/deployments/{id} (drill-down) — the
+  // param's presence is what decides between them.
+  const view = (route === 'deployments' && param) ? 'detail'
+    : (VIEWS.includes(route) ? route : 'dashboard');
 
-async function submitDeploy() {
-  const msg = document.getElementById('deployMsg');
-  let config;
-  try {
-    config = JSON.parse(document.getElementById('deployConfig').value || '{}');
-  } catch (e) {
-    msg.innerHTML = `<span style="color:var(--red)">Invalid config JSON: ${e.message}</span>`;
-    return;
-  }
-  const body = {
-    deployment_name: document.getElementById('deployName').value.trim(),
-    strategy_name: currentStrategyDefault.strategyName,
-    mode: document.getElementById('deployMode').value,
-    initial_capital: Number(document.getElementById('deployCapital').value),
-    config,
-  };
-  if (!body.deployment_name) {
-    msg.innerHTML = '<span style="color:var(--red)">Deployment name is required</span>';
-    return;
-  }
-  msg.innerHTML = '<span class="spinner"></span> Deploying…';
-  const r = await fetch('/deployments', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
+  document.getElementById(`view-${view}`).classList.add('active');
+
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.classList.toggle('active', el.dataset.nav === (view === 'detail' ? 'deployments' : view));
   });
-  const data = await r.json();
-  if (!r.ok) {
-    msg.innerHTML = `<span style="color:var(--red)">${data.detail || 'Failed'}</span>`;
-    return;
-  }
-  msg.innerHTML = `<span style="color:var(--green)">✓ Deployed "${data.deployment_name}"</span>`;
-  setTimeout(() => { closeDeployModal(); loadDeployments(); }, 800);
+
+  if (view === 'dashboard') Dashboard.load();
+  else if (view === 'catalog') Catalog.load();
+  else if (view === 'deployments') Deployments.load();
+  else if (view === 'detail') Detail.load(param);
 }
 
-// ── Deployments ──────────────────────────────────────────────────────
-function fmtMoney(n) { return '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
-
-async function loadDeployments() {
-  const el = document.getElementById('deploymentsList');
-  el.innerHTML = '<div class="empty"><span class="spinner"></span> Loading…</div>';
-  const r = await fetch('/deployments');
-  const deployments = await r.json();
-  if (!deployments.length) {
-    el.innerHTML = '<div class="empty">No deployments yet. Deploy a strategy above to create one.</div>';
-    return;
-  }
-  el.innerHTML = deployments.map(d => `
-    <div class="card" id="dep-${d.id}">
-      <div class="card-row">
-        <div>
-          <div class="card-title">
-            ${d.deployment_name}
-            <span class="tag tag-${d.status}">${d.status}</span>
-            ${!d.strategy_registered ? '<span class="tag tag-warn">strategy not registered</span>' : ''}
-          </div>
-          <div class="card-sub">${d.strategy_name} · ${d.mode}</div>
-          <div class="card-meta">
-            <span>Capital: <b>${fmtMoney(d.initial_capital)}</b></span>
-            <span>Cash: <b>${fmtMoney(d.current_cash)}</b></span>
-          </div>
-        </div>
-        <div class="card-actions">
-          ${d.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="pauseDep('${d.id}')">Pause</button>` : ''}
-          ${d.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="resumeDep('${d.id}')">Resume</button>` : ''}
-          ${d.status !== 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="stopDep('${d.id}')">Stop</button>` : ''}
-          <button class="btn btn-secondary btn-sm" onclick="toggleDetail('${d.id}')">Details</button>
-        </div>
-      </div>
-      <div id="detail-${d.id}" style="display:none;"></div>
-    </div>
-  `).join('');
-}
-
-async function pauseDep(id) {
-  await fetch(`/deployments/${id}/pause`, { method: 'POST' });
-  loadDeployments();
-}
-async function resumeDep(id) {
-  await fetch(`/deployments/${id}/resume`, { method: 'POST' });
-  loadDeployments();
-}
-async function stopDep(id) {
-  const forceClose = confirm(
-    'Stop this deployment.\n\nOK = force-close any open position at the last known price.\nCancel = only stop if already flat.'
-  );
-  const r = await fetch(`/deployments/${id}/stop?force_close=${forceClose}`, { method: 'POST' });
-  if (!r.ok) {
-    const data = await r.json();
-    alert(data.detail || 'Could not stop — it may have open positions. Try again and confirm force-close.');
-  }
-  loadDeployments();
-}
-
-async function toggleDetail(id) {
-  const panel = document.getElementById(`detail-${id}`);
-  if (panel.style.display === 'block') { panel.style.display = 'none'; return; }
-  panel.style.display = 'block';
-  await showDetailTab(id, 'positions');
-}
-
-async function showDetailTab(id, tab) {
-  const panel = document.getElementById(`detail-${id}`);
-  panel.innerHTML = `
-    <div class="detail-panel">
-      <div class="detail-tabs">
-        <button class="${tab==='positions'?'active':''}" onclick="showDetailTab('${id}','positions')">Positions</button>
-        <button class="${tab==='trades'?'active':''}" onclick="showDetailTab('${id}','trades')">Trades</button>
-        <button class="${tab==='report'?'active':''}" onclick="showDetailTab('${id}','report')">Report</button>
-      </div>
-      <div id="detail-body-${id}"><span class="spinner"></span></div>
-    </div>
-  `;
-  const body = document.getElementById(`detail-body-${id}`);
-
-  if (tab === 'positions') {
-    const r = await fetch(`/deployments/${id}/positions?status=open`);
-    const rows = await r.json();
-    body.innerHTML = rows.length ? `
-      <table><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Avg</th><th>Price</th><th>Unrealized</th></tr></thead>
-      <tbody>${rows.map(p => `<tr>
-        <td>${p.symbol}</td><td>${p.side}</td><td>${p.qty}</td>
-        <td>${p.avg_entry_price}</td><td>${p.current_price ?? '—'}</td>
-        <td class="${(p.unrealized_pnl||0)>=0?'pos':'neg'}">${p.unrealized_pnl != null ? p.unrealized_pnl.toFixed(2) : '—'}</td>
-      </tr>`).join('')}</tbody></table>
-    ` : '<div class="empty">No open positions</div>';
-  } else if (tab === 'trades') {
-    const r = await fetch(`/deployments/${id}/trades?limit=50`);
-    const data = await r.json();
-    body.innerHTML = data.lots.length ? `
-      <table><thead><tr><th>Time</th><th>Action</th><th>Qty</th><th>Price</th><th>Reason</th></tr></thead>
-      <tbody>${data.lots.map(l => `<tr>
-        <td>${l.executed_at}</td><td>${l.action}</td><td>${l.qty}</td><td>${l.price}</td><td>${l.reason||''}</td>
-      </tr>`).join('')}</tbody></table>
-      <div style="color:var(--fg2);font-size:11px;margin-top:6px;">${data.total} total</div>
-    ` : '<div class="empty">No trades yet</div>';
-  } else if (tab === 'report') {
-    const r = await fetch(`/deployments/${id}/report`);
-    const rep = await r.json();
-    body.innerHTML = `
-      <div class="card-meta" style="font-size:13px;">
-        <span>Realized P&L: <b class="${rep.total_realized_pnl>=0?'pos':'neg'}">${fmtMoney(rep.total_realized_pnl)}</b></span>
-        <span>Win rate: <b>${rep.win_rate_pct}%</b></span>
-        <span>Closed: <b>${rep.closed_positions}</b></span>
-        <span>Open: <b>${rep.open_positions}</b></span>
-        <span>Avg win: <b class="pos">${fmtMoney(rep.avg_win)}</b></span>
-        <span>Avg loss: <b class="neg">${fmtMoney(rep.avg_loss)}</b></span>
-      </div>
-    `;
-  }
-}
-
-// ── Instruments ──────────────────────────────────────────────────────
-async function loadInstruments() {
-  const el = document.getElementById('instrumentsList');
-  el.innerHTML = '<div class="empty"><span class="spinner"></span> Loading…</div>';
-  const r = await fetch('/instruments');
-  const data = await r.json();
-  if (!data.subscribed.length) {
-    el.innerHTML = '<div class="empty">Nothing subscribed</div>';
-    return;
-  }
-  el.innerHTML = `<table><thead><tr><th>Symbol</th><th>Token</th><th>Source</th></tr></thead><tbody>
-    ${data.subscribed.map(i => `<tr>
-      <td>${i.symbol}</td><td>${i.instrument_token}</td>
-      <td>${i.static ? 'tokens.json' : 'dynamic'}</td>
-    </tr>`).join('')}
-  </tbody></table>`;
-}
-
-function openInstrumentModal() {
-  document.getElementById('instToken').value = '';
-  document.getElementById('instSymbol').value = '';
-  document.getElementById('instrumentMsg').textContent = '';
-  document.getElementById('instrumentModal').classList.add('open');
-}
-function closeInstrumentModal() {
-  document.getElementById('instrumentModal').classList.remove('open');
-}
-async function submitInstrument() {
-  const msg = document.getElementById('instrumentMsg');
-  const token = Number(document.getElementById('instToken').value);
-  const symbol = document.getElementById('instSymbol').value.trim();
-  if (!token) { msg.innerHTML = '<span style="color:var(--red)">Instrument token is required</span>'; return; }
-  const r = await fetch('/instruments', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify([{ instrument_token: token, symbol: symbol || null }]),
-  });
-  const data = await r.json();
-  if (!r.ok) { msg.innerHTML = `<span style="color:var(--red)">${data.detail || 'Failed'}</span>`; return; }
-  msg.innerHTML = '<span style="color:var(--green)">✓ Subscribed</span>';
-  setTimeout(() => { closeInstrumentModal(); loadInstruments(); }, 600);
-}
-
-// ── Init ─────────────────────────────────────────────────────────────
-pollHealth();
-loadStrategies();
-loadDeployments();
-loadInstruments();
-setInterval(pollHealth, 5000);
+window.addEventListener('hashchange', router);
+window.addEventListener('DOMContentLoaded', () => {
+  pollHealth();
+  router();
+  setInterval(pollHealth, 5000);
+});
 </script>
 </body>
 </html>

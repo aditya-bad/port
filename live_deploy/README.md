@@ -983,6 +983,116 @@ fired twice, on cycles with deliberately different realized-P&L/cash
 history, confirming the logged `checkpoint_target` is identical both
 times even though `capital_now` demonstrably isn't.
 
+## What's here (Step 13: UI redesign — a real multi-view app)
+
+The original UI was one HTML file with three sections stacked on a
+single scrolling page, and deployment detail was an inline expand-in-
+place panel — fine for one strategy, doesn't scale to seven strategies
+with many deployments each and the richer trade metadata
+`strangle_monthly_v2` (and, going forward, every other strategy) writes.
+This is a genuine redesign: four real views with real navigation between
+them, not more content stacked onto the existing page.
+
+**Navigation** — a persistent left sidebar, deliberately kept to three
+items (this is a small personal tool, not enterprise software):
+**Dashboard**, **Strategy Catalog**, **Deployed Strategies**. Strategy
+Detail is reached by clicking into a deployment row, not a fourth
+sidebar destination — it's a drill-down (`#/deployments/{id}`), not a
+peer view. Routing is a small hash-based router in `index.html`'s own
+inline `<script>` (`#/dashboard`, `#/catalog`, `#/deployments`,
+`#/deployments/{id}`) — still no frontend framework, same vanilla-JS
+style as before, just enough for the browser's back/forward buttons and
+page refresh to behave like real navigation.
+
+`static/index.html`'s JS (498 lines before this step, and still growing)
+is now split into `static/js/{api,dashboard,catalog,deployments,detail}.js`
+— `api.js` owns every fetch wrapper and the formatting/badge helpers
+every other file shares (so `fmtMoney`, P&L coloring, and date formatting
+can never quietly drift between views); the other four each own exactly
+one view's rendering.
+
+1. **Dashboard** — the cross-strategy birds-eye view, nothing here is
+   per-deployment. Aggregate P&L (realized + unrealized, summed across
+   active/paused deployments, with a small per-deployment breakdown),
+   deployment status counts, a consolidated open-positions table across
+   every deployment, and a recent-activity feed (latest 20 fills across
+   everything, newest first). The positions table and activity feed are
+   backed by two new endpoints (`GET /positions`, `GET /trades/recent`
+   — see below) rather than N+1 client-side fetching across every
+   deployment. The old "Subscribed Instruments" section (no natural home
+   among the 4 real views, and not worth a 4th sidebar item for how
+   rarely it's touched) lives at the bottom of this page instead of
+   being dropped.
+2. **Strategy Catalog** — the existing card list, upgraded with a count
+   of how many currently-active deployments are running each strategy
+   (derived from the same `/deployments` list already needed elsewhere —
+   no new endpoint). Deploy modal unchanged.
+3. **Deployed Strategies** — a real filterable table now (status +
+   strategy-type filters — necessary, not polish, once there are many
+   deployments across seven strategies), with running P&L (realized AND
+   unrealized) pulled directly into each row so "is this currently
+   winning or losing" doesn't need a click-through. Pause/Resume/Stop
+   stay available right from the row; clicking the row itself (not a
+   button) navigates to Strategy Detail.
+4. **Strategy Detail** — header (name, strategy, status, action buttons)
+   + 4 tabs:
+   - **Config** — the deployment's actual running config as a readable
+     key/value table, not a raw JSON dump (nested values still shown as
+     compact JSON within their own cell).
+   - **Positions** — unchanged from before.
+   - **Trades** — the tab the trade-reason logging work was actually
+     for. The visible table stays scannable (time/action/symbol/price/
+     reason) — `trigger_values`/`target_basis`/`resulting_state` are
+     NEVER crammed into columns. Click a row to expand it and see the
+     full metadata: `trigger_values`/`target_basis`/`resulting_state`
+     get their own labeled blocks when a strategy's metadata has them
+     (`strangle_monthly_v2`'s own Section 12 schema); everything else in
+     that fill's metadata — which, today, is most strategies' entire
+     metadata, since the trade-logging retrofit for the other six is
+     separate work — renders verbatim in an "other metadata" block, so
+     nothing is ever silently dropped or renamed regardless of which
+     strategy wrote it. Each reason also gets a small colored
+     **trigger-type badge** (keyword-matched — `stop`/`force_exit`/
+     `spike`/`backstop` → red, `profit_target`/`checkpoint`/`decay` →
+     green, `roll`/`adjust`/`eod`/`gap`/`unwind`/`converg`/`flip` →
+     amber, `entry` → blue), so a long trade list can be scanned for
+     every stop-loss or every checkpoint at a glance. The vocabulary
+     genuinely differs strategy to strategy; the CATEGORY-to-color
+     mapping doesn't need to (and isn't meant to) match byte-for-byte
+     across strategies, only stay internally consistent.
+   - **Stats** — the old Report tab's content (realized P&L, win rate,
+     open/closed counts, avg win/loss) plus three genuinely new things:
+     a **trigger breakdown** (count of trades per `reason` — if a
+     strategy is expected to hit checkpoints regularly and this shows
+     zero, that's an immediate, visible signal without reading a single
+     log line), **average holding period** (from closed positions' own
+     `opened_at`/`closed_at`, no new backend needed), and an **equity
+     curve** — a single inline SVG `<polyline>` over that deployment's
+     recorded snapshots (see "Equity-curve snapshots" above), deliberately
+     not a charting library. Fewer than 2 snapshots shows an explicit
+     "not enough data yet" state, never a fabricated flat line.
+
+**Two real bugs caught and fixed during this step's own testing** (both
+found via a full headless-browser pass, not just the unit-style HTTP
+tests — see "Verified" below):
+1. The hash router's view-resolution originally couldn't distinguish
+   `#/deployments` (the list) from `#/deployments/{id}` (the drill-down)
+   — `"deployments"` matched the valid-views list either way, so
+   `Detail.load()` was silently never called for any real deployment
+   link; only navigating there DIRECTLY via JS (bypassing the router
+   entirely, exactly what the first, HTTP-only test pass had done)
+   masked it. Fixed by checking for a param specifically before falling
+   back to the bare view-name match.
+2. `list_lots`'s SQL gained a `JOIN` onto `positions` for the new
+   `symbol` column — logically correct, but it changed Postgres's query
+   plan enough to perturb row order for two fills sharing the exact same
+   `executed_at` (a roll's close-then-open pair, timestamped identically
+   by the strategy that placed them) — previously stable in practice,
+   though never actually guaranteed by the old query either. Fixed by
+   using a correlated subquery for `symbol` instead of a `JOIN`, which
+   leaves the primary scan (on `position_lots` alone, filtered +
+   ordered) structurally unchanged from before this column was added.
+
 ## Setup
 
 ```bash
@@ -1163,15 +1273,52 @@ asyncio.run(main())
 | Method & path | What it does |
 |---|---|
 | `POST /deployments` | Create + immediately start a deployment |
-| `GET /deployments?status=active` | List deployments, optionally filtered by status |
-| `GET /deployments/{id}` | Full deployment detail (config, cash, status) |
+| `GET /deployments?status=active` | List deployments, optionally filtered by status — each row now also carries `realized_pnl`/`unrealized_pnl` (Step 13; see below) |
+| `GET /deployments/{id}` | Full deployment detail (config, cash, status, `realized_pnl`/`unrealized_pnl`) |
 | `GET /deployments/{id}/positions?status=open` | Current positions, with live `current_price` + `unrealized_pnl` computed from the dispatcher's last-tick cache |
-| `GET /deployments/{id}/trades?offset=&limit=` | Paginated fill history (every lot) |
+| `GET /deployments/{id}/trades?offset=&limit=` | Paginated fill history (every lot) — each lot now also carries `symbol` and the fill's full `metadata` dict (Step 13) |
 | `GET /deployments/{id}/events?offset=&limit=` | Audit log: fills, pause/resume/stop, strategy errors |
 | `GET /deployments/{id}/report` | Aggregate stats: realized P&L, win rate, avg win/loss, open/closed counts |
+| `GET /deployments/{id}/snapshots?limit=1000` | Equity-curve points (Step 13) — see "Equity-curve snapshots" below |
 | `POST /deployments/{id}/pause` | Halt trading, keep positions as-is, stop reacting to ticks |
 | `POST /deployments/{id}/resume` | Resume a paused deployment |
 | `POST /deployments/{id}/stop?force_close=false` | Terminal. Refuses if positions are open unless `force_close=true`, which flattens every open position at the dispatcher's last known tick price first |
+
+**Cross-deployment aggregates** (Step 13) — the only two endpoints in
+this API that are NOT scoped to one `{deployment_id}`, added specifically
+so the UI's Dashboard doesn't have to fetch every deployment's own data
+and merge it client-side:
+
+| Method & path | What it does |
+|---|---|
+| `GET /positions?status=open` | Every position across every deployment, each annotated with `deployment_id`/`deployment_name`/`strategy_name` — same mark-to-market formula as the per-deployment positions endpoint, so the two can never silently disagree |
+| `GET /trades/recent?limit=20` | Latest fills across every deployment, newest first, same annotation |
+
+**`realized_pnl`/`unrealized_pnl` on deployment responses**: computed
+server-side (two bulk queries for the LIST endpoint — every deployment's
+realized total, and every open position across every deployment,
+mark-to-market summed in Python — rather than one query per deployment)
+so the Deployed Strategies list and the Dashboard can show "is this
+deployment currently winning or losing" without a click-through. A
+freshly created deployment is correctly `0.0`/`0.0` with no query at all.
+
+### Equity-curve snapshots
+
+`deployment_snapshots` existed as a table with working
+`record_snapshot()`/`list_snapshots()` query functions since Step 2, but
+nothing ever actually called `record_snapshot()` — the equity-curve stats
+tab had no data to draw from. Step 13 closes that gap:
+`DeploymentManager.snapshot_loop()` runs as a background `asyncio.Task`
+for the lifetime of the process (started in `main.py`'s `startup()`,
+cancelled cleanly in `shutdown()`), and every `snapshot_interval_seconds`
+(default 300 — a chart's granularity, not a backtest engine's; overridable
+per-`DeploymentManager` instance, mainly for tests) records one point per
+currently-**active** deployment: cash, mark-to-market unrealized P&L
+across its open positions (`open_positions_value`), `total_value = cash +
+open_positions_value`, and cumulative realized P&L. A paused/stopped
+deployment (no runner) is silently skipped, not an error; one
+deployment's snapshot failing doesn't stop the rest of that round from
+being recorded.
 
 **Create example:**
 
@@ -2013,6 +2160,80 @@ with `active_management` in this version — both documented as known
 limitations in the module's own docstring rather than silently
 inconsistent.
 
+**UI redesign (Step 13)** — the backend surface was checked BEFORE
+building UI on top of it, same discipline as everywhere else in this
+project: `record_snapshot()` really was dead code (grepped, confirmed
+zero call sites anywhere outside `queries.py` itself) before this step
+added its one caller; no aggregate cross-deployment endpoint existed
+before this step added the two the Dashboard needed. Verified end-to-end
+via the real API/DB pipeline (14 scenarios across
+`test_ui_redesign.py`):
+
+- **`realized_pnl`/`unrealized_pnl` correctness AND agreement** between
+  the two independent enrichment code paths: a deployment with BOTH a
+  closed position (realized +20000) and a live open position
+  (unrealized +10000, from a real fed tick) shows identical numbers on
+  `GET /deployments/{id}` (scoped queries) and inside the `GET
+  /deployments` list (bulk-enriched, two queries total regardless of
+  deployment count) — the two paths can never quietly drift apart.
+- **`GET /positions` aggregate**: two deployments' open positions,
+  correctly annotated with `deployment_name`/`strategy_name`, and —
+  this redesign's own explicit spot-check requirement — one
+  deployment's row in the AGGREGATE table confirmed to match that SAME
+  deployment's own `/deployments/{id}/positions` numbers EXACTLY, not
+  just approximately.
+- **`GET /trades/recent` aggregate**: fills from multiple deployments,
+  newest-first, correctly annotated.
+- **`LotOut`'s new `symbol`/`metadata` fields round-trip byte-for-byte**
+  — checked with BOTH a rich, `strangle_monthly_v2`-shaped metadata dict
+  (`trigger_values`/`target_basis`/`resulting_state` and all) and a
+  sparse, ad-hoc dict (`{"leg": "CE", "exchange": "NFO"}`, the shape
+  most strategies actually write today, pre-retrofit) — the API returns
+  the EXACT dict stored either way, nothing dropped or renamed.
+- **Equity snapshots**: `GET /deployments/{id}/snapshots` correctly
+  empty (not an error) before anything's recorded; after
+  `DeploymentManager.snapshot_all_active()` runs (the exact method the
+  periodic loop itself calls, not a separate test-only code path), one
+  real row appears — checked DIRECTLY against the `deployment_snapshots`
+  table first (cash, `open_positions_value` == mark-to-market unrealized
+  P&L, `total_value`, `realized_pnl_cumulative`, all hand-verified), then
+  confirmed the API returns that same row; a second round ADDS a point
+  rather than overwriting the first (a real curve, not one flickering
+  value); a PAUSED deployment (no runner) is silently skipped, not an
+  error.
+- **The snapshot loop is a genuine background task**: a real
+  `asyncio.Task` running throughout the app's lifespan (`app.state.
+  snapshot_task`), confirmed cancelled — not leaked — once the lifespan
+  context exits.
+- **Static file serving**: `index.html` plus all 5 new
+  `static/js/*.js` modules confirmed served with real content.
+- Full existing regression suite (every strategy above) re-run — zero
+  regressions, after fixing two real, unrelated-to-the-redesign's-own-
+  logic bugs this testing caught:
+  1. **The hash router's own view-resolution bug** — `#/deployments/
+     {id}` was silently never routing to Strategy Detail at all
+     (`"deployments"` matched the plain list view's name regardless of
+     whether an id followed it), caught only by a full headless-browser
+     pass (Chromium via Playwright) driving REAL hash navigation — an
+     earlier HTTP-only pass had called `Detail.load()` directly,
+     bypassing the router entirely, and would never have caught this.
+     Fixed by checking for the param's presence before falling back to
+     the bare view-name match.
+  2. **A real, if narrow, regression in `test_intraday_dtt_advanced_
+     live.py`**: adding a `symbol` column to `list_lots` via a SQL
+     `JOIN` changed Postgres's row order for two fills sharing the
+     exact same `executed_at` (a roll's close-then-open pair) — a
+     pre-existing fragility (row order for ties was never actually
+     guaranteed by the original query either) that this specific JOIN
+     happened to expose. Fixed by using a correlated subquery for
+     `symbol` instead, leaving the primary `position_lots` scan
+     structurally unchanged from before the column was added.
+
+Not yet tested against a real Kite tick stream, real option premiums, or
+a real browser session over an actual network (only headless Chromium
+against the local test server) — same caveat as every other piece of
+this project.
+
 ## Folder layout
 
 ```
@@ -2021,8 +2242,14 @@ live_deploy/
 ├── tokens.json                 # committed — which instruments to subscribe to
 ├── requirements.txt
 ├── static/
-│   ├── index.html                # the UI — served at "/" by the FastAPI app itself
-│   └── login.html                 # step 7 — served inline by AuthMiddleware, unauthenticated "/"
+│   ├── index.html                # the UI shell — sidebar nav, view containers, hash router (step 13)
+│   ├── login.html                 # step 7 — served inline by AuthMiddleware, unauthenticated "/"
+│   └── js/                         # step 13 — index.html's JS, split by view
+│       ├── api.js                    # every fetch wrapper + shared formatting/badge helpers
+│       ├── dashboard.js               # Dashboard view
+│       ├── catalog.js                  # Strategy Catalog view + Deploy modal
+│       ├── deployments.js               # Deployed Strategies view (filters, actions)
+│       └── detail.js                     # Strategy Detail view (Config/Positions/Trades/Stats tabs)
 └── app/
     ├── main.py                  # FastAPI app, startup/shutdown wiring, static mount, middleware order
     ├── config.py                  # config.json / tokens.json loading
@@ -2040,10 +2267,11 @@ live_deploy/
     │   ├── schemas.py                   # Pydantic request/response models
     │   ├── strategy_base.py              # interface future strategies implement
     │   ├── runner.py                      # DeploymentRunner — one per deployment
-    │   └── manager.py                      # DeploymentManager — lifecycle + registry wiring
+    │   └── manager.py                      # DeploymentManager — lifecycle + registry wiring + snapshot loop (step 13)
     ├── routers/
     │   ├── health.py
     │   ├── deployments.py
+    │   ├── aggregate.py                     # step 13 — GET /positions, GET /trades/recent (cross-deployment)
     │   ├── instruments.py                   # manual subscribe/unsubscribe control
     │   ├── kite_auth.py                      # login-url / callback / status
     │   ├── strategies.py                      # GET /strategies

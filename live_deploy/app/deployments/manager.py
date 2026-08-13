@@ -33,7 +33,9 @@ position cache) per deployment_id, so they never share state, never
 overlap.
 """
 
+import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -46,13 +48,26 @@ from .schemas import DeploymentCreate
 
 logger = logging.getLogger("live_deploy.manager")
 
+# How often to record an equity-curve point per active deployment. This
+# is for a CHART, not a backtest engine or an audit trail (every fill is
+# already durably recorded via position_lots regardless) — 5 minutes is
+# plenty of resolution for "how has this deployment's equity moved over
+# a trading day/week" without bloating deployment_snapshots on a scale
+# that buys no visible benefit. Overridable per-instance (tests pass a
+# much shorter interval rather than waiting 5 real minutes).
+DEFAULT_SNAPSHOT_INTERVAL_SECONDS = 300.0
+
 
 class DeploymentManager:
-    def __init__(self, pool: asyncpg.Pool, broadcaster, dispatcher):
+    def __init__(
+        self, pool: asyncpg.Pool, broadcaster, dispatcher,
+        snapshot_interval_seconds: float = DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
+    ):
         self.pool = pool
         self.broadcaster = broadcaster
         self.dispatcher = dispatcher
         self.runners: dict[str, DeploymentRunner] = {}   # str(deployment_id) -> runner
+        self.snapshot_interval_seconds = snapshot_interval_seconds
 
     # ── Startup / shutdown ───────────────────────────────────────────
 
@@ -135,7 +150,6 @@ class DeploymentManager:
                 f"strategy first."
             )
         if open_positions and force_close:
-            from datetime import datetime, timezone
             for pos in open_positions:
                 price = self.dispatcher.last_prices.get(int(pos["instrument_token"]))
                 if price is None:
@@ -160,6 +174,62 @@ class DeploymentManager:
             metadata={"force_close": force_close, "positions_closed": len(open_positions)},
         )
         logger.info("Stopped deployment %s (force_close=%s)", row["deployment_name"], force_close)
+
+    # ── Equity-curve snapshots (periodic, not per-tick) ─────────────────
+
+    async def snapshot_loop(self) -> None:
+        """
+        Runs for the lifetime of the process (started as a background
+        task from main.py's startup(), cancelled on shutdown) — sleeps
+        `snapshot_interval_seconds`, records one snapshot per currently
+        ACTIVE deployment, repeats. Deliberately NOT hooked into the
+        runner's own tick loop (module docstring's "not per tick") —
+        this task is the one place that decides "how often," completely
+        independent of how fast ticks are actually arriving.
+        """
+        while True:
+            await asyncio.sleep(self.snapshot_interval_seconds)
+            await self.snapshot_all_active()
+
+    async def snapshot_all_active(self) -> None:
+        """One equity-curve point for every currently-running deployment
+        (self.runners — paused/stopped deployments have no runner and
+        are correctly skipped; their existing snapshot history is
+        untouched). A single deployment's snapshot failing (e.g. a
+        transient DB hiccup) must not stop the rest from being recorded,
+        so each is isolated and logged rather than propagated."""
+        for runner in list(self.runners.values()):
+            try:
+                await self._snapshot_one(runner)
+            except Exception:
+                logger.exception(
+                    "Failed to record an equity snapshot for %s — continuing",
+                    runner.deployment_name,
+                )
+
+    async def _snapshot_one(self, runner: DeploymentRunner) -> None:
+        # Mark-to-market off the runner's OWN already-loaded
+        # open_positions cache (no extra DB round trip needed — this is
+        # exactly the state DeploymentRunner already maintains for the
+        # strategy itself) — see SnapshotOut's own docstring for why
+        # `open_positions_value` here means unrealized P&L, not notional
+        # position value.
+        open_positions_value = 0.0
+        for token, pos in runner.open_positions.items():
+            price = self.dispatcher.last_prices.get(token)
+            if price is None:
+                continue
+            qty, avg = float(pos["qty"]), float(pos["avg_entry_price"])
+            open_positions_value += (price - avg) * qty if pos["side"] == "long" \
+                else (avg - price) * qty
+
+        realized = await queries.realized_pnl_total(self.pool, runner.deployment_id)
+        await queries.record_snapshot(
+            self.pool, runner.deployment_id, datetime.now(timezone.utc),
+            cash=runner.cash, open_positions_value=open_positions_value,
+            total_value=runner.cash + open_positions_value,
+            realized_pnl_cumulative=realized,
+        )
 
     # ── Internal ─────────────────────────────────────────────────────
 

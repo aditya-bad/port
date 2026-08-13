@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Request
 from ..db import queries
 from ..deployments.schemas import (
     DeploymentCreate, DeploymentOut, EventOut, LotsPage, PositionOut, ReportOut,
+    SnapshotOut,
 )
 from ..strategies.registry import is_registered
 
@@ -26,6 +27,46 @@ def _annotate(row: dict) -> dict:
     row = dict(row)
     row["strategy_registered"] = is_registered(row["strategy_name"])
     return row
+
+
+def _mark_to_market(position: dict, dispatcher) -> float:
+    """Unrealized P&L for ONE open position row, or 0.0 if there's no
+    live price for it yet — same formula used by GET
+    /deployments/{id}/positions, kept in one place so every pnl-
+    enrichment path (single deployment, deployment list, cross-
+    deployment aggregate) computes it identically."""
+    price = dispatcher.last_prices.get(int(position["instrument_token"]))
+    if price is None:
+        return 0.0
+    qty, avg = float(position["qty"]), float(position["avg_entry_price"])
+    return (price - avg) * qty if position["side"] == "long" else (avg - price) * qty
+
+
+async def _enrich_pnl_many(pool, dispatcher, rows: list[dict]) -> None:
+    """Mutates each row in `rows` in place, adding realized_pnl/
+    unrealized_pnl -- used by the deployment LIST endpoint. Two queries
+    total (not one per deployment): every deployment's realized total,
+    and every OPEN position across every deployment, grouped by
+    deployment_id in Python for the mark-to-market sum."""
+    realized_map = await queries.realized_pnl_by_deployment(pool)
+    open_positions = await queries.list_all_positions(pool, status="open")
+    unrealized_map: dict[str, float] = {}
+    for p in open_positions:
+        dep_id = str(p["deployment_id"])
+        unrealized_map[dep_id] = unrealized_map.get(dep_id, 0.0) + _mark_to_market(p, dispatcher)
+    for row in rows:
+        dep_id = str(row["id"])
+        row["realized_pnl"] = round(realized_map.get(dep_id, 0.0), 2)
+        row["unrealized_pnl"] = round(unrealized_map.get(dep_id, 0.0), 2)
+
+
+async def _enrich_pnl_one(pool, dispatcher, deployment_id: UUID, row: dict) -> None:
+    """Single-deployment version of _enrich_pnl_many, for GET
+    /deployments/{id} -- scoped queries instead of fetching every
+    deployment's data just to pick one out."""
+    row["realized_pnl"] = round(await queries.realized_pnl_total(pool, deployment_id), 2)
+    open_positions = await queries.list_open_positions(pool, deployment_id)
+    row["unrealized_pnl"] = round(sum(_mark_to_market(p, dispatcher) for p in open_positions), 2)
 
 
 @router.post("", response_model=DeploymentOut, status_code=201)
@@ -40,21 +81,30 @@ async def create_deployment(payload: DeploymentCreate, request: Request):
         row, _strategy_registered = await manager.create_deployment(payload)
     except Exception as e:
         raise HTTPException(400, str(e))
+    # A freshly created deployment has traded nothing yet -- realized_pnl/
+    # unrealized_pnl are correctly 0.0 via DeploymentOut's own defaults,
+    # no query needed.
     return _annotate(row)
 
 
 @router.get("", response_model=list[DeploymentOut])
 async def list_deployments(request: Request, status: str | None = None):
-    rows = await queries.list_deployments(request.app.state.db_pool, status=status)
-    return [_annotate(r) for r in rows]
+    pool = request.app.state.db_pool
+    rows = await queries.list_deployments(pool, status=status)
+    out = [_annotate(r) for r in rows]
+    await _enrich_pnl_many(pool, request.app.state.dispatcher, out)
+    return out
 
 
 @router.get("/{deployment_id}", response_model=DeploymentOut)
 async def get_deployment(deployment_id: UUID, request: Request):
-    row = await queries.get_deployment(request.app.state.db_pool, deployment_id)
+    pool = request.app.state.db_pool
+    row = await queries.get_deployment(pool, deployment_id)
     if row is None:
         raise HTTPException(404, "No such deployment")
-    return _annotate(row)
+    out = _annotate(row)
+    await _enrich_pnl_one(pool, request.app.state.dispatcher, deployment_id, out)
+    return out
 
 
 @router.get("/{deployment_id}/positions", response_model=list[PositionOut])
@@ -108,6 +158,23 @@ async def get_report(deployment_id: UUID, request: Request):
     if not report:
         raise HTTPException(404, "No such deployment")
     return report
+
+
+@router.get("/{deployment_id}/snapshots", response_model=list[SnapshotOut])
+async def get_snapshots(deployment_id: UUID, request: Request, limit: int = 1000):
+    """
+    Equity-curve material — see DeploymentManager's periodic snapshot
+    loop for how these rows get written (roughly every 5 minutes per
+    active deployment, not per tick). An empty list is a normal state,
+    not an error: a deployment younger than one snapshot interval, or
+    one that's spent its whole life paused, genuinely has none yet.
+    """
+    pool = request.app.state.db_pool
+    dep = await queries.get_deployment(pool, deployment_id)
+    if dep is None:
+        raise HTTPException(404, "No such deployment")
+    rows = await queries.list_snapshots(pool, deployment_id, limit=limit)
+    return [dict(r) for r in rows]
 
 
 @router.post("/{deployment_id}/pause")

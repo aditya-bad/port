@@ -27,6 +27,12 @@ class DeploymentOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     strategy_registered: bool = True   # False = created, but no code will ever run for it (yet)
+    # Populated by the deployments router (list/get), NOT by
+    # queries.create_deployment itself — a freshly created deployment is
+    # correctly 0/0 by these defaults with no extra query needed. See
+    # routers/deployments.py's _enrich_pnl / per-deployment pnl lookup.
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
 
     class Config:
         from_attributes = True
@@ -48,20 +54,57 @@ class PositionOut(BaseModel):
     unrealized_pnl: Optional[float] = None
 
 
+class AggregatePositionOut(PositionOut):
+    """PositionOut plus which deployment/strategy it belongs to — used
+    ONLY by the cross-deployment /positions endpoint (the Dashboard's
+    consolidated table); the per-deployment
+    /deployments/{id}/positions endpoint keeps returning plain
+    PositionOut, since the deployment is already implied by the URL."""
+    deployment_name: str
+    strategy_name: str
+
+
 class LotOut(BaseModel):
     id: UUID
     position_id: UUID
+    symbol: str
     action: str
     qty: float
     price: float
     executed_at: datetime
     reason: Optional[str] = None
+    # The whole point of the trade-reason logging strategies write
+    # (trigger/trigger_values/target_basis/resulting_state, where a
+    # given strategy populates them — see strangle_monthly_v2's own
+    # Section 12) — previously omitted here, which meant it was written
+    # but never actually readable through this API. Older/simpler
+    # strategies just put a handful of ad-hoc keys in here (or nothing);
+    # the frontend renders whatever's actually present, never assumes
+    # this specific strategy's schema.
+    metadata: dict = {}
 
 
 class LotsPage(BaseModel):
     total: int
     offset: int
     lots: list[LotOut]
+
+
+class RecentTradeOut(BaseModel):
+    """Cross-deployment trade row — LotOut plus which deployment/
+    strategy it belongs to, for the Dashboard's recent-activity feed."""
+    id: UUID
+    deployment_id: UUID
+    deployment_name: str
+    strategy_name: str
+    position_id: UUID
+    symbol: str
+    action: str
+    qty: float
+    price: float
+    executed_at: datetime
+    reason: Optional[str] = None
+    metadata: dict = {}
 
 
 class EventOut(BaseModel):
@@ -86,3 +129,26 @@ class ReportOut(BaseModel):
     win_rate_pct: float
     avg_win: float
     avg_loss: float
+
+
+class SnapshotOut(BaseModel):
+    """One point on a deployment's equity curve — see
+    queries.record_snapshot/list_snapshots and DeploymentManager's
+    periodic snapshot loop for how these rows actually get written.
+
+    `open_positions_value` is the mark-to-market UNREALIZED P&L sum of
+    every position open at snapshot time (not the notional value of the
+    positions themselves — for short option legs "notional value"
+    isn't a meaningful equity contribution the way it is for a long
+    position, whereas unrealized P&L always is) — so `total_value =
+    cash + open_positions_value` is genuinely "what this deployment's
+    account is worth right now," the natural equity-curve Y axis.
+    """
+    id: UUID
+    deployment_id: UUID
+    snapshot_at: datetime
+    cash: float
+    open_positions_value: float
+    total_value: float
+    realized_pnl_cumulative: float
+    metadata: dict = {}

@@ -52,6 +52,7 @@ from .db.migrate import run_migrations
 from .db.pool import close_pool, create_pool
 from .deployments.manager import DeploymentManager
 from .dispatcher import LiveDataDispatcher
+from .routers import aggregate as aggregate_router
 from .routers import auth as auth_router
 from .routers import deployments as deployments_router
 from .routers import health as health_router
@@ -81,6 +82,7 @@ app.include_router(deployments_router.router)
 app.include_router(kite_auth_router.router)
 app.include_router(strategies_router.router)
 app.include_router(auth_router.router)
+app.include_router(aggregate_router.router)
 
 # Middleware order matters: add_middleware() makes the MOST RECENTLY
 # added one OUTERMOST (it runs first on the way in, last on the way
@@ -132,6 +134,12 @@ async def startup() -> None:
     resumed = await manager.load_active_on_startup()
     app.state.deployment_manager = manager
 
+    # ── Equity-curve snapshots: periodic, not per-tick — see
+    # DeploymentManager.snapshot_loop's own docstring for why.
+    app.state.snapshot_task = asyncio.create_task(
+        manager.snapshot_loop(), name="deployment-snapshot-loop",
+    )
+
     logger.info(
         "live_deploy started — %d static token(s), mode=%s, %d deployment(s) resumed, "
         "kite_session=%s",
@@ -142,6 +150,16 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    # Cancel the snapshot loop before tearing down runners/DB pool below
+    # — it's a plain infinite-sleep loop with no cleanup of its own, so
+    # cancellation is all it needs.
+    snapshot_task = app.state.snapshot_task
+    snapshot_task.cancel()
+    try:
+        await snapshot_task
+    except asyncio.CancelledError:
+        pass
+
     # Stop deployment runner tasks first (they hold broadcaster
     # subscriptions and DB connections) — this does NOT change any
     # deployment's status in the DB, so 'active' ones resume
