@@ -162,6 +162,14 @@
   --font-display: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'IBM Plex Mono', 'Cascadia Code', Consolas, monospace;
+
+  /* Real property, not a custom one — the browser's own accent for
+     checkboxes, radio buttons, and (Chromium/Firefox) the <input
+     type="time"> picker's internal clock icon/segment highlight, which
+     otherwise renders in the browser's default blue regardless of any
+     other CSS here. Set once on :root so every native form control
+     app-wide picks up the theme's own accent instead of that blue. */
+  accent-color: var(--accent);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {

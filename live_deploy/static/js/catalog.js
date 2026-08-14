@@ -114,34 +114,36 @@ const Catalog = {
       el.innerHTML = emptyHtml('No strategies registered yet.');
       return;
     }
-    el.innerHTML = `
-      <div class="table-wrap">
-      <table style="table-layout:fixed;">
-      <colgroup>
-        <col style="width:190px"><col><col style="width:130px"><col style="width:100px"><col style="width:90px">
-      </colgroup>
-      <thead><tr>
-        <th>Strategy</th><th>Description</th><th>Active deployments</th><th>Status</th><th></th>
-      </tr></thead>
-      <tbody>${this._strategies.map(s => {
-        const enabled = s.enabled !== false;
-        const count = this._activeCounts[s.name] || 0;
-        return `<tr>
-          <td style="word-break:break-word;">${escapeHtml(s.name)}</td>
-          <td style="white-space:normal;">${escapeHtml(s.description || 'no description')}</td>
-          <td>${count}</td>
-          <td><span class="tag ${enabled ? 'tag-active' : 'tag-stopped'}">${enabled ? 'enabled' : 'disabled'}</span></td>
-          <td>
-            <button class="btn btn-sm ${enabled ? 'btn-danger' : 'btn-primary'}"
-              onclick="Catalog.toggleStrategyEnabled('${escapeHtml(s.name)}', ${!enabled})">
-              ${enabled ? 'Disable' : 'Enable'}
-            </button>
-          </td>
-        </tr>`;
-      }).join('')}</tbody></table>
-      </div>
-      <div class="table-note">Disabling a strategy only hides it from Browse and blocks NEW deployments — anything already deployed keeps running untouched.</div>
-    `;
+    // Cards, not a table — a strategy's description is long free text
+    // (strangle_monthly_v2's runs 400+ characters), which a dense
+    // multi-column table fights: a description column narrow enough to
+    // leave room for Status/Action ends up wrapping one word per line.
+    // Browse already solves exactly this with .card, so Admin reuses
+    // the identical treatment instead of a second, worse solution.
+    el.innerHTML = this._strategies.map(s => {
+      const enabled = s.enabled !== false;
+      const count = this._activeCounts[s.name] || 0;
+      return `
+        <div class="card">
+          <div class="card-row">
+            <div>
+              <div class="card-title">
+                ${escapeHtml(s.name)}
+                <span class="tag ${enabled ? 'tag-active' : 'tag-stopped'}">${enabled ? 'enabled' : 'disabled'}</span>
+                ${count > 0 ? `<span class="tag tag-active">${count} active</span>` : ''}
+              </div>
+              <div class="card-sub">${escapeHtml(s.description || 'no description')}</div>
+            </div>
+            <div class="card-actions">
+              <button class="btn btn-sm ${enabled ? 'btn-danger' : 'btn-primary'}"
+                onclick="Catalog.toggleStrategyEnabled('${escapeHtml(s.name)}', ${!enabled})">
+                ${enabled ? 'Disable' : 'Enable'}
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('') + `<div class="table-note">Disabling a strategy only hides it from Browse and blocks NEW deployments — anything already deployed keeps running untouched.</div>`;
   },
 
   async toggleStrategyEnabled(name, newEnabled) {
