@@ -237,6 +237,7 @@ tr.trade-row:focus-visible {
 .ticker-change.pos { color: var(--gain); }
 .ticker-change.neg { color: var(--loss); }
 .ticker-clock { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--parchment); white-space: nowrap; }
+.ticker-stale { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--parchment); }
 @media (max-width: 760px) {
   .ticker-bar { position: static; }
 }
@@ -795,8 +796,10 @@ const TICKER_INSTRUMENTS = [
   { token: 265, label: 'SENSEX' },
   { token: 260105, label: 'NIFTY BANK' },
 ];
-const tickerState = {};   // token -> { price, prevClose }
+const tickerState = {};   // token -> { price, prevClose, live }
 let tickerSocket = null;
+let tickerFallbackTimer = null;
+let tickerHasLiveTick = false;
 
 function renderTickerPrices() {
   const el = document.getElementById('tickerPrices');
@@ -817,9 +820,47 @@ function renderTickerPrices() {
       const arrow = diff >= 0 ? '▲' : '▼';
       changeHtml = ` <span class="ticker-change ${cls}">${arrow} ${Math.abs(pct).toFixed(2)}%</span>`;
     }
+    // Honest labeling, not decoration: a REST-fetched snapshot (market
+    // closed, no ticks flowing) must never look identical to a genuinely
+    // live tick-driven price — a trading terminal silently showing a
+    // stale number as current is exactly the kind of thing this app's
+    // whole design is supposed to prevent.
+    const staleHtml = s.live ? '' : ' <span class="ticker-stale">closed</span>';
     return `<span class="ticker-item"><span class="ticker-label">${inst.label}</span>` +
-      `<span class="ticker-price">${fmtNum(s.price)}</span>${changeHtml}</span>`;
+      `<span class="ticker-price">${fmtNum(s.price)}</span>${changeHtml}${staleHtml}</span>`;
   }).join('');
+}
+
+// Kite sends literally no ticks when the market is closed — a
+// perfectly healthy, connected session just has nothing to say outside
+// trading hours. Left alone, the bar would show "connecting…" forever
+// in that case, which reads as broken even though nothing actually is.
+// If no real tick shows up within this window after the WS connects,
+// fetch a one-time REST snapshot (last_price + previous close) instead
+// — a stale-but-honest number, clearly labeled as such above, beats an
+// indefinite spinner. If a real tick DOES arrive later (market opens
+// while the tab is left open), it overwrites this and the "closed"
+// label disappears on its own — renderTickerPrices() doesn't care where
+// a price came from, only whether `live` is set.
+async function fetchTickerFallback() {
+  if (tickerHasLiveTick) return;
+  try {
+    const tokensParam = TICKER_INSTRUMENTS.map(i => i.token).join(',');
+    const r = await fetch(`/instruments/quotes?tokens=${tokensParam}`);
+    if (!r.ok) return;   // most likely no Kite session yet — nothing useful to show, leave the placeholder
+    const data = await r.json();
+    let changed = false;
+    for (const inst of TICKER_INSTRUMENTS) {
+      const entry = data[String(inst.token)];
+      if (!entry || entry.last_price == null) continue;
+      tickerState[inst.token] = { price: entry.last_price, prevClose: entry.prev_close, live: false };
+      changed = true;
+    }
+    if (changed) renderTickerPrices();
+  } catch (e) {
+    // Network hiccup on the fallback call itself — leave whatever's
+    // currently shown rather than throw.
+  }
 }
 
 function updateClock() {
@@ -847,8 +888,10 @@ function connectTickerSocket() {
       const watched = TICKER_INSTRUMENTS.find(i => i.token === t.instrument_token);
       if (!watched || t.last_price == null) continue;
       const prevClose = (t.ohlc && t.ohlc.close) || (tickerState[watched.token] && tickerState[watched.token].prevClose);
-      tickerState[watched.token] = { price: t.last_price, prevClose };
+      tickerState[watched.token] = { price: t.last_price, prevClose, live: true };
       changed = true;
+      tickerHasLiveTick = true;
+      clearTimeout(tickerFallbackTimer);   // a real tick arrived — no fallback needed
     }
     if (changed) renderTickerPrices();
   };
@@ -898,6 +941,7 @@ window.addEventListener('DOMContentLoaded', () => {
   updateClock();
   setInterval(updateClock, 1000);
   connectTickerSocket();
+  tickerFallbackTimer = setTimeout(fetchTickerFallback, 8000);
 });
 </script>
 </body>

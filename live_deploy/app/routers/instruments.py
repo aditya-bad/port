@@ -8,10 +8,12 @@ that needs it, or just watching a token's ticks via /ws/ticks without
 any deployment involved at all.
 """
 
+import asyncio
+
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
 
-from ..options import NoKiteSession, OptionsResolver
+from ..options import NoKiteSession, OptionsResolver, get_kite_connect
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
 
@@ -53,6 +55,52 @@ async def search_instruments(q: str, request: Request):
     except NoKiteSession as e:
         raise HTTPException(400, str(e))
     return {"query": q, "results": results}
+
+
+@router.get("/quotes")
+async def get_quotes(tokens: str, request: Request):
+    """
+    One-shot REST snapshot (last_price + previous day's close) for the
+    given instrument_tokens, straight from Kite's quote() endpoint —
+    NOT a live feed. Exists for the ticker bar's fallback: outside
+    market hours Kite simply sends no ticks at all over /ws/ticks (a
+    live, correctly-connected Kite session with nothing to say, not a
+    broken one) — a stale-but-honest last-known price beats an
+    indefinite "connecting…" placeholder that would otherwise never
+    resolve on its own. See resolver.py's get_ltp/get_quote for the
+    same asyncio.to_thread(kite.quote, ...) pattern this reuses (the
+    kiteconnect client is a synchronous/blocking HTTP client).
+
+    `tokens` — comma-separated instrument_token integers, e.g.
+    "256265,265,260105". Kite's quote() accepts raw instrument_tokens
+    directly (not just exchange:tradingsymbol strings), so no exchange
+    lookup is needed here.
+    """
+    try:
+        token_list = [int(t) for t in tokens.split(",") if t.strip()]
+    except ValueError:
+        raise HTTPException(400, "tokens must be a comma-separated list of instrument_token integers")
+    if not token_list:
+        raise HTTPException(400, "tokens must not be empty")
+
+    dispatcher = request.app.state.dispatcher
+    try:
+        kite = get_kite_connect(dispatcher)
+    except NoKiteSession as e:
+        raise HTTPException(400, str(e))
+
+    raw = await asyncio.to_thread(kite.quote, token_list)
+    out = {}
+    for entry in raw.values():
+        token = entry.get("instrument_token")
+        if token is None:
+            continue
+        ohlc = entry.get("ohlc") or {}
+        out[str(token)] = {
+            "last_price": entry.get("last_price"),
+            "prev_close": ohlc.get("close"),
+        }
+    return out
 
 
 @router.post("")

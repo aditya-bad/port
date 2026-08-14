@@ -1424,6 +1424,50 @@ genuinely advanced, not just rendered once. Full existing regression
 suite re-run afterward, unaffected (this is additive markup/CSS/JS plus
 one more `tokens.json` entry, no existing endpoint or schema touched).
 
+### Follow-up: ticker bar REST fallback for closed-market hours
+
+Found immediately after shipping the above: Kite sends **no ticks at
+all** outside market hours — a live, correctly-authenticated Kite
+session simply has nothing to say when nothing's trading — so the
+ticker bar's "connecting…" placeholder had no way to ever resolve
+itself in that state. It wasn't broken; it was accurately reflecting
+"zero ticks received," which just isn't useful when that's the normal
+state for most of the day.
+
+Fixed with a one-shot REST fallback, not a second polling system: new
+`GET /instruments/quotes?tokens=...` (`app/routers/instruments.py`)
+calls Kite's `quote()` REST endpoint via the same `get_kite_connect()` /
+`asyncio.to_thread(...)` pattern `OptionsResolver` already uses
+elsewhere for `ltp()`/`quote()` calls (`KiteConnect`'s REST client is
+synchronous under the hood). If the frontend hasn't received a single
+real tick within 8 seconds of the WebSocket connecting, it calls this
+endpoint ONCE and renders the last-known price/change from it instead
+of leaving the placeholder up indefinitely. If a real tick arrives
+later (market opens while the tab is left open), it silently overwrites
+the REST-sourced value — `renderTickerPrices()` doesn't care where a
+price came from, only whether it's live.
+
+The one thing that mattered most here: a REST-fetched snapshot must
+never look identical to a genuinely live, tick-driven price — showing
+a stale number as if it were current is exactly the kind of quiet
+mislabeling this whole app's design is built to avoid elsewhere (the
+trigger badges, the pos/neg coloring). Every fallback-sourced price
+gets a small, explicit "closed" label next to it; it disappears the
+instant a real tick supersedes it.
+
+**Verified end-to-end**: a real Playwright browser against the actual
+running app, with the Kite WebSocket never sending a single tick for
+the whole test (an authentic "market closed" simulation, not a mock) —
+confirmed the bar correctly shows "connecting…" immediately after
+login, then correctly calls the new endpoint after the 8s window and
+renders the exact fetched prices with correct up/down arrows/
+percentages AND the "closed" label on all three. The backend endpoint
+was also checked in isolation first (direct HTTP calls, correct 200
+with correct values, and correct 400s for a non-integer or empty
+`tokens` param) before testing it through the browser, to separate
+"does the backend work" from "does the frontend's timing/fallback logic
+work." Full regression suite re-run afterward, unaffected.
+
 ## Setup
 
 ```bash
