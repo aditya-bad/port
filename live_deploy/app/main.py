@@ -63,6 +63,7 @@ from .routers import kite_auth as kite_auth_router
 from .routers import strategies as strategies_router
 from .routers.aggregate import fetch_positions_open, fetch_trades_recent
 from .routers.deployments import fetch_deployments_list
+from .routers.health import check_db_health
 from .routers.strategies import fetch_strategies
 
 logging.basicConfig(level=logging.INFO)
@@ -166,6 +167,13 @@ async def startup() -> None:
     cache.register("positions_open", lambda: fetch_positions_open(db_pool, dispatcher), interval=6.0)
     cache.register("trades_recent", lambda: fetch_trades_recent(db_pool), interval=12.0)
     cache.register("strategies", lambda: fetch_strategies(db_pool), interval=20.0)
+    # 15s: /health is polled by the frontend every 5s (pollHealth() in
+    # index.html) -- without this it was the one endpoint left paying a
+    # live Neon round trip (700-800ms) on every single call, the exact
+    # per-round-trip cost every other hot read used to pay before it
+    # got cached. A DB outage still surfaces within one interval, which
+    # is the right trade for a status indicator.
+    cache.register("db_health", lambda: check_db_health(db_pool), interval=15.0)
     await cache.start()
     app.state.cache = cache
 

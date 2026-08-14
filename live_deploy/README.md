@@ -1829,6 +1829,25 @@ re-run afterward (one unrelated failure traced to test-DB pollution
 from an earlier scratch test run sharing the same local Postgres — not
 an app regression — cleared and re-confirmed).
 
+## What's here (Step 23: `/health` was the one endpoint still paying a live Neon round trip)
+
+Reported: every API blazing fast (<30ms, post-Step-22 caching) except
+`GET /health`, still 700-800ms. Root cause found immediately —
+`/health` ran a live `SELECT 1` against Neon on every single call,
+unlike every other hot read cached in Step 22. Made worse by the
+frontend polling it every 5s (`pollHealth()`), so it was the one
+remaining endpoint paying that flat per-round-trip cost repeatedly.
+
+Fixed the same way as Step 22: `check_db_health()` pulled out into its
+own function, registered as a fifth `AggregateCache` key (`db_health`,
+15s interval — a DB outage still surfaces within one interval, the
+right trade for a status indicator that gates nothing). `GET /health`
+now reads `cache.get("db_health")` instead of querying live.
+
+**Verified**: 5 repeated `GET /health` calls all in the low single-
+digit milliseconds (was 700-800ms), `database_connected` still
+correctly reflects real DB state.
+
 ## Setup
 
 ```bash
