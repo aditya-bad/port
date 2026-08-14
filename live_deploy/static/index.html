@@ -5,198 +5,448 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>live_deploy</title>
 <style>
+/* ── Self-hosted type — Libre Caslon Text (display), IBM Plex Sans
+   (body/UI), IBM Plex Mono (data). No CDN dependency, consistent with
+   this app's standalone-server philosophy. Each family/weight ships as
+   two subset files (latin + latin-ext) so the unicode-range split
+   covers ₹ (U+20B9, in latin-ext) — every money value in this app
+   renders it. See RUN_GUIDE.md / static/fonts/ for the source. ────── */
+@font-face {
+  font-family: 'Libre Caslon Text';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/caslon-400-italic-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Libre Caslon Text';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/caslon-400-italic-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Libre Caslon Text';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/caslon-400-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Libre Caslon Text';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/caslon-400-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Libre Caslon Text';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/caslon-700-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Libre Caslon Text';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/caslon-700-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/plexsans-400-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/plexsans-400-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/plexsans-500-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/plexsans-500-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/plexsans-600-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/plexsans-600-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/plexmono-400-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/plexmono-400-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/plexmono-500-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/plexmono-500-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/plexmono-600-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/plexmono-600-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+/* ── Design tokens ───────────────────────────────────────────────────
+   A ledger at night, not a SaaS admin panel: warm graphite ground
+   (never navy), brass/verdigris instrument colors, red/olive ledger
+   ink for gains and losses. Single dark world by deliberate choice —
+   see DESIGN_PLAN.md — so every color is painted explicitly, no
+   prefers-color-scheme branch. */
 :root {
-  --bg: #0f1117; --bg2: #1a1d28; --bg3: #242838;
-  --fg: #e1e4eb; --fg2: #8b90a0;
-  --accent: #4f8cff; --green: #22c55e; --red: #ef4444; --yellow: #f59e0b;
-  --border: #2d3148;
-  --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
-  --mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --ink: #15130f;        /* page ground */
+  --panel: #1d1912;       /* sidebar / card / table surface */
+  --panel-2: #262016;     /* modals, hover, badge fill */
+  --rule: #3c3324;        /* hairline borders */
+  --paper: #f2ead9;       /* primary text */
+  --parchment: #a5977c;   /* secondary text / labels */
+
+  --verdigris: #4f9d92;   /* accent — links, actions, active nav, focus */
+  --gain: #86a556;        /* profit */
+  --loss: #d9634a;        /* loss / danger */
+  --brass: #c99348;       /* paused / adjust / warn */
+
+  --verdigris-rgb: 79, 157, 146;
+  --gain-rgb: 134, 165, 86;
+  --loss-rgb: 217, 99, 74;
+  --brass-rgb: 201, 147, 72;
+
+  --font-display: 'Libre Caslon Text', Georgia, 'Times New Roman', serif;
+  --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Cascadia Code', Consolas, monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: var(--font); background: var(--bg); color: var(--fg); line-height: 1.5; }
-a { color: var(--accent); }
+body {
+  font-family: var(--font-body); background: var(--ink); color: var(--paper);
+  line-height: 1.5; font-variant-numeric: tabular-nums;
+}
+a { color: var(--verdigris); }
+
+/* Keyboard-focus baseline — every interactive element gets a visible,
+   on-brand ring; nothing relies on the (often invisible) UA default. */
+a:focus-visible, button:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible,
+.nav-item:focus-visible, .clickable-row:focus-visible,
+tr.trade-row:focus-visible {
+  outline: 2px solid var(--verdigris);
+  outline-offset: 2px;
+}
 
 /* ── App shell: persistent sidebar + scrolling main content ────────── */
 .app-shell { display: flex; min-height: 100vh; }
 .sidebar {
-  width: 220px; flex-shrink: 0; background: var(--bg2); border-right: 1px solid var(--border);
-  display: flex; flex-direction: column; padding: 18px 0; position: sticky; top: 0; height: 100vh;
+  width: 220px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--rule);
+  display: flex; flex-direction: column; padding: 20px 0; position: sticky; top: 0; height: 100vh;
 }
-.sidebar-brand { font-size: 16px; font-weight: 700; color: var(--accent); padding: 0 20px 18px; }
-.sidebar-brand .subtitle { font-size: 11px; color: var(--fg2); font-weight: 400; margin-top: 2px; }
+.sidebar-brand {
+  font-family: var(--font-display); font-size: 18px; font-weight: 700;
+  color: var(--paper); padding: 0 20px 20px; letter-spacing: 0.2px;
+}
+.sidebar-brand .subtitle {
+  font-family: var(--font-display); font-style: italic; font-weight: 400;
+  font-size: 12px; color: var(--parchment); margin-top: 3px;
+}
 .nav-item {
-  display: block; padding: 10px 20px; color: var(--fg2); text-decoration: none;
+  display: block; padding: 10px 20px; color: var(--parchment); text-decoration: none;
   font-size: 13px; font-weight: 500; border-left: 3px solid transparent; cursor: pointer;
 }
-.nav-item:hover { color: var(--fg); background: var(--bg3); }
-.nav-item.active { color: var(--fg); background: var(--bg3); border-left-color: var(--accent); }
+.nav-item:hover { color: var(--paper); background: var(--panel-2); }
+.nav-item.active { color: var(--paper); background: var(--panel-2); border-left-color: var(--verdigris); }
 .sidebar-footer {
-  margin-top: auto; padding: 16px 20px 0; border-top: 1px solid var(--border);
+  margin-top: auto; padding: 16px 20px 0; border-top: 1px solid var(--rule);
   display: flex; flex-direction: column; gap: 10px;
 }
 
-.main { flex: 1; min-width: 0; padding: 24px 28px 60px; max-width: 1300px; }
+.main { flex: 1; min-width: 0; padding: 28px 32px 60px; max-width: 1300px; }
 .view { display: none; }
 .view.active { display: block; }
-.view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; gap: 12px; flex-wrap: wrap; }
-.view-header h1 { font-size: 19px; }
-.view-header .view-sub { font-size: 12px; color: var(--fg2); margin-top: 2px; }
+.view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
+.view-header h1 { font-family: var(--font-display); font-weight: 700; font-size: 22px; }
+.view-header .view-sub {
+  font-family: var(--font-display); font-style: italic; font-weight: 400;
+  font-size: 13px; color: var(--parchment); margin-top: 3px;
+}
 
 .status-bar { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-size: 12px; }
 .badge {
-  display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
-  border-radius: 20px; font-size: 12px; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px;
+  border-radius: 3px; font-size: 12px; font-weight: 500;
 }
-.badge.ok { background: rgba(34,197,94,0.15); color: var(--green); }
-.badge.bad { background: rgba(239,68,68,0.15); color: var(--red); }
+.badge.ok { background: rgba(var(--gain-rgb), 0.14); color: var(--gain); }
+.badge.bad { background: rgba(var(--loss-rgb), 0.14); color: var(--loss); }
 .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
 .btn {
-  padding: 7px 14px; border-radius: 6px; border: none; cursor: pointer;
-  font-size: 13px; font-weight: 500; transition: all 0.15s;
+  padding: 7px 14px; border-radius: 3px; border: none; cursor: pointer;
+  font-family: var(--font-body); font-size: 13px; font-weight: 600; transition: filter 0.15s, border-color 0.15s, background 0.15s;
 }
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover { background: #3d7aee; }
-.btn-secondary { background: var(--bg3); color: var(--fg); border: 1px solid var(--border); }
-.btn-secondary:hover { border-color: var(--fg2); }
-.btn-danger { background: rgba(239,68,68,0.15); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
-.btn-danger:hover { background: rgba(239,68,68,0.25); }
+.btn-primary { background: var(--verdigris); color: var(--ink); }
+.btn-primary:hover { filter: brightness(0.92); }
+.btn-secondary { background: var(--panel-2); color: var(--paper); border: 1px solid var(--rule); }
+.btn-secondary:hover { border-color: var(--parchment); }
+.btn-danger { background: rgba(var(--loss-rgb), 0.15); color: var(--loss); border: 1px solid rgba(var(--loss-rgb), 0.35); }
+.btn-danger:hover { background: rgba(var(--loss-rgb), 0.25); }
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-section { margin-bottom: 26px; }
+section { margin-bottom: 28px; }
 section h2 {
-  font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px;
-  color: var(--fg2); margin-bottom: 12px; display: flex; align-items: center;
+  font-family: var(--font-body); font-size: 12px; text-transform: uppercase; letter-spacing: 0.7px;
+  font-weight: 600; color: var(--parchment); margin-bottom: 12px; display: flex; align-items: center;
   justify-content: space-between;
 }
 
+/* ── Cards: flat fields with a rule across the top, like a ledger
+   column head — not a bordered box. The gap between cards (real
+   negative space) does the separating, not a hairline around each. */
 .card {
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
-  padding: 16px; margin-bottom: 10px;
+  background: var(--panel); border: none; border-top: 2px solid var(--rule); border-radius: 0;
+  padding: 16px 18px; margin-bottom: 10px;
 }
 .card-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-.card-title { font-size: 14px; font-weight: 600; }
-.card-sub { font-size: 12px; color: var(--fg2); margin-top: 2px; }
-.card-meta { display: flex; gap: 16px; font-size: 12px; color: var(--fg2); margin-top: 8px; flex-wrap: wrap; }
-.card-meta b { color: var(--fg); font-weight: 500; }
+.card-title { font-family: var(--font-body); font-size: 14px; font-weight: 600; }
+.card-sub { font-size: 12px; color: var(--parchment); margin-top: 2px; }
+.card-meta { display: flex; gap: 16px; font-size: 12px; color: var(--parchment); margin-top: 8px; flex-wrap: wrap; }
+.card-meta b { color: var(--paper); font-weight: 600; font-family: var(--font-mono); }
 .card-actions { display: flex; gap: 6px; flex-shrink: 0; }
 
 .tag {
-  display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.3px;
+  display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.4px;
 }
-.tag-active { background: rgba(34,197,94,0.15); color: var(--green); }
-.tag-paused { background: rgba(245,158,11,0.15); color: var(--yellow); }
-.tag-stopped { background: rgba(239,68,68,0.15); color: var(--red); }
-.tag-warn { background: rgba(245,158,11,0.15); color: var(--yellow); }
+.tag-active { background: rgba(var(--gain-rgb), 0.14); color: var(--gain); }
+.tag-paused { background: rgba(var(--brass-rgb), 0.14); color: var(--brass); }
+.tag-stopped { background: rgba(var(--loss-rgb), 0.14); color: var(--loss); }
+.tag-warn { background: rgba(var(--brass-rgb), 0.14); color: var(--brass); }
 
-.empty { color: var(--fg2); font-size: 13px; padding: 20px; text-align: center;
-  border: 1px dashed var(--border); border-radius: 8px; }
+.empty { color: var(--parchment); font-size: 13px; padding: 22px; text-align: center;
+  border: 1px dashed var(--rule); }
 
+/* ── Tables: the actual workhorse. A heavier header rule so it reads
+   as a fixed masthead over scrolling data; numeric cells right where
+   it makes sense, always tabular Plex Mono. */
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
-th { text-align: left; padding: 6px 8px; color: var(--fg2); font-weight: 500;
-  border-bottom: 1px solid var(--border); font-size: 11px; text-transform: uppercase; }
-td { padding: 6px 8px; border-bottom: 1px solid var(--border); font-family: var(--mono); }
-.pos { color: var(--green); } .neg { color: var(--red); }
+th { text-align: left; padding: 8px 10px; color: var(--parchment); font-weight: 600;
+  border-bottom: 2px solid var(--rule); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px;
+  font-family: var(--font-body); }
+td { padding: 7px 10px; border-bottom: 1px solid var(--rule); font-family: var(--font-mono); }
+.pos, .neg { padding-left: 8px; border-left: 2px solid transparent; }
+.pos { color: var(--gain); border-left-color: rgba(var(--gain-rgb), 0.45); }
+.neg { color: var(--loss); border-left-color: rgba(var(--loss-rgb), 0.45); }
 .table-wrap { overflow-x: auto; }
-.table-note { color: var(--fg2); font-size: 11px; margin-top: 6px; }
+.table-note { color: var(--parchment); font-size: 11px; margin-top: 8px; }
+.deploy-table th:nth-child(n+5), .deploy-table td:nth-child(n+5) { text-align: right; }
 
-/* ── Stat cards (Dashboard) ──────────────────────────────────────── */
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 24px; }
-.stat-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-.stat-card .stat-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--fg2); margin-bottom: 8px; }
-.stat-card .stat-value { font-size: 22px; font-weight: 700; font-family: var(--mono); }
-.stat-card .stat-sub { font-size: 11px; color: var(--fg2); margin-top: 8px; line-height: 1.6; }
+/* ── Stat cards (Dashboard) — the one place a number is the headline
+   of a card, so it earns the display face. ────────────────────────── */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-bottom: 26px; }
+.stat-card { background: var(--panel); border: none; border-top: 2px solid var(--rule); border-radius: 0; padding: 16px 18px; }
+.stat-card .stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; color: var(--parchment); margin-bottom: 10px; }
+.stat-card .stat-value { font-family: var(--font-display); font-size: 25px; font-weight: 700; }
+.stat-card .stat-sub { font-size: 11.5px; color: var(--parchment); margin-top: 10px; line-height: 1.7; font-family: var(--font-mono); }
 .stat-card .stat-sub .row { display: flex; justify-content: space-between; gap: 10px; }
 
 /* ── Filters (Deployed Strategies) ───────────────────────────────── */
 .filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .filters select {
-  background: var(--bg2); border: 1px solid var(--border); color: var(--fg);
-  padding: 6px 10px; border-radius: 6px; font-size: 12px; font-family: inherit;
+  background: var(--panel); border: 1px solid var(--rule); color: var(--paper);
+  padding: 7px 10px; border-radius: 2px; font-size: 12px; font-family: var(--font-body);
 }
 .clickable-row { cursor: pointer; }
-.clickable-row:hover { background: var(--bg3); }
+.clickable-row:hover { background: var(--panel-2); }
 
 /* ── Strategy Detail ──────────────────────────────────────────────── */
 .detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
-.detail-header h1 { font-size: 20px; }
-.back-link { display: inline-block; font-size: 12px; color: var(--fg2); text-decoration: none; margin-bottom: 12px; cursor: pointer; }
-.back-link:hover { color: var(--fg); }
+.detail-header h1 { font-family: var(--font-display); font-weight: 700; font-size: 23px; }
+.back-link { display: inline-block; font-size: 12px; color: var(--parchment); text-decoration: none; margin-bottom: 14px; cursor: pointer; }
+.back-link:hover { color: var(--paper); }
 
-.tabs { display: flex; gap: 4px; margin: 18px 0 14px; border-bottom: 1px solid var(--border); }
+.tabs { display: flex; gap: 4px; margin: 20px 0 16px; border-bottom: 1px solid var(--rule); }
 .tabs button {
-  padding: 8px 14px; font-size: 13px; background: none; border: none;
-  color: var(--fg2); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 9px 14px; font-size: 13px; font-weight: 500; font-family: var(--font-body); background: none; border: none;
+  color: var(--parchment); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
 }
-.tabs button.active { color: var(--fg); border-bottom-color: var(--accent); }
-.tabs button:hover { color: var(--fg); }
+.tabs button.active { color: var(--paper); border-bottom-color: var(--verdigris); font-weight: 600; }
+.tabs button:hover { color: var(--paper); }
 
-.kv-table td:first-child { color: var(--fg2); width: 240px; }
+.kv-table td:first-child { color: var(--parchment); width: 240px; }
 
-/* ── Trigger badges ───────────────────────────────────────────────── */
+/* ── Trigger badges — deliberately quiet, so they don't compete with
+   the trade-expand signature below: small, solid dot, no translucent
+   color wash. ────────────────────────────────────────────────────── */
 .trigger-badge {
-  display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: 0.3px; margin-left: 6px; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 5px; background: var(--panel-2);
+  padding: 2px 7px; border-radius: 2px; font-size: 10px; font-weight: 600; font-family: var(--font-body);
+  text-transform: uppercase; letter-spacing: 0.4px; margin-left: 6px; white-space: nowrap;
 }
-.trig-stop { background: rgba(239,68,68,0.15); color: var(--red); }
-.trig-profit { background: rgba(34,197,94,0.15); color: var(--green); }
-.trig-adjust { background: rgba(245,158,11,0.15); color: var(--yellow); }
-.trig-entry { background: rgba(79,140,255,0.15); color: var(--accent); }
-.trig-other { background: rgba(139,144,160,0.18); color: var(--fg2); }
+.trigger-badge::before { content: ''; width: 4px; height: 4px; flex-shrink: 0; background: currentColor; }
+.trig-stop { color: var(--loss); }
+.trig-profit { color: var(--gain); }
+.trig-adjust { color: var(--brass); }
+.trig-entry { color: var(--verdigris); }
+.trig-other { color: var(--parchment); }
 
-/* ── Expandable trade rows ───────────────────────────────────────── */
+/* ── Expandable trade rows — the signature move. Reframed as pulling
+   the order ticket out from under the ledger row: a circular marker
+   (not a triangle), a dashed tear-line, an inset spine rule down the
+   left edge of the revealed ticket. ─────────────────────────────── */
 tr.trade-row { cursor: pointer; }
-tr.trade-row:hover { background: var(--bg3); }
-tr.trade-row td:first-child::before { content: '▸ '; color: var(--fg2); font-family: var(--font); }
-tr.trade-row.open td:first-child::before { content: '▾ '; }
-tr.trade-detail-row td { background: var(--bg3); padding: 12px 14px; font-family: var(--font); }
-.trade-json { font-family: var(--mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--fg2); }
-.trade-json .k { color: var(--accent); }
-.trade-json-block { margin-bottom: 10px; }
+tr.trade-row:hover { background: var(--panel-2); }
+tr.trade-row td:first-child::before {
+  content: '○'; display: inline-block; width: 14px; color: var(--verdigris); font-weight: 700;
+}
+tr.trade-row.open td:first-child::before { content: '●'; }
+tr.trade-detail-row td {
+  background: var(--panel-2); padding: 16px 18px 16px 32px; font-family: var(--font-body);
+  border-top: 1px dashed var(--rule); border-bottom: 1px solid var(--rule); position: relative;
+}
+tr.trade-detail-row td::before {
+  content: ''; position: absolute; left: 14px; top: 16px; bottom: 16px; width: 2px; background: var(--verdigris);
+}
+.trade-json { font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--parchment); }
+.trade-json .k { color: var(--verdigris); }
+.trade-json-block { margin-bottom: 12px; }
 .trade-json-block:last-child { margin-bottom: 0; }
-.trade-json-block .label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--fg2); margin-bottom: 4px; }
+.trade-json-block .label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; font-family: var(--font-body);
+  color: var(--parchment); margin-bottom: 5px; padding-left: 8px; border-left: 2px solid var(--verdigris);
+}
 
 /* ── Equity curve ─────────────────────────────────────────────────── */
-.equity-wrap { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+.equity-wrap { background: var(--panel); border: none; border-top: 2px solid var(--rule); border-radius: 0; padding: 16px 18px; }
 .equity-chart { width: 100%; height: 160px; display: block; }
 
+/* ── Modals — the ONE surface keeping the full raised + bordered
+   treatment, so "floating above everything" actually means something
+   when it appears. ──────────────────────────────────────────────── */
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none;
+  position: fixed; inset: 0; background: rgba(0,0,0,0.72); display: none;
   align-items: center; justify-content: center; z-index: 100;
 }
 .modal-overlay.open { display: flex; }
 .modal {
-  background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
-  padding: 22px; max-width: 560px; width: 95%; max-height: 85vh; overflow-y: auto;
+  background: var(--panel-2); border: 1px solid var(--rule); border-radius: 3px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+  padding: 24px; max-width: 560px; width: 95%; max-height: 85vh; overflow-y: auto;
 }
-.modal h2 { font-size: 16px; margin-bottom: 14px; text-transform: none; }
+.modal h2 { font-family: var(--font-display); font-weight: 700; font-size: 17px; margin-bottom: 16px; text-transform: none; }
 .field { margin-bottom: 12px; }
-.field label { display: block; font-size: 12px; color: var(--fg2); margin-bottom: 4px; }
+.field label { display: block; font-size: 12px; color: var(--parchment); margin-bottom: 5px; }
 .field input, .field select, .field textarea {
-  width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg);
-  padding: 8px 10px; border-radius: 6px; font-size: 13px; font-family: inherit;
+  width: 100%; background: var(--ink); border: 1px solid var(--rule); color: var(--paper);
+  padding: 9px 10px; border-radius: 2px; font-size: 13px; font-family: var(--font-body);
 }
-.field textarea { font-family: var(--mono); min-height: 120px; resize: vertical; }
-.modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
+.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--verdigris); }
+.field textarea { font-family: var(--font-mono); min-height: 120px; resize: vertical; }
+.modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
 .modal-msg { margin-top: 10px; font-size: 13px; }
 
 .spinner {
-  display: inline-block; width: 13px; height: 13px; border: 2px solid var(--border);
-  border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite;
+  display: inline-block; width: 13px; height: 13px; border: 2px solid var(--rule);
+  border-top-color: var(--verdigris); border-radius: 50%; animation: spin 0.6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .spinner { animation: none; border-top-color: var(--rule); opacity: 0.6; }
+}
 
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 8px; }
+
+/* ── Responsive baseline: the sidebar collapses to a top bar below a
+   phone/small-tablet width; nothing else needs to change since cards,
+   stat-grid, and tables already reflow via flex-wrap / grid auto-fit /
+   overflow-x. ───────────────────────────────────────────────────── */
+@media (max-width: 760px) {
+  .app-shell { flex-direction: column; }
+  .sidebar {
+    width: 100%; height: auto; position: static; flex-direction: row; flex-wrap: wrap;
+    align-items: center; padding: 12px 16px; border-right: none; border-bottom: 1px solid var(--rule);
+  }
+  .sidebar-brand { padding: 0 16px 0 0; }
+  .nav-item { padding: 8px 12px; border-left: none; border-bottom: 3px solid transparent; }
+  .nav-item.active { border-left-color: transparent; border-bottom-color: var(--verdigris); }
+  .sidebar-footer {
+    margin-top: 0; margin-left: auto; padding: 0 0 0 14px; border-top: none; border-left: 1px solid var(--rule);
+    flex-direction: row; align-items: center;
+  }
+  .main { padding: 18px 16px 40px; }
+}
 </style>
 </head>
 <body>
 
 <div class="app-shell">
   <nav class="sidebar">
-    <div class="sidebar-brand">⚡ live_deploy
+    <div class="sidebar-brand">live_deploy
       <div class="subtitle">Data dispatcher · paper trading</div>
     </div>
     <a class="nav-item" data-nav="dashboard" href="#/dashboard">Dashboard</a>
@@ -422,8 +672,8 @@ async function pollHealth() {
     if (h.kite_connected) {
       bar.innerHTML = `
         <span class="badge ok"><span class="dot"></span> Kite connected</span>
-        <span style="color:var(--fg2)">${h.running_deployments} running · ${h.downstream_subscribers} ws client(s)</span>
-        <div style="display:flex; gap:6px;">
+        <span style="color:var(--parchment)">${h.running_deployments} running · ${h.downstream_subscribers} ws client(s)</span>
+        <div style="display:flex; flex-direction:column; gap:6px;">
           <button class="btn btn-secondary btn-sm" onclick="loginWithKite()">Re-login</button>
           <button class="btn btn-secondary btn-sm" onclick="openManualLoginModal()">Enter manually</button>
         </div>
@@ -432,7 +682,7 @@ async function pollHealth() {
       const label = h.needs_login ? 'Not connected — login required' : 'Disconnected — reconnecting…';
       bar.innerHTML = `
         <span class="badge bad"><span class="dot"></span> ${label}</span>
-        <div style="display:flex; gap:6px;">
+        <div style="display:flex; flex-direction:column; gap:6px;">
           <button class="btn btn-primary btn-sm" onclick="loginWithKite()">Login with Kite</button>
           <button class="btn btn-secondary btn-sm" onclick="openManualLoginModal()">Enter manually</button>
         </div>
@@ -480,7 +730,7 @@ async function submitManualLogin() {
   const msg = document.getElementById('manualLoginMsg');
   const requestToken = document.getElementById('manualRequestToken').value.trim();
   if (!requestToken) {
-    msg.innerHTML = '<span style="color:var(--red)">request_token is required</span>';
+    msg.innerHTML = '<span style="color:var(--loss)">request_token is required</span>';
     return;
   }
   const payload = { request_token: requestToken };
@@ -488,7 +738,7 @@ async function submitManualLogin() {
     const apiKey = document.getElementById('manualApiKey').value.trim();
     const apiSecret = document.getElementById('manualApiSecret').value.trim();
     if (!apiKey || !apiSecret) {
-      msg.innerHTML = '<span style="color:var(--red)">Provide both api_key and api_secret, or uncheck the override</span>';
+      msg.innerHTML = '<span style="color:var(--loss)">Provide both api_key and api_secret, or uncheck the override</span>';
       return;
     }
     payload.api_key = apiKey;
@@ -497,10 +747,10 @@ async function submitManualLogin() {
   msg.textContent = '';
   const { ok, data } = await Api.manualKiteLogin(payload);
   if (!ok) {
-    msg.innerHTML = `<span style="color:var(--red)">${escapeHtml(data.detail || 'Login failed')}</span>`;
+    msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(data.detail || 'Login failed')}</span>`;
     return;
   }
-  msg.innerHTML = '<span style="color:var(--green)">✓ Logged in</span>';
+  msg.innerHTML = '<span style="color:var(--gain)">✓ Logged in</span>';
   setTimeout(() => { closeManualLoginModal(); pollHealth(); }, 600);
 }
 

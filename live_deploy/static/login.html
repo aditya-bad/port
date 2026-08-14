@@ -5,41 +5,85 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>live_deploy — Login</title>
 <style>
+  @font-face {
+    font-family: 'Libre Caslon Text';
+    font-style: normal; font-weight: 700; font-display: swap;
+    src: url('/fonts/caslon-700-normal-latin.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'Libre Caslon Text';
+    font-style: normal; font-weight: 700; font-display: swap;
+    src: url('/fonts/caslon-700-normal-latin-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  }
+  @font-face {
+    font-family: 'IBM Plex Sans';
+    font-style: normal; font-weight: 400; font-display: swap;
+    src: url('/fonts/plexsans-400-normal-latin.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'IBM Plex Sans';
+    font-style: normal; font-weight: 400; font-display: swap;
+    src: url('/fonts/plexsans-400-normal-latin-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  }
+  @font-face {
+    font-family: 'IBM Plex Sans';
+    font-style: normal; font-weight: 500; font-display: swap;
+    src: url('/fonts/plexsans-500-normal-latin.woff2') format('woff2');
+    unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+  }
+  @font-face {
+    font-family: 'IBM Plex Sans';
+    font-style: normal; font-weight: 500; font-display: swap;
+    src: url('/fonts/plexsans-500-normal-latin-ext.woff2') format('woff2');
+    unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+  }
+
   :root {
-    --bg: #0f1117; --bg2: #1a1d28; --fg: #e1e4eb; --fg2: #8b90a0;
-    --accent: #4f8cff; --red: #ef4444; --border: #2d3148;
-    --font: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    --ink: #15130f; --panel: #1d1912; --panel-2: #262016; --rule: #3c3324;
+    --paper: #f2ead9; --parchment: #a5977c;
+    --verdigris: #4f9d92; --loss: #d9634a; --loss-rgb: 217, 99, 74;
+    --font-display: 'Libre Caslon Text', Georgia, 'Times New Roman', serif;
+    --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: var(--font); background: var(--bg); color: var(--fg);
+    font-family: var(--font-body); background: var(--ink); color: var(--paper);
     height: 100vh; display: flex; align-items: center; justify-content: center;
   }
+  a:focus-visible, button:focus-visible, input:focus-visible {
+    outline: 2px solid var(--verdigris); outline-offset: 2px;
+  }
   .card {
-    background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
-    padding: 32px; width: 100%; max-width: 340px;
+    background: var(--panel); border: none; border-top: 2px solid var(--rule);
+    padding: 34px 32px; width: 100%; max-width: 340px;
   }
-  h1 { font-size: 18px; color: var(--accent); margin-bottom: 4px; }
-  .sub { font-size: 12px; color: var(--fg2); margin-bottom: 20px; }
-  label { display: block; font-size: 12px; color: var(--fg2); margin-bottom: 6px; }
+  h1 { font-family: var(--font-display); font-weight: 700; font-size: 20px; color: var(--paper); margin-bottom: 5px; }
+  .sub { font-size: 12px; color: var(--parchment); margin-bottom: 22px; }
+  label { display: block; font-size: 12px; color: var(--parchment); margin-bottom: 6px; }
   input {
-    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--fg);
-    padding: 10px 12px; border-radius: 6px; font-size: 14px; font-family: inherit;
+    width: 100%; background: var(--ink); border: 1px solid var(--rule); color: var(--paper);
+    padding: 10px 12px; border-radius: 2px; font-size: 14px; font-family: inherit;
   }
+  input:focus { border-color: var(--verdigris); }
   button {
-    width: 100%; margin-top: 14px; padding: 10px 14px; border-radius: 6px; border: none;
-    background: var(--accent); color: #fff; font-size: 14px; font-weight: 500; cursor: pointer;
+    width: 100%; margin-top: 16px; padding: 10px 14px; border-radius: 2px; border: none;
+    background: var(--verdigris); color: var(--ink); font-family: var(--font-body);
+    font-size: 14px; font-weight: 600; cursor: pointer; transition: filter 0.15s;
   }
-  button:hover { background: #3d7aee; }
+  button:hover { filter: brightness(0.92); }
   button:disabled { opacity: 0.6; cursor: not-allowed; }
   .msg { margin-top: 12px; font-size: 13px; min-height: 18px; }
-  .msg.error { color: var(--red); }
+  .msg.error { color: var(--loss); }
 </style>
 </head>
 <body>
 
 <div class="card">
-  <h1>⚡ live_deploy</h1>
+  <h1>live_deploy</h1>
   <div class="sub">This app's own login — unrelated to your Kite credentials.</div>
   <form id="loginForm">
     <label for="password">Password</label>

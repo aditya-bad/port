@@ -43,7 +43,7 @@ const Instruments = {
         <td>${i.instrument_token}</td>
         <td>${i.static ? 'tokens.json' : 'dynamic'}</td>
         <td>${i.static
-          ? '<span style="color:var(--fg2)">permanent</span>'
+          ? '<span style="color:var(--parchment)">permanent</span>'
           : `<button class="btn btn-danger btn-sm" onclick="Instruments.unsubscribe(${i.instrument_token})">Unsubscribe</button>`}
         </td>
       </tr>`).join('')}</tbody></table>
@@ -100,13 +100,13 @@ const Instruments = {
     return `<tr>
       <td>${escapeHtml(r.tradingsymbol)}</td>
       <td>${escapeHtml(r.name)}</td>
-      <td>${escapeHtml(r.exchange)}<span style="color:var(--fg2)"> · ${escapeHtml(r.segment)}</span></td>
+      <td>${escapeHtml(r.exchange)}<span style="color:var(--parchment)"> · ${escapeHtml(r.segment)}</span></td>
       <td>${escapeHtml(r.instrument_type)}</td>
       <td>${r.strike != null ? fmtNum(r.strike, 2) : '—'}</td>
       <td>${r.expiry || '—'}</td>
       <td>${r.instrument_token}</td>
       <td>${subscribed
-        ? '<span style="color:var(--green)">✓ subscribed</span>'
+        ? '<span style="color:var(--gain)">✓ subscribed</span>'
         : `<button class="btn btn-primary btn-sm" onclick="Instruments.subscribe(${r.instrument_token}, '${escapeHtml(r.tradingsymbol).replace(/'/g, "\\'")}')">Subscribe</button>`}
       </td>
     </tr>`;

@@ -158,9 +158,9 @@ async function submitInstrument() {
   const msg = document.getElementById('instrumentMsg');
   const token = Number(document.getElementById('instToken').value);
   const symbol = document.getElementById('instSymbol').value.trim();
-  if (!token) { msg.innerHTML = '<span style="color:var(--red)">Instrument token is required</span>'; return; }
+  if (!token) { msg.innerHTML = '<span style="color:var(--loss)">Instrument token is required</span>'; return; }
   const { ok, data } = await Api.addInstrument(token, symbol);
-  if (!ok) { msg.innerHTML = `<span style="color:var(--red)">${data.detail || 'Failed'}</span>`; return; }
-  msg.innerHTML = '<span style="color:var(--green)">✓ Subscribed</span>';
+  if (!ok) { msg.innerHTML = `<span style="color:var(--loss)">${data.detail || 'Failed'}</span>`; return; }
+  msg.innerHTML = '<span style="color:var(--gain)">✓ Subscribed</span>';
   setTimeout(() => { closeInstrumentModal(); Dashboard.load(); }, 600);
 }

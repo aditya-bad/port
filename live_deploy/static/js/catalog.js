@@ -72,7 +72,7 @@ async function submitDeploy() {
   try {
     config = JSON.parse(document.getElementById('deployConfig').value || '{}');
   } catch (e) {
-    msg.innerHTML = `<span style="color:var(--red)">Invalid config JSON: ${e.message}</span>`;
+    msg.innerHTML = `<span style="color:var(--loss)">Invalid config JSON: ${e.message}</span>`;
     return;
   }
   const body = {
@@ -83,15 +83,15 @@ async function submitDeploy() {
     config,
   };
   if (!body.deployment_name) {
-    msg.innerHTML = '<span style="color:var(--red)">Deployment name is required</span>';
+    msg.innerHTML = '<span style="color:var(--loss)">Deployment name is required</span>';
     return;
   }
   msg.innerHTML = '<span class="spinner"></span> Deploying…';
   const { ok, data } = await Api.createDeployment(body);
   if (!ok) {
-    msg.innerHTML = `<span style="color:var(--red)">${data.detail || 'Failed'}</span>`;
+    msg.innerHTML = `<span style="color:var(--loss)">${data.detail || 'Failed'}</span>`;
     return;
   }
-  msg.innerHTML = `<span style="color:var(--green)">✓ Deployed "${escapeHtml(data.deployment_name)}"</span>`;
+  msg.innerHTML = `<span style="color:var(--gain)">✓ Deployed "${escapeHtml(data.deployment_name)}"</span>`;
   setTimeout(() => { closeDeployModal(); Catalog.load(); }, 800);
 }

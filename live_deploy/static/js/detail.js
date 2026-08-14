@@ -188,7 +188,7 @@ const Detail = {
     const rest = {};
     Object.keys(meta).forEach(k => { if (!known.includes(k)) rest[k] = meta[k]; });
     if (Object.keys(rest).length) html += renderJsonBlock('other metadata', rest);
-    if (!html) html = '<div class="trade-json" style="color:var(--fg2)">No structured metadata recorded for this fill.</div>';
+    if (!html) html = '<div class="trade-json" style="color:var(--parchment)">No structured metadata recorded for this fill.</div>';
     return html;
   },
 
@@ -275,7 +275,7 @@ const Detail = {
 // ── Shared render helpers for this view ────────────────────────────
 
 function formatConfigValue(v) {
-  if (v === null || v === undefined) return '<span style="color:var(--fg2)">null</span>';
+  if (v === null || v === undefined) return '<span style="color:var(--parchment)">null</span>';
   if (typeof v === 'object') return `<span class="trade-json">${escapeHtml(JSON.stringify(v))}</span>`;
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   return escapeHtml(String(v));
@@ -316,7 +316,7 @@ function renderEquityChart(snapshots) {
     const y = H - PAD - ((s.total_value - min) / range) * (H - 2 * PAD);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
-  const color = values[values.length - 1] >= values[0] ? 'var(--green)' : 'var(--red)';
+  const color = values[values.length - 1] >= values[0] ? 'var(--gain)' : 'var(--loss)';
   return `
     <div class="equity-wrap">
       <svg class="equity-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">

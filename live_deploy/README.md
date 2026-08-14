@@ -1292,6 +1292,83 @@ specifically (confirming NIFTY 50's `instrument_token` matches the exact
 redirect-vs-manual-login parity plus the override's disk/log audit, and
 one covering the env-var startup path end to end.
 
+## What's here (Step 16: UI design pass)
+
+A visual redesign, not a functional change — every id/class the JS reads
+or writes, every endpoint, every data shape is untouched; this is
+`static/index.html`'s CSS/markup, `static/login.html`, and ~13 inline
+`style="color:var(--x)"` references in `static/js/*.js`, rewritten
+top to bottom. The prior look (`#0f1117` ground, `#4f8cff` blue accent,
+a system-font stack, one repeated bordered-box treatment for every
+surface) was a generic dark-admin-template default with nothing specific
+to this app. Replaced with a design grounded in what this actually is: a
+personal, serious trading terminal for Indian index derivatives, checked
+daily, not a SaaS dashboard.
+
+**Color** — 6 named tokens (`static/index.html`'s `:root`), a warm
+near-black graphite (not navy) standing in for a desk lamp over a ledger
+at night, with a verdigris (patinated brass-instrument teal — explicitly
+not blue) accent kept out of the amber/olive/vermillion family the
+semantic colors already use, so "this is clickable" and "this position
+is paused" never share a hue. `--gain`/`--loss` were tuned by actually
+computing WCAG contrast (not eyeballed) against `--ink`/`--panel-2` —
+see `DESIGN_PLAN.md`-equivalent reasoning inline in the commit — since
+the first-pass values were correctly warm/muted in hue but too dark in
+value for small bold table/badge text.
+
+**Type** — self-hosted (`static/fonts/*.woff2`, 18 files, no CDN
+dependency, consistent with this project's standalone-server
+philosophy; both `latin` and `latin-ext` unicode-range subsets fetched
+per weight/style specifically because `latin` alone does NOT cover ₹
+U+20B9, which `fmtMoney()` renders in every money value this app shows).
+Libre Caslon Text (financial-print/ledger heritage) for headings and
+headline stat-card numbers; IBM Plex Sans (enterprise/financial-
+computing heritage) for body/UI; IBM Plex Mono for anything tabular —
+strikes, premiums, timestamps, the raw trigger-metadata JSON blocks.
+
+**Layout** — structural differentiation instead of one recolored card
+style everywhere: the sidebar keeps a solid accent-colored left edge for
+the active item; cards/stat-cards/tables lost their borders in favor of
+a `--rule` top edge only (real negative space between them does the
+separating); table headers get a heavier 2px rule so they read as a
+fixed masthead; modals are now the ONLY surface keeping a full
+bordered+elevated treatment, so "floating above everything" means
+something when it appears.
+
+**Signature** — the expandable trade row (click a fill, see its
+`trigger_values`/`target_basis`/`resulting_state`) is reframed as
+pulling an order ticket out from under the ledger row: a small circular
+marker instead of a triangle, a dashed top border evoking a tear-line,
+an inset accent-colored spine rule down the revealed ticket's left edge,
+small-caps labels with a left rule instead of plain bold text. Chosen
+over the trigger badges deliberately — the expand row is the interaction
+that actually proves a trade was justified, not just logged, which is
+the whole reason the trade-reason metadata schema (Step 14) exists.
+Trigger badges stay quiet by comparison: solid dot + solid small chip,
+not the translucent `rgba(color,0.15)` treatment every Tailwind
+dashboard uses for the same kind of tag.
+
+Single dark theme by deliberate choice, not an oversight — the palette
+concept (a lit room at night) has no light-mode inverse that's actually
+the same idea, the app has no theme toggle anywhere and never has, and
+the one user (per the brief) never asked for one. Colors are still
+painted explicitly rather than left to rely on browser/OS defaults.
+
+**Verified**: the full existing regression suite passes unchanged (zero
+backend files touched — this is a `static/` diff only); every
+`getElementById` target and every CSS class name the JS reads (`.pos`/
+`.neg`, `.tag-{status}`, `.trig-{stop,profit,adjust,entry,other}`,
+`.trigger-badge`, `.open`) cross-checked present in the new stylesheet;
+no orphaned references to the old token names (`var(--bg2)`,
+`var(--accent)`, etc.) anywhere in `static/`. Every view (Dashboard,
+Strategy Catalog, Deployed Strategies, Detail's 4 tabs, Instruments, the
+login page) screenshotted against a seeded deployment with real
+positions/trades/rich trigger metadata and checked against the design
+plan; a narrow-viewport pass confirmed the sidebar collapses to a top
+bar below ~760px; keyboard `:focus-visible` and
+`prefers-reduced-motion` (the spinner is the app's only animation) are
+both explicitly handled.
+
 ## Setup
 
 ```bash
