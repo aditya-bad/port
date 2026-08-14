@@ -1292,82 +1292,97 @@ specifically (confirming NIFTY 50's `instrument_token` matches the exact
 redirect-vs-manual-login parity plus the override's disk/log audit, and
 one covering the env-var startup path end to end.
 
-## What's here (Step 16: UI design pass)
+## What's here (Step 16: UI design pass, then a second pass — "Bazaar Ledger")
 
-A visual redesign, not a functional change — every id/class the JS reads
-or writes, every endpoint, every data shape is untouched; this is
-`static/index.html`'s CSS/markup, `static/login.html`, and ~13 inline
-`style="color:var(--x)"` references in `static/js/*.js`, rewritten
-top to bottom. The prior look (`#0f1117` ground, `#4f8cff` blue accent,
-a system-font stack, one repeated bordered-box treatment for every
-surface) was a generic dark-admin-template default with nothing specific
-to this app. Replaced with a design grounded in what this actually is: a
-personal, serious trading terminal for Indian index derivatives, checked
-daily, not a SaaS dashboard.
+Two visual redesigns, neither a functional change — every id/class the
+JS reads or writes, every endpoint, every data shape has stayed
+untouched across both; only `static/index.html`'s CSS/markup,
+`static/login.html`, and ~13 inline `style="color:var(--x)"` references
+in `static/js/*.js` moved. The first pass replaced the original generic
+dark-admin-template look (`#0f1117` ground, `#4f8cff` blue accent, a
+system-font stack, one repeated bordered-box treatment for every
+surface) with a quiet dark "ledger at night" system — warm graphite,
+Libre Caslon Text headings, a verdigris accent, soft rule-top cards.
+Shown to the user, who wanted the visual *language* of a different
+reference design entirely (thick ink borders, flat offset "stamped"
+shadows, blocky bordered nav buttons, alternating-tint card grids — a
+workbook/ledger-form aesthetic, not a soft glass-panel one) while
+explicitly asking for a genuinely different, surprising palette rather
+than that reference's own forest-green-on-cream. **The current design
+is the second pass** — same structural language the user pointed to,
+a palette built for this instead of reused from either source.
 
-**Color** — 6 named tokens (`static/index.html`'s `:root`), a warm
-near-black graphite (not navy) standing in for a desk lamp over a ledger
-at night, with a verdigris (patinated brass-instrument teal — explicitly
-not blue) accent kept out of the amber/olive/vermillion family the
-semantic colors already use, so "this is clickable" and "this position
-is paused" never share a hue. `--gain`/`--loss` were tuned by actually
-computing WCAG contrast (not eyeballed) against `--ink`/`--panel-2` —
-see `DESIGN_PLAN.md`-equivalent reasoning inline in the commit — since
-the first-pass values were correctly warm/muted in hue but too dark in
-value for small bold table/badge text.
+**Color — "Bazaar Ledger."** 10 named tokens (`static/index.html`'s
+`:root`): a warm rice-paper ground and deep-indigo border ink (not
+black, not navy) standing in for a ledger page and its ruling, with a
+marigold/saffron accent — the literal color of festoons and trading-
+floor energy on muhurat-trading morning, when Indian exchanges open at
+dawn for a symbolic first trade — deliberately not the blue, teal, or
+graphite this app has already tried. Semantic colors pull from the same
+everyday Indian color vocabulary rather than generic Tailwind
+red/green: sindoor red for loss, jade for gain, turmeric/ochre for
+paused. The accent is the only *cool*-leaning hue in a mostly warm
+palette (marigold itself is warm, but sits apart from the red/green/
+ochre trio by being the one clearly "clickable" color) — kept out of
+the loss/gain/paused hue family on purpose, same reasoning as the first
+pass, so "this is a button" and "this position needs attention" never
+share a color.
 
-**Type** — self-hosted (`static/fonts/*.woff2`, 18 files, no CDN
-dependency, consistent with this project's standalone-server
-philosophy; both `latin` and `latin-ext` unicode-range subsets fetched
-per weight/style specifically because `latin` alone does NOT cover ₹
-U+20B9, which `fmtMoney()` renders in every money value this app shows).
-Libre Caslon Text (financial-print/ledger heritage) for headings and
-headline stat-card numbers; IBM Plex Sans (enterprise/financial-
-computing heritage) for body/UI; IBM Plex Mono for anything tabular —
-strikes, premiums, timestamps, the raw trigger-metadata JSON blocks.
+**Type** — self-hosted (`static/fonts/*.woff2`, no CDN dependency,
+consistent with this project's standalone-server philosophy; both
+`latin` and `latin-ext` unicode-range subsets fetched per weight
+specifically because `latin` alone does NOT cover ₹ U+20B9, which
+`fmtMoney()` renders in every money value this app shows). Single
+family this pass — IBM Plex Sans, weights 400 through 700, tight
+letter-spacing on headlines — carrying both display and body roles
+(the reference's own Inter-everywhere approach honored directly); IBM
+Plex Mono unchanged for anything tabular. Libre Caslon Text (the first
+pass's serif display face) is no longer used and its font files were
+removed — this system has no serif anywhere, matching the reference.
 
-**Layout** — structural differentiation instead of one recolored card
-style everywhere: the sidebar keeps a solid accent-colored left edge for
-the active item; cards/stat-cards/tables lost their borders in favor of
-a `--rule` top edge only (real negative space between them does the
-separating); table headers get a heavier 2px rule so they read as a
-fixed masthead; modals are now the ONLY surface keeping a full
-bordered+elevated treatment, so "floating above everything" means
-something when it appears.
+**Layout** — the reference's own bordered-frame-plus-offset-shadow
+language, applied to this app's existing structure rather than a
+literal copy of its DOM: cards, the table wrap, and modals all carry a
+3px `--line` border; modals get the heaviest offset shadow in the app
+so "floating above everything" is unmistakable; stat-cards keep a
+lighter 2px-no-shadow treatment so they read as flatter KPI boxes, not
+identical to a full "frame." Sidebar nav items became individually
+bordered, uppercase, bold buttons (solid accent fill when active)
+instead of the first pass's plain underlined-link list. The Strategy
+Catalog — previously one narrow column of cards — is now a responsive
+grid with alternating tints across every third card, mirroring the
+reference's own catalog treatment; nothing else needed a DOM change,
+only `#catalogList`'s own CSS.
 
-**Signature** — the expandable trade row (click a fill, see its
-`trigger_values`/`target_basis`/`resulting_state`) is reframed as
-pulling an order ticket out from under the ledger row: a small circular
-marker instead of a triangle, a dashed top border evoking a tear-line,
-an inset accent-colored spine rule down the revealed ticket's left edge,
-small-caps labels with a left rule instead of plain bold text. Chosen
-over the trigger badges deliberately — the expand row is the interaction
-that actually proves a trade was justified, not just logged, which is
-the whole reason the trade-reason metadata schema (Step 14) exists.
-Trigger badges stay quiet by comparison: solid dot + solid small chip,
-not the translucent `rgba(color,0.15)` treatment every Tailwind
-dashboard uses for the same kind of tag.
+**Signature** — the expandable trade row keeps its role as the one
+deliberately bold interaction, reframed again for this system: instead
+of the first pass's soft dashed "torn ticket," it's now a stamped
+audit slip — a heavy top+bottom rule frames the reveal, and each
+`trigger_values`/`target_basis`/`resulting_state` block becomes its own
+small bordered card nested inside, the same frame-within-a-frame
+language the rest of the app now uses at a smaller scale. The expand
+marker switched from a circle to a hollow/filled square (`□`/`■`),
+matching the blockier overall vocabulary. Trigger badges stay smaller
+and quieter than `.tag` chips by design, so they don't compete with the
+row's own reveal.
 
-Single dark theme by deliberate choice, not an oversight — the palette
-concept (a lit room at night) has no light-mode inverse that's actually
-the same idea, the app has no theme toggle anywhere and never has, and
-the one user (per the brief) never asked for one. Colors are still
-painted explicitly rather than left to rely on browser/OS defaults.
+Single light theme by deliberate choice (the reference itself has no
+theme toggle either) — colors are still painted explicitly rather than
+left to rely on browser/OS defaults, satisfying the "design both themes
+unless deliberately committing to one visual world" rule from the same
+place either way.
 
 **Verified**: the full existing regression suite passes unchanged (zero
-backend files touched — this is a `static/` diff only); every
-`getElementById` target and every CSS class name the JS reads (`.pos`/
-`.neg`, `.tag-{status}`, `.trig-{stop,profit,adjust,entry,other}`,
-`.trigger-badge`, `.open`) cross-checked present in the new stylesheet;
-no orphaned references to the old token names (`var(--bg2)`,
-`var(--accent)`, etc.) anywhere in `static/`. Every view (Dashboard,
-Strategy Catalog, Deployed Strategies, Detail's 4 tabs, Instruments, the
-login page) screenshotted against a seeded deployment with real
-positions/trades/rich trigger metadata and checked against the design
-plan; a narrow-viewport pass confirmed the sidebar collapses to a top
-bar below ~760px; keyboard `:focus-visible` and
-`prefers-reduced-motion` (the spinner is the app's only animation) are
-both explicitly handled.
+backend files touched, both passes — this is a `static/` diff only);
+every `getElementById` target and every CSS class name the JS reads
+(`.pos`/`.neg`, `.tag-{status}`, `.trig-{stop,profit,adjust,entry,other}`,
+`.trigger-badge`, `.open`) re-cross-checked present in the rewritten
+stylesheet; no orphaned references to any prior palette's token names
+anywhere in `static/`; every JS file re-syntax-checked. Every view
+(Dashboard, Strategy Catalog, Deployed Strategies, Detail's 4 tabs,
+Instruments, the login page, the deploy/instrument/manual-login modals)
+re-screenshotted against the same seeded deployment data used for the
+first pass and checked by inspection.
 
 ## Setup
 

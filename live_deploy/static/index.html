@@ -5,60 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>live_deploy</title>
 <style>
-/* ── Self-hosted type — Libre Caslon Text (display), IBM Plex Sans
-   (body/UI), IBM Plex Mono (data). No CDN dependency, consistent with
-   this app's standalone-server philosophy. Each family/weight ships as
-   two subset files (latin + latin-ext) so the unicode-range split
-   covers ₹ (U+20B9, in latin-ext) — every money value in this app
-   renders it. See RUN_GUIDE.md / static/fonts/ for the source. ────── */
-@font-face {
-  font-family: 'Libre Caslon Text';
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/caslon-400-italic-latin.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'Libre Caslon Text';
-  font-style: italic;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/caslon-400-italic-latin-ext.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
-@font-face {
-  font-family: 'Libre Caslon Text';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/caslon-400-normal-latin.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'Libre Caslon Text';
-  font-style: normal;
-  font-weight: 400;
-  font-display: swap;
-  src: url('/fonts/caslon-400-normal-latin-ext.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
-@font-face {
-  font-family: 'Libre Caslon Text';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('/fonts/caslon-700-normal-latin.woff2') format('woff2');
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-@font-face {
-  font-family: 'Libre Caslon Text';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('/fonts/caslon-700-normal-latin-ext.woff2') format('woff2');
-  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
+/* ── Self-hosted type — IBM Plex Sans carries both display (700,
+   tight tracking) and body/UI roles; IBM Plex Mono for anything
+   tabular — strikes, premiums, timestamps, raw trigger JSON. No CDN
+   dependency, consistent with this app's standalone-server
+   philosophy. Both latin and latin-ext subsets per weight so the
+   unicode-range split covers ₹ (U+20B9, in latin-ext) — every money
+   value this app renders. See static/fonts/. ───────────────────── */
 @font-face {
   font-family: 'IBM Plex Sans';
   font-style: normal;
@@ -105,6 +58,22 @@
   font-weight: 600;
   font-display: swap;
   src: url('/fonts/plexsans-600-normal-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/plexsans-700-normal-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/plexsans-700-normal-latin-ext.woff2') format('woff2');
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 @font-face {
@@ -156,40 +125,50 @@
   unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
-/* ── Design tokens ───────────────────────────────────────────────────
-   A ledger at night, not a SaaS admin panel: warm graphite ground
-   (never navy), brass/verdigris instrument colors, red/olive ledger
-   ink for gains and losses. Single dark world by deliberate choice —
-   see DESIGN_PLAN.md — so every color is painted explicitly, no
-   prefers-color-scheme branch. */
+/* ── Design tokens — "Bazaar Ledger": a trading floor on Diwali
+   muhurat-trading morning, not a forest cabin. Warm rice-paper ground,
+   deep indigo ink borders (khadi/indigo-dye, not navy), marigold
+   accent (the actual color of festoons and trading-floor energy on
+   the one day Indian exchanges open at dawn), sindoor red for loss,
+   jade for gain, turmeric for paused/warn. Thick borders + flat
+   offset "stamped" shadows instead of soft blur — a workbook/ledger-
+   form language, not a glass-panel one. Single light theme by
+   deliberate choice (same reasoning as before: no toggle, one user,
+   colors painted explicitly either way). ───────────────────────── */
 :root {
-  --ink: #15130f;        /* page ground */
-  --panel: #1d1912;       /* sidebar / card / table surface */
-  --panel-2: #262016;     /* modals, hover, badge fill */
-  --rule: #3c3324;        /* hairline borders */
-  --paper: #f2ead9;       /* primary text */
-  --parchment: #a5977c;   /* secondary text / labels */
+  --bg: #F6F1E4;          /* page ground — warm rice-paper */
+  --paper: #FFFDF6;        /* card / input / table surface — brightest */
+  --panel: #EFE4C8;        /* sidebar / stat-card surface — turmeric-tinted */
+  --stone: #E3D6B0;        /* alternating tint 1 */
+  --sand: #F1E7CC;         /* alternating tint 2 / hover wash */
+  --ink: #1B1130;          /* primary text — deep indigo, not black */
+  --parchment: #6B5A72;    /* secondary text / muted labels — dusty mauve */
+  --line: #2A1B45;         /* border ink — deep indigo */
 
-  --verdigris: #4f9d92;   /* accent — links, actions, active nav, focus */
-  --gain: #86a556;        /* profit */
-  --loss: #d9634a;        /* loss / danger */
-  --brass: #c99348;       /* paused / adjust / warn */
+  --accent: #E2711D;       /* marigold/saffron — links, primary actions, active nav */
+  --accent-soft: #F6C177;  /* lighter marigold — logo fill */
+  --gain: #1F7A5C;         /* jade — profit */
+  --gain-soft: #DCEEE3;
+  --loss: #B23A48;         /* sindoor — loss / danger */
+  --loss-soft: #F7E1E1;
+  --brass: #A6741A;        /* turmeric/ochre — paused / adjust / warn */
+  --brass-soft: #F3E6C8;
+  --info: #2D5C7A;         /* indigo-teal — neutral/entry accent */
+  --info-soft: #DCEAF0;
 
-  --verdigris-rgb: 79, 157, 146;
-  --gain-rgb: 134, 165, 86;
-  --loss-rgb: 217, 99, 74;
-  --brass-rgb: 201, 147, 72;
+  --shadow: 12px 12px 0 rgba(27, 17, 48, 0.14);
+  --shadow-sm: 6px 6px 0 rgba(27, 17, 48, 0.14);
 
-  --font-display: 'Libre Caslon Text', Georgia, 'Times New Roman', serif;
+  --font-display: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'IBM Plex Mono', 'Cascadia Code', Consolas, monospace;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
-  font-family: var(--font-body); background: var(--ink); color: var(--paper);
+  font-family: var(--font-body); background: var(--bg); color: var(--ink);
   line-height: 1.5; font-variant-numeric: tabular-nums;
 }
-a { color: var(--verdigris); }
+a { color: var(--accent); }
 
 /* Keyboard-focus baseline — every interactive element gets a visible,
    on-brand ring; nothing relies on the (often invisible) UA default. */
@@ -197,245 +176,258 @@ a:focus-visible, button:focus-visible, input:focus-visible,
 select:focus-visible, textarea:focus-visible,
 .nav-item:focus-visible, .clickable-row:focus-visible,
 tr.trade-row:focus-visible {
-  outline: 2px solid var(--verdigris);
+  outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
 
 /* ── App shell: persistent sidebar + scrolling main content ────────── */
 .app-shell { display: flex; min-height: 100vh; }
 .sidebar {
-  width: 220px; flex-shrink: 0; background: var(--panel); border-right: 1px solid var(--rule);
-  display: flex; flex-direction: column; padding: 20px 0; position: sticky; top: 0; height: 100vh;
+  width: 220px; flex-shrink: 0; background: var(--panel); border-right: 3px solid var(--line);
+  display: flex; flex-direction: column; padding: 20px 16px; position: sticky; top: 0; height: 100vh;
 }
 .sidebar-brand {
-  font-family: var(--font-display); font-size: 18px; font-weight: 700;
-  color: var(--paper); padding: 0 20px 20px; letter-spacing: 0.2px;
+  display: flex; align-items: center; gap: 12px; padding: 0 0 18px;
+  border-bottom: 3px solid var(--line); margin-bottom: 16px;
+}
+.brand-mark {
+  width: 40px; height: 40px; flex-shrink: 0; border: 3px solid var(--line);
+  background: var(--accent-soft); color: var(--ink); display: grid; place-items: center;
+  font-weight: 700; font-size: 16px; font-family: var(--font-display);
+}
+.sidebar-brand b {
+  display: block; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; color: var(--ink);
 }
 .sidebar-brand .subtitle {
-  font-family: var(--font-display); font-style: italic; font-weight: 400;
-  font-size: 12px; color: var(--parchment); margin-top: 3px;
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.09em; font-weight: 700;
+  color: var(--parchment); margin-top: 3px;
 }
 .nav-item {
-  display: block; padding: 10px 20px; color: var(--parchment); text-decoration: none;
-  font-size: 13px; font-weight: 500; border-left: 3px solid transparent; cursor: pointer;
+  display: block; margin: 0 0 8px; padding: 11px 12px; border: 3px solid var(--line);
+  background: var(--paper); color: var(--ink); text-decoration: none;
+  font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; cursor: pointer;
 }
-.nav-item:hover { color: var(--paper); background: var(--panel-2); }
-.nav-item.active { color: var(--paper); background: var(--panel-2); border-left-color: var(--verdigris); }
+.nav-item:hover { background: var(--stone); }
+.nav-item.active { background: var(--accent); color: #fff; }
 .sidebar-footer {
-  margin-top: auto; padding: 16px 20px 0; border-top: 1px solid var(--rule);
+  margin-top: auto; padding: 16px 0 0; border-top: 3px solid var(--line);
   display: flex; flex-direction: column; gap: 10px;
 }
 
 .main { flex: 1; min-width: 0; padding: 28px 32px 60px; max-width: 1300px; }
 .view { display: none; }
 .view.active { display: block; }
-.view-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
-.view-header h1 { font-family: var(--font-display); font-weight: 700; font-size: 22px; }
-.view-header .view-sub {
-  font-family: var(--font-display); font-style: italic; font-weight: 400;
-  font-size: 13px; color: var(--parchment); margin-top: 3px;
-}
+.view-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
+.view-header h1 { font-family: var(--font-display); font-weight: 700; font-size: 30px; letter-spacing: -0.03em; }
+.view-header .view-sub { font-size: 11.5px; color: var(--parchment); margin-top: 6px; max-width: 640px; line-height: 1.6; font-weight: 500; }
 
 .status-bar { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-size: 12px; }
 .badge {
-  display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px;
-  border-radius: 3px; font-size: 12px; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px;
+  border: 2px solid var(--line); background: var(--panel); font-size: 10px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: 0.03em;
 }
-.badge.ok { background: rgba(var(--gain-rgb), 0.14); color: var(--gain); }
-.badge.bad { background: rgba(var(--loss-rgb), 0.14); color: var(--loss); }
+.badge.ok { background: var(--gain-soft); color: var(--gain); }
+.badge.bad { background: var(--loss-soft); color: var(--loss); }
 .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
 .btn {
-  padding: 7px 14px; border-radius: 3px; border: none; cursor: pointer;
-  font-family: var(--font-body); font-size: 13px; font-weight: 600; transition: filter 0.15s, border-color 0.15s, background 0.15s;
+  padding: 9px 13px; border: 3px solid var(--line); cursor: pointer; background: var(--paper); color: var(--ink);
+  font-family: var(--font-body); font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em;
+  transition: background 0.15s;
 }
-.btn-primary { background: var(--verdigris); color: var(--ink); }
-.btn-primary:hover { filter: brightness(0.92); }
-.btn-secondary { background: var(--panel-2); color: var(--paper); border: 1px solid var(--rule); }
-.btn-secondary:hover { border-color: var(--parchment); }
-.btn-danger { background: rgba(var(--loss-rgb), 0.15); color: var(--loss); border: 1px solid rgba(var(--loss-rgb), 0.35); }
-.btn-danger:hover { background: rgba(var(--loss-rgb), 0.25); }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--line); }
+.btn-primary:hover { background: #c65f13; }
+.btn-secondary { background: var(--panel); color: var(--ink); }
+.btn-secondary:hover { background: var(--stone); }
+.btn-danger { background: var(--loss-soft); color: var(--loss); }
+.btn-danger:hover { background: #f0c7ca; }
+.btn-sm { padding: 6px 10px; font-size: 9.5px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 section { margin-bottom: 28px; }
 section h2 {
-  font-family: var(--font-body); font-size: 12px; text-transform: uppercase; letter-spacing: 0.7px;
-  font-weight: 600; color: var(--parchment); margin-bottom: 12px; display: flex; align-items: center;
+  font-family: var(--font-body); font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em;
+  font-weight: 800; color: var(--parchment); margin-bottom: 12px; display: flex; align-items: center;
   justify-content: space-between;
 }
 
-/* ── Cards: flat fields with a rule across the top, like a ledger
-   column head — not a bordered box. The gap between cards (real
-   negative space) does the separating, not a hairline around each. */
+/* ── Cards: a bordered, offset-shadow "frame" — the reference's own
+   stamped-block language, not a soft glass panel. ─────────────────── */
 .card {
-  background: var(--panel); border: none; border-top: 2px solid var(--rule); border-radius: 0;
-  padding: 16px 18px; margin-bottom: 10px;
+  background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm);
+  padding: 16px 18px; margin-bottom: 14px;
 }
 .card-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
-.card-title { font-family: var(--font-body); font-size: 14px; font-weight: 600; }
-.card-sub { font-size: 12px; color: var(--parchment); margin-top: 2px; }
-.card-meta { display: flex; gap: 16px; font-size: 12px; color: var(--parchment); margin-top: 8px; flex-wrap: wrap; }
-.card-meta b { color: var(--paper); font-weight: 600; font-family: var(--font-mono); }
-.card-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.card-title { font-family: var(--font-body); font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+.card-sub { font-size: 11.5px; color: var(--parchment); margin-top: 4px; line-height: 1.5; }
+.card-meta { display: flex; gap: 16px; font-size: 10.5px; color: var(--parchment); margin-top: 10px; flex-wrap: wrap; }
+.card-meta b { color: var(--ink); font-weight: 700; font-family: var(--font-mono); }
+.card-actions { display: flex; gap: 8px; flex-shrink: 0; flex-wrap: wrap; }
+/* Strategy Catalog is the one place .card renders in a grid, each card
+   getting an alternating tint — the reference's own catalog treatment. */
+#catalogList { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+#catalogList .card { display: flex; flex-direction: column; min-height: 190px; margin-bottom: 0; }
+#catalogList .card .card-actions { margin-top: auto; padding-top: 16px; }
+#catalogList .card:nth-child(3n+2) { background: var(--sand); }
+#catalogList .card:nth-child(3n+3) { background: var(--gain-soft); }
 
 .tag {
-  display: inline-block; padding: 2px 8px; border-radius: 2px; font-size: 11px; font-weight: 600;
-  text-transform: uppercase; letter-spacing: 0.4px;
+  display: inline-block; padding: 3px 8px; border: 2px solid var(--line); font-size: 9.5px; font-weight: 800;
+  text-transform: uppercase; letter-spacing: 0.04em;
 }
-.tag-active { background: rgba(var(--gain-rgb), 0.14); color: var(--gain); }
-.tag-paused { background: rgba(var(--brass-rgb), 0.14); color: var(--brass); }
-.tag-stopped { background: rgba(var(--loss-rgb), 0.14); color: var(--loss); }
-.tag-warn { background: rgba(var(--brass-rgb), 0.14); color: var(--brass); }
+.tag-active { background: var(--gain-soft); color: var(--gain); }
+.tag-paused { background: var(--brass-soft); color: var(--brass); }
+.tag-stopped { background: var(--stone); color: var(--parchment); }
+.tag-warn { background: var(--brass-soft); color: var(--brass); }
 
 .empty { color: var(--parchment); font-size: 13px; padding: 22px; text-align: center;
-  border: 1px dashed var(--rule); }
+  border: 2px dashed var(--line); background: var(--paper); }
 
-/* ── Tables: the actual workhorse. A heavier header rule so it reads
-   as a fixed masthead over scrolling data; numeric cells right where
-   it makes sense, always tabular Plex Mono. */
+/* ── Tables: thick header rule, bordered+shadowed wrap — the
+   workbook's own ledger-page treatment. ───────────────────────────── */
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
-th { text-align: left; padding: 8px 10px; color: var(--parchment); font-weight: 600;
-  border-bottom: 2px solid var(--rule); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px;
+th { text-align: left; padding: 10px 10px; color: var(--parchment); font-weight: 800;
+  border-bottom: 3px solid var(--line); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em;
   font-family: var(--font-body); }
-td { padding: 7px 10px; border-bottom: 1px solid var(--rule); font-family: var(--font-mono); }
-.pos, .neg { padding-left: 8px; border-left: 2px solid transparent; }
-.pos { color: var(--gain); border-left-color: rgba(var(--gain-rgb), 0.45); }
-.neg { color: var(--loss); border-left-color: rgba(var(--loss-rgb), 0.45); }
-.table-wrap { overflow-x: auto; }
+td { padding: 9px 10px; border-bottom: 2px solid rgba(42, 27, 69, 0.14); font-family: var(--font-mono); }
+.pos { color: var(--gain); font-weight: 700; }
+.neg { color: var(--loss); font-weight: 700; }
+.table-wrap { overflow-x: auto; border: 3px solid var(--line); background: var(--paper); box-shadow: var(--shadow-sm); }
 .table-note { color: var(--parchment); font-size: 11px; margin-top: 8px; }
 .deploy-table th:nth-child(n+5), .deploy-table td:nth-child(n+5) { text-align: right; }
 
-/* ── Stat cards (Dashboard) — the one place a number is the headline
-   of a card, so it earns the display face. ────────────────────────── */
-.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-bottom: 26px; }
-.stat-card { background: var(--panel); border: none; border-top: 2px solid var(--rule); border-radius: 0; padding: 16px 18px; }
-.stat-card .stat-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; color: var(--parchment); margin-bottom: 10px; }
-.stat-card .stat-value { font-family: var(--font-display); font-size: 25px; font-weight: 700; }
-.stat-card .stat-sub { font-size: 11.5px; color: var(--parchment); margin-top: 10px; line-height: 1.7; font-family: var(--font-mono); }
+/* ── Stat cards (Dashboard) — a flatter KPI-box treatment (2px, no
+   shadow) so .card/.table-wrap/.modal's full "frame" treatment (3px +
+   shadow) stays meaningfully heavier, not identical everywhere. ──── */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 26px; }
+.stat-card { background: var(--panel); border: 2px solid var(--line); padding: 14px 16px; }
+.stat-card .stat-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 800; color: var(--parchment); margin-bottom: 8px; }
+.stat-card .stat-value { font-family: var(--font-display); font-size: 26px; font-weight: 700; letter-spacing: -0.03em; }
+.stat-card .stat-sub { font-size: 11px; color: var(--parchment); margin-top: 10px; line-height: 1.7; font-family: var(--font-mono); }
 .stat-card .stat-sub .row { display: flex; justify-content: space-between; gap: 10px; }
 
 /* ── Filters (Deployed Strategies) ───────────────────────────────── */
 .filters { display: flex; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
 .filters select {
-  background: var(--panel); border: 1px solid var(--rule); color: var(--paper);
-  padding: 7px 10px; border-radius: 2px; font-size: 12px; font-family: var(--font-body);
+  background: var(--paper); border: 3px solid var(--line); color: var(--ink);
+  padding: 8px 10px; font-size: 11px; font-weight: 600; font-family: var(--font-body);
 }
 .clickable-row { cursor: pointer; }
-.clickable-row:hover { background: var(--panel-2); }
+.clickable-row:hover { background: var(--sand); }
 
 /* ── Strategy Detail ──────────────────────────────────────────────── */
 .detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }
-.detail-header h1 { font-family: var(--font-display); font-weight: 700; font-size: 23px; }
-.back-link { display: inline-block; font-size: 12px; color: var(--parchment); text-decoration: none; margin-bottom: 14px; cursor: pointer; }
-.back-link:hover { color: var(--paper); }
+.detail-header h1 { font-family: var(--font-display); font-weight: 700; font-size: 26px; letter-spacing: -0.03em; }
+.back-link {
+  display: inline-block; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--parchment); text-decoration: none; margin-bottom: 14px; cursor: pointer;
+}
+.back-link:hover { color: var(--ink); }
 
-.tabs { display: flex; gap: 4px; margin: 20px 0 16px; border-bottom: 1px solid var(--rule); }
+/* Blocky bordered tabs, not an underline pattern — matches the
+   reference's own standalone-button tab style. */
+.tabs { display: flex; gap: 8px; margin: 20px 0 16px; flex-wrap: wrap; }
 .tabs button {
-  padding: 9px 14px; font-size: 13px; font-weight: 500; font-family: var(--font-body); background: none; border: none;
-  color: var(--parchment); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  padding: 9px 13px; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em;
+  font-family: var(--font-body); background: var(--paper); border: 3px solid var(--line); color: var(--ink); cursor: pointer;
 }
-.tabs button.active { color: var(--paper); border-bottom-color: var(--verdigris); font-weight: 600; }
-.tabs button:hover { color: var(--paper); }
+.tabs button.active { background: var(--accent); color: #fff; }
+.tabs button:hover { background: var(--stone); }
 
-.kv-table td:first-child { color: var(--parchment); width: 240px; }
+.kv-table td:first-child { color: var(--parchment); width: 240px; font-weight: 600; }
 
-/* ── Trigger badges — deliberately quiet, so they don't compete with
-   the trade-expand signature below: small, solid dot, no translucent
-   color wash. ────────────────────────────────────────────────────── */
+/* ── Trigger badges — deliberately smaller/quieter than .tag, so they
+   don't compete with the trade-expand signature below, but still
+   speak the same bordered-chip language as the rest of the app. ──── */
 .trigger-badge {
-  display: inline-flex; align-items: center; gap: 5px; background: var(--panel-2);
-  padding: 2px 7px; border-radius: 2px; font-size: 10px; font-weight: 600; font-family: var(--font-body);
-  text-transform: uppercase; letter-spacing: 0.4px; margin-left: 6px; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 5px; border: 2px solid var(--line);
+  padding: 1px 6px; font-size: 9px; font-weight: 800; font-family: var(--font-body);
+  text-transform: uppercase; letter-spacing: 0.03em; margin-left: 6px; white-space: nowrap;
 }
-.trigger-badge::before { content: ''; width: 4px; height: 4px; flex-shrink: 0; background: currentColor; }
-.trig-stop { color: var(--loss); }
-.trig-profit { color: var(--gain); }
-.trig-adjust { color: var(--brass); }
-.trig-entry { color: var(--verdigris); }
-.trig-other { color: var(--parchment); }
+.trigger-badge::before { content: ''; width: 5px; height: 5px; flex-shrink: 0; background: currentColor; }
+.trig-stop { background: var(--loss-soft); color: var(--loss); }
+.trig-profit { background: var(--gain-soft); color: var(--gain); }
+.trig-adjust { background: var(--brass-soft); color: var(--brass); }
+.trig-entry { background: var(--info-soft); color: var(--info); }
+.trig-other { background: var(--stone); color: var(--parchment); }
 
-/* ── Expandable trade rows — the signature move. Reframed as pulling
-   the order ticket out from under the ledger row: a circular marker
-   (not a triangle), a dashed tear-line, an inset spine rule down the
-   left edge of the revealed ticket. ─────────────────────────────── */
+/* ── Expandable trade rows — the signature move, reframed for this
+   system as a stamped "audit slip" pulled out from the ledger row: a
+   filled/hollow square marker (not a triangle or circle), a heavy
+   top+bottom rule framing the reveal, and each metadata block as its
+   own small bordered card — the same nested-frame language as the
+   rest of the app, at a smaller scale. ─────────────────────────── */
 tr.trade-row { cursor: pointer; }
-tr.trade-row:hover { background: var(--panel-2); }
+tr.trade-row:hover { background: var(--sand); }
 tr.trade-row td:first-child::before {
-  content: '○'; display: inline-block; width: 14px; color: var(--verdigris); font-weight: 700;
+  content: '□'; display: inline-block; width: 14px; color: var(--accent); font-weight: 700;
 }
-tr.trade-row.open td:first-child::before { content: '●'; }
+tr.trade-row.open td:first-child::before { content: '■'; }
 tr.trade-detail-row td {
-  background: var(--panel-2); padding: 16px 18px 16px 32px; font-family: var(--font-body);
-  border-top: 1px dashed var(--rule); border-bottom: 1px solid var(--rule); position: relative;
+  background: var(--panel); padding: 16px 18px; font-family: var(--font-body);
+  border-top: 3px solid var(--line); border-bottom: 3px solid var(--line);
 }
-tr.trade-detail-row td::before {
-  content: ''; position: absolute; left: 14px; top: 16px; bottom: 16px; width: 2px; background: var(--verdigris);
-}
-.trade-json { font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--parchment); }
-.trade-json .k { color: var(--verdigris); }
-.trade-json-block { margin-bottom: 12px; }
+.trade-json { font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap; word-break: break-word; color: var(--ink); }
+.trade-json .k { color: var(--accent); font-weight: 700; }
+.trade-json-block { border: 2px solid var(--line); background: var(--paper); padding: 10px 12px; margin-bottom: 10px; }
 .trade-json-block:last-child { margin-bottom: 0; }
 .trade-json-block .label {
-  font-size: 10px; text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; font-family: var(--font-body);
-  color: var(--parchment); margin-bottom: 5px; padding-left: 8px; border-left: 2px solid var(--verdigris);
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.07em; font-weight: 800;
+  color: var(--parchment); margin-bottom: 6px;
 }
 
 /* ── Equity curve ─────────────────────────────────────────────────── */
-.equity-wrap { background: var(--panel); border: none; border-top: 2px solid var(--rule); border-radius: 0; padding: 16px 18px; }
+.equity-wrap { background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm); padding: 16px 18px; }
 .equity-chart { width: 100%; height: 160px; display: block; }
 
-/* ── Modals — the ONE surface keeping the full raised + bordered
-   treatment, so "floating above everything" actually means something
-   when it appears. ──────────────────────────────────────────────── */
+/* ── Modals — the biggest offset shadow in the app, so "floating
+   above everything" reads unmistakably. ───────────────────────────── */
 .modal-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.72); display: none;
-  align-items: center; justify-content: center; z-index: 100;
+  position: fixed; inset: 0; background: rgba(27, 17, 48, 0.4); display: none;
+  align-items: center; justify-content: center; z-index: 100; padding: 18px;
 }
 .modal-overlay.open { display: flex; }
 .modal {
-  background: var(--panel-2); border: 1px solid var(--rule); border-radius: 3px;
-  box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+  background: var(--paper); border: 3px solid var(--line); box-shadow: 18px 18px 0 rgba(27, 17, 48, 0.16);
   padding: 24px; max-width: 560px; width: 95%; max-height: 85vh; overflow-y: auto;
 }
-.modal h2 { font-family: var(--font-display); font-weight: 700; font-size: 17px; margin-bottom: 16px; text-transform: none; }
+.modal h2 { font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: -0.02em; margin-bottom: 16px; text-transform: none; }
 .field { margin-bottom: 12px; }
-.field label { display: block; font-size: 12px; color: var(--parchment); margin-bottom: 5px; }
+.field label { display: block; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700; color: var(--parchment); margin-bottom: 6px; }
 .field input, .field select, .field textarea {
-  width: 100%; background: var(--ink); border: 1px solid var(--rule); color: var(--paper);
-  padding: 9px 10px; border-radius: 2px; font-size: 13px; font-family: var(--font-body);
+  width: 100%; background: var(--paper); border: 3px solid var(--line); color: var(--ink);
+  padding: 9px 10px; font-size: 13px; font-family: var(--font-body);
 }
-.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--verdigris); }
+.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--accent); }
 .field textarea { font-family: var(--font-mono); min-height: 120px; resize: vertical; }
 .modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
-.modal-msg { margin-top: 10px; font-size: 13px; }
+.modal-msg { margin-top: 10px; font-size: 13px; font-weight: 600; }
 
 .spinner {
-  display: inline-block; width: 13px; height: 13px; border: 2px solid var(--rule);
-  border-top-color: var(--verdigris); border-radius: 50%; animation: spin 0.6s linear infinite;
+  display: inline-block; width: 14px; height: 14px; border: 3px solid var(--line);
+  border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
-  .spinner { animation: none; border-top-color: var(--rule); opacity: 0.6; }
+  .spinner { animation: none; border-top-color: var(--line); opacity: 0.6; }
 }
 
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 8px; }
 
 /* ── Responsive baseline: the sidebar collapses to a top bar below a
-   phone/small-tablet width; nothing else needs to change since cards,
-   stat-grid, and tables already reflow via flex-wrap / grid auto-fit /
-   overflow-x. ───────────────────────────────────────────────────── */
+   phone/small-tablet width; cards, stat-grid, catalog grid, and
+   tables already reflow via flex-wrap / grid auto-fit / overflow-x. */
 @media (max-width: 760px) {
   .app-shell { flex-direction: column; }
   .sidebar {
     width: 100%; height: auto; position: static; flex-direction: row; flex-wrap: wrap;
-    align-items: center; padding: 12px 16px; border-right: none; border-bottom: 1px solid var(--rule);
+    align-items: center; padding: 14px 16px; border-right: none; border-bottom: 3px solid var(--line);
   }
-  .sidebar-brand { padding: 0 16px 0 0; }
-  .nav-item { padding: 8px 12px; border-left: none; border-bottom: 3px solid transparent; }
-  .nav-item.active { border-left-color: transparent; border-bottom-color: var(--verdigris); }
+  .sidebar-brand { padding: 0 16px 0 0; border-bottom: none; margin-bottom: 0; }
+  .nav-item { margin: 0 8px 0 0; }
   .sidebar-footer {
-    margin-top: 0; margin-left: auto; padding: 0 0 0 14px; border-top: none; border-left: 1px solid var(--rule);
+    margin-top: 0; margin-left: auto; padding: 0 0 0 14px; border-top: none; border-left: 3px solid var(--line);
     flex-direction: row; align-items: center;
   }
   .main { padding: 18px 16px 40px; }
@@ -446,8 +438,12 @@ tr.trade-detail-row td::before {
 
 <div class="app-shell">
   <nav class="sidebar">
-    <div class="sidebar-brand">live_deploy
-      <div class="subtitle">Data dispatcher · paper trading</div>
+    <div class="sidebar-brand">
+      <div class="brand-mark">L</div>
+      <div>
+        <b>live_deploy</b>
+        <div class="subtitle">Data dispatcher · paper trading</div>
+      </div>
     </div>
     <a class="nav-item" data-nav="dashboard" href="#/dashboard">Dashboard</a>
     <a class="nav-item" data-nav="catalog" href="#/catalog">Strategy Catalog</a>
