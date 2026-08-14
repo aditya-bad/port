@@ -221,6 +221,26 @@ tr.trade-row:focus-visible {
 .view-header h1 { font-family: var(--font-display); font-weight: 700; font-size: 30px; letter-spacing: -0.03em; }
 .view-header .view-sub { font-size: 11.5px; color: var(--parchment); margin-top: 6px; max-width: 640px; line-height: 1.6; font-weight: 500; }
 
+/* ── Live ticker bar — NIFTY/SENSEX/BANK NIFTY prices fed by
+   /ws/ticks, plus an IST clock. Sticky so it stays visible while
+   scrolling a long view; sits above every view's own header. ────── */
+.ticker-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm);
+  padding: 10px 16px; margin-bottom: 22px; position: sticky; top: 0; z-index: 5;
+}
+.ticker-prices { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.ticker-item { display: inline-flex; align-items: baseline; gap: 7px; }
+.ticker-label { font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 800; color: var(--parchment); }
+.ticker-price { font-family: var(--font-mono); font-size: 14px; font-weight: 700; color: var(--ink); }
+.ticker-change { font-family: var(--font-mono); font-size: 11px; font-weight: 700; }
+.ticker-change.pos { color: var(--gain); }
+.ticker-change.neg { color: var(--loss); }
+.ticker-clock { font-family: var(--font-mono); font-size: 12.5px; font-weight: 600; color: var(--parchment); white-space: nowrap; }
+@media (max-width: 760px) {
+  .ticker-bar { position: static; }
+}
+
 .status-bar { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-size: 12px; }
 .badge {
   display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px;
@@ -458,6 +478,16 @@ tr.trade-detail-row td {
   </nav>
 
   <main class="main">
+
+    <!-- ═══ Live ticker: NIFTY/SENSEX/BANK NIFTY + IST clock — persistent
+         across every view (sits outside the .view containers below), fed
+         by the already-existing /ws/ticks broadcast, not polling. ═══ -->
+    <div class="ticker-bar" id="tickerBar">
+      <div class="ticker-prices" id="tickerPrices">
+        <span class="ticker-item"><span class="ticker-label">Live prices</span><span class="ticker-price">connecting…</span></span>
+      </div>
+      <div class="ticker-clock" id="tickerClock">—</div>
+    </div>
 
     <!-- ═══ Dashboard ═══ -->
     <div id="view-dashboard" class="view">
@@ -750,6 +780,87 @@ async function submitManualLogin() {
   setTimeout(() => { closeManualLoginModal(); pollHealth(); }, 600);
 }
 
+// ── Live ticker: NIFTY/SENSEX/BANK NIFTY prices + an IST clock ───────
+// Prices are genuinely PUSHED, not polled — this connects straight to
+// the already-existing /ws/ticks broadcast (the same one-upstream-
+// Kite-connection-fans-out-to-many-clients stream every other tick
+// consumer would use), so a new price band shows up the instant Kite
+// sends it, with zero extra load on the backend beyond one more
+// broadcaster subscriber. The three tokens below are the ones
+// tokens.json subscribes to permanently (see its own comment), so
+// ticks for them start flowing the moment Kite connects, with no
+// per-page subscribe step needed.
+const TICKER_INSTRUMENTS = [
+  { token: 256265, label: 'NIFTY 50' },
+  { token: 265, label: 'SENSEX' },
+  { token: 260105, label: 'NIFTY BANK' },
+];
+const tickerState = {};   // token -> { price, prevClose }
+let tickerSocket = null;
+
+function renderTickerPrices() {
+  const el = document.getElementById('tickerPrices');
+  if (!el) return;
+  el.innerHTML = TICKER_INSTRUMENTS.map(inst => {
+    const s = tickerState[inst.token];
+    if (!s || s.price == null) {
+      return `<span class="ticker-item"><span class="ticker-label">${inst.label}</span><span class="ticker-price">—</span></span>`;
+    }
+    let changeHtml = '';
+    // ohlc.close (previous day's close) only arrives in "quote"/"full"
+    // tick mode, not "ltp" — degrade gracefully to price-only rather
+    // than assume it's always present.
+    if (s.prevClose) {
+      const diff = s.price - s.prevClose;
+      const pct = (diff / s.prevClose) * 100;
+      const cls = diff >= 0 ? 'pos' : 'neg';
+      const arrow = diff >= 0 ? '▲' : '▼';
+      changeHtml = ` <span class="ticker-change ${cls}">${arrow} ${Math.abs(pct).toFixed(2)}%</span>`;
+    }
+    return `<span class="ticker-item"><span class="ticker-label">${inst.label}</span>` +
+      `<span class="ticker-price">${fmtNum(s.price)}</span>${changeHtml}</span>`;
+  }).join('');
+}
+
+function updateClock() {
+  const el = document.getElementById('tickerClock');
+  if (!el) return;
+  const now = new Date();
+  const datePart = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric',
+  }).format(now);
+  const timePart = new Intl.DateTimeFormat('en-IN', {
+    timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(now);
+  el.textContent = `${datePart} · ${timePart} IST`;
+}
+
+function connectTickerSocket() {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  tickerSocket = new WebSocket(`${proto}//${window.location.host}/ws/ticks`);
+  tickerSocket.onmessage = (event) => {
+    let ticks;
+    try { ticks = JSON.parse(event.data); } catch (e) { return; }
+    if (!Array.isArray(ticks)) return;
+    let changed = false;
+    for (const t of ticks) {
+      const watched = TICKER_INSTRUMENTS.find(i => i.token === t.instrument_token);
+      if (!watched || t.last_price == null) continue;
+      const prevClose = (t.ohlc && t.ohlc.close) || (tickerState[watched.token] && tickerState[watched.token].prevClose);
+      tickerState[watched.token] = { price: t.last_price, prevClose };
+      changed = true;
+    }
+    if (changed) renderTickerPrices();
+  };
+  // The session cookie rides along automatically on a same-origin
+  // WebSocket handshake (no query-param api_key needed here — that
+  // fallback in AuthMiddleware is for non-browser WS clients) — by the
+  // time this code runs at all, index.html has already been served,
+  // which only happens once authenticated.
+  tickerSocket.onclose = () => { setTimeout(connectTickerSocket, 3000); };
+  tickerSocket.onerror = () => { tickerSocket.close(); };
+}
+
 // ── Router ────────────────────────────────────────────────────────────
 // Five real views + one drill-down (detail, reached only by navigating
 // to #/deployments/{id}, never a sidebar destination of its own).
@@ -784,6 +895,9 @@ window.addEventListener('DOMContentLoaded', () => {
   pollHealth();
   router();
   setInterval(pollHealth, 5000);
+  updateClock();
+  setInterval(updateClock, 1000);
+  connectTickerSocket();
 });
 </script>
 </body>

@@ -1384,6 +1384,46 @@ Instruments, the login page, the deploy/instrument/manual-login modals)
 re-screenshotted against the same seeded deployment data used for the
 first pass and checked by inspection.
 
+## What's here (Step 17: live ticker bar — NIFTY/SENSEX/BANK NIFTY + IST clock)
+
+A sticky bar at the top of every view (`static/index.html`, sits outside
+the `.view` containers so it persists across navigation) showing three
+index prices and a live IST clock, both genuinely live, not polled:
+
+- **Prices** connect directly to the already-existing `/ws/ticks`
+  WebSocket broadcast — the same one-upstream-Kite-connection-fans-out-
+  to-many-clients stream any downstream tick consumer would use (see
+  `app/main.py`'s `ws_ticks` handler and `TickBroadcaster`). No new
+  backend endpoint, no polling loop: a tick lands in the DOM the instant
+  Kite sends it, at zero extra load on the dispatcher beyond one more
+  broadcaster subscriber. Each price shows an up/down arrow and % change
+  against `ohlc.close` (the previous day's close, present in `full`/
+  `quote` tick mode) when available — degrades to price-only if not
+  (e.g. `tick_mode: "ltp"`, which carries no OHLC at all).
+- **NIFTY BANK** (`instrument_token` 260105) was added to `tokens.json`
+  alongside the two indices already subscribed there — needed so its
+  ticks flow by default rather than only when some deployment or manual
+  subscription happens to require it.
+- **The clock** is pure client-side (`Intl.DateTimeFormat` pinned to
+  `Asia/Kolkata`, updated every second) — India has one fixed UTC+5:30
+  offset with no DST, so no timezone library or backend involvement is
+  needed for it to always be correct.
+
+**Verified end-to-end, not just visually**: a real Playwright browser
+was driven against the actual FastAPI app (real ASGI stack, fake Kite
+underneath) running as a real `uvicorn` server, with ticks injected
+through the exact same `FakeKiteTicker` instance the live dispatcher
+owns — proving the full `/ws/ticks` → browser path, not a mock of the
+frontend. Confirmed: the bar shows a "connecting…" placeholder before
+any tick; after injecting ticks for all three tokens (two priced above
+their `ohlc.close`, one below), the DOM updated with the exact prices,
+the up-arrow/down-arrow direction correct for each, and percentages
+correct; the clock string matched `Asia/Kolkata` wall-clock time
+including seconds and was re-checked ~2 seconds later to confirm it had
+genuinely advanced, not just rendered once. Full existing regression
+suite re-run afterward, unaffected (this is additive markup/CSS/JS plus
+one more `tokens.json` entry, no existing endpoint or schema touched).
+
 ## Setup
 
 ```bash
