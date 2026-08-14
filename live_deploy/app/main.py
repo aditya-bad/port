@@ -125,6 +125,12 @@ async def startup() -> None:
     initial_token = (kite_session["access_token"] if kite_session else None) \
         or config.get("access_token")
 
+    # Set the instant shutdown() starts running — the ONLY way a
+    # /ws/ticks handler blocked in queue.get() (nothing to forward,
+    # e.g. market closed) finds out the server wants to exit. See
+    # ws_ticks's own docstring for the full story.
+    app.state.shutdown_event = asyncio.Event()
+
     broadcaster = TickBroadcaster()
     dispatcher = LiveDataDispatcher(
         api_key=config["api_key"],
@@ -159,6 +165,16 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    # FIRST thing, before any other teardown: wake up every /ws/ticks
+    # handler currently blocked waiting for a tick that may never come
+    # (see ws_ticks's own docstring) so they can exit cleanly instead of
+    # leaving Uvicorn's graceful shutdown hanging on "Waiting for
+    # background tasks to complete" forever, needing a second Ctrl+C
+    # (which then surfaces as an ugly unhandled-CancelledError
+    # traceback from the forced cancellation — this fixes the root
+    # cause, not just the symptom).
+    app.state.shutdown_event.set()
+
     # Cancel the snapshot loop before tearing down runners/DB pool below
     # — it's a plain infinite-sleep loop with no cleanup of its own, so
     # cancellation is all it needs.
@@ -197,18 +213,61 @@ async def ws_ticks(websocket: WebSocket):
     clients are connected at once, they're all fed from the ONE upstream
     Kite connection owned by LiveDataDispatcher; connecting here never
     opens a new Kite session.
+
+    This is a send-only stream from the server's point of view (ticks
+    flow out, nothing meaningful flows in), which historically meant TWO
+    real bugs, both fixed by the same race below:
+      1. `while True: ticks = await queue.get()` alone has no way to
+         notice the CLIENT disconnected — a plain send-only loop only
+         finds out on its next send() attempt, which never happens if
+         no ticks are flowing (e.g. market closed — see the ticker bar's
+         own REST fallback for why that's a normal, expected state, not
+         an error). A closed browser tab during closed-market hours left
+         a zombie broadcaster subscription forever.
+      2. The same blocked queue.get() has no way to notice the SERVER
+         wants to shut down either — Uvicorn's graceful shutdown would
+         then hang on "Waiting for background tasks to complete"
+         indefinitely, and a forced second Ctrl+C surfaced as an
+         unhandled asyncio.CancelledError traceback instead of a clean
+         exit.
+    Racing queue.get() against both an explicit receive-loop (the actual
+    way to detect a client-initiated close) and app.state.shutdown_event
+    (set first-thing in the shutdown() handler above) fixes both at once.
     """
     await websocket.accept()
     broadcaster: TickBroadcaster = websocket.app.state.broadcaster
+    shutdown_event: asyncio.Event = websocket.app.state.shutdown_event
     queue = await broadcaster.subscribe()
-    try:
+
+    async def _forward_ticks():
         while True:
             ticks = await queue.get()
             await websocket.send_json(ticks)
+
+    async def _watch_for_client_disconnect():
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                return
+
+    forward_task = asyncio.create_task(_forward_ticks())
+    disconnect_task = asyncio.create_task(_watch_for_client_disconnect())
+    shutdown_task = asyncio.create_task(shutdown_event.wait())
+    try:
+        await asyncio.wait(
+            [forward_task, disconnect_task, shutdown_task], return_when=asyncio.FIRST_COMPLETED,
+        )
     except WebSocketDisconnect:
         pass
     finally:
+        for t in (forward_task, disconnect_task, shutdown_task):
+            t.cancel()
+        await asyncio.gather(forward_task, disconnect_task, shutdown_task, return_exceptions=True)
         await broadcaster.unsubscribe(queue)
+        try:
+            await websocket.close()
+        except Exception:
+            pass   # already closed, e.g. the client-disconnect path above
 
 
 # UI — served last so it doesn't shadow the API routes above (StaticFiles

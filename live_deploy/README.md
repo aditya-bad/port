@@ -1605,6 +1605,56 @@ opened it for `strangle_monthly_v2` and confirmed `eod_check_time`
 0.80), and `entry_time` (10:00) are all genuinely present and editable
 together, matching the code's own defaults exactly.
 
+## What's here (Step 20: fixed a shutdown hang on Ctrl+C)
+
+Reported directly: `uvicorn` printing `Waiting for background tasks to
+complete. (CTRL+C to force quit)` and sitting there forever, needing a
+second Ctrl+C, which then dumped a pile of `asyncio.exceptions.
+CancelledError` traceback noise instead of exiting cleanly.
+
+**Root cause, found by actually tracing it, not guessed**: `/ws/ticks`
+(`app/main.py`) was a send-only loop —
+`while True: ticks = await queue.get(); await websocket.send_json(...)`
+— with no way to notice the client disconnected (a send-only loop only
+finds out on its *next* send, which never happens if no ticks are
+flowing) and, critically, no way to notice the *server* wants to shut
+down either. The Step 17 ticker bar keeps exactly this kind of
+connection open essentially all the time now, and outside market hours
+zero ticks ever flow (see Step 17's own follow-up) — so the handler
+sits blocked in `queue.get()` indefinitely, Uvicorn's graceful shutdown
+waits forever for that connection to finish on its own, and a forced
+second Ctrl+C cancels it mid-`await`, which isn't a `WebSocketDisconnect`
+so it surfaced as an unhandled `CancelledError` instead of a clean exit.
+This bug existed before the ticker bar; nothing exercised a long-lived
+idle `/ws/ticks` connection often enough to hit it until then.
+
+**Fixed at the root**, not patched around: a new `app.state.
+shutdown_event` (`asyncio.Event`) is set as the very first line of the
+`shutdown()` handler, before any other teardown. `/ws/ticks` now races
+three things concurrently — forwarding ticks, an explicit
+`websocket.receive()` loop (the actual way to detect a client-initiated
+close, which the old code never did either), and that shutdown event —
+and cleanly closes and unsubscribes the instant any one of them fires.
+This fixes two real bugs with one change: the reported shutdown hang,
+and a previously-unnoticed companion bug where a client closing their
+browser tab while idle left a zombie broadcaster subscription forever
+(nothing ever detected the disconnect to clean it up).
+
+**Verified concretely, not just "looks right"**: a real Uvicorn server
+with a genuine idle WebSocket client connected to `/ws/ticks` (via the
+`websockets` library, not a mock) and zero ticks ever sent — the exact
+reported scenario. Confirmed server shutdown now completes in ~0.3
+seconds with that connection still open (previously this reliably hung
+past a 5-10s bound in every earlier test in this session that happened
+to leave a `/ws/ticks` connection open during teardown — re-read after
+the fact as the same bug surfacing quietly, not unrelated test flakiness
+as it was assumed to be at the time), and that the connection was
+genuinely closed *by the server*, not just abandoned. Separately
+confirmed a client-side disconnect while idle now correctly drops the
+broadcaster's subscriber count. Full regression suite re-run afterward
+(unrelated pre-existing flakiness in `test_db_layer.py` unaffected, as
+established earlier in this project).
+
 ## Setup
 
 ```bash
