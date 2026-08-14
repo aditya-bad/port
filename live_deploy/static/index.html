@@ -609,8 +609,13 @@ tr.trade-detail-row td {
       <input type="number" id="deployCapital" value="100000" min="1">
     </div>
     <div class="field">
-      <label>Config (JSON — must include instrument_tokens)</label>
-      <textarea id="deployConfig"></textarea>
+      <label>Strategy configuration</label>
+      <div id="deployConfigFields"></div>
+      <textarea id="deployConfig" style="display:none; margin-top:8px;"></textarea>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="deployAdvancedToggle" onchange="Catalog.toggleAdvanced()">
+      <label for="deployAdvancedToggle">Advanced (edit raw JSON)</label>
     </div>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="closeDeployModal()">Cancel</button>

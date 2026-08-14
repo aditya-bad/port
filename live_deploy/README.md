@@ -1468,6 +1468,60 @@ with correct values, and correct 400s for a non-integer or empty
 "does the backend work" from "does the frontend's timing/fallback logic
 work." Full regression suite re-run afterward, unaffected.
 
+### Follow-up: structured Deploy config form, with an Advanced/raw-JSON toggle
+
+The Deploy modal's config field was a bare JSON textarea from day one —
+fine for a developer, not for actually operating this thing day to day.
+Replaced with real boxes/dropdowns generated from each strategy's own
+registered `default_config` (`static/js/catalog.js`), with an "Advanced"
+checkbox that swaps in the original raw-JSON textarea as a genuine mode
+switch, not a read-only mirror.
+
+Deliberately NOT a hand-maintained schema per strategy (7 strategies,
+each with its own config shape, would mean 7 schemas to keep in sync
+with the actual strategy code forever). Instead, the form is generated
+straight from whatever `default_config` the strategy registered itself
+with (`app/strategies/registry.py`), so it can never drift out of sync
+with what a strategy actually accepts — widget chosen from the value's
+own shape: booleans and known enum strings (`pivot_type`,
+`atr_smoothing`, `expiry_selector`, `convergence_mode` — verified
+against each strategy's own docstring/validation code, not guessed) get
+dropdowns; `instrument_tokens` gets a comma-separated box parsed back
+into a real array; `"HH:MM"`-shaped strings get a real time picker;
+everything else gets a plain text/number box. Config keys registered as
+`null` (`capital_per_trade`, `prev_day_ohlc`, `seed_candles`,
+`supertrend_seed` — genuinely advanced initialization knobs almost no
+deploy needs) are deliberately left OUT of the simple form — shown
+instead as a small note naming them, since a form field can't represent
+"leave this at its true default" any more clearly than just not showing
+a box for it — but they still round-trip untouched into the submitted
+config, and Advanced mode can set them directly.
+
+Switching to Advanced seeds the JSON textarea from whatever's currently
+in the boxes (not the strategy's original defaults), so nothing typed
+gets lost; switching back parses the JSON and re-renders the boxes from
+it, staying on the JSON view (with an explanatory alert) if it doesn't
+parse, rather than silently discarding an in-progress edit.
+
+**Verified end-to-end** with a real browser against the real app: opened
+the Deploy modal for `pivot_supertrend` and confirmed every field
+widget's actual type (dropdown/time-picker/checkbox/text, matching the
+value's shape) and every prefilled default; confirmed the four
+null-valued advanced keys are correctly excluded from the boxes and
+named in the note; edited `instrument_tokens`/`pivot_type`/
+`force_exit_time` via the boxes, toggled to Advanced and confirmed the
+JSON exactly reflected those edits (plus the untouched null-valued
+keys); edited further directly in JSON mode, toggled back, and confirmed
+the boxes re-rendered correctly — including a previously-null field
+that gained its own real box once given a real value; then actually
+submitted through the simple form and fetched the resulting deployment
+back via the real API, confirming its persisted `config` matched every
+box edit, every JSON-mode edit, AND every untouched default, exactly —
+nothing dropped or mangled across the whole box↔JSON↔submit round trip.
+Full regression suite re-run afterward, unaffected (this is a
+`static/js/catalog.js` + one `static/index.html` markup change only, no
+backend endpoint or schema touched).
+
 ## Setup
 
 ```bash
