@@ -4,3 +4,9 @@ config.json
 # Python
 __pycache__/
 *.pyc
+
+# supervisord.conf's own runtime output (see RUN_GUIDE.md) — keep the
+# directory (so supervisord doesn't need to create it first) but not
+# its generated logs/sockets/pidfile.
+logs/*
+!logs/.gitkeep

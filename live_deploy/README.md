@@ -1285,9 +1285,19 @@ uvicorn app.main:app --reload --port 8000
 ```
 
 (Run from inside `live_deploy/` — the app uses relative imports, so
-`uvicorn app.main:app` resolves the package correctly. Running
-`python app/main.py` directly does not; use `python -m app.main` if you
-need a direct-execution fallback instead of uvicorn's CLI.)
+`uvicorn app.main:app` resolves the package correctly; running it from
+one directory up, e.g. the repo root, fails with `ModuleNotFoundError:
+No module named 'app'`. Running `python app/main.py` directly fails
+differently — `ImportError: attempted relative import with no known
+parent package` — for the same underlying reason. If you want a
+direct-execution alternative to the uvicorn CLI, use `python run.py`
+instead: a tiny launcher at the `live_deploy/` root, outside the `app`
+package, that works from any current directory. See **`RUN_GUIDE.md`**
+for the full writeup of that bug plus three genuinely distinct ways to
+run this service — local dev, background/production on a machine you
+already have (`supervisord`), and containerized (Docker) — each with
+exact commands, prerequisites, and how to confirm it's actually working,
+not just that the process is up.)
 
 Open **`http://localhost:8000/`** for the UI. On first run (or any
 morning after the server was off overnight) it'll show "Not connected —
@@ -2407,6 +2417,10 @@ pre-existing files, plus these 6 new ones) re-run clean after the fix.
 
 ```
 live_deploy/
+├── RUN_GUIDE.md                # 3 ways to run this: local dev, background/production, Docker
+├── run.py                       # `python run.py` — works where `python app/main.py` can't (see RUN_GUIDE.md)
+├── supervisord.conf              # background/production option — see RUN_GUIDE.md
+├── Dockerfile                     # containerized option — see RUN_GUIDE.md
 ├── config.example.json        # copy -> config.json (gitignored). access_token now optional.
 ├── tokens.json                 # committed — which instruments to subscribe to
 ├── requirements.txt
