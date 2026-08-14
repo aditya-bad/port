@@ -1655,6 +1655,82 @@ broadcaster's subscriber count. Full regression suite re-run afterward
 (unrelated pre-existing flakiness in `test_db_layer.py` unaffected, as
 established earlier in this project).
 
+## What's here (Step 21: Admin Options polish + a "Clear All" danger zone)
+
+Three requests landed together, in the same message.
+
+### Admin Options table → cards
+
+The Admin Options tab (Step 19) originally listed strategies in a dense
+multi-column table. Reported back as "very bad" with a screenshot showing
+severe word-by-word wrapping. A first attempt (`table-layout: fixed` plus
+explicit `<colgroup>` widths) was tried and rejected as insufficient — the
+real problem wasn't column widths, it was a fundamental mismatch between a
+table and strategies' long free-text descriptions (400+ characters for
+some). Fixed properly by dropping the table entirely and reusing the same
+`.card` layout Browse already uses (name, tag, description, action button,
+one card per strategy) rather than continuing to tune a data shape that
+doesn't fit the content.
+
+### Time picker color
+
+Native `<input type="time">` elements were rendering Chromium's default
+blue, clashing with the Bazaar Ledger palette. Fixed with a single real
+CSS property — `accent-color: var(--accent)` on `:root` — which themes
+native form-control chrome (checkboxes, radios, and a time input's clock
+icon/segment highlight) app-wide. Verified via
+`getComputedStyle(el).accentColor`.
+
+### Clear All Deployments
+
+A destructive "start fresh" action for the Admin Options danger zone.
+Scope and confirmation mechanism were both explicitly decided up front
+(asked, not assumed, given the action is irreversible): scope is
+**deployments only** — not a full factory reset — and confirmation is
+**app password + a typed confirmation phrase**, both required.
+
+`POST /deployments/clear-all` (`app/routers/deployments.py`, deliberately
+last in the file under a "DANGER ZONE" banner) takes `{password, confirm}`,
+checks the password with `secrets.compare_digest` against the same
+`app_auth_secret` used for login, requires `confirm == "DELETE ALL"`
+exactly, then calls `DeploymentManager.shutdown_all()` (stops every
+in-memory runner task first, so nothing holds a reference to a row that's
+about to disappear) and a single `DELETE FROM deployments` — cascading at
+the DB level via the `ON DELETE CASCADE` foreign keys already on
+`positions`, `position_lots`, `deployment_events`, and
+`deployment_snapshots` (`0001_init.sql`), so one delete wipes every
+deployment and everything under it in one transaction. Deliberately
+narrow: the Kite login session, subscribed instruments, and Admin Options
+enable/disable state are untouched — this clears deployments, not the
+whole app.
+
+New `Catalog.openClearAllModal()`/`submitClearAll()` (`static/js/
+catalog.js`) and a `#clearAllModal` (`static/index.html`) — password
+field, a "type DELETE ALL to confirm" field (client-side check as a fast
+fail, not the real security boundary — both gates are re-checked
+server-side regardless), and a modal message area reporting the exact
+outcome (`✓ Cleared N deployment(s)` or the server's own error text).
+
+**Verified end-to-end** with a real server, real Postgres, and a real
+browser: seeded two deployments with a genuine open position, trade,
+event, and equity snapshot; disabled a strategy and manually subscribed
+an instrument (to check the scope boundary); completed a real Kite login
+so `kite_sessions` had a genuine row to check. Wrong password alone → 401,
+wrong confirm phrase alone → 400, either leaves everything untouched.
+Correct password + phrase → 200 with the right `deleted` count; confirmed
+`GET /deployments` now returns empty; confirmed directly against Postgres
+(not just the API) that `deployments`/`positions`/`position_lots`/
+`deployment_events`/`deployment_snapshots` are all genuinely empty;
+confirmed `DeploymentManager.runners` has no dangling in-memory tasks left
+over. Confirmed the scope boundary itself: the disabled strategy is still
+disabled, the manually-subscribed instrument is still subscribed, and the
+`kite_sessions` row is still present — none of them touched by the wipe.
+Then the same flow through the real modal in a real browser: wrong
+password shows an error and leaves the modal open, a wrong-case confirm
+phrase is caught client-side before it even reaches the API, and the
+correct combination clears the deployment and refreshes both the Catalog
+and Deployed Strategies views to reflect it.
+
 ## Setup
 
 ```bash

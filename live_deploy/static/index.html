@@ -696,6 +696,36 @@ tr.trade-detail-row td {
   </div>
 </div>
 
+<!-- Clear All Deployments — destructive, irreversible. See
+     app/routers/deployments.py's clear_all_deployments docstring for
+     exactly what this does and does not touch (deployments and
+     everything under them only — not Kite login, subscribed
+     instruments, or Admin Options enable/disable state). -->
+<div class="modal-overlay" id="clearAllModal">
+  <div class="modal">
+    <h2>Clear all deployments</h2>
+    <div class="card-sub" style="margin-bottom:14px;">
+      Permanently deletes <b id="clearAllCount">every</b> deployment —
+      positions, trades, events, and equity snapshots included. Cannot
+      be undone. Your Kite login, subscribed instruments, and Admin
+      Options settings are <b>not</b> affected.
+    </div>
+    <div class="field">
+      <label>App password</label>
+      <input type="password" id="clearAllPassword" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Type <code>DELETE ALL</code> to confirm</label>
+      <input type="text" id="clearAllConfirm" placeholder="DELETE ALL" autocomplete="off">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeClearAllModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="submitClearAll()">Clear all deployments</button>
+    </div>
+    <div class="modal-msg" id="clearAllMsg"></div>
+  </div>
+</div>
+
 <script src="/js/api.js"></script>
 <script src="/js/dashboard.js"></script>
 <script src="/js/catalog.js"></script>

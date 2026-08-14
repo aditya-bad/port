@@ -143,7 +143,30 @@ const Catalog = {
           </div>
         </div>
       `;
-    }).join('') + `<div class="table-note">Disabling a strategy only hides it from Browse and blocks NEW deployments — anything already deployed keeps running untouched.</div>`;
+    }).join('') +
+      `<div class="table-note">Disabling a strategy only hides it from Browse and blocks NEW deployments — anything already deployed keeps running untouched.</div>` +
+      `<div class="card" style="border-top-color:var(--loss); margin-top:22px; max-width:520px;">
+        <div class="card-row">
+          <div>
+            <div class="card-title" style="color:var(--loss);">Danger zone</div>
+            <div class="card-sub">Permanently delete every deployment and everything under it. Cannot be undone.</div>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-danger btn-sm" onclick="Catalog.openClearAllModal()">Clear all deployments</button>
+          </div>
+        </div>
+      </div>`;
+  },
+
+  async openClearAllModal() {
+    const deployments = await Api.listDeployments();
+    const count = deployments.length;
+    document.getElementById('clearAllCount').textContent =
+      count === 0 ? 'zero deployments (nothing to clear)' : `all ${count} deployment${count === 1 ? '' : 's'}`;
+    document.getElementById('clearAllPassword').value = '';
+    document.getElementById('clearAllConfirm').value = '';
+    document.getElementById('clearAllMsg').textContent = '';
+    document.getElementById('clearAllModal').classList.add('open');
   },
 
   async toggleStrategyEnabled(name, newEnabled) {
@@ -328,4 +351,35 @@ async function submitDeploy() {
   }
   msg.innerHTML = `<span style="color:var(--gain)">✓ Deployed "${escapeHtml(data.deployment_name)}"</span>`;
   setTimeout(() => { closeDeployModal(); Catalog.load(); }, 800);
+}
+
+// ── Clear All Deployments — destructive, irreversible. Gated behind
+// re-entering the app password AND typing the confirmation phrase,
+// both checked server-side (see app/routers/deployments.py's
+// clear_all_deployments) — this client-side check is a fast fail for
+// an obviously-wrong attempt, not the actual security boundary. ──────
+function closeClearAllModal() {
+  document.getElementById('clearAllModal').classList.remove('open');
+}
+
+async function submitClearAll() {
+  const msg = document.getElementById('clearAllMsg');
+  const password = document.getElementById('clearAllPassword').value;
+  const confirmText = document.getElementById('clearAllConfirm').value.trim();
+  if (!password) {
+    msg.innerHTML = '<span style="color:var(--loss)">Password is required</span>';
+    return;
+  }
+  if (confirmText !== 'DELETE ALL') {
+    msg.innerHTML = '<span style="color:var(--loss)">Type DELETE ALL exactly to confirm</span>';
+    return;
+  }
+  msg.innerHTML = '<span class="spinner"></span> Clearing…';
+  const { ok, data } = await Api.clearAllDeployments(password, confirmText);
+  if (!ok) {
+    msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(data.detail || 'Failed')}</span>`;
+    return;
+  }
+  msg.innerHTML = `<span style="color:var(--gain)">✓ Cleared ${data.deleted} deployment(s)</span>`;
+  setTimeout(() => { closeClearAllModal(); Catalog.load(); Deployments.load(); }, 900);
 }

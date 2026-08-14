@@ -9,8 +9,10 @@ overlapping with the first (enforced at the DB layer, see
 db/migrations/0001_init.sql).
 """
 
+import secrets
 from uuid import UUID
 
+from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
 
 from ..db import queries
@@ -21,6 +23,16 @@ from ..deployments.schemas import (
 from ..strategies.registry import is_registered
 
 router = APIRouter(prefix="/deployments", tags=["deployments"])
+
+# The literal phrase Admin Options' "Clear All" dialog requires typing,
+# on top of re-entering the app password — see clear_all's own
+# docstring for why both gates exist.
+CLEAR_ALL_CONFIRM_PHRASE = "DELETE ALL"
+
+
+class ClearAllIn(BaseModel):
+    password: str
+    confirm: str
 
 
 def _annotate(row: dict) -> dict:
@@ -222,3 +234,40 @@ async def stop_deployment(deployment_id: UUID, request: Request, force_close: bo
     except ValueError as e:
         raise HTTPException(409, str(e))
     return {"status": "stopped"}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# DANGER ZONE — destructive, irreversible, deliberately last in the file
+# ═════════════════════════════════════════════════════════════════════
+
+@router.post("/clear-all")
+async def clear_all_deployments(payload: ClearAllIn, request: Request):
+    """
+    Deletes EVERY deployment and everything under it — positions,
+    position_lots, deployment_events, deployment_snapshots — via a
+    single `DELETE FROM deployments`, cascading at the DB level (see
+    migrations/0001_init.sql's `ON DELETE CASCADE`). Deliberately
+    narrow in scope: does NOT touch the Kite login session, subscribed
+    instruments, or Admin Options enable/disable state — this is "clear
+    all deployments," not a full factory reset of the whole app.
+
+    Gated behind TWO things beyond the normal request auth (session
+    cookie / X-API-Key) already required to reach this endpoint at all:
+    re-entering the app's own login password, and typing the literal
+    confirmation phrase — both required, checked server-side, so a
+    stray click or a replayed request can't trigger this by itself.
+    """
+    app_auth_secret = request.app.state.app_auth_secret
+    if not secrets.compare_digest(payload.password, app_auth_secret):
+        raise HTTPException(401, "Incorrect password")
+    if payload.confirm != CLEAR_ALL_CONFIRM_PHRASE:
+        raise HTTPException(400, f"Type {CLEAR_ALL_CONFIRM_PHRASE!r} exactly to confirm")
+
+    manager = request.app.state.deployment_manager
+    # Stop every runner task FIRST — DB status doesn't matter, the rows
+    # are about to be deleted entirely, but a still-running runner
+    # holding a stale reference to a row that no longer exists would
+    # error on its next write (e.g. a tick arriving mid-delete).
+    await manager.shutdown_all()
+    deleted = await queries.clear_all_deployments(request.app.state.db_pool)
+    return {"deleted": deleted}

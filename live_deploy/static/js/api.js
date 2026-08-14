@@ -44,6 +44,14 @@ const Api = {
   async stopDeployment(id, forceClose) {
     return fetch(`/deployments/${id}/stop?force_close=${forceClose}`, { method: 'POST' });
   },
+  async clearAllDeployments(password, confirm) {
+    const r = await fetch('/deployments/clear-all', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, confirm }),
+    });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
 
   // ── Per-deployment detail data ─────────────────────────────────
   // Each throws on a non-2xx response (rather than quietly returning

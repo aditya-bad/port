@@ -82,6 +82,27 @@ async def set_status(pool: asyncpg.Pool, deployment_id: UUID, status: str) -> No
         )
 
 
+async def clear_all_deployments(pool: asyncpg.Pool) -> int:
+    """
+    Delete EVERY deployment row — cascades (ON DELETE CASCADE, see
+    migrations/0001_init.sql) to positions, position_lots,
+    deployment_events, and deployment_snapshots automatically, wiping
+    all trading history in one statement. Deliberately narrow: does NOT
+    touch kite_sessions, strategy_settings, or anything instrument-
+    related — the router endpoint calling this is "clear all
+    deployments," not a full factory reset.
+
+    Returns how many deployment rows were actually deleted, so the
+    caller can report a real number back rather than just "done."
+    """
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM deployments")
+        # asyncpg's execute() returns a command-status string like
+        # "DELETE 3" for a DELETE statement — the row count is the last
+        # whitespace-separated token.
+        return int(result.split()[-1])
+
+
 # ═════════════════════════════════════════════════════════════════════
 # POSITIONS
 # ═════════════════════════════════════════════════════════════════════
