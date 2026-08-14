@@ -228,6 +228,8 @@ tr.trade-row:focus-visible {
 .view-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 20px; gap: 12px; flex-wrap: wrap; }
 .view-header h1 { font-family: var(--font-display); font-weight: 700; font-size: 30px; letter-spacing: -0.03em; }
 .view-header .view-sub { font-size: 11.5px; color: var(--parchment); margin-top: 6px; max-width: 640px; line-height: 1.6; font-weight: 500; }
+.view-header-actions { display: flex; align-items: center; gap: 10px; }
+.updated-label { font-size: 11px; color: var(--parchment); font-weight: 500; font-variant-numeric: tabular-nums; }
 
 /* ── Live ticker bar — NIFTY/SENSEX/BANK NIFTY prices fed by
    /ws/ticks, plus an IST clock. Sticky so it stays visible while
@@ -505,7 +507,10 @@ tr.trade-detail-row td {
           <h1>Dashboard</h1>
           <div class="view-sub">Cross-strategy overview — everything combined</div>
         </div>
-        <button class="btn btn-secondary btn-sm" onclick="Dashboard.load()">↻ Refresh</button>
+        <div class="view-header-actions">
+          <span class="updated-label" id="dashUpdatedLabel"></span>
+          <button class="btn btn-secondary btn-sm" onclick="Dashboard.load()">↻ Refresh</button>
+        </div>
       </div>
       <div id="dashStats" class="stat-grid"><div class="empty"><span class="spinner"></span> Loading…</div></div>
 
@@ -535,7 +540,10 @@ tr.trade-detail-row td {
           <h1>Strategy Catalog</h1>
           <div class="view-sub">Every strategy registered in app/strategies/</div>
         </div>
-        <button class="btn btn-secondary btn-sm" onclick="Catalog.load()">↻ Refresh</button>
+        <div class="view-header-actions">
+          <span class="updated-label" id="catalogUpdatedLabel"></span>
+          <button class="btn btn-secondary btn-sm" onclick="Catalog.load()">↻ Refresh</button>
+        </div>
       </div>
       <div class="tabs" id="catalogTabs">
         <button class="active" data-tab="browse" onclick="Catalog.switchTab('browse')">Browse</button>
@@ -551,7 +559,10 @@ tr.trade-detail-row td {
           <h1>Deployed Strategies</h1>
           <div class="view-sub">Every deployment, filterable by status and strategy</div>
         </div>
-        <button class="btn btn-secondary btn-sm" onclick="Deployments.load()">↻ Refresh</button>
+        <div class="view-header-actions">
+          <span class="updated-label" id="deploymentsUpdatedLabel"></span>
+          <button class="btn btn-secondary btn-sm" onclick="Deployments.load()">↻ Refresh</button>
+        </div>
       </div>
       <div class="filters">
         <select id="filterStatus" onchange="Deployments.render()">
@@ -978,6 +989,32 @@ function router() {
   else if (view === 'deployments') Deployments.load();
   else if (view === 'detail') Detail.load(param);
   else if (view === 'instruments') Instruments.load();
+
+  _startAutoRefresh(view);
+}
+
+// ── Auto-refresh: Dashboard/Catalog/Deployments now read from a
+// server-side cache (app/cache.py) instead of a fresh multi-second
+// Neon round trip per request, so polling them every few seconds is
+// cheap enough to give the page a genuinely "live" feel without the
+// user having to navigate away and back to see an update. One shared
+// timer, restarted (not stacked) on every route change so switching
+// views never leaves an old view's timer still firing in the
+// background. Detail (a single deployment someone is watching closely
+// — deliberately NOT cache-backed, see aggregate.py/deployments.py's
+// own comments on why) and Instruments (rarely changes) are left out
+// on purpose; polling them would just be re-paying the slow round trip
+// this whole cache exists to avoid.
+let _viewAutoRefreshTimer = null;
+const _AUTO_REFRESH_VIEWS = { dashboard: () => Dashboard.load(), catalog: () => Catalog.load(), deployments: () => Deployments.load() };
+function _startAutoRefresh(view) {
+  if (_viewAutoRefreshTimer) clearInterval(_viewAutoRefreshTimer);
+  _viewAutoRefreshTimer = null;
+  const reload = _AUTO_REFRESH_VIEWS[view];
+  if (!reload) return;
+  _viewAutoRefreshTimer = setInterval(() => {
+    if (document.visibilityState === 'visible') reload();
+  }, 6000);
 }
 
 window.addEventListener('hashchange', router);

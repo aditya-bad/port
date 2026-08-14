@@ -19,7 +19,7 @@ Postgres when a runner starts up IS the current state, no replay needed.
 import asyncio
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 import asyncpg
 
@@ -37,6 +37,7 @@ class DeploymentRunner:
         broadcaster,
         dispatcher,
         strategy: Optional[StrategyBase] = None,
+        on_fill: Optional[Callable[[], None]] = None,
     ):
         self.deployment_id = deployment["id"]
         self.deployment_name = deployment["deployment_name"]
@@ -47,6 +48,18 @@ class DeploymentRunner:
         self.broadcaster = broadcaster
         self.dispatcher = dispatcher
         self.strategy = strategy
+        # Optional, fire-and-forget: DeploymentManager passes a callback
+        # here that schedules a background aggregate-cache refresh (see
+        # app/cache.py) after every fill. The runner itself stays
+        # deliberately ignorant of what a "cache" even is — it just
+        # calls this if given one, same shape as any other hook — so
+        # trading logic never depends on or blocks on the HTTP layer.
+        # Without this, a trade booked by the strategy (never going
+        # through any HTTP endpoint) would only show up in the cached
+        # GET /deployments list once the background loop next ticks,
+        # while GET /deployments/{id} (not cached) would already show
+        # it — a real, if brief, disagreement between the two views.
+        self._on_fill = on_fill
 
         self.open_positions: dict[int, dict] = {}   # instrument_token -> position row (as dict)
         self.cash: float = float(deployment["current_cash"])
@@ -195,4 +208,6 @@ class DeploymentRunner:
             self.deployment_name, action, qty, symbol, price, reason or "",
             f" realized_pnl={result['realized_pnl']:.2f}" if result["realized_pnl"] is not None else "",
         )
+        if self._on_fill:
+            self._on_fill()
         return result

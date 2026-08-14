@@ -47,6 +47,7 @@ const Catalog = {
     });
 
     this._render();
+    markUpdated('catalogUpdatedLabel');
   },
 
   switchTab(tab) {

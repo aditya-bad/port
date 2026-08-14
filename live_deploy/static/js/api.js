@@ -175,6 +175,29 @@ function spinnerHtml(label = 'Loading…') {
   return `<div class="empty"><span class="spinner"></span> ${label}</div>`;
 }
 
+// ── "Updated Xs ago" freshness labels ──────────────────────────────
+// Dashboard/Catalog/Deployments now read from a server-side cache (see
+// app/cache.py) instead of paying a fresh multi-second Neon round trip
+// on every single page view — a plain client-side "since my last
+// successful load" timestamp is enough to be honest about freshness
+// without needing the server to report its own cache age over the
+// wire. markUpdated() is called at the end of each view's load(); one
+// shared ticking interval keeps every registered label's text current
+// without each view needing its own timer.
+const _updatedAt = {};
+function markUpdated(labelId) {
+  _updatedAt[labelId] = Date.now();
+  _tickUpdatedLabel(labelId);
+}
+function _tickUpdatedLabel(labelId) {
+  const el = document.getElementById(labelId);
+  const ts = _updatedAt[labelId];
+  if (!el || !ts) return;
+  const secs = Math.round((Date.now() - ts) / 1000);
+  el.textContent = secs < 2 ? 'Updated just now' : `Updated ${secs}s ago`;
+}
+setInterval(() => { Object.keys(_updatedAt).forEach(_tickUpdatedLabel); }, 1000);
+
 function emptyHtml(label) {
   return `<div class="empty">${label}</div>`;
 }

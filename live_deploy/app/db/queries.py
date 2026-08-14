@@ -51,6 +51,18 @@ async def create_deployment(
         )
 
 
+async def delete_deployment(pool: asyncpg.Pool, deployment_id: UUID) -> None:
+    """Rolls back a single just-created deployment row (and, via the
+    same ON DELETE CASCADE foreign keys clear_all_deployments relies
+    on, anything already written under it) — used when a deployment is
+    created in the DB but its runner then fails to start (e.g. the
+    strategy's own on_start() rejects the config), so a failed POST
+    /deployments never leaves an orphaned row behind for a caller who
+    was told it failed."""
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM deployments WHERE id = $1", deployment_id)
+
+
 async def get_deployment(pool: asyncpg.Pool, deployment_id: UUID) -> Optional[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetchrow(

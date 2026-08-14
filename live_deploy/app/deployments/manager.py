@@ -62,12 +62,24 @@ class DeploymentManager:
     def __init__(
         self, pool: asyncpg.Pool, broadcaster, dispatcher,
         snapshot_interval_seconds: float = DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
+        cache=None,
     ):
         self.pool = pool
         self.broadcaster = broadcaster
         self.dispatcher = dispatcher
         self.runners: dict[str, DeploymentRunner] = {}   # str(deployment_id) -> runner
         self.snapshot_interval_seconds = snapshot_interval_seconds
+        # Optional (app.state.cache — see app/cache.py). When given,
+        # every runner this manager starts gets wired to call back in
+        # here after each fill, so a strategy-driven trade shows up in
+        # the cached GET /deployments/positions/trades-recent lists
+        # immediately instead of waiting out the background refresh
+        # loop — see DeploymentRunner's own on_fill docstring for why
+        # this matters. None in any context that doesn't have a cache
+        # (kept optional rather than required so the manager itself
+        # stays testable/constructible without standing up the whole
+        # app).
+        self.cache = cache
 
     # ── Startup / shutdown ───────────────────────────────────────────
 
@@ -102,7 +114,20 @@ class DeploymentManager:
             self.pool, payload.deployment_name, payload.strategy_name,
             payload.mode, payload.initial_capital, payload.config,
         )
-        await self._start_runner(row)
+        try:
+            await self._start_runner(row)
+        except Exception:
+            # The row above is already committed -- if the runner then
+            # fails to start (most commonly a strategy's own on_start()
+            # rejecting the config, e.g. pivot_supertrend requiring
+            # exactly one instrument_token), roll it back rather than
+            # leaving an orphaned row a caller who was just told "this
+            # failed" (a 400 from the router) has no idea exists. Without
+            # this, retrying with the same deployment_name would 409 as
+            # "already exists" for a deployment that supposedly never
+            # got created.
+            await queries.delete_deployment(self.pool, row["id"])
+            raise
         return row, is_registered(payload.strategy_name)
 
     async def pause(self, deployment_id: UUID) -> None:
@@ -253,10 +278,31 @@ class DeploymentManager:
                 row["deployment_name"], row["strategy_name"],
             )
 
-        runner = DeploymentRunner(row, self.pool, self.broadcaster, self.dispatcher, strategy)
+        runner = DeploymentRunner(
+            row, self.pool, self.broadcaster, self.dispatcher, strategy,
+            on_fill=self._on_fill_committed,
+        )
         await runner.start()
         self.runners[str(row["id"])] = runner
         return runner
+
+    def _on_fill_committed(self) -> None:
+        """Passed to every DeploymentRunner as on_fill. Fire-and-forget
+        on purpose — scheduled as a background task, never awaited here
+        — so a slow Neon round trip refreshing the cache can never add
+        latency to the strategy's own tick-processing loop. A cache-less
+        context (self.cache is None) is a silent no-op, not an error."""
+        if self.cache is None:
+            return
+        asyncio.create_task(self._refresh_cache_after_fill())
+
+    async def _refresh_cache_after_fill(self) -> None:
+        await asyncio.gather(
+            self.cache.refresh_now("deployments"),
+            self.cache.refresh_now("positions_open"),
+            self.cache.refresh_now("trades_recent"),
+            return_exceptions=True,   # one failed refresh shouldn't crash the others -- see AggregateCache's own docstring on why a failed refresh degrades to stale, not an error
+        )
 
     @staticmethod
     def _deployment_tokens(row: asyncpg.Record) -> list[dict]:

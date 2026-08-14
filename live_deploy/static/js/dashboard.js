@@ -22,6 +22,7 @@ const Dashboard = {
     this.renderPositions(positions);
     this.renderActivity(trades);
     this.renderInstruments(instruments);
+    markUpdated('dashUpdatedLabel');
   },
 
   renderStats(deployments) {

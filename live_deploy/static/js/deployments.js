@@ -14,6 +14,7 @@ const Deployments = {
     this._all = await Api.listDeployments();
     this._populateStrategyFilter();
     this.render();
+    markUpdated('deploymentsUpdatedLabel');
   },
 
   _populateStrategyFilter() {

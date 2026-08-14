@@ -20,6 +20,17 @@ class StrategyEnabledIn(BaseModel):
     enabled: bool
 
 
+async def fetch_strategies(pool) -> list[dict]:
+    """The registry-plus-enabled-map payload behind GET /strategies,
+    pulled out on its own so app.state.cache's background loop can call
+    it directly. See app/cache.py for why this is cached at all."""
+    strategies = list_strategies()
+    enabled_map = await queries.get_strategy_enabled_map(pool)
+    for s in strategies:
+        s["enabled"] = enabled_map.get(s["name"], True)   # True: see ensure_strategy_settings — a row should always exist, this is just defense in depth
+    return strategies
+
+
 @router.get("")
 async def get_strategies(request: Request):
     """
@@ -30,11 +41,7 @@ async def get_strategies(request: Request):
     + enabled map) is small and this is read far more often than the
     enabled flag ever changes.
     """
-    strategies = list_strategies()
-    enabled_map = await queries.get_strategy_enabled_map(request.app.state.db_pool)
-    for s in strategies:
-        s["enabled"] = enabled_map.get(s["name"], True)   # True: see ensure_strategy_settings — a row should always exist, this is just defense in depth
-    return strategies
+    return await request.app.state.cache.get("strategies")
 
 
 @router.put("/{strategy_name}/enabled")
@@ -50,4 +57,8 @@ async def set_strategy_enabled(strategy_name: str, payload: StrategyEnabledIn, r
     if not is_registered(strategy_name):
         raise HTTPException(404, f"No such strategy: {strategy_name!r}")
     await queries.set_strategy_enabled(request.app.state.db_pool, strategy_name, payload.enabled)
+    # Refresh now -- Catalog.switchTab/openClearAllModal etc. read this
+    # cache right after a toggle and a stale read would make the button
+    # look like it didn't do anything.
+    await request.app.state.cache.refresh_now("strategies")
     return {"strategy_name": strategy_name, "enabled": payload.enabled}

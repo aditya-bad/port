@@ -9,6 +9,7 @@ overlapping with the first (enforced at the DB layer, see
 db/migrations/0001_init.sql).
 """
 
+import asyncio
 import secrets
 from uuid import UUID
 
@@ -72,6 +73,19 @@ async def _enrich_pnl_many(pool, dispatcher, rows: list[dict]) -> None:
         row["unrealized_pnl"] = round(unrealized_map.get(dep_id, 0.0), 2)
 
 
+async def fetch_deployments_list(pool, dispatcher) -> list[dict]:
+    """The full, unfiltered deployment list, pnl-enriched -- this is
+    the actual DB-round-trip-heavy work behind GET /deployments with no
+    status filter (the only shape the frontend ever requests), pulled
+    out on its own so app.state.cache's background loop can call it
+    directly rather than going through the HTTP layer. See app/cache.py
+    for why this is cached at all."""
+    rows = await queries.list_deployments(pool, status=None)
+    out = [_annotate(r) for r in rows]
+    await _enrich_pnl_many(pool, dispatcher, out)
+    return out
+
+
 async def _enrich_pnl_one(pool, dispatcher, deployment_id: UUID, row: dict) -> None:
     """Single-deployment version of _enrich_pnl_many, for GET
     /deployments/{id} -- scoped queries instead of fetching every
@@ -104,6 +118,13 @@ async def create_deployment(payload: DeploymentCreate, request: Request):
         row, _strategy_registered = await manager.create_deployment(payload)
     except Exception as e:
         raise HTTPException(400, str(e))
+    # Refresh the cached list NOW, not on the next background tick --
+    # catalog.js's submitDeploy() reloads the Catalog (which itself
+    # reads this same cached list, for active-deployment counts)
+    # immediately after this call resolves, and a stale cache there
+    # would show the modal closing over an unchanged list, looking like
+    # the deploy silently did nothing.
+    await request.app.state.cache.refresh_now("deployments")
     # A freshly created deployment has traded nothing yet -- realized_pnl/
     # unrealized_pnl are correctly 0.0 via DeploymentOut's own defaults,
     # no query needed.
@@ -112,6 +133,13 @@ async def create_deployment(payload: DeploymentCreate, request: Request):
 
 @router.get("", response_model=list[DeploymentOut])
 async def list_deployments(request: Request, status: str | None = None):
+    # The frontend only ever calls this with no status filter -- that's
+    # the cached hot path. Anything else (unused today, but part of the
+    # API's own contract) falls through to a live query so a future
+    # caller passing a real filter never gets an answer for the wrong
+    # question.
+    if status is None:
+        return await request.app.state.cache.get("deployments")
     pool = request.app.state.db_pool
     rows = await queries.list_deployments(pool, status=status)
     out = [_annotate(r) for r in rows]
@@ -209,6 +237,7 @@ async def pause_deployment(deployment_id: UUID, request: Request):
         raise HTTPException(404, "No such deployment")
     except ValueError as e:
         raise HTTPException(409, str(e))
+    await request.app.state.cache.refresh_now("deployments")   # status changed -- see fetch_deployments_list
     return {"status": "paused"}
 
 
@@ -221,6 +250,7 @@ async def resume_deployment(deployment_id: UUID, request: Request):
         raise HTTPException(404, "No such deployment")
     except ValueError as e:
         raise HTTPException(409, str(e))
+    await request.app.state.cache.refresh_now("deployments")
     return _annotate(row)
 
 
@@ -233,6 +263,15 @@ async def stop_deployment(deployment_id: UUID, request: Request, force_close: bo
         raise HTTPException(404, "No such deployment")
     except ValueError as e:
         raise HTTPException(409, str(e))
+    # A force-close stop can both change status AND close a position/
+    # book a trade -- refresh every cache a stop could have touched, not
+    # just the deployment list.
+    cache = request.app.state.cache
+    await asyncio.gather(
+        cache.refresh_now("deployments"),
+        cache.refresh_now("positions_open"),
+        cache.refresh_now("trades_recent"),
+    )
     return {"status": "stopped"}
 
 
@@ -270,4 +309,13 @@ async def clear_all_deployments(payload: ClearAllIn, request: Request):
     # error on its next write (e.g. a tick arriving mid-delete).
     await manager.shutdown_all()
     deleted = await queries.clear_all_deployments(request.app.state.db_pool)
+    # Everything just vanished -- deployments, positions, trades all at
+    # once. strategy_settings is untouched (see the docstring above), so
+    # that cache is deliberately left alone.
+    cache = request.app.state.cache
+    await asyncio.gather(
+        cache.refresh_now("deployments"),
+        cache.refresh_now("positions_open"),
+        cache.refresh_now("trades_recent"),
+    )
     return {"deleted": deleted}

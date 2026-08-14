@@ -47,6 +47,7 @@ from . import strategies  # noqa: F401 — importing runs every @register_strate
 from .strategies.registry import list_strategies
 from .auth import AuthMiddleware, HostAwareSessionMiddleware
 from .broadcaster import TickBroadcaster
+from .cache import AggregateCache
 from .config import load_config, load_tokens
 from .db import queries
 from .db.migrate import run_migrations
@@ -60,6 +61,9 @@ from .routers import health as health_router
 from .routers import instruments as instruments_router
 from .routers import kite_auth as kite_auth_router
 from .routers import strategies as strategies_router
+from .routers.aggregate import fetch_positions_open, fetch_trades_recent
+from .routers.deployments import fetch_deployments_list
+from .routers.strategies import fetch_strategies
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("live_deploy")
@@ -144,8 +148,29 @@ async def startup() -> None:
     app.state.broadcaster = broadcaster
     app.state.dispatcher = dispatcher
 
+    # ── Aggregate-read cache: GET /deployments, /positions, /trades/
+    # recent, /strategies were reported taking 3-6s to load on every
+    # single page view — a flat per-round-trip cost against Neon, not
+    # query complexity (see app/cache.py's own docstring for the full
+    # reasoning). Each key is refreshed once here (so the very first
+    # real request never pays a cold-cache penalty) and then on its own
+    # background loop for the life of the process; mutating endpoints
+    # (and, via DeploymentManager below, every strategy fill too) call
+    # cache.refresh_now(key) right after their own write so an action
+    # the user just took — or a trade a strategy just made — is
+    # reflected immediately, not after the next tick. Set up BEFORE the
+    # DeploymentManager below, which needs a live cache reference to
+    # pass to it.
+    cache = AggregateCache()
+    cache.register("deployments", lambda: fetch_deployments_list(db_pool, dispatcher), interval=6.0)
+    cache.register("positions_open", lambda: fetch_positions_open(db_pool, dispatcher), interval=6.0)
+    cache.register("trades_recent", lambda: fetch_trades_recent(db_pool), interval=12.0)
+    cache.register("strategies", lambda: fetch_strategies(db_pool), interval=20.0)
+    await cache.start()
+    app.state.cache = cache
+
     # ── Deployment lifecycle: resume everything still 'active' ────────
-    manager = DeploymentManager(db_pool, broadcaster, dispatcher)
+    manager = DeploymentManager(db_pool, broadcaster, dispatcher, cache=cache)
     resumed = await manager.load_active_on_startup()
     app.state.deployment_manager = manager
 
@@ -184,6 +209,11 @@ async def shutdown() -> None:
         await snapshot_task
     except asyncio.CancelledError:
         pass
+
+    # Stop the aggregate-read cache's background refresh loops before
+    # the DB pool closes below — otherwise a loop mid-sleep can wake up
+    # after close_pool() and try to query a closed pool.
+    await app.state.cache.stop()
 
     # Stop deployment runner tasks first (they hold broadcaster
     # subscriptions and DB connections) — this does NOT change any

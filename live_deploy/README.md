@@ -1731,6 +1731,104 @@ phrase is caught client-side before it even reaches the API, and the
 correct combination clears the deployment and refreshes both the Catalog
 and Deployed Strategies views to reflect it.
 
+## What's here (Step 22: an aggregate-read cache — pages that took 3-6s now load instantly)
+
+Reported directly: `GET /deployments` and friends taking 3-6 seconds to
+load on every single page view. Confirmed earlier (see the query-
+parallelization investigation) that this isn't query complexity — a
+deployment list and a positions list run very different numbers of
+queries but took the same ~3s, pointing at a flat per-round-trip cost
+against Neon that swamps every request about equally.
+
+**The fix: cache the hot reads, refresh in the background.** New
+`app/cache.py` (`AggregateCache`) holds four keys — `deployments`,
+`positions_open`, `trades_recent`, `strategies` — the exact endpoints
+behind Dashboard, Deployed Strategies, and the Catalog's active-
+deployment counts. Each is populated once at startup (before the app
+accepts any traffic — no cold-cache penalty on the very first real
+request) and then refreshed on its own background loop for the life of
+the process (6s for deployments/positions, 12s for trades, 20s for
+strategies — infrequent enough not to hammer Neon, frequent enough that
+unrealized P&L, which drifts continuously with live prices and isn't
+tied to any single "event," never drifts far). `GET /deployments`,
+`/positions`, `/trades/recent`, `/strategies` now just read memory —
+each endpoint still accepts its full original query-param range, but
+falls through to a live query for any parameter combination other than
+the one the frontend actually sends (a status filter, a non-default
+limit), so nothing about the API's contract narrows.
+
+A cache with only a timer would still leave up to one full interval of
+staleness right after something actually changes, which would read as
+"my click didn't do anything" — so every mutating endpoint
+(create/pause/resume/stop/clear-all a deployment, enable/disable a
+strategy) calls `cache.refresh_now(key)` right after its own write,
+before returning to the caller. That covers every HTTP-driven change,
+but not the one that matters most: a strategy's own trade, which never
+goes through any HTTP endpoint at all — `DeploymentRunner.buy()`/
+`sell()` write straight to Postgres. Wired a fire-and-forget hook
+through instead: `DeploymentManager` now optionally holds a `cache`
+reference and passes a callback to every runner it starts; after each
+fill, the runner calls it, and the manager schedules a background
+refresh (`asyncio.create_task`, never awaited inline) so a slow Neon
+round trip can never add latency to the strategy's own tick-processing
+loop. Found this gap the direct way: an existing regression test
+asserting the list and single-deployment views agree on `realized_pnl`
+right after a runner-level fill (bypassing the API entirely, same as a
+real strategy) started failing once the list became cached — a genuine
+consistency gap, not a stale test, fixed by wiring the hook rather than
+loosening the assertion.
+
+**A second, unrelated bug found the same way**: chasing that same test
+failure down turned up an actual pre-existing bug, unmasked rather than
+caused by the cache. `DeploymentManager.create_deployment()` writes the
+deployment row to Postgres, *then* starts its runner — if the strategy's
+own `on_start()` rejects the config (pivot_supertrend requiring exactly
+one `instrument_token`, say), that exception was propagating up to a
+clean 400 response, but the row was already committed and never rolled
+back: a caller told "this failed" had an orphaned `active`-status
+deployment sitting in the DB with no live runner, discoverable only by
+retrying the same `deployment_name` and getting a confusing 409 for a
+deployment that supposedly never got created. This was always a bug —
+it just used to be invisible, because the old uncached `GET
+/deployments` would still find the orphaned row on its next live query,
+making a rejected deploy look like it "eventually" succeeded. The cache
+removed that accidental cover. Fixed with a real rollback: `
+create_deployment()` now deletes the row if starting its runner fails,
+and re-raises the original exception so the caller still gets the
+strategy's own error message.
+
+**Frontend**: since reads are now memory-speed, Dashboard/Catalog/
+Deployed Strategies auto-poll every 6s while active (paused instantly on
+`document.visibilitychange` to hidden, and stopped entirely — not just
+paused — the moment you navigate to Detail or Instruments, so nothing
+re-pays the slow round trip this cache exists to avoid on a page that
+isn't cache-backed). A small "Updated Xs ago" label sits next to each
+view's Refresh button — a client-side timestamp of the view's own last
+successful load, ticked every second, not a real server-reported cache
+age (the honest thing that's cheap to provide without adding a header
+to every response).
+
+**Verified concretely**: first `GET /deployments` immediately after boot
+in the single millisecond range (was 3-6s), five repeated calls all
+sub-5ms. Every mutation (create/pause/resume/stop/clear-all, strategy
+enable/disable) reflected on the very next read with zero wait. A write
+made *directly against Postgres*, bypassing every endpoint, confirmed
+correctly invisible until the background loop's interval elapsed, then
+correctly visible afterward — proving the loop itself works
+independently of any mutation hook, not just that the hooks work. The
+fill-triggered refresh verified the same way at the runner level (not
+through any HTTP call). The rollback fix verified with a genuinely
+rejected deploy: 400 returned, no row in `GET /deployments`, no row
+directly in Postgres either, and a retry with the same
+`deployment_name` succeeding cleanly. Real-browser check of the
+freshness label ticking and auto-refresh starting/stopping correctly
+per view. Shutdown stays clean (~0.2-0.3s) — `cache.stop()` cancels its
+background loops before the DB pool closes, same shutdown-hang class
+already fixed once for `/ws/ticks` in Step 20. Full regression suite
+re-run afterward (one unrelated failure traced to test-DB pollution
+from an earlier scratch test run sharing the same local Postgres — not
+an app regression — cleared and re-confirmed).
+
 ## Setup
 
 ```bash
