@@ -436,19 +436,24 @@ protective legs already open when active_management engages are left
 in place untouched by the delegated logic, which will not roll or
 close them. Flagged rather than silently broken.
 
-KNOWN LIMITATION: fills placed BY the delegated `_adjust` call carry
-`intraday_dtt_adjusted`'s own (simpler) metadata shape
-(`leg_role`/`leg`/`strike`/`expiry`/`exchange`), not this strategy's
-richer `_trade_meta()` schema (Section 12) — a direct consequence of
-reusing that method's `runner.sell(...)` call completely unmodified.
-`trigger`/`trigger_values`/`target_basis`/`resulting_state` are therefore
-absent from those specific fills (they still carry `reason=...` on the
-fill row itself, and every OTHER trigger path in this strategy — including
-Section 6/EOD legs opened post-convergence under active_management —
-uses the full schema as normal). Flagged rather than silently
-inconsistent; see `_active_management_tick`'s own docstring for the two
-other bridging fixes this delegation needs (`realized_pnl_today` sync,
-missing `"seq"` backfill).
+KNOWN LIMITATION (narrowed by the Step 14 trade-reason-logging retrofit —
+`intraday_dtt_adjusted._adjust`/`_unwind_one`/`_flatten_all` now build
+their OWN `trigger`/`trigger_values`/`target_basis`/`resulting_state`
+internally via the shared `build_trade_meta()` helper, duck-typed against
+whatever `self` actually is, so those four fields ARE now present, with
+real numbers, on fills placed BY the delegated `_adjust`/`_unwind_one`
+call — this was NOT true before Step 14): what's STILL absent from those
+specific fills is this strategy's OWN extra context —
+`cycle_id`/`contract_expiry`/`converged`/`convergence_premium`/`seq` —
+since the delegated methods have no way to know about this strategy's
+own bookkeeping (`leg_role`/`leg`/`strike`/`expiry`/`exchange` ARE
+present, `intraday_dtt_adjusted`'s own naming for the same concepts).
+Every OTHER trigger path in this strategy — including Section 6/EOD legs
+opened post-convergence under active_management — uses the full,
+richer `_trade_meta()` schema (Section 12) as normal. Flagged rather
+than silently inconsistent; see `_active_management_tick`'s own
+docstring for the two other bridging fixes this delegation needs
+(`realized_pnl_today` sync, missing `"seq"` backfill).
 """
 
 import logging

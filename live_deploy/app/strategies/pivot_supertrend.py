@@ -114,6 +114,7 @@ from typing import Optional
 
 from ..deployments.strategy_base import StrategyBase
 from .registry import register_strategy
+from .trade_meta import build_trade_meta
 
 logger = logging.getLogger("live_deploy.strategies.pivot_supertrend")
 
@@ -498,7 +499,13 @@ class PivotSupertrendStrategy(StrategyBase):
         self.prev_day_ohlc: Optional[dict] = cfg.get("prev_day_ohlc")
         self.pivots: Optional[dict] = None
 
-        self.pending_exit = False
+        # Both hold trigger_values captured at DETECTION time (step 4/5
+        # below), not bare flags — this strategy's "decide on close, act
+        # on next open" timing means the triggering candle's own data
+        # (close price, trend before/after, which pivot level broke) is
+        # gone by the time the deferred trade actually executes, so it
+        # has to be stashed here to make it into the fill's metadata.
+        self.pending_exit: Optional[dict] = None
         self.pending_entry: Optional[dict] = None
         self.prev_trend: Optional[str] = None
 
@@ -577,40 +584,76 @@ class PivotSupertrendStrategy(StrategyBase):
         before_cutoff = self.force_exit_time is None or t < self.force_exit_time
 
         # 1 — execute a pending ST-flip exit at THIS candle's open
-        if self.pending_exit:
-            await self._exit(runner, candle, "st_flip")
-            self.pending_exit = False
+        if self.pending_exit is not None:
+            await self._exit(runner, candle, "st_flip", self.pending_exit["trigger_values"])
+            self.pending_exit = None
 
         # 2 — execute a pending entry at THIS candle's open
         if self.pending_entry is not None and before_cutoff:
-            await self._enter(runner, candle, self.pending_entry["side"])
+            await self._enter(runner, candle, self.pending_entry["side"], self.pending_entry["trigger_values"])
         self.pending_entry = None
 
         # 3 — force-exit at/after cutoff if still open
         if self.force_exit_time is not None and t >= self.force_exit_time:
             if self.instrument_token in runner.open_positions:
-                await self._exit(runner, candle, "force_exit")
+                await self._exit(runner, candle, "force_exit", {
+                    "candle_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
+                })
 
-        # 4 — advance SuperTrend, detect a flip
+        # 4 — advance SuperTrend, detect a flip. trigger_values captured
+        # HERE (detection time) since this is the only point that has
+        # both the pre-flip and post-flip trend plus the candle that
+        # caused it — by the time step 1 executes the exit next call,
+        # this candle is gone.
+        prev_trend_before_update = self.prev_trend
         new_trend = self.st.update(candle)
         if new_trend is not None:
-            if self.prev_trend is not None and new_trend != self.prev_trend:
+            if prev_trend_before_update is not None and new_trend != prev_trend_before_update:
                 if self.instrument_token in runner.open_positions:
-                    self.pending_exit = True
+                    self.pending_exit = {
+                        "trigger_values": {
+                            "prev_trend": prev_trend_before_update, "new_trend": new_trend,
+                            "close": round(candle["close"], 2),
+                            "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
+                            "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
+                        },
+                    }
             self.prev_trend = new_trend
 
-        # 5 — detect a fresh entry signal (flat, pivots known, ST ready, before cutoff)
+        # 5 — detect a fresh entry signal (flat, pivots known, ST ready,
+        # before cutoff). Same detection-time capture as step 4: records
+        # WHICH specific pivot level broke, not just that "some" R/S did.
         if self.instrument_token not in runner.open_positions and self.pivots is not None \
                 and self.prev_trend is not None and before_cutoff:
             close = candle["close"]
-            r_levels = [self.pivots[k] for k in R_KEYS]
-            s_levels = [self.pivots[k] for k in S_KEYS]
-            if self.prev_trend == "up" and any(close > r for r in r_levels):
-                self.pending_entry = {"side": "long"}
-            elif self.prev_trend == "down" and any(close < s for s in s_levels):
-                self.pending_entry = {"side": "short"}
+            if self.prev_trend == "up":
+                for k in R_KEYS:
+                    level = self.pivots[k]
+                    if close > level:
+                        self.pending_entry = {
+                            "side": "long",
+                            "trigger_values": {
+                                "close": round(close, 2), "trend": self.prev_trend,
+                                "broken_level_key": k, "broken_level": round(level, 2),
+                                "r_levels": {rk: round(self.pivots[rk], 2) for rk in R_KEYS},
+                            },
+                        }
+                        break
+            elif self.prev_trend == "down":
+                for k in S_KEYS:
+                    level = self.pivots[k]
+                    if close < level:
+                        self.pending_entry = {
+                            "side": "short",
+                            "trigger_values": {
+                                "close": round(close, 2), "trend": self.prev_trend,
+                                "broken_level_key": k, "broken_level": round(level, 2),
+                                "s_levels": {sk: round(self.pivots[sk], 2) for sk in S_KEYS},
+                            },
+                        }
+                        break
 
-    async def _enter(self, runner, candle: dict, side: str) -> None:
+    async def _enter(self, runner, candle: dict, side: str, trigger_values: dict) -> None:
         price = candle["open"]
         budget = self.capital_per_trade if self.capital_per_trade is not None else runner.cash
         qty = int(budget // price) if price > 0 else 0
@@ -621,17 +664,31 @@ class PivotSupertrendStrategy(StrategyBase):
             )
             return
         action = runner.buy if side == "long" else runner.sell
+        meta = build_trade_meta(
+            trigger="pivot_break_long" if side == "long" else "pivot_break_short",
+            action="open_long" if side == "long" else "open_short",
+            trigger_values=trigger_values,
+            resulting_state={"side": side, "qty": qty, "entry_price": round(price, 2)},
+            pivots={k: round(v, 2) for k, v in self.pivots.items()},
+        )
         await action(self.symbol, self.instrument_token, qty, price, candle["date"],
-                     reason="entry", metadata={"pivots": {k: round(v, 2) for k, v in self.pivots.items()}})
+                     reason="entry", metadata=meta)
 
-    async def _exit(self, runner, candle: dict, reason: str) -> None:
+    async def _exit(self, runner, candle: dict, reason: str, trigger_values: dict) -> None:
         pos = runner.open_positions.get(self.instrument_token)
         if pos is None:
             return
         price = candle["open"]
         qty = float(pos["qty"])
         action = runner.sell if pos["side"] == "long" else runner.buy
-        await action(self.symbol, self.instrument_token, qty, price, candle["date"], reason=reason)
+        meta = build_trade_meta(
+            trigger=reason,
+            action="close_long" if pos["side"] == "long" else "close_short",
+            trigger_values=trigger_values,
+            resulting_state={"position": "flat"},
+        )
+        await action(self.symbol, self.instrument_token, qty, price, candle["date"],
+                     reason=reason, metadata=meta)
 
     async def on_stop(self, runner) -> None:
         logger.info("%s: strategy stopped (trend=%s, pivots=%s)",

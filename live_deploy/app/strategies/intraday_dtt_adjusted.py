@@ -248,10 +248,31 @@ from ..options import NoKiteSession, OptionsResolver
 from .intraday_dtt_simple import resolve_atm_straddle_legs
 from .pivot_supertrend import _parse_hhmm
 from .registry import register_strategy
+from .trade_meta import build_trade_meta
 
 logger = logging.getLogger("live_deploy.strategies.intraday_dtt_adjusted")
 
 OTHER_SIDE = {"CE": "PE", "PE": "CE"}
+
+
+def _legs_snapshot(legs: dict) -> dict:
+    """Compact per-side leg snapshot for a fill's `resulting_state` — same
+    reasoning as strangle_monthly_v2's own `_snapshot_state`. Deliberately
+    a plain function of `legs` (not an instance method) rather than
+    `_legs_snapshot(self.legs)`: `_adjust`/`_unwind_one`/`_flatten_all` are
+    also reused verbatim by strangle_monthly_v2's "active_management"
+    convergence mode via unbound-method binding onto a
+    StrangleMonthlyV2Strategy instance (see that module's "ACTIVE-
+    MANAGEMENT DELEGATION" section) — an instance method here would
+    AttributeError the moment `self` is actually that other class, since
+    it doesn't define or inherit this name. A plain function taking
+    `legs` needs nothing from `self` but the one dict every caller
+    (including the delegated one) already keeps in the exact same
+    `{"CE": [...], "PE": [...]}` shape."""
+    return {
+        side: [{"strike": l["strike"], "role": l["role"]} for l in legs.get(side, [])]
+        for side in ("CE", "PE")
+    }
 
 
 @register_strategy(
@@ -586,29 +607,53 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             {"instrument_token": pe_leg.instrument_token, "symbol": pe_leg.tradingsymbol},
         ])
 
+        # Continuous tick-check strategy (same as intraday_dtt_simple) —
+        # trigger_values read straight out of local scope.
+        trigger_values = {
+            "tick_time": ts.time().isoformat(), "entry_time": self.entry_time.isoformat(),
+            "late_start_today": self._late_start_today,
+        }
         common_meta = {
             "strike": strike, "expiry": expiry.isoformat(), "leg_role": "original",
             "entry_spot": entry_spot,
         }
-        await runner.sell(
-            ce_leg.tradingsymbol, ce_leg.instrument_token, qty, ce_price, ts,
-            reason="entry", metadata={**common_meta, "leg": "CE", "exchange": ce_leg.exchange},
-        )
-        await runner.sell(
-            pe_leg.tradingsymbol, pe_leg.instrument_token, qty, pe_price, ts,
-            reason="entry", metadata={**common_meta, "leg": "PE", "exchange": pe_leg.exchange},
-        )
 
+        # Each leg is appended to self.legs BEFORE its own fill is
+        # recorded, so _legs_snapshot(self.legs) (used for resulting_state)
+        # always reflects the book exactly as of immediately after that fill —
+        # the CE fill's resulting_state shows CE-only, the PE fill's
+        # shows both legs.
         self.legs["CE"].append({
             "token": ce_leg.instrument_token, "symbol": ce_leg.tradingsymbol,
             "exchange": ce_leg.exchange, "entry_price": ce_price,
             "strike": strike, "role": "original",
         })
+        await runner.sell(
+            ce_leg.tradingsymbol, ce_leg.instrument_token, qty, ce_price, ts,
+            reason="entry",
+            metadata=build_trade_meta(
+                trigger="entry_time_reached", action="sell_open_CE",
+                trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
+                target_basis={"selection_basis": "ATM", "selected_strike": strike, "fill_premium": ce_price},
+                **common_meta, leg="CE", exchange=ce_leg.exchange,
+            ),
+        )
+
         self.legs["PE"].append({
             "token": pe_leg.instrument_token, "symbol": pe_leg.tradingsymbol,
             "exchange": pe_leg.exchange, "entry_price": pe_price,
             "strike": strike, "role": "original",
         })
+        await runner.sell(
+            pe_leg.tradingsymbol, pe_leg.instrument_token, qty, pe_price, ts,
+            reason="entry",
+            metadata=build_trade_meta(
+                trigger="entry_time_reached", action="sell_open_PE",
+                trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
+                target_basis={"selection_basis": "ATM", "selected_strike": strike, "fill_premium": pe_price},
+                **common_meta, leg="PE", exchange=pe_leg.exchange,
+            ),
+        )
 
         self.entry_spot = entry_spot
         self.combined_entry_premium = ce_price + pe_price
@@ -633,12 +678,18 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         t = ts.time()
 
         if t >= self.force_exit_time:
-            await self._flatten_all(runner, ts, "force_exit")
+            await self._flatten_all(runner, ts, "force_exit", trigger_values={
+                "tick_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
+            })
             return
 
         if self.breakeven_lower is not None:
             if spot_price <= self.breakeven_lower or spot_price >= self.breakeven_upper:
-                await self._flatten_all(runner, ts, "breakeven_fallback")
+                await self._flatten_all(runner, ts, "breakeven_fallback", trigger_values={
+                    "spot_price": round(spot_price, 2),
+                    "breakeven_lower": round(self.breakeven_lower, 2),
+                    "breakeven_upper": round(self.breakeven_upper, 2),
+                })
                 return
 
         # Every remaining check needs EVERY open leg's live premium.
@@ -658,7 +709,12 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             total_profit = self.realized_pnl_today + unrealized
             target = self.decay_pct * self.combined_entry_premium
             if total_profit >= target:
-                await self._flatten_all(runner, ts, "profit_target_total")
+                await self._flatten_all(runner, ts, "profit_target_total", trigger_values={
+                    "realized_pnl_today": round(self.realized_pnl_today, 2),
+                    "unrealized": round(unrealized, 2), "total_profit": round(total_profit, 2),
+                    "target": round(target, 2), "decay_pct": self.decay_pct,
+                    "combined_entry_premium": round(self.combined_entry_premium, 2),
+                })
                 return
 
         if self.adjusted_side is None:
@@ -732,6 +788,33 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             )
             return
 
+        # trigger_values computed HERE, internally, from `side`/`bigger_now`
+        # (already parameters) plus a fresh read of the smaller side's own
+        # current premiums off the dispatcher — deliberately NOT a new
+        # parameter, so intraday_dtt_advanced's existing call sites
+        # (`self._adjust(runner, ts, side, bigger_now)` /
+        # `..., reason="roll_open")`) need no changes at all.
+        if reason == "adjustment":
+            smaller_total = sum(
+                (runner.dispatcher.last_prices.get(l["token"]) or l["entry_price"])
+                for l in self.legs[side]
+            ) if self.legs[side] else None
+            trigger_values = {
+                "side": side, "bigger_now": round(bigger_now, 2),
+                "smaller_total": round(smaller_total, 2) if smaller_total is not None else None,
+                "adjustment_trigger_ratio": self.adjustment_trigger_ratio,
+                "trigger_threshold": round(self.adjustment_trigger_ratio * bigger_now, 2),
+            }
+        else:
+            # roll_open (intraday_dtt_advanced) -- reopening immediately
+            # after _unwind_one closed the cheapest leg at the concurrent
+            # cap; the trigger is the cap being hit again, not a fresh
+            # smaller/bigger comparison (see that module's docstring).
+            trigger_values = {
+                "side": side, "bigger_now": round(bigger_now, 2),
+                "concurrent_legs_before_roll_open": len(self.legs[side]),
+            }
+
         self.adjustments_used += 1
         role = f"adjustment_{self.adjustments_used}"
         self.adjusted_side = side
@@ -740,19 +823,24 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         runner.dispatcher.add_instruments(
             [{"instrument_token": leg.instrument_token, "symbol": leg.tradingsymbol}]
         )
-        await runner.sell(
-            leg.tradingsymbol, leg.instrument_token, qty, price, ts,
-            reason=reason,
-            metadata={
-                "leg_role": role, "leg": side, "strike": leg.strike,
-                "expiry": leg.expiry.isoformat(), "exchange": leg.exchange,
-            },
-        )
         self.legs[side].append({
             "token": leg.instrument_token, "symbol": leg.tradingsymbol,
             "exchange": leg.exchange, "entry_price": price,
             "strike": leg.strike, "role": role,
         })
+        await runner.sell(
+            leg.tradingsymbol, leg.instrument_token, qty, price, ts,
+            reason=reason,
+            metadata=build_trade_meta(
+                trigger=reason, action=f"sell_open_{side}",
+                trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
+                target_basis={
+                    "target_premium": round(target, 2), "selected_strike": leg.strike, "fill_premium": price,
+                },
+                leg_role=role, leg=side, strike=leg.strike,
+                expiry=leg.expiry.isoformat(), exchange=leg.exchange,
+            ),
+        )
         logger.info(
             "%s: %s #%d — sold %s %s@%.2f (target was %.2f) — %s "
             "side now %d leg(s)", runner.deployment_name, reason, self.adjustments_used,
@@ -772,16 +860,45 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         # only ever appended) -- documented in the module docstring.
         cheapest = min(self.legs[side], key=lambda l: (prices[l["token"]], self.legs[side].index(l)))
         price = prices[cheapest["token"]]
+
+        # trigger_values computed HERE, internally, from `side`/`prices`
+        # (already parameters) -- deliberately no new parameter, so
+        # intraday_dtt_advanced's existing
+        # `self._unwind_one(runner, ts, prices, reason="roll_close")` call
+        # site needs no changes.
+        leg_premiums = {l["symbol"]: round(prices[l["token"]], 2) for l in self.legs[side]}
+        if reason == "reversal_unwind":
+            anchor_side = OTHER_SIDE[side]
+            smaller_total = sum(prices[l["token"]] for l in self.legs[side])
+            bigger_now = prices[self.legs[anchor_side][0]["token"]] if self.legs[anchor_side] else None
+            trigger_values = {
+                "side": side, "smaller_total": round(smaller_total, 2),
+                "bigger_now": round(bigger_now, 2) if bigger_now is not None else None,
+                "leg_premiums": leg_premiums,
+            }
+        else:
+            # roll_close (intraday_dtt_advanced) -- fired because `side`
+            # is AT its concurrent leg cap, not a reversal condition; see
+            # that module's _handle_adjustment_trigger.
+            trigger_values = {
+                "side": side, "concurrent_legs_before_roll": len(self.legs[side]),
+                "leg_premiums": leg_premiums,
+            }
+
         pos = runner.open_positions.get(cheapest["token"])
+        self.legs[side].remove(cheapest)
         if pos is not None:
             result = await runner.buy(
                 cheapest["symbol"], cheapest["token"], float(pos["qty"]), price, ts,
                 reason=reason,
+                metadata=build_trade_meta(
+                    trigger=reason, action=f"buy_close_{side}",
+                    trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
+                ),
             )
             if result.get("realized_pnl") is not None:
                 self.realized_pnl_today += result["realized_pnl"]
         runner.dispatcher.release_instruments([cheapest["token"]])
-        self.legs[side].remove(cheapest)
         logger.info(
             "%s: %s — closed %s %s@%.2f (%s side now %d leg(s), "
             "realized_pnl_today=%.2f)", runner.deployment_name, reason, side,
@@ -790,7 +907,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
 
     # ── Full flatten: force-exit / break-even / profit-target ──────────
 
-    async def _flatten_all(self, runner, ts, reason: str) -> None:
+    async def _flatten_all(self, runner, ts, reason: str, trigger_values: dict) -> None:
         for side in ("CE", "PE"):
             for leg in list(self.legs[side]):
                 price = runner.dispatcher.last_prices.get(leg["token"])
@@ -802,14 +919,18 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                         runner.deployment_name, leg["symbol"], reason, price,
                     )
                 pos = runner.open_positions.get(leg["token"])
+                self.legs[side].remove(leg)
                 if pos is not None:
                     result = await runner.buy(
                         leg["symbol"], leg["token"], float(pos["qty"]), price, ts, reason=reason,
+                        metadata=build_trade_meta(
+                            trigger=reason, action=f"buy_close_{side}",
+                            trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
+                        ),
                     )
                     if result.get("realized_pnl") is not None:
                         self.realized_pnl_today += result["realized_pnl"]
                 runner.dispatcher.release_instruments([leg["token"]])
-            self.legs[side] = []
         logger.info(
             "%s: flattened everything (%s) — realized_pnl_today=%.2f",
             runner.deployment_name, reason, self.realized_pnl_today,

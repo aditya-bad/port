@@ -114,6 +114,7 @@ from .pivot_supertrend import (
     apply_seed_to_state,
 )
 from .registry import register_strategy
+from .trade_meta import build_trade_meta
 
 logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options_inverse")
 
@@ -177,8 +178,13 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         self.st = SuperTrendState(period=ST_PERIOD, multiplier=ST_MULTIPLIER,
                                   atr_method=self.atr_method)
 
-        self.pending_entry: Optional[str] = None   # "PE" | "CE"
-        self.pending_exit = False
+        # Both hold trigger_values captured at DETECTION time — the
+        # SuperTrend flip (pending_entry) and the hold-expiry threshold
+        # being crossed (pending_exit) are both detected one call before
+        # they execute, same "decide on close, act on next open" timing
+        # as pivot_supertrend.py.
+        self.pending_entry: Optional[dict] = None   # {"option_type": "PE"|"CE", "trigger_values": {...}}
+        self.pending_exit: Optional[dict] = None    # {"trigger_values": {...}}
         self.prev_trend: Optional[str] = None
 
         self.resolver = OptionsResolver(runner.dispatcher)
@@ -265,22 +271,31 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             self._reattach_entry_date = None
             just_reconciled = True
             if self.candles_held >= self.hold_candles:
-                self.pending_exit = True
+                self.pending_exit = {
+                    "trigger_values": {
+                        "candles_held": self.candles_held, "hold_candles": self.hold_candles,
+                        "reconciled_after_resume": True,
+                    },
+                }
 
         # 1 — execute a pending hold-expiry exit at THIS candle's open
-        if self.pending_exit:
-            await self._exit(runner, candle, "hold_expired")
-            self.pending_exit = False
+        if self.pending_exit is not None:
+            await self._exit(runner, candle, "hold_expired", self.pending_exit["trigger_values"])
+            self.pending_exit = None
 
         # 2 — execute a pending entry (flip detected on a previous close) at THIS candle's open
         if self.pending_entry is not None and before_cutoff:
-            await self._enter(runner, candle, self.pending_entry)
+            await self._enter(
+                runner, candle, self.pending_entry["option_type"], self.pending_entry["trigger_values"],
+            )
         self.pending_entry = None
 
         # 3 — force-exit at/after cutoff if still open
         if self.force_exit_time is not None and t >= self.force_exit_time:
             if self.active_leg_token is not None:
-                await self._exit(runner, candle, "force_exit")
+                await self._exit(runner, candle, "force_exit", {
+                    "candle_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
+                })
 
         # 4 — still holding a position -> one more full candle has
         # elapsed since entry, count it toward hold_candles. Skipped on
@@ -289,19 +304,36 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         if self.active_leg_token is not None and not just_reconciled:
             self.candles_held += 1
             if self.candles_held >= self.hold_candles:
-                self.pending_exit = True
+                self.pending_exit = {
+                    "trigger_values": {
+                        "candles_held": self.candles_held, "hold_candles": self.hold_candles,
+                        "reconciled_after_resume": False,
+                    },
+                }
 
-        # 5 — advance SuperTrend, detect a flip -> queue the INVERSE entry
+        # 5 — advance SuperTrend, detect a flip -> queue the INVERSE
+        # entry. trigger_values captured at detection time (this candle's
+        # close is gone by the time step 2 executes it next call).
+        prev_trend_before_update = self.prev_trend
         new_trend = self.st.update(candle)
         if new_trend is not None:
-            if (self.prev_trend is not None and new_trend != self.prev_trend
+            if (prev_trend_before_update is not None and new_trend != prev_trend_before_update
                     and self.active_leg_token is None and before_cutoff):
-                self.pending_entry = "PE" if new_trend == "down" else "CE"
+                option_type = "PE" if new_trend == "down" else "CE"
+                self.pending_entry = {
+                    "option_type": option_type,
+                    "trigger_values": {
+                        "prev_trend": prev_trend_before_update, "new_trend": new_trend,
+                        "close": round(candle["close"], 2),
+                        "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
+                        "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
+                    },
+                }
             self.prev_trend = new_trend
 
     # ── Execution — buy an option leg to open, sell it to close ────────
 
-    async def _enter(self, runner, candle: dict, option_type: str) -> None:
+    async def _enter(self, runner, candle: dict, option_type: str, trigger_values: dict) -> None:
         try:
             leg = await self.resolver.get_atm_leg(
                 self.options_underlying, self.expiry_selector, option_type,
@@ -325,14 +357,21 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             [{"instrument_token": leg.instrument_token, "symbol": leg.tradingsymbol}]
         )
 
+        meta = build_trade_meta(
+            trigger="st_flip_entry_ce" if option_type == "CE" else "st_flip_entry_pe",
+            action=f"buy_open_{option_type}",
+            trigger_values=trigger_values,
+            resulting_state={"leg": option_type, "strike": leg.strike, "symbol": leg.tradingsymbol},
+            target_basis={
+                "selection_basis": "ATM", "selected_strike": leg.strike, "fill_premium": price,
+            },
+            option_type=option_type, strike=leg.strike,
+            expiry=leg.expiry.isoformat(), exchange=leg.exchange,
+            entry_candle_date=candle["date"].isoformat(),
+        )
         await runner.buy(   # BUY TO OPEN — long premium, opposite of pivot_supertrend_options
             leg.tradingsymbol, leg.instrument_token, qty, price, candle["date"],
-            reason="entry",
-            metadata={
-                "option_type": option_type, "strike": leg.strike,
-                "expiry": leg.expiry.isoformat(), "exchange": leg.exchange,
-                "entry_candle_date": candle["date"].isoformat(),
-            },
+            reason="entry", metadata=meta,
         )
         self.active_leg_token = leg.instrument_token
         self.active_leg_symbol = leg.tradingsymbol
@@ -344,7 +383,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             runner.deployment_name, option_type, leg.tradingsymbol, price, self.hold_candles,
         )
 
-    async def _exit(self, runner, candle: dict, reason: str) -> None:
+    async def _exit(self, runner, candle: dict, reason: str, trigger_values: dict) -> None:
         if self.active_leg_token is None:
             return
         pos = runner.open_positions.get(self.active_leg_token)
@@ -374,9 +413,16 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                 )
 
         qty = float(pos["qty"])
+        option_type = "CE" if self.active_leg_symbol.endswith("CE") else "PE"
+        meta = build_trade_meta(
+            trigger=reason,
+            action=f"sell_close_{option_type}",
+            trigger_values=trigger_values,
+            resulting_state={"position": "flat"},
+        )
         await runner.sell(   # SELL TO CLOSE
             self.active_leg_symbol, self.active_leg_token, qty, price, candle["date"],
-            reason=reason,
+            reason=reason, metadata=meta,
         )
         runner.dispatcher.release_instruments([self.active_leg_token])
         self._clear_active_leg()

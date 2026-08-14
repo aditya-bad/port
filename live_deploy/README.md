@@ -1046,12 +1046,11 @@ one view's rendering.
      NEVER crammed into columns. Click a row to expand it and see the
      full metadata: `trigger_values`/`target_basis`/`resulting_state`
      get their own labeled blocks when a strategy's metadata has them
-     (`strangle_monthly_v2`'s own Section 12 schema); everything else in
-     that fill's metadata — which, today, is most strategies' entire
-     metadata, since the trade-logging retrofit for the other six is
-     separate work — renders verbatim in an "other metadata" block, so
-     nothing is ever silently dropped or renamed regardless of which
-     strategy wrote it. Each reason also gets a small colored
+     (`strangle_monthly_v2`'s own Section 12 schema, and — since Step
+     14 — every other strategy's too); everything else in that fill's
+     metadata renders verbatim in an "other metadata" block, so nothing
+     is ever silently dropped or renamed regardless of which strategy
+     wrote it. Each reason also gets a small colored
      **trigger-type badge** (keyword-matched — `stop`/`force_exit`/
      `spike`/`backstop` → red, `profit_target`/`checkpoint`/`decay` →
      green, `roll`/`adjust`/`eod`/`gap`/`unwind`/`converg`/`flip` →
@@ -1092,6 +1091,110 @@ tests — see "Verified" below):
    using a correlated subquery for `symbol` instead of a `JOIN`, which
    leaves the primary scan (on `position_lots` alone, filtered +
    ordered) structurally unchanged from before this column was added.
+
+## What's here (Step 14: trade-reason logging retrofit)
+
+`strangle_monthly_v2` (Step 12) was the first strategy to carry the
+full five-field metadata schema on every fill — `trigger` (the specific
+rule that fired), `action` (open/close + which position), `trigger_values`
+(the actual numbers that made the condition true at that moment — enough
+to independently recompute whether it was genuinely true, without
+re-running the strategy or trusting the code was right), `target_basis`
+(only where a strike/premium selection actually happened — what was
+targeted, what was selected, what it filled at), and `resulting_state`
+(a compact snapshot of the position immediately after this fill). This
+step brings the other six strategies up to the same standard:
+`pivot_supertrend`, `pivot_supertrend_options`,
+`pivot_supertrend_options_inverse`, `intraday_dtt_simple`,
+`intraday_dtt_adjusted`, `intraday_dtt_advanced`.
+
+**Shared helper, not six copies**: `app/strategies/trade_meta.py`'s
+`build_trade_meta(trigger, action, trigger_values=None,
+resulting_state=None, target_basis=None, **extra)` assembles the common
+dict shape exactly once — `target_basis` is genuinely OMITTED (not even
+as `{}`) unless a caller passes one, since it doesn't apply everywhere
+(see below). It's a plain module-level function, not a mixin or base-
+class method — deliberately, since `_adjust`/`_unwind_one`/`_flatten_all`
+in `intraday_dtt_adjusted.py` are ALSO reused, unmodified, by
+`strangle_monthly_v2`'s `active_management` convergence mode via
+unbound-method binding onto a `StrangleMonthlyV2Strategy` instance (see
+that module's "ACTIVE-MANAGEMENT DELEGATION" section) — a method that
+only exists on `IntradayDTTAdjustedStrategy` would `AttributeError` the
+moment `self` turns out to be that other class. Every metadata-building
+call in the retrofit works from a plain function of the values already
+in scope, never assuming anything about `self`'s actual type. The one
+piece of PER-STRATEGY shared state (`_legs_snapshot(legs)`, the compact
+`{"CE": [...], "PE": [...]}` `resulting_state` snapshot,
+`intraday_dtt_adjusted`'s analogue of `strangle_monthly_v2`'s own
+`_snapshot_state`) is the same kind of plain function for the same
+reason.
+
+**Adapted per strategy, not forced to a uniform shape** — exactly what
+the schema's own five fields mean differs where the underlying strategy
+genuinely differs:
+- `pivot_supertrend` trades the underlying directly, not options —
+  `target_basis` is omitted entirely on every fill (not forced to exist
+  with nothing meaningful in it). Triggers: `pivot_break_long` /
+  `pivot_break_short` (entries — `trigger_values` carries the close
+  price, the trend, WHICH specific pivot level broke and its value, and
+  the full R/S level set for context), `st_flip` / `force_exit` (exits
+  — `trigger_values` carries the trend before/after and the close that
+  caused the flip, or the candle time vs. the cutoff).
+- `pivot_supertrend_options` — the identical signal engine as
+  `pivot_supertrend` (imported, not duplicated), but selling an ATM leg
+  instead of the underlying — `target_basis` is `{"selection_basis":
+  "ATM", "selected_strike", "fill_premium"}` on every entry (an ATM pick
+  has no PREMIUM target the way `intraday_dtt_adjusted`'s adjustment
+  legs do — just a strike rule and what it filled at).
+- `pivot_supertrend_options_inverse` — same ATM `target_basis` shape;
+  triggers are `st_flip_entry_ce`/`st_flip_entry_pe` (the flip itself IS
+  the entry here, mirror image of the two strategies above) and
+  `hold_expired`/`force_exit`. The RESUME-CRITICAL `entry_candle_date`
+  metadata key (read back by `on_start` to reconstruct the hold counter
+  after a restart — see that module's own docstring) is preserved
+  verbatim, merged in via `build_trade_meta`'s `**extra`, never renamed.
+- `intraday_dtt_simple` — continuous tick-check, not candle-deferred
+  (unlike the three above, no detection/execution timing split — every
+  trigger's numbers are read directly out of local scope at the call
+  site). Triggers: `entry_time_reached`, `profit_target_decay`,
+  `leg_spike_stop`, `force_exit`. `target_basis` is the same ATM shape.
+- `intraday_dtt_adjusted` — the most complex case: `target_basis` on an
+  `_adjust` fill is a genuine PREMIUM target (`{"target_premium",
+  "selected_strike", "fill_premium"}`, since `_adjust` really does aim
+  at `adjustment_size_pct * bigger_now`), distinct from the ATM-only
+  shape above. `resulting_state` is a running PER-FILL snapshot — each
+  fill shows the book exactly as it stood immediately after THAT fill,
+  not after the whole multi-leg event finishes (a 3-leg flatten's first
+  close still shows 2 legs remaining; only the last shows fully flat).
+  All five RESUME-CRITICAL metadata keys (`leg_role`, `leg`, `strike`,
+  `exchange`, `entry_spot`) are preserved verbatim. `_adjust`/
+  `_unwind_one` compute their own `trigger_values` INTERNALLY, branching
+  on the `reason` they were called with: the ordinary adjustment/
+  reversal condition (`smaller_total`/`bigger_now`/the trigger ratio)
+  for `reason="adjustment"`/`"reversal_unwind"`, versus the concurrent-
+  cap condition (`concurrent_legs_before_roll[_open]`) for
+  `reason="roll_open"`/`"roll_close"` — a roll's trigger_values never
+  claim the ordinary condition fired, since it usually hasn't.
+- `intraday_dtt_advanced` — a SUBCLASS that overrides only
+  `_handle_adjustment_trigger`, reusing `_adjust`/`_unwind_one` directly
+  with `reason="roll_open"`/`"roll_close"`. This retrofit added NO code
+  to this file at all: because the base class computes `trigger_values`
+  from parameters already in its own signature (`side`, `bigger_now`,
+  `prices` — never a NEW parameter the subclass would also need to
+  pass), every one of this file's existing call sites picked up the full
+  schema automatically the moment the base class was retrofitted.
+
+**Resume-safety discipline carried through unchanged**: every metadata
+key any strategy's own `on_start()` reads back to reconstruct in-memory
+state after a restart (see each module's own docstring) was verified
+still present, unrenamed, after the retrofit — the retrofit is
+ADDITIVE only. The DB `reason` column (and every existing test's
+assertions against it, and `static/js/api.js`'s `triggerBadge()`
+keyword classifier, which is keyed off `reason`, not `trigger`) was
+never changed either — `trigger` in metadata is sometimes MORE specific
+than `reason` (`pivot_supertrend`'s `reason="entry"` fills carry
+`trigger="pivot_break_long"`/`"pivot_break_short"`), never a competing
+source of truth for the same fill.
 
 ## Setup
 
@@ -2234,6 +2337,72 @@ a real browser session over an actual network (only headless Chromium
 against the local test server) — same caveat as every other piece of
 this project.
 
+**Trade-reason logging retrofit (Step 14)** — verified against the same
+bar already applied to `strangle_monthly_v2`'s own Section 12: for EVERY
+one of the six strategies, at least one real trade from each distinct
+trigger path was independently checked to confirm `trigger_values` alone
+— not the code, not surrounding rows — is sufficient to recompute
+whether the condition was genuinely true (6 dedicated integration test
+files, one per strategy, driven through the real API/dispatcher/runner/
+Postgres pipeline, largely reusing each strategy's own already-proven
+tick/candle fixtures):
+
+- **`pivot_supertrend`**: `pivot_break_long` (close > an independently
+  recomputed `R`-level, same `compute_pivots()` formula the strategy
+  itself uses, not re-derived), `st_flip` (close vs. `final_upper`/
+  `final_lower` from `trigger_values` alone), `pivot_break_short`,
+  `force_exit` (`candle_time >= force_exit_time`) — all 4 in one
+  seeded run, `target_basis` confirmed absent (trades the underlying).
+- **`pivot_supertrend_options`**: the same 4 triggers, PLUS
+  `target_basis.selected_strike`/`fill_premium` checked against the
+  actual sold leg, and the RESUME-CRITICAL `exchange` metadata key
+  confirmed present.
+- **`pivot_supertrend_options_inverse`**: `st_flip_entry_pe` (flip-to-
+  red), `hold_expired` (`candles_held >= hold_candles`), and a second,
+  isolated deployment for `force_exit` (`hold_candles` set unreachably
+  high so it can't race) — RESUME-CRITICAL `entry_candle_date` and
+  `exchange` both confirmed present.
+- **`intraday_dtt_simple`**: `entry_time_reached`, `profit_target_decay`
+  (`combined_now <= target_combined`, both computed from the SAME entry/
+  exit premiums the test itself fed in), `leg_spike_stop` (the spiking
+  leg's own current price vs. its own +40% threshold), `force_exit` — 4
+  isolated scenarios, `resulting_state` confirmed to show CE-only after
+  the CE fill, both legs after the PE fill (a running per-fill snapshot,
+  not a single end-of-event summary).
+- **`intraday_dtt_adjusted`**: `entry_time_reached`, `adjustment`
+  (`smaller_total <= trigger_threshold`, `target_basis` vs. actual
+  fill), `reversal_unwind` (`smaller_total >= bigger_now`,
+  `leg_premiums` showing the full tie-break context), `profit_target_
+  total` (`total_profit >= target`, `resulting_state` confirmed as a
+  running per-fill snapshot — the flatten's first close still shows legs
+  remaining, only the last shows `{"CE": [], "PE": []}`),
+  `breakeven_fallback` (`spot_price` vs. the band), `force_exit` — all 6
+  trigger paths, RESUME-CRITICAL `leg_role`/`exchange`/`entry_spot` all
+  confirmed present on the entry fills.
+- **`intraday_dtt_advanced`**: `roll_close`/`roll_open` specifically
+  checked to carry the CONCURRENT-CAP condition
+  (`concurrent_legs_before_roll[_open]`), NOT a fabricated ordinary-
+  adjustment/reversal condition that didn't actually hold at that
+  moment (explicitly asserted absent: no `smaller_total` key on
+  `roll_close`, no `adjustment_trigger_ratio` key on `roll_open`) —
+  `roll_open`'s `bigger_now` confirmed to reflect the CURRENT premium at
+  roll time, not a stale value from an earlier adjustment trigger.
+
+A real bug surfaced by this verification (not by the retrofit's own unit
+scope, but by re-running `strangle_monthly_v2`'s existing regression
+suite immediately after): `intraday_dtt_adjusted`'s `_adjust`/
+`_unwind_one`/`_flatten_all` are ALSO reused, unmodified, by
+`strangle_monthly_v2`'s `active_management` convergence mode via
+unbound-method binding (see that module's own "ACTIVE-MANAGEMENT
+DELEGATION" section) — an instance-method `self._legs_snapshot()`
+`AttributeError`'d the moment `self` turned out to be a
+`StrangleMonthlyV2Strategy`, which doesn't define or inherit that name.
+Fixed by making it a plain module-level function of `legs` instead
+(`_legs_snapshot(legs)` — no instance-method form ever existed), needing
+nothing from `self` but the one dict every caller, delegated or not,
+already keeps in the identical shape — full regression suite (all 15
+pre-existing files, plus these 6 new ones) re-run clean after the fix.
+
 ## Folder layout
 
 ```
@@ -2279,6 +2448,7 @@ live_deploy/
     ├── strategies/
     │   ├── __init__.py                         # import list — triggers registration
     │   ├── registry.py                          # @register_strategy
+    │   ├── trade_meta.py                          # step 14 — build_trade_meta(), shared metadata-dict shape
     │   ├── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
     │   ├── pivot_supertrend_options.py            # step 6 — same signal engine, sells options instead
     │   ├── intraday_dtt_simple.py                 # step 8 — short straddle, decay/spike/time exits

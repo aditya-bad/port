@@ -95,6 +95,7 @@ from .pivot_supertrend import (
     compute_pivots,
 )
 from .registry import register_strategy
+from .trade_meta import build_trade_meta
 
 logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options")
 
@@ -162,7 +163,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         self.prev_day_ohlc: Optional[dict] = cfg.get("prev_day_ohlc")
         self.pivots: Optional[dict] = None
 
-        self.pending_exit = False
+        # Both hold trigger_values captured at DETECTION time, not bare
+        # flags — see pivot_supertrend.py's identical comment; same
+        # "decide on close, act on next open" timing applies here.
+        self.pending_exit: Optional[dict] = None
         self.pending_entry: Optional[dict] = None
         self.prev_trend: Optional[str] = None
 
@@ -267,42 +271,73 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         before_cutoff = self.force_exit_time is None or t < self.force_exit_time
 
         # 1 — execute a pending ST-flip exit at THIS candle's open
-        if self.pending_exit:
-            await self._exit(runner, candle, "st_flip")
-            self.pending_exit = False
+        if self.pending_exit is not None:
+            await self._exit(runner, candle, "st_flip", self.pending_exit["trigger_values"])
+            self.pending_exit = None
 
         # 2 — execute a pending entry at THIS candle's open
         if self.pending_entry is not None and before_cutoff:
-            await self._enter(runner, candle, self.pending_entry["side"])
+            await self._enter(runner, candle, self.pending_entry["side"], self.pending_entry["trigger_values"])
         self.pending_entry = None
 
         # 3 — force-exit at/after cutoff if still open
         if self.force_exit_time is not None and t >= self.force_exit_time:
             if self.active_leg_token is not None:
-                await self._exit(runner, candle, "force_exit")
+                await self._exit(runner, candle, "force_exit", {
+                    "candle_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
+                })
 
-        # 4 — advance SuperTrend, detect a flip
+        # 4 — advance SuperTrend, detect a flip — trigger_values captured
+        # at detection time (see pivot_supertrend.py's identical comment).
+        prev_trend_before_update = self.prev_trend
         new_trend = self.st.update(candle)
         if new_trend is not None:
-            if self.prev_trend is not None and new_trend != self.prev_trend:
+            if prev_trend_before_update is not None and new_trend != prev_trend_before_update:
                 if self.active_leg_token is not None:
-                    self.pending_exit = True
+                    self.pending_exit = {
+                        "trigger_values": {
+                            "prev_trend": prev_trend_before_update, "new_trend": new_trend,
+                            "close": round(candle["close"], 2),
+                            "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
+                            "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
+                        },
+                    }
             self.prev_trend = new_trend
 
         # 5 — detect a fresh entry signal (flat, pivots known, ST ready, before cutoff)
         if self.active_leg_token is None and self.pivots is not None \
                 and self.prev_trend is not None and before_cutoff:
             close = candle["close"]
-            r_levels = [self.pivots[k] for k in R_KEYS]
-            s_levels = [self.pivots[k] for k in S_KEYS]
-            if self.prev_trend == "up" and any(close > r for r in r_levels):
-                self.pending_entry = {"side": "long"}
-            elif self.prev_trend == "down" and any(close < s for s in s_levels):
-                self.pending_entry = {"side": "short"}
+            if self.prev_trend == "up":
+                for k in R_KEYS:
+                    level = self.pivots[k]
+                    if close > level:
+                        self.pending_entry = {
+                            "side": "long",
+                            "trigger_values": {
+                                "close": round(close, 2), "trend": self.prev_trend,
+                                "broken_level_key": k, "broken_level": round(level, 2),
+                                "r_levels": {rk: round(self.pivots[rk], 2) for rk in R_KEYS},
+                            },
+                        }
+                        break
+            elif self.prev_trend == "down":
+                for k in S_KEYS:
+                    level = self.pivots[k]
+                    if close < level:
+                        self.pending_entry = {
+                            "side": "short",
+                            "trigger_values": {
+                                "close": round(close, 2), "trend": self.prev_trend,
+                                "broken_level_key": k, "broken_level": round(level, 2),
+                                "s_levels": {sk: round(self.pivots[sk], 2) for sk in S_KEYS},
+                            },
+                        }
+                        break
 
     # ── Execution — sell an option leg to open, buy it back to close ───
 
-    async def _enter(self, runner, candle: dict, side: str) -> None:
+    async def _enter(self, runner, candle: dict, side: str, trigger_values: dict) -> None:
         option_type = "PE" if side == "long" else "CE"   # bullish -> sell puts, bearish -> sell calls
         try:
             leg = await self.resolver.get_atm_leg(
@@ -327,20 +362,27 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             [{"instrument_token": leg.instrument_token, "symbol": leg.tradingsymbol}]
         )
 
+        meta = build_trade_meta(
+            trigger="pivot_break_long" if side == "long" else "pivot_break_short",
+            action=f"sell_open_{option_type}",
+            trigger_values=trigger_values,
+            resulting_state={"leg": option_type, "strike": leg.strike, "symbol": leg.tradingsymbol},
+            target_basis={
+                "selection_basis": "ATM", "selected_strike": leg.strike, "fill_premium": price,
+            },
+            signal_side=side, option_type=option_type, strike=leg.strike,
+            expiry=leg.expiry.isoformat(), exchange=leg.exchange,
+            pivots={k: round(v, 2) for k, v in self.pivots.items()},
+        )
         await runner.sell(   # SELL TO OPEN — writing this leg, regardless of signal direction
             leg.tradingsymbol, leg.instrument_token, qty, price, candle["date"],
-            reason="entry",
-            metadata={
-                "signal_side": side, "option_type": option_type, "strike": leg.strike,
-                "expiry": leg.expiry.isoformat(), "exchange": leg.exchange,
-                "pivots": {k: round(v, 2) for k, v in self.pivots.items()},
-            },
+            reason="entry", metadata=meta,
         )
         self.active_leg_token = leg.instrument_token
         self.active_leg_symbol = leg.tradingsymbol
         self.active_leg_exchange = leg.exchange
 
-    async def _exit(self, runner, candle: dict, reason: str) -> None:
+    async def _exit(self, runner, candle: dict, reason: str, trigger_values: dict) -> None:
         if self.active_leg_token is None:
             return
         pos = runner.open_positions.get(self.active_leg_token)
@@ -370,9 +412,16 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 )
 
         qty = float(pos["qty"])
+        option_type = "CE" if self.active_leg_symbol.endswith("CE") else "PE"
+        meta = build_trade_meta(
+            trigger=reason,
+            action=f"buy_close_{option_type}",
+            trigger_values=trigger_values,
+            resulting_state={"position": "flat"},
+        )
         await runner.buy(   # BUY TO CLOSE
             self.active_leg_symbol, self.active_leg_token, qty, price, candle["date"],
-            reason=reason,
+            reason=reason, metadata=meta,
         )
         runner.dispatcher.release_instruments([self.active_leg_token])
         self._clear_active_leg()

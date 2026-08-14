@@ -109,6 +109,7 @@ from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver
 from .pivot_supertrend import _parse_hhmm
 from .registry import register_strategy
+from .trade_meta import build_trade_meta
 
 logger = logging.getLogger("live_deploy.strategies.intraday_dtt_simple")
 
@@ -348,14 +349,38 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             {"instrument_token": pe_leg.instrument_token, "symbol": pe_leg.tradingsymbol},
         ])
 
+        # Continuous tick-check strategy (unlike the pivot_supertrend
+        # family) -- no detection/execution split, so trigger_values are
+        # just read straight out of local scope at the call site.
+        trigger_values = {
+            "tick_time": ts.time().isoformat(), "entry_time": self.entry_time.isoformat(),
+            "late_start_today": self._late_start_today,
+        }
         common_meta = {"strike": strike, "expiry": expiry.isoformat()}
         await runner.sell(
             ce_leg.tradingsymbol, ce_leg.instrument_token, qty, ce_price, ts,
-            reason="entry", metadata={**common_meta, "leg": "CE", "exchange": ce_leg.exchange},
+            reason="entry",
+            metadata=build_trade_meta(
+                trigger="entry_time_reached", action="sell_open_CE",
+                trigger_values=trigger_values,
+                resulting_state={"CE": {"strike": strike, "entry_price": round(ce_price, 2)}},
+                target_basis={"selection_basis": "ATM", "selected_strike": strike, "fill_premium": ce_price},
+                **common_meta, leg="CE", exchange=ce_leg.exchange,
+            ),
         )
         await runner.sell(
             pe_leg.tradingsymbol, pe_leg.instrument_token, qty, pe_price, ts,
-            reason="entry", metadata={**common_meta, "leg": "PE", "exchange": pe_leg.exchange},
+            reason="entry",
+            metadata=build_trade_meta(
+                trigger="entry_time_reached", action="sell_open_PE",
+                trigger_values=trigger_values,
+                resulting_state={
+                    "CE": {"strike": strike, "entry_price": round(ce_price, 2)},
+                    "PE": {"strike": strike, "entry_price": round(pe_price, 2)},
+                },
+                target_basis={"selection_basis": "ATM", "selected_strike": strike, "fill_premium": pe_price},
+                **common_meta, leg="PE", exchange=pe_leg.exchange,
+            ),
         )
 
         self.ce_token, self.ce_symbol = ce_leg.instrument_token, ce_leg.tradingsymbol
@@ -379,7 +404,9 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         # Time stop always applies, regardless of whether live premium
         # data is available for either leg.
         if t >= self.force_exit_time:
-            await self._exit_both(runner, ts, "force_exit")
+            await self._exit_both(runner, ts, "force_exit", trigger_values={
+                "tick_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
+            })
             return
 
         # Combined-premium / single-leg checks need BOTH legs' live
@@ -399,27 +426,44 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         # decay_pct on the same tick, that's real one-sided directional
         # exposure, not calm two-sided decay — the risk stop should win
         # that tie, not the profit target.
-        if (ce_now >= self.ce_entry_price * (1 + self.spike_pct)
-                or pe_now >= self.pe_entry_price * (1 + self.spike_pct)):
-            await self._exit_both(runner, ts, "leg_spike_stop", ce_now, pe_now)
+        ce_spike_threshold = self.ce_entry_price * (1 + self.spike_pct)
+        pe_spike_threshold = self.pe_entry_price * (1 + self.spike_pct)
+        if ce_now >= ce_spike_threshold or pe_now >= pe_spike_threshold:
+            await self._exit_both(runner, ts, "leg_spike_stop", ce_now, pe_now, trigger_values={
+                "ce_now": round(ce_now, 2), "pe_now": round(pe_now, 2),
+                "ce_entry_price": round(self.ce_entry_price, 2), "pe_entry_price": round(self.pe_entry_price, 2),
+                "spike_pct": self.spike_pct,
+                "ce_threshold": round(ce_spike_threshold, 2), "pe_threshold": round(pe_spike_threshold, 2),
+            })
             return
 
         combined_entry = self.ce_entry_price + self.pe_entry_price
         combined_now = ce_now + pe_now
-        if combined_now <= combined_entry * (1 - self.decay_pct):
-            await self._exit_both(runner, ts, "profit_target_decay", ce_now, pe_now)
+        target_combined = combined_entry * (1 - self.decay_pct)
+        if combined_now <= target_combined:
+            await self._exit_both(runner, ts, "profit_target_decay", ce_now, pe_now, trigger_values={
+                "combined_entry": round(combined_entry, 2), "combined_now": round(combined_now, 2),
+                "decay_pct": self.decay_pct, "target_combined": round(target_combined, 2),
+            })
             return
 
     async def _exit_both(
         self, runner, ts, reason: str,
         ce_now: Optional[float] = None, pe_now: Optional[float] = None,
+        trigger_values: Optional[dict] = None,
     ) -> None:
+        trigger_values = trigger_values or {}
         if self.ce_token is not None:
             price = ce_now if ce_now is not None else \
                 (runner.dispatcher.last_prices.get(self.ce_token) or self.ce_entry_price)
             pos = runner.open_positions.get(self.ce_token)
             if pos is not None:
-                await runner.buy(self.ce_symbol, self.ce_token, float(pos["qty"]), price, ts, reason=reason)
+                meta = build_trade_meta(
+                    trigger=reason, action="buy_close_CE",
+                    trigger_values=trigger_values, resulting_state={"position": "flat"},
+                )
+                await runner.buy(self.ce_symbol, self.ce_token, float(pos["qty"]), price, ts,
+                                 reason=reason, metadata=meta)
             runner.dispatcher.release_instruments([self.ce_token])
             self.ce_token = self.ce_symbol = self.ce_exchange = self.ce_entry_price = None
 
@@ -428,7 +472,12 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                 (runner.dispatcher.last_prices.get(self.pe_token) or self.pe_entry_price)
             pos = runner.open_positions.get(self.pe_token)
             if pos is not None:
-                await runner.buy(self.pe_symbol, self.pe_token, float(pos["qty"]), price, ts, reason=reason)
+                meta = build_trade_meta(
+                    trigger=reason, action="buy_close_PE",
+                    trigger_values=trigger_values, resulting_state={"position": "flat"},
+                )
+                await runner.buy(self.pe_symbol, self.pe_token, float(pos["qty"]), price, ts,
+                                 reason=reason, metadata=meta)
             runner.dispatcher.release_instruments([self.pe_token])
             self.pe_token = self.pe_symbol = self.pe_exchange = self.pe_entry_price = None
 
