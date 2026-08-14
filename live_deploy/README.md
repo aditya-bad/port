@@ -1522,6 +1522,89 @@ Full regression suite re-run afterward, unaffected (this is a
 `static/js/catalog.js` + one `static/index.html` markup change only, no
 backend endpoint or schema touched).
 
+## What's here (Step 19: admin enable/disable, and confirming time/threshold fields are configurable)
+
+Two requests landed together; the second turned out to already be
+covered by Step 18's own structured Deploy form, verified rather than
+assumed.
+
+### Admin Options tab: enable/disable strategies in the Catalog
+
+New `strategy_settings` table (`app/db/migrations/0003_strategy_settings.sql`,
+`strategy_name TEXT PRIMARY KEY, enabled BOOLEAN DEFAULT true`) layered
+on top of `app.strategies.registry`'s existing in-memory registration —
+registration itself stays pure Python/import-time as before; this is
+only the "should this show up / be deployable" flag on top of that,
+persisted so it survives a restart. Every currently-registered strategy
+gets a settings row (`enabled=true`) on every boot
+(`queries.ensure_strategy_settings`, called from `main.py`'s startup) —
+existing rows, including anything an admin already disabled, are left
+untouched (`ON CONFLICT DO NOTHING`, not an upsert).
+
+`GET /strategies` now returns every registered strategy annotated with
+`enabled`; new `PUT /strategies/{name}/enabled` sets it (404 for a name
+nothing has ever registered — toggling a strategy that doesn't exist
+isn't a meaningful action). Enforced where it actually matters, not just
+hidden in the UI: `POST /deployments` now 400s for a registered-but-
+disabled strategy, checked BEFORE `DeploymentManager.create_deployment`
+runs. Deliberately does NOT block an *unregistered* strategy_name —
+that's a different, still-intentionally-allowed case (see
+`DeploymentManager.create_deployment`'s own docstring: a deployment can
+exist before matching code does) — `is_strategy_enabled()` defaults to
+`True` for any name with no settings row, so this distinction falls out
+naturally rather than needing a separate check.
+
+Strategy Catalog gained a `Browse`/`Admin Options` tab pair (reusing the
+Detail page's own bordered-tab pattern). Browse now filters to
+`enabled !== false` — a disabled strategy simply isn't offered for a
+*new* deployment, shown-but-greyed-out was considered and rejected as
+adding a UI state (partially-clickable card) that doesn't map to
+anything the backend actually allows. Admin Options lists every
+registered strategy with a live count of its active deployments and an
+Enable/Disable button. Disabling only affects *new* deployments —
+anything already running under that strategy is completely unaffected,
+called out explicitly in the tab's own footer note so it's never
+ambiguous with pausing/stopping a specific deployment (a separate,
+per-deployment action elsewhere in the app).
+
+**Verified end-to-end**: direct API checks first — default `enabled:
+true` for every strategy, `PUT .../enabled` persists and is reflected
+back by `GET /strategies`, a disabled strategy's `POST /deployments`
+correctly 400s with a clear message, an *unregistered* strategy_name
+remains allowed (confirming the enabled check didn't regress that
+existing behavior), re-enabling lifts the block, and a nonexistent
+strategy_name 404s. Then the real UI end to end: disabled a strategy via
+the Admin Options button, confirmed it disappeared from Browse,
+re-enabled it via the UI, confirmed it reappeared. Full regression suite
+(including the full-restart integration test, since `main.py`'s startup
+sequence changed) re-run afterward, unaffected.
+
+### Time/threshold config fields — already covered, verified rather than rebuilt
+
+Checked whether `entry_time`/`force_exit_time`/`eod_check_time` and the
+"EOD 80%" threshold (`strangle_monthly_v2`'s `eod_gap_floor`, default
+`0.80` — matching the actual code, not a guess: `eod_check_time` is the
+time that check runs, `eod_gap_floor` is the 80% ratio it checks
+against) are genuinely read from each strategy's own `cfg.get(...)` (not
+hardcoded) across every strategy that has them — pivot_supertrend family
+(`force_exit_time`), the DTT family (`entry_time`/`force_exit_time`,
+`intraday_dtt_advanced` inheriting the same handling from
+`IntradayDTTAdjustedStrategy`), and `strangle_monthly_v2`
+(`entry_time`/`eod_check_time`/`eod_gap_floor`). All confirmed genuinely
+config-driven, all already present in each strategy's registered
+`default_config` — which means Step 18's structured Deploy form (built
+generically from `default_config`, not a hand-maintained per-strategy
+schema) already exposes every one of them as a real editable field: a
+time picker for the `"HH:MM"`-shaped ones, a plain number box for
+`eod_gap_floor`. Nothing needed building — **verified** with a real
+browser instead: opened the Deploy form for `intraday_dtt_simple` and
+confirmed `entry_time`/`force_exit_time` are genuine `<input
+type="time">` fields with the correct 10:00/15:00 defaults, editable;
+opened it for `strangle_monthly_v2` and confirmed `eod_check_time`
+(time picker, default 15:13), `eod_gap_floor` (number box, default
+0.80), and `entry_time` (10:00) are all genuinely present and editable
+together, matching the code's own defaults exactly.
+
 ## Setup
 
 ```bash

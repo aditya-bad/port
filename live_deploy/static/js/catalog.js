@@ -23,6 +23,9 @@ const CONFIG_TIME_FIELD_RE = /^\d{2}:\d{2}$/;
 const Catalog = {
   _currentDeploy: {},
   _configBase: {},   // the full config object (including null-valued advanced keys), kept in sync as the source of truth across form <-> JSON toggles
+  _strategies: [],   // every REGISTERED strategy (enabled or not) — the Admin tab's own source of truth
+  _activeCounts: {},
+  _tab: 'browse',    // 'browse' | 'admin'
 
   async load() {
     const el = document.getElementById('catalogList');
@@ -32,23 +35,54 @@ const Catalog = {
       Api.listStrategies(),
       Api.listDeployments(),
     ]);
-
-    if (!strategies.length) {
-      el.innerHTML = emptyHtml('No strategies registered yet — nothing to deploy until one is added to app/strategies/.');
-      return;
-    }
+    this._strategies = strategies;
 
     // Active-deployment count per strategy_name, derived from the same
     // /deployments list the Deployed Strategies view uses — no
     // separate backend endpoint needed for this, the data's already
     // there.
-    const activeCounts = {};
+    this._activeCounts = {};
     deployments.forEach(d => {
-      if (d.status === 'active') activeCounts[d.strategy_name] = (activeCounts[d.strategy_name] || 0) + 1;
+      if (d.status === 'active') this._activeCounts[d.strategy_name] = (this._activeCounts[d.strategy_name] || 0) + 1;
     });
 
+    this._render();
+  },
+
+  switchTab(tab) {
+    this._tab = tab;
+    document.querySelectorAll('#catalogTabs button').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    this._render();
+  },
+
+  _render() {
+    if (this._tab === 'admin') this._renderAdmin();
+    else this._renderBrowse();
+  },
+
+  // ── Browse: cards for DEPLOYABLE strategies only. A strategy an
+  // admin has disabled still exists in the registry (its running
+  // deployments, if any, are completely unaffected — see the backend's
+  // own create_deployment check) but has no business being offered for
+  // a NEW deployment, so it's simply not shown here at all rather than
+  // shown-but-greyed-out. ─────────────────────────────────────────────
+  _renderBrowse() {
+    const el = document.getElementById('catalogList');
+    const strategies = this._strategies.filter(s => s.enabled !== false);
+
+    if (!this._strategies.length) {
+      el.innerHTML = emptyHtml('No strategies registered yet — nothing to deploy until one is added to app/strategies/.');
+      return;
+    }
+    if (!strategies.length) {
+      el.innerHTML = emptyHtml('Every registered strategy is currently disabled — check Admin Options.');
+      return;
+    }
+
     el.innerHTML = strategies.map(s => {
-      const count = activeCounts[s.name] || 0;
+      const count = this._activeCounts[s.name] || 0;
       return `
         <div class="card">
           <div class="card-row">
@@ -66,6 +100,56 @@ const Catalog = {
         </div>
       `;
     }).join('');
+  },
+
+  // ── Admin Options: EVERY registered strategy, enabled or not, with a
+  // per-row toggle. Disabling here only affects NEW deployments (the
+  // Browse tab, and the backend's own create_deployment check) —
+  // deployments already running under a strategy stay completely
+  // unaffected, same as pausing/stopping is a separate, per-deployment
+  // action from this. ─────────────────────────────────────────────────
+  _renderAdmin() {
+    const el = document.getElementById('catalogList');
+    if (!this._strategies.length) {
+      el.innerHTML = emptyHtml('No strategies registered yet.');
+      return;
+    }
+    el.innerHTML = `
+      <div class="table-wrap">
+      <table style="table-layout:fixed;">
+      <colgroup>
+        <col style="width:190px"><col><col style="width:130px"><col style="width:100px"><col style="width:90px">
+      </colgroup>
+      <thead><tr>
+        <th>Strategy</th><th>Description</th><th>Active deployments</th><th>Status</th><th></th>
+      </tr></thead>
+      <tbody>${this._strategies.map(s => {
+        const enabled = s.enabled !== false;
+        const count = this._activeCounts[s.name] || 0;
+        return `<tr>
+          <td style="word-break:break-word;">${escapeHtml(s.name)}</td>
+          <td style="white-space:normal;">${escapeHtml(s.description || 'no description')}</td>
+          <td>${count}</td>
+          <td><span class="tag ${enabled ? 'tag-active' : 'tag-stopped'}">${enabled ? 'enabled' : 'disabled'}</span></td>
+          <td>
+            <button class="btn btn-sm ${enabled ? 'btn-danger' : 'btn-primary'}"
+              onclick="Catalog.toggleStrategyEnabled('${escapeHtml(s.name)}', ${!enabled})">
+              ${enabled ? 'Disable' : 'Enable'}
+            </button>
+          </td>
+        </tr>`;
+      }).join('')}</tbody></table>
+      </div>
+      <div class="table-note">Disabling a strategy only hides it from Browse and blocks NEW deployments — anything already deployed keeps running untouched.</div>
+    `;
+  },
+
+  async toggleStrategyEnabled(name, newEnabled) {
+    const { ok, data } = await Api.setStrategyEnabled(name, newEnabled);
+    if (!ok) { alert(data.detail || 'Could not update strategy'); return; }
+    const s = this._strategies.find(x => x.name === name);
+    if (s) s.enabled = newEnabled;
+    this._render();
   },
 
   openDeployModal(strategyName, defaultConfig) {

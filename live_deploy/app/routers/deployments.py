@@ -77,6 +77,17 @@ async def create_deployment(payload: DeploymentCreate, request: Request):
     )
     if existing is not None:
         raise HTTPException(409, f"deployment_name {payload.deployment_name!r} already exists")
+    # A registered-but-admin-disabled strategy can't be deployed, full
+    # stop — an unregistered strategy_name is a DIFFERENT, still-allowed
+    # case (see DeploymentManager.create_deployment's own docstring),
+    # which is exactly why this only blocks when is_registered() is
+    # ALSO true: is_strategy_enabled() defaults to True for any name
+    # with no settings row, so an unregistered name never gets blocked
+    # here on account of a flag that was never set for it.
+    if is_registered(payload.strategy_name) and not await queries.is_strategy_enabled(
+        request.app.state.db_pool, payload.strategy_name
+    ):
+        raise HTTPException(400, f"Strategy {payload.strategy_name!r} is disabled — enable it from Admin Options first")
     try:
         row, _strategy_registered = await manager.create_deployment(payload)
     except Exception as e:

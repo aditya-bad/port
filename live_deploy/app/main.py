@@ -44,6 +44,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from . import strategies  # noqa: F401 — importing runs every @register_strategy in it
+from .strategies.registry import list_strategies
 from .auth import AuthMiddleware, HostAwareSessionMiddleware
 from .broadcaster import TickBroadcaster
 from .config import load_config, load_tokens
@@ -104,6 +105,14 @@ async def startup() -> None:
     if applied:
         logger.info("Applied migrations: %s", applied)
     app.state.db_pool = db_pool
+
+    # Every currently-registered strategy gets a settings row (enabled=
+    # true by default) on every boot — new strategies added to the
+    # codebase since the last restart pick up a row automatically;
+    # existing rows (including anything an admin already disabled) are
+    # left untouched. See queries.ensure_strategy_settings's own
+    # docstring.
+    await queries.ensure_strategy_settings(db_pool, [s["name"] for s in list_strategies()])
     app.state.kite_config = config   # api_key/api_secret, for the login/callback router
     app.state.app_auth_secret = config["app_auth_secret"]   # this app's own front door — see auth router
 

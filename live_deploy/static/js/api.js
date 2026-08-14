@@ -10,6 +10,13 @@ const Api = {
     const r = await fetch('/strategies');
     return r.json();
   },
+  async setStrategyEnabled(name, enabled) {
+    const r = await fetch(`/strategies/${encodeURIComponent(name)}/enabled`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }),
+    });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
 
   // ── Deployments (CRUD/lifecycle) ───────────────────────────────
   async listDeployments() {

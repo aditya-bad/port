@@ -529,6 +529,10 @@ tr.trade-detail-row td {
         </div>
         <button class="btn btn-secondary btn-sm" onclick="Catalog.load()">↻ Refresh</button>
       </div>
+      <div class="tabs" id="catalogTabs">
+        <button class="active" data-tab="browse" onclick="Catalog.switchTab('browse')">Browse</button>
+        <button data-tab="admin" onclick="Catalog.switchTab('admin')">Admin Options</button>
+      </div>
       <div id="catalogList"><div class="empty"><span class="spinner"></span> Loading…</div></div>
     </div>
 

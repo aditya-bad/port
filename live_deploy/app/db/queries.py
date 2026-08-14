@@ -527,3 +527,62 @@ async def set_kite_session(
             """,
             access_token, login_time,
         )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# STRATEGY SETTINGS — the admin enable/disable toggle layered on top of
+# app.strategies.registry's in-memory registrations (see registry.py's
+# own module docstring: registration itself is still pure Python/import-
+# time, this table is ONLY the "should this show up in the catalog"
+# flag on top of that).
+# ═════════════════════════════════════════════════════════════════════
+
+async def ensure_strategy_settings(pool: asyncpg.Pool, strategy_names: list[str]) -> None:
+    """
+    Insert a default enabled=true row for any of the given (currently-
+    registered) strategy names that doesn't already have one — called
+    once at startup so every registered strategy always has a row from
+    its very first boot, meaning "missing row = enabled" never actually
+    has to be relied on at query time. Existing rows (including ones an
+    admin has already disabled) are left untouched — ON CONFLICT DO
+    NOTHING, not an upsert.
+    """
+    if not strategy_names:
+        return
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            "INSERT INTO strategy_settings (strategy_name) VALUES ($1) ON CONFLICT DO NOTHING",
+            [(n,) for n in strategy_names],
+        )
+
+
+async def get_strategy_enabled_map(pool: asyncpg.Pool) -> dict[str, bool]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT strategy_name, enabled FROM strategy_settings")
+        return {r["strategy_name"]: r["enabled"] for r in rows}
+
+
+async def is_strategy_enabled(pool: asyncpg.Pool, strategy_name: str) -> bool:
+    """True if there's no row at all (see ensure_strategy_settings — in
+    practice this only happens for a strategy_name nothing has ever
+    registered, which create_deployment already allows independently of
+    this check — see DeploymentManager.create_deployment's own
+    docstring)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT enabled FROM strategy_settings WHERE strategy_name = $1", strategy_name,
+        )
+        return True if row is None else row["enabled"]
+
+
+async def set_strategy_enabled(pool: asyncpg.Pool, strategy_name: str, enabled: bool) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO strategy_settings (strategy_name, enabled, updated_at)
+            VALUES ($1, $2, now())
+            ON CONFLICT (strategy_name) DO UPDATE
+                SET enabled = $2, updated_at = now()
+            """,
+            strategy_name, enabled,
+        )
