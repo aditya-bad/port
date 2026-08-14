@@ -9,7 +9,9 @@ any deployment involved at all.
 """
 
 from pydantic import BaseModel
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
+
+from ..options import NoKiteSession, OptionsResolver
 
 router = APIRouter(prefix="/instruments", tags=["instruments"])
 
@@ -26,6 +28,31 @@ async def list_instruments(request: Request):
         "subscribed": dispatcher.status["subscribed_tokens"],
         "tick_mode": dispatcher.tick_mode,
     }
+
+
+@router.get("/search")
+async def search_instruments(q: str, request: Request):
+    """
+    Symbol/name substring search across NSE/NFO/BSE/BFO (see
+    OptionsResolver.search_instruments's own docstring for the exact
+    matching/caching rules) — this is what the Instrument Browser page
+    calls as the user types, so a person can find an instrument_token by
+    symbol instead of already having to know the raw number to POST here.
+
+    Requires an active Kite session (the instrument master is fetched
+    over Kite's own REST API) — a clear 400, not a 500, if no one has
+    ever logged in yet, same failure shape strategies already get from
+    NoKiteSession elsewhere in this codebase.
+    """
+    q = (q or "").strip()
+    if len(q) < 2:
+        raise HTTPException(400, "q must be at least 2 characters")
+    resolver = OptionsResolver(request.app.state.dispatcher)
+    try:
+        results = await resolver.search_instruments(q)
+    except NoKiteSession as e:
+        raise HTTPException(400, str(e))
+    return {"query": q, "results": results}
 
 
 @router.post("")

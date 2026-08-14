@@ -202,6 +202,7 @@ tr.trade-detail-row td { background: var(--bg3); padding: 12px 14px; font-family
     <a class="nav-item" data-nav="dashboard" href="#/dashboard">Dashboard</a>
     <a class="nav-item" data-nav="catalog" href="#/catalog">Strategy Catalog</a>
     <a class="nav-item" data-nav="deployments" href="#/deployments">Deployed Strategies</a>
+    <a class="nav-item" data-nav="instruments" href="#/instruments">Instruments</a>
     <div class="sidebar-footer">
       <div class="status-bar" id="statusBar">
         <span class="badge bad"><span class="dot"></span> checking…</span>
@@ -285,6 +286,29 @@ tr.trade-detail-row td { background: var(--bg3); padding: 12px 14px; font-family
       <div id="detailBody"><span class="spinner"></span></div>
     </div>
 
+    <!-- ═══ Instruments ═══ -->
+    <div id="view-instruments" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Instruments</h1>
+          <div class="view-sub">Search Kite's instrument master by symbol/name and subscribe — across NSE, NFO, BSE, and BFO</div>
+        </div>
+      </div>
+      <div class="field" style="max-width:420px;">
+        <label>Search (symbol or name — e.g. "NIFTY", "RELIANCE", "BANKNIFTY26AUG")</label>
+        <input type="text" id="instSearchInput" placeholder="Type at least 2 characters…" oninput="Instruments.onSearchInput()">
+      </div>
+      <div id="instSearchResults"></div>
+
+      <section style="margin-top:26px;">
+        <h2>
+          Subscribed
+          <button class="btn btn-secondary btn-sm" onclick="Instruments.loadSubscribed()">↻ Refresh</button>
+        </h2>
+        <div id="instSubscribedList"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      </section>
+    </div>
+
   </main>
 </div>
 
@@ -339,11 +363,51 @@ tr.trade-detail-row td { background: var(--bg3); padding: 12px 14px; font-family
   </div>
 </div>
 
+<!-- Manual Kite login modal — an ALTERNATIVE to "Login with Kite"
+     (which still works exactly as before), not a replacement. See
+     app/routers/kite_auth.py's own docstring for what does and does
+     not persist when the api_key/api_secret override is used. -->
+<div class="modal-overlay" id="manualLoginModal">
+  <div class="modal">
+    <h2>Enter Kite login manually</h2>
+    <div class="card-sub" style="margin-bottom:14px;">
+      For when you've already completed Kite's own login in a separate
+      tab and have the <code>request_token</code> from the resulting
+      redirect URL's query string.
+    </div>
+    <div class="field">
+      <label>request_token</label>
+      <input type="text" id="manualRequestToken" placeholder="paste from the redirect URL" autocomplete="off">
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="manualOverrideToggle" onchange="toggleManualOverride()">
+      <label for="manualOverrideToggle">Use a different api_key / api_secret for this login only</label>
+    </div>
+    <div id="manualOverrideFields" style="display:none; margin-top:10px;">
+      <div class="field">
+        <label>api_key</label>
+        <input type="text" id="manualApiKey" autocomplete="off">
+      </div>
+      <div class="field">
+        <label>api_secret</label>
+        <input type="password" id="manualApiSecret" autocomplete="off">
+      </div>
+      <div class="table-note">Used for this one login only — never written to config.json or anywhere else on disk.</div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeManualLoginModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitManualLogin()">Login</button>
+    </div>
+    <div class="modal-msg" id="manualLoginMsg"></div>
+  </div>
+</div>
+
 <script src="/js/api.js"></script>
 <script src="/js/dashboard.js"></script>
 <script src="/js/catalog.js"></script>
 <script src="/js/deployments.js"></script>
 <script src="/js/detail.js"></script>
+<script src="/js/instruments.js"></script>
 <script>
 // ── App shell: auth status polling + hash-based view routing ─────────
 // Deliberately no frontend framework — same vanilla-JS style as the
@@ -359,13 +423,19 @@ async function pollHealth() {
       bar.innerHTML = `
         <span class="badge ok"><span class="dot"></span> Kite connected</span>
         <span style="color:var(--fg2)">${h.running_deployments} running · ${h.downstream_subscribers} ws client(s)</span>
-        <button class="btn btn-secondary btn-sm" onclick="loginWithKite()">Re-login</button>
+        <div style="display:flex; gap:6px;">
+          <button class="btn btn-secondary btn-sm" onclick="loginWithKite()">Re-login</button>
+          <button class="btn btn-secondary btn-sm" onclick="openManualLoginModal()">Enter manually</button>
+        </div>
       `;
     } else {
       const label = h.needs_login ? 'Not connected — login required' : 'Disconnected — reconnecting…';
       bar.innerHTML = `
         <span class="badge bad"><span class="dot"></span> ${label}</span>
-        <button class="btn btn-primary btn-sm" onclick="loginWithKite()">Login with Kite</button>
+        <div style="display:flex; gap:6px;">
+          <button class="btn btn-primary btn-sm" onclick="loginWithKite()">Login with Kite</button>
+          <button class="btn btn-secondary btn-sm" onclick="openManualLoginModal()">Enter manually</button>
+        </div>
       `;
     }
   } catch (e) {
@@ -389,10 +459,55 @@ async function loginWithKite() {
   }, 1500);
 }
 
+// ── Manual Kite login (alternative to the popup flow above) ──────────
+function openManualLoginModal() {
+  document.getElementById('manualRequestToken').value = '';
+  document.getElementById('manualApiKey').value = '';
+  document.getElementById('manualApiSecret').value = '';
+  document.getElementById('manualOverrideToggle').checked = false;
+  document.getElementById('manualOverrideFields').style.display = 'none';
+  document.getElementById('manualLoginMsg').textContent = '';
+  document.getElementById('manualLoginModal').classList.add('open');
+}
+function closeManualLoginModal() {
+  document.getElementById('manualLoginModal').classList.remove('open');
+}
+function toggleManualOverride() {
+  const on = document.getElementById('manualOverrideToggle').checked;
+  document.getElementById('manualOverrideFields').style.display = on ? 'block' : 'none';
+}
+async function submitManualLogin() {
+  const msg = document.getElementById('manualLoginMsg');
+  const requestToken = document.getElementById('manualRequestToken').value.trim();
+  if (!requestToken) {
+    msg.innerHTML = '<span style="color:var(--red)">request_token is required</span>';
+    return;
+  }
+  const payload = { request_token: requestToken };
+  if (document.getElementById('manualOverrideToggle').checked) {
+    const apiKey = document.getElementById('manualApiKey').value.trim();
+    const apiSecret = document.getElementById('manualApiSecret').value.trim();
+    if (!apiKey || !apiSecret) {
+      msg.innerHTML = '<span style="color:var(--red)">Provide both api_key and api_secret, or uncheck the override</span>';
+      return;
+    }
+    payload.api_key = apiKey;
+    payload.api_secret = apiSecret;
+  }
+  msg.textContent = '';
+  const { ok, data } = await Api.manualKiteLogin(payload);
+  if (!ok) {
+    msg.innerHTML = `<span style="color:var(--red)">${escapeHtml(data.detail || 'Login failed')}</span>`;
+    return;
+  }
+  msg.innerHTML = '<span style="color:var(--green)">✓ Logged in</span>';
+  setTimeout(() => { closeManualLoginModal(); pollHealth(); }, 600);
+}
+
 // ── Router ────────────────────────────────────────────────────────────
-// Four real views + one drill-down (detail, reached only by navigating
+// Five real views + one drill-down (detail, reached only by navigating
 // to #/deployments/{id}, never a sidebar destination of its own).
-const VIEWS = ['dashboard', 'catalog', 'deployments', 'detail'];
+const VIEWS = ['dashboard', 'catalog', 'deployments', 'detail', 'instruments'];
 
 function router() {
   const hash = (window.location.hash || '#/dashboard').replace(/^#\/?/, '');
@@ -415,6 +530,7 @@ function router() {
   else if (view === 'catalog') Catalog.load();
   else if (view === 'deployments') Deployments.load();
   else if (view === 'detail') Detail.load(param);
+  else if (view === 'instruments') Instruments.load();
 }
 
 window.addEventListener('hashchange', router);

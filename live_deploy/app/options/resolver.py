@@ -53,6 +53,12 @@ Full method list:
     get_lot_size(underlying)
     round_to_lot(underlying, qty)   -- nearest whole-lot quantity, min 1 lot
     list_underlyings()              -- every options-eligible "name" on the exchange
+    search_instruments(query, exchanges=None, limit=30)
+        -- symbol/name substring search, for a HUMAN picking an instrument
+           to subscribe to (see routers/instruments.py's GET
+           /instruments/search) — not used by any strategy's own
+           resolution logic above, which always knows exactly what it
+           wants already.
 """
 
 import asyncio
@@ -79,6 +85,14 @@ INDEX_SPOT_SYMBOL: dict[str, tuple[str, str]] = {
     "SENSEX": ("BSE", "SENSEX"),
     "BANKEX": ("BSE", "BANKEX"),
 }
+
+# The four exchanges this whole codebase already knows how to trade on
+# (see strangle_monthly_v2.py's own SUPPORTED_INSTRUMENTS: NSE/BSE for
+# the underlying equities/indices themselves, NFO/BFO for their
+# options/futures) — search_instruments() below defaults to all four so
+# a human looking for "what can I subscribe to" doesn't have to already
+# know which exchange a symbol lives on.
+SEARCH_EXCHANGES: tuple[str, ...] = ("NSE", "NFO", "BSE", "BFO")
 
 # Instrument master is shared process-wide (not per-resolver-instance) —
 # it's the same several-thousand-row list regardless of which deployment
@@ -537,3 +551,79 @@ class OptionsResolver:
         lot_size = await self.get_lot_size(underlying, exchange)
         lots = max(1, round(qty / lot_size))
         return lots * lot_size
+
+    async def search_instruments(
+        self, query: str, exchanges: Optional[Iterable[str]] = None, limit: int = 30,
+    ) -> list[dict]:
+        """
+        Symbol/name substring search across one or more exchanges — for
+        a HUMAN picking an instrument to subscribe to (the Instrument
+        Browser UI), not for strategy resolution (every method above
+        this one always knows the exact underlying/strike/expiry it
+        wants already, never searches for it).
+
+        Case-insensitive, matched against BOTH `tradingsymbol` (so a
+        specific contract like "NIFTY26AUG24700CE" is findable) AND
+        `name` (so its underlying "NIFTY" is too — a strike-specific
+        tradingsymbol containing the query is a hit either way).
+
+        Reuses the SAME per-exchange instrument-master cache
+        `_ensure_instruments` already maintains for every other method
+        in this class — no separate fetch, no separate cache, just a
+        different read pattern (a substring scan instead of a `name`
+        dict lookup) over the identical cached rows. `exchanges`
+        defaults to `SEARCH_EXCHANGES` (NSE/NFO/BSE/BFO) rather than
+        just `self.exchange` — a search is inherently "what's out
+        there", not scoped to whatever single exchange this particular
+        resolver instance happens to default to.
+
+        A single exchange's instrument-master fetch failing (e.g. a
+        transient Kite API hiccup) does not fail the whole search — that
+        exchange is just skipped, logged, and the rest still return
+        results; a human searching is better served by partial results
+        than an all-or-nothing failure.
+
+        `limit` caps the TOTAL result count across all exchanges
+        combined (checked as results accumulate, not a post-hoc slice)
+        — searching a common substring like "NIFTY" would otherwise
+        return every listed NIFTY option contract, thousands of rows,
+        for what's meant to be a human-facing autocomplete-style search.
+        """
+        q = query.strip().upper()
+        if not q:
+            return []
+        exchanges = tuple(e.upper() for e in exchanges) if exchanges else SEARCH_EXCHANGES
+
+        results: list[dict] = []
+        for exchange in exchanges:
+            try:
+                cache = await self._ensure_instruments(exchange)
+            except Exception:
+                logger.exception(
+                    "search_instruments: failed to fetch %s instrument master — "
+                    "skipping this exchange, not failing the whole search", exchange,
+                )
+                continue
+
+            for row in cache["data"]:
+                if q in row["tradingsymbol"].upper() or q in row["name"].upper():
+                    expiry = row.get("expiry")
+                    results.append({
+                        "tradingsymbol": row["tradingsymbol"],
+                        "instrument_token": row["instrument_token"],
+                        "exchange": row["exchange"],
+                        "segment": row["segment"],
+                        "name": row["name"],
+                        "instrument_type": row["instrument_type"],
+                        # expiry/strike are only meaningful for
+                        # derivatives — kiteconnect leaves non-derivative
+                        # rows as "" (str, not a date) / 0.0 respectively,
+                        # both of which map to None here rather than a
+                        # misleading empty-string/zero.
+                        "expiry": expiry.isoformat() if hasattr(expiry, "isoformat") else None,
+                        "strike": row["strike"] or None,
+                        "lot_size": row["lot_size"],
+                    })
+                    if len(results) >= limit:
+                        return results
+        return results

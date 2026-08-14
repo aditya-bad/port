@@ -79,6 +79,12 @@ const Api = {
     const r = await fetch('/instruments');
     return r.json();
   },
+  async searchInstruments(q) {
+    const r = await fetch(`/instruments/search?q=${encodeURIComponent(q)}`);
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || `Search failed (${r.status})`);
+    return data;
+  },
   async addInstrument(token, symbol) {
     const r = await fetch('/instruments', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -90,6 +96,16 @@ const Api = {
   async removeInstrument(token) {
     const r = await fetch(`/instruments/${token}`, { method: 'DELETE' });
     return r.json();
+  },
+
+  // ── Kite manual login ───────────────────────────────────────────
+  async manualKiteLogin(payload) {
+    const r = await fetch('/kite/manual-login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    return { ok: r.ok, data };
   },
 };
 

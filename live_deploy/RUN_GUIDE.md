@@ -151,9 +151,16 @@ server is up"):
 1. Open `http://localhost:8000/` — first run shows "Not connected —
    login required." Click **Login with Kite**, complete the popup login.
    `/health`'s `kite_connected` flips to `true` within a couple seconds,
-   no restart.
+   no restart. Already have a `request_token` from completing Kite's own
+   login in a separate tab (or the popup can't reach this service from
+   wherever you're logging in)? Click **Enter manually** instead — same
+   end state, see the README's own section on this for exactly what it
+   does and doesn't persist.
 2. Go to **Strategy Catalog**, pick a strategy (e.g. `pivot_supertrend`),
-   fill in the config, deploy it. **Verified**: `POST /deployments`
+   fill in the config, deploy it. Need an `instrument_token` for the
+   config and don't already know the raw number? The **Instruments**
+   page (sidebar) searches Kite's instrument master by symbol/name
+   across NSE/NFO/BSE/BFO. **Verified**: `POST /deployments`
    against a real running instance returns `201` with
    `"strategy_registered": true` and `"status": "active"` immediately.
 3. Go to **Deployed Strategies** → click into it → **Strategy Detail**.
@@ -362,6 +369,80 @@ terminal.
 
 ---
 
+## Credential hardening
+
+`config.json` (Options 1/2) or a mounted copy of it (Option 3) puts
+`api_key`/`api_secret`/`database_url`/`app_auth_secret` on disk as
+plaintext. Be honest about what fixing that does and doesn't buy you:
+**encrypting `config.json` would NOT fully protect against a live
+compromise of the same server it runs on** — the app still needs the
+decryption key accessible to itself somewhere on that machine, and an
+attacker who's already gotten far enough to read `config.json` can
+typically get that too. The actual improvement available here is
+reducing what sits as a readable FILE in the first place, not obscuring
+one that still has to exist — which is exactly what environment
+variables do, and it's why this project doesn't ship a custom
+`config.json` encryption scheme (see the note at the end of this
+section for why not, if a stronger guarantee is genuinely needed later).
+
+**The recommended path for anything actually server-hosted**:
+`api_key`, `api_secret`, `database_url`, and `app_auth_secret` can each
+be supplied as an environment variable instead of a `config.json` key —
+`KITE_API_KEY`, `KITE_API_SECRET`, `DATABASE_URL`, `APP_AUTH_SECRET`
+respectively. **Verified end-to-end**: with all four set and
+`config.json` genuinely absent from disk, the REAL app — full FastAPI
+lifespan, migrations, dispatcher, deployment manager, not just
+`load_config()` called in isolation — boots successfully and serves
+`/health` correctly, and the env-sourced `app_auth_secret` is
+confirmably LIVE (the correct value authorizes requests, a wrong one
+still 401s, not silently bypassed). This is additive, not a breaking
+change — `config.json` alone, exactly as it works today, is untouched
+for any key an env var doesn't override; **verified** a config.json
+covering only some of the four keys, with the rest supplied as env
+vars, merges correctly per-key rather than all-or-nothing.
+
+How to supply them per deployment option:
+
+- **Option 1 (local dev)**: not really the point of this option — stick
+  with `config.json`, it's the quick-start convenience path and there's
+  no "server" here to hold credentials at risk on. Nothing wrong with
+  using env vars here too if you'd rather, they work identically.
+- **Option 2 (supervisord/systemd)**: use an `EnvironmentFile=`-style
+  mechanism — a **separate, restricted-permission file** (see below),
+  never the repo's own `config.json`. For supervisord specifically, add
+  an `environment=` line to `supervisord.conf`'s `[program:live_deploy]`
+  section (supervisord doesn't read a `.env` file on its own); for a
+  systemd user unit, `EnvironmentFile=/etc/live-deploy/env` pointing at
+  a file `chmod 600`'d to the service's own user, containing
+  `KITE_API_KEY=...` etc., one per line.
+- **Option 3 (Docker)**: `docker run -e KITE_API_KEY=... -e
+  KITE_API_SECRET=... -e DATABASE_URL=... -e APP_AUTH_SECRET=...`, or
+  Docker secrets / your orchestrator's own secret injection if you have
+  one, or a cloud provider's secret manager (AWS Secrets Manager, GCP
+  Secret Manager, etc.) writing them into the container's environment at
+  launch — no `-v config.json:...` mount needed at all in this case,
+  since env vars alone now satisfy every required key.
+
+**Cheap, immediate, zero-code step, regardless of everything else
+above**: `chmod 600 config.json` — tightens exposure from "any local
+user/process that can read files" to "only the exact user running this
+app." Do this even if you're also moving to env vars for the keys env
+vars cover; `config.json` may still exist locally for `tick_mode` or as
+an `access_token` bootstrap.
+
+**What this deliberately does NOT include, and why**: a custom
+encryption scheme for `config.json`. Given the honest limitation stated
+at the top of this section — the app still needs the key to decrypt it
+accessible to itself somewhere — that adds real implementation
+complexity for a smaller security improvement than env vars + tight
+file permissions already provide for free. If genuinely stronger
+protection is wanted later, a REAL secrets manager (not custom
+encryption code written for this project) is the right next step, and
+it's only worth building against a specific hosting target once one's
+actually chosen, not speculatively now.
+
+---
+
 ## Common failure modes
 
 Real ones, either already known from this project's own history or
@@ -383,19 +464,28 @@ live_deploy/run.py` instead, which works from any directory (verified
 above) because it locates `live_deploy/` from its own file path, not
 your shell's cwd.
 
-**Missing `config.json`** — crashes at IMPORT time, before FastAPI even
-starts serving, not on the first request. **Reproduced while writing
-this guide**, exact message:
+**Missing `config.json` AND missing environment variables** — crashes
+at IMPORT time, before FastAPI even starts serving, not on the first
+request. **Reproduced while writing this guide**, exact message (now
+naming both ways to fix it, per "Credential hardening" below):
 ```
-RuntimeError: Config not found: /…/live_deploy/config.json
-Copy config.example.json -> config.json and fill in your Kite Connect
-credentials.
+RuntimeError: Config not found: /…/live_deploy/config.json, and the
+following required value(s) were not supplied via environment variable
+either: api_key (or $KITE_API_KEY), api_secret (or $KITE_API_SECRET),
+database_url (or $DATABASE_URL), app_auth_secret (or $APP_AUTH_SECRET).
+Either copy config.example.json -> config.json and fill in your Kite
+Connect credentials, or set the corresponding environment variable(s)
+instead — see RUN_GUIDE.md's 'Credential hardening' section.
 ```
-Already clear and actionable as written (`app/config.py`'s
-`load_config()`) — no fix needed here, just confirming it really does
-say what it claims to, since a startup-time crash with a vague message
-would be just as confusing as the import bug above. Same style of clear
-message for a missing `tokens.json`.
+If `config.json` exists but is still missing a key not covered by any
+env var either, the message is shorter and names only what's actually
+still missing (`Config missing: app_auth_secret (or $APP_AUTH_SECRET)`,
+say) — **verified** for both the "nothing at all" case and the "3 of 4
+env vars set, config.json absent" case, confirming the message correctly
+narrows down to only the genuinely missing piece rather than always
+listing all four. Same style of clear message for a missing
+`tokens.json` (env vars don't cover that one — it's the token
+subscription list, not a credential).
 
 **Expired Kite session after any restart** (crash, redeploy, or a
 scheduled bounce) — not a bug, documented, existing behavior; see this

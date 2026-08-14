@@ -1196,6 +1196,102 @@ than `reason` (`pivot_supertrend`'s `reason="entry"` fills carry
 `trigger="pivot_break_long"`/`"pivot_break_short"`), never a competing
 source of truth for the same fill.
 
+## What's here (Step 15: instrument browser, manual Kite login, credential hardening)
+
+Three additions, genuinely separate concerns, described together here
+because they landed in one pass.
+
+**Instrument browser** — `GET /instruments` (existing, unchanged) only
+ever showed what was ALREADY subscribed, and `POST /instruments` only
+ever accepted a raw numeric `instrument_token` — there was no way to
+find one by symbol/name at all; you had to already know it. New `GET
+/instruments/search?q=...` searches Kite's instrument master by
+symbol/name substring, case-insensitive, matched against BOTH
+`tradingsymbol` (finds a specific contract like
+`NIFTY26AUG24700CE`) AND the underlying `name` (finds it by searching
+just `"NIFTY"` too) — across NSE/NFO/BSE/BFO by default (the same four
+exchanges `strangle_monthly_v2`'s own `SUPPORTED_INSTRUMENTS` already
+trades on). Implemented as `OptionsResolver.search_instruments()`,
+reusing the EXACT SAME per-exchange instrument-master cache
+(`_ensure_instruments`, refreshed once per calendar day) every other
+resolver method already relies on — no separate fetch, no separate
+cache, no re-fetching Kite's multi-thousand-row dump on every keystroke.
+Results are capped (`limit`, default 30) since a common substring like
+`"NIFTY"` would otherwise mean every listed NIFTY option contract.
+New **Instruments** page in the sidebar (a real 5th nav item, not
+tucked into Dashboard) — a debounced search box, a results table with a
+per-row **Subscribe** button, and the currently-subscribed list with
+**Unsubscribe** — both actions wired to the ALREADY-EXISTING `POST
+/instruments` / `DELETE /instruments/{token}` endpoints, which needed no
+changes at all. Dashboard's own small "Subscribed Instruments" widget
+(and its raw-token-entry modal) is untouched — this is a new, better
+front door for the same underlying subscription mechanism, not a
+replacement for the old one.
+
+**Manual Kite login** — an ALTERNATIVE to the popup/redirect flow, not
+a replacement (that flow, `GET /kite/login-url` + `GET /kite/callback`,
+works completely unchanged). For someone who already completed Kite's
+own login in a separate tab/window and has the `request_token` from the
+resulting redirect URL's query string, without wanting to go through
+this app's own popup again. New `POST /kite/manual-login` — JSON in,
+JSON out (matching how the rest of this SPA already does every other
+write — deploy, subscribe/unsubscribe — unlike `/kite/callback`'s HTML
+response, which exists for a raw browser redirect Kite itself controls,
+not a `fetch()` caller). Both endpoints now share one
+`_complete_kite_login()` helper (generate_session + persist to
+`kite_sessions` + `dispatcher.reconnect()`) so there is exactly one
+implementation of "what a successful Kite login does to this process's
+state," not two that could drift apart. **Verified** to produce the
+IDENTICAL end state as the redirect flow (checked via `/kite/status`
+after each, independently, fresh app/DB each time — not one riding on
+the other's success).
+
+`api_key`/`api_secret` are OPTIONAL on the manual-login form: omitted
+(the common case), it reuses this app's already-configured credentials;
+provided, they're used for that ONE `generate_session` call only.
+**This is where it connects to credential hardening below, made
+explicit in the implementation, not two disconnected features**: the
+override is a request-scoped Pydantic field and two local variables,
+never written to `config.json`, never assigned onto
+`app.state.kite_config` (which would leak it into every SUBSEQUENT
+request), never logged. The resulting `access_token` is still persisted
+to the DB exactly as it already is for every other login path — that
+part was already correct and is unchanged; it's SPECIFICALLY the
+typed-in `api_key`/`api_secret` that must never outlive the one
+request, and does not. **Verified**: `config.json`'s own on-disk bytes
+are byte-for-byte identical before and after an override request, do
+not contain either override value anywhere, and neither override value
+appears in captured log output at any level for that request.
+
+**Credential hardening** — see `RUN_GUIDE.md`'s own "Credential
+hardening" section for the full writeup (what this does and honestly
+does NOT solve, why a custom `config.json` encryption scheme was
+deliberately not built). In short: `app/config.py`'s `load_config()`
+now checks `KITE_API_KEY`/`KITE_API_SECRET`/`DATABASE_URL`/
+`APP_AUTH_SECRET` environment variables FIRST for each of
+`api_key`/`api_secret`/`database_url`/`app_auth_secret`, falling back to
+`config.json` per-key for whichever aren't set that way — additive,
+`config.json` alone still works completely unchanged for local dev.
+**Verified**: with all four env vars set and `config.json` genuinely
+absent from disk, the REAL app (full FastAPI lifespan — migrations,
+dispatcher, deployment manager, not `load_config()` in isolation) boots
+successfully and serves `/health`, with the env-sourced
+`app_auth_secret` confirmably live (correct value authorizes, wrong
+value still 401s). A partial mix (some keys from `config.json`, others
+from env vars) merges correctly per-key, not all-or-nothing — also
+verified. The "config not found" error message now names both ways to
+supply whatever's still missing, narrowing to only the genuinely-absent
+keys rather than always listing all four.
+
+Verified via 3 new dedicated integration test scripts, run against the
+real API/DB pipeline, on top of the full existing regression suite
+(zero regressions): one spot-checking search results across NSE and NFO
+specifically (confirming NIFTY 50's `instrument_token` matches the exact
+`256265` already used everywhere else in this codebase — `tokens.json`,
+`INDEX_SPOT_SYMBOL`, every `pivot_supertrend` test), one covering the
+redirect-vs-manual-login parity plus the override's disk/log audit, and
+one covering the env-var startup path end to end.
+
 ## Setup
 
 ```bash
@@ -2432,7 +2528,8 @@ live_deploy/
 │       ├── dashboard.js               # Dashboard view
 │       ├── catalog.js                  # Strategy Catalog view + Deploy modal
 │       ├── deployments.js               # Deployed Strategies view (filters, actions)
-│       └── detail.js                     # Strategy Detail view (Config/Positions/Trades/Stats tabs)
+│       ├── detail.js                     # Strategy Detail view (Config/Positions/Trades/Stats tabs)
+│       └── instruments.js                 # step 15 — Instruments view: search + subscribe/unsubscribe
 └── app/
     ├── main.py                  # FastAPI app, startup/shutdown wiring, static mount, middleware order
     ├── config.py                  # config.json / tokens.json loading

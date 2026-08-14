@@ -6,6 +6,7 @@ other folder in it (tg_int_st_pp, generic, etc).
 """
 
 import json
+import os
 from pathlib import Path
 
 LIVE_DEPLOY_DIR = Path(__file__).resolve().parent.parent
@@ -15,18 +16,44 @@ TOKENS_PATH = LIVE_DEPLOY_DIR / "tokens.json"
 REQUIRED_CONFIG_KEYS = ("api_key", "api_secret", "database_url", "app_auth_secret")
 VALID_TICK_MODES = ("ltp", "quote", "full")
 
+# Environment-variable equivalents for each required credential — see
+# RUN_GUIDE.md's "Credential hardening" section for the full reasoning.
+# Checked FIRST, config.json is the fallback per-key, not the other way
+# round: a value sitting as plaintext in a file on disk is strictly more
+# exposed than one held only in the process's own environment (readable
+# by anything that can read the file + anything with that permission,
+# vs. readable only by whatever can already inspect this specific
+# process) — env vars are the recommended path for anything actually
+# server-hosted, config.json stays for local-dev convenience. This is
+# ADDITIVE: config.json alone, exactly as before, still works unchanged
+# for every key an env var doesn't override.
+ENV_VAR_FOR_KEY = {
+    "api_key": "KITE_API_KEY",
+    "api_secret": "KITE_API_SECRET",
+    "database_url": "DATABASE_URL",
+    "app_auth_secret": "APP_AUTH_SECRET",
+}
+
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
     """
-    Load Kite credentials + service settings.
+    Load Kite credentials + service settings — environment variables
+    first (KITE_API_KEY, KITE_API_SECRET, DATABASE_URL,
+    APP_AUTH_SECRET), config.json as the fallback for whichever of those
+    aren't set as env vars. config.json itself is now fully OPTIONAL —
+    it doesn't even need to exist — PROVIDED every key in
+    REQUIRED_CONFIG_KEYS ends up covered by an env var; if it doesn't
+    exist and env vars don't cover everything, the same kind of clear
+    RuntimeError as before is raised, just naming both ways to supply
+    whatever's still missing.
 
-    access_token is deliberately NOT required here — it expires daily,
-    so the DB (kite_sessions table, updated via the /kite/login-url +
-    /kite/callback flow) is the primary source of truth for it. A value
+    access_token is deliberately NOT part of this env-var scheme (and
+    NOT required here at all) — it expires daily, so the DB
+    (kite_sessions table, updated via the /kite/login-url +
+    /kite/callback flow, or the manual-entry alternative — see
+    routers/kite_auth.py) is the primary source of truth for it. A value
     in config.json is honored only as a one-time bootstrap fallback if
-    the DB doesn't have one yet (see main.py's startup). api_key/
-    api_secret are the actual long-lived app credentials and stay
-    required.
+    the DB doesn't have one yet (see main.py's startup).
 
     app_auth_secret is unrelated to Kite entirely — it's THIS app's own
     front door (see app/auth.py): a password you set yourself, doubling
@@ -40,16 +67,29 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     sys.exit() doesn't shut the ASGI server down cleanly, so a normal
     exception is used instead.
     """
-    if not path.exists():
-        raise RuntimeError(
-            f"Config not found: {path}\n"
-            f"Copy config.example.json -> {path.name} and fill in your "
-            f"Kite Connect credentials."
-        )
-    cfg = json.loads(path.read_text())
+    cfg: dict = {}
+    if path.exists():
+        cfg = json.loads(path.read_text())
+
+    for cfg_key, env_name in ENV_VAR_FOR_KEY.items():
+        env_val = os.environ.get(env_name)
+        if env_val:
+            cfg[cfg_key] = env_val
+
     missing = [k for k in REQUIRED_CONFIG_KEYS if not cfg.get(k)]
     if missing:
-        raise RuntimeError(f"Config missing: {', '.join(missing)}")
+        missing_desc = ", ".join(f"{k} (or ${ENV_VAR_FOR_KEY[k]})" for k in missing)
+        if not path.exists():
+            raise RuntimeError(
+                f"Config not found: {path}, and the following required "
+                f"value(s) were not supplied via environment variable "
+                f"either: {missing_desc}.\n"
+                f"Either copy config.example.json -> {path.name} and fill "
+                f"in your Kite Connect credentials, or set the "
+                f"corresponding environment variable(s) instead — see "
+                f"RUN_GUIDE.md's 'Credential hardening' section."
+            )
+        raise RuntimeError(f"Config missing: {missing_desc}")
 
     cfg.setdefault("tick_mode", "full")
     if cfg["tick_mode"] not in VALID_TICK_MODES:
