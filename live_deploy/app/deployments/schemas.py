@@ -15,6 +15,25 @@ class DeploymentCreate(BaseModel):
     config: dict = Field(default_factory=dict)
 
 
+class DeploymentUpdate(BaseModel):
+    """
+    PATCH /deployments/{id} — partial update, both fields optional so a
+    caller can rename without touching notes or vice versa. Deliberately
+    narrow: deployment_name (identity) and notes (free-text metadata,
+    e.g. "why this was deployed") are the only fields editable after
+    creation. strategy_name/mode/initial_capital/config are NOT here on
+    purpose — the running strategy instance and every P&L calculation
+    already assume those are fixed for the deployment's lifetime (e.g.
+    initial_capital is the fixed reference value several strategies size
+    against); changing them post-creation without a real reset/restart
+    semantics would silently corrupt state rather than do anything
+    useful. Stop and redeploy fresh for a genuine strategy/capital/config
+    change.
+    """
+    deployment_name: Optional[str] = None
+    notes: Optional[str] = None
+
+
 class DeploymentOut(BaseModel):
     id: UUID
     deployment_name: str
@@ -24,6 +43,7 @@ class DeploymentOut(BaseModel):
     initial_capital: float
     current_cash: float
     config: dict
+    notes: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     strategy_registered: bool = True   # False = created, but no code will ever run for it (yet)

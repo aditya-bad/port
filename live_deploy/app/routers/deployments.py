@@ -18,8 +18,8 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ..db import queries
 from ..deployments.schemas import (
-    DeploymentCreate, DeploymentOut, EventOut, LotsPage, PositionOut, ReportOut,
-    SnapshotOut,
+    DeploymentCreate, DeploymentOut, DeploymentUpdate, EventOut, LotsPage,
+    PositionOut, ReportOut, SnapshotOut,
 )
 from ..strategies.registry import is_registered
 
@@ -155,6 +155,44 @@ async def get_deployment(deployment_id: UUID, request: Request):
         raise HTTPException(404, "No such deployment")
     out = _annotate(row)
     await _enrich_pnl_one(pool, request.app.state.dispatcher, deployment_id, out)
+    return out
+
+
+@router.patch("/{deployment_id}", response_model=DeploymentOut)
+async def update_deployment(deployment_id: UUID, payload: DeploymentUpdate, request: Request):
+    """
+    Rename a deployment and/or edit its free-text notes — the only
+    fields editable after creation (see DeploymentUpdate's own
+    docstring for why strategy_name/mode/initial_capital/config aren't
+    here). Works regardless of status (active/paused/stopped) — a
+    rename or a note is never a risky action, unlike anything that would
+    touch trading state.
+    """
+    pool = request.app.state.db_pool
+    existing = await queries.get_deployment(pool, deployment_id)
+    if existing is None:
+        raise HTTPException(404, "No such deployment")
+
+    if payload.deployment_name is not None:
+        stripped = payload.deployment_name.strip()
+        if not stripped:
+            raise HTTPException(400, "deployment_name cannot be blank")
+        if stripped != existing["deployment_name"]:
+            collision = await queries.get_deployment_by_name(pool, stripped)
+            if collision is not None:
+                raise HTTPException(409, f"deployment_name {stripped!r} already exists")
+        payload.deployment_name = stripped
+
+    row = await queries.update_deployment_metadata(
+        pool, deployment_id,
+        deployment_name=payload.deployment_name, notes=payload.notes,
+    )
+    out = _annotate(row)
+    await _enrich_pnl_one(pool, request.app.state.dispatcher, deployment_id, out)
+    # A rename changes what the cached LIST shows for this row (notes
+    # aren't shown in the list today, but the name is) -- refresh now so
+    # the very next GET /deployments already reflects it.
+    await request.app.state.cache.refresh_now("deployments")
     return out
 
 

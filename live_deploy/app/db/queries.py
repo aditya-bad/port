@@ -86,6 +86,33 @@ async def list_deployments(pool: asyncpg.Pool, status: Optional[str] = None) -> 
         return await conn.fetch("SELECT * FROM deployments ORDER BY created_at")
 
 
+async def update_deployment_metadata(
+    pool: asyncpg.Pool, deployment_id: UUID,
+    deployment_name: Optional[str] = None, notes: Optional[str] = None,
+) -> Optional[asyncpg.Record]:
+    """
+    Partial update for PATCH /deployments/{id} — only the field(s)
+    actually passed get written; omitted ones (None) are left untouched,
+    NOT overwritten with NULL (a caller renaming a deployment shouldn't
+    accidentally blank out its notes, and vice versa). Uses COALESCE
+    against the row's own current value rather than a dynamically-built
+    SQL string — same fixed query every call, no string-built column
+    list to get wrong.
+    """
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            UPDATE deployments
+            SET deployment_name = COALESCE($2, deployment_name),
+                notes = COALESCE($3, notes),
+                updated_at = now()
+            WHERE id = $1
+            RETURNING *
+            """,
+            deployment_id, deployment_name, notes,
+        )
+
+
 async def set_status(pool: asyncpg.Pool, deployment_id: UUID, status: str) -> None:
     async with pool.acquire() as conn:
         await conn.execute(

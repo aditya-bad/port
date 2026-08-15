@@ -50,8 +50,10 @@ const Detail = {
             <span>Realized: <b class="${pnlClass(dep.realized_pnl)}">${fmtSignedMoney(dep.realized_pnl)}</b></span>
             <span>Unrealized: <b class="${pnlClass(dep.unrealized_pnl)}">${fmtSignedMoney(dep.unrealized_pnl)}</b></span>
           </div>
+          ${dep.notes ? `<div class="card-sub" style="margin-top:8px; white-space:pre-wrap;">📝 ${escapeHtml(dep.notes)}</div>` : ''}
         </div>
         <div class="card-actions">
+          <button class="btn btn-secondary btn-sm" onclick="Detail.openEditModal()">Edit</button>
           ${dep.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="Detail.pause()">Pause</button>` : ''}
           ${dep.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="Detail.resume()">Resume</button>` : ''}
           ${dep.status !== 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Detail.stop()">Stop</button>` : ''}
@@ -257,6 +259,12 @@ const Detail = {
   },
 
   // ── Header actions ──────────────────────────────────────────────
+  openEditModal() {
+    document.getElementById('editDeploymentName').value = this._dep.deployment_name;
+    document.getElementById('editDeploymentNotes').value = this._dep.notes || '';
+    document.getElementById('editDeploymentMsg').textContent = '';
+    document.getElementById('editDeploymentModal').classList.add('open');
+  },
   async pause() { await Api.pauseDeployment(this._id); this.load(this._id); },
   async resume() { await Api.resumeDeployment(this._id); this.load(this._id); },
   async stop() {
@@ -328,4 +336,20 @@ function renderEquityChart(snapshots) {
       </div>
     </div>
   `;
+}
+
+// ── Edit deployment (rename + notes) modal ─────────────────────────────
+function closeEditDeploymentModal() {
+  document.getElementById('editDeploymentModal').classList.remove('open');
+}
+async function submitEditDeployment() {
+  const msg = document.getElementById('editDeploymentMsg');
+  const name = document.getElementById('editDeploymentName').value.trim();
+  const notes = document.getElementById('editDeploymentNotes').value;
+  if (!name) { msg.innerHTML = '<span style="color:var(--loss)">Deployment name cannot be blank</span>'; return; }
+  msg.innerHTML = '<span class="spinner"></span> Saving…';
+  const { ok, data } = await Api.updateDeployment(Detail._id, { deployment_name: name, notes });
+  if (!ok) { msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(data.detail || 'Failed')}</span>`; return; }
+  msg.innerHTML = '<span style="color:var(--gain)">✓ Saved</span>';
+  setTimeout(() => { closeEditDeploymentModal(); Detail.load(Detail._id); }, 500);
 }

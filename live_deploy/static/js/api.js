@@ -35,6 +35,13 @@ const Api = {
     const data = await r.json();
     return { ok: r.ok, data };
   },
+  async updateDeployment(id, body) {
+    const r = await fetch(`/deployments/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
   async pauseDeployment(id) {
     return fetch(`/deployments/${id}/pause`, { method: 'POST' });
   },

@@ -668,6 +668,30 @@ tr.trade-detail-row td {
   </div>
 </div>
 
+<!-- Edit deployment (rename + free-text notes) — the only two fields
+     editable after creation; see DeploymentUpdate's own docstring
+     (app/deployments/schemas.py) for why strategy/mode/capital/config
+     aren't here. -->
+<div class="modal-overlay" id="editDeploymentModal">
+  <div class="modal">
+    <h2>Edit deployment</h2>
+    <div class="field">
+      <label>Deployment name</label>
+      <input type="text" id="editDeploymentName" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Notes (optional)</label>
+      <textarea id="editDeploymentNotes" style="font-family:var(--font-body); min-height:90px;"
+        placeholder="Why this was deployed, what to watch for, anything worth remembering later…"></textarea>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeEditDeploymentModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitEditDeployment()">Save</button>
+    </div>
+    <div class="modal-msg" id="editDeploymentMsg"></div>
+  </div>
+</div>
+
 <!-- Manual Kite login modal — an ALTERNATIVE to "Login with Kite"
      (which still works exactly as before), not a replacement. See
      app/routers/kite_auth.py's own docstring for what does and does

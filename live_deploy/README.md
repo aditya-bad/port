@@ -1893,6 +1893,44 @@ legs, exit at `exit_time` closes everything with the right buy/sell
 direction per leg, and a second cycle enters normally that same evening
 — 8 entry fills + 4 exit fills total, exactly as expected.
 
+## What's here (Step 25: edit a deployment's name and notes)
+
+`PATCH /deployments/{id}` — new `notes TEXT` column (migration `0004_
+deployment_notes.sql`) plus the existing `deployment_name`. Deliberately
+narrow, and deliberately NOT config/mode/initial_capital: those are
+either fixed identity or structural/financial fields a running strategy
+and every P&L calculation already assume are stable for the
+deployment's lifetime (e.g. several strategies size against
+`initial_capital` as a FIXED reference value) — changing them
+post-creation would silently corrupt state rather than do anything
+useful. Stop and redeploy fresh for an actual strategy/capital/config
+change; rename and notes are the two things safe to edit in place,
+regardless of status. A rename checks for a collision against every
+OTHER deployment (renaming to its own current name is a no-op success,
+not a false 409) and refreshes the aggregate-read cache immediately so
+the next `GET /deployments` already reflects it.
+
+New "Edit" button in the Detail page header, next to Pause/Resume/Stop
+— opens a small modal pre-filled with the current name/notes; saved
+notes render right in the header (📝, preserving line breaks) so
+"why did I deploy this" doesn't require opening a separate tab of
+scratch notes. Deliberately only on the Detail page, not inline on the
+Deployed Strategies list — renaming/annotating is a "look at this one
+thing" action, not a lifecycle action like Pause/Resume/Stop that
+benefits from being reachable without drilling in.
+
+**Verified**: rename-only and notes-only PATCHes each leave the other
+field untouched, a blank name is rejected, renaming to an
+already-taken name 409s, renaming to its own current name succeeds,
+PATCH on a nonexistent deployment 404s, and the cached list reflects a
+rename immediately. Real-browser check of the actual Edit modal:
+opens pre-filled with the live values, submits, and the header shows
+the new name/notes after reload — caught and fixed a Playwright
+selector quirk in the test itself along the way (`:not(.open)` +
+`state="hidden"` don't combine reliably, the same class of issue hit
+once before in this project — fixed by waiting on the plain selector's
+hidden state instead), not an app bug.
+
 ## Setup
 
 ```bash
