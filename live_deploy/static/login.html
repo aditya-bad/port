@@ -97,8 +97,10 @@
     </div>
   </div>
   <form id="loginForm">
+    <label for="username">Username</label>
+    <input type="text" id="username" name="username" autocomplete="username" autofocus required style="margin-bottom: 14px;">
     <label for="password">Password</label>
-    <input type="password" id="password" name="password" autocomplete="current-password" autofocus required>
+    <input type="password" id="password" name="password" autocomplete="current-password" required>
     <button type="submit" id="submitBtn">Login</button>
     <div class="msg" id="msg"></div>
   </form>
@@ -109,6 +111,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const btn = document.getElementById('submitBtn');
   const msg = document.getElementById('msg');
+  const username = document.getElementById('username').value;
   const password = document.getElementById('password').value;
   btn.disabled = true;
   msg.className = 'msg';
@@ -117,7 +120,7 @@ document.getElementById('loginForm').addEventListener('submit', async (e) => {
     const r = await fetch('/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ username, password }),
     });
     if (r.ok) {
       window.location.href = '/';

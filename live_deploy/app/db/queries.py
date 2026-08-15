@@ -646,3 +646,103 @@ async def set_strategy_enabled(pool: asyncpg.Pool, strategy_name: str, enabled: 
             """,
             strategy_name, enabled,
         )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# USERS  (see app/db/migrations/0005_users_and_audit.sql for the schema
+# and app/rbac.py for the (currently no-op) authorization extension
+# point `role` exists for)
+# ═════════════════════════════════════════════════════════════════════
+
+async def count_users(pool: asyncpg.Pool) -> int:
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT count(*) FROM users")
+
+
+async def create_user(
+    pool: asyncpg.Pool, username: str, password_hash: str, role: str = "member",
+) -> asyncpg.Record:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            INSERT INTO users (username, password_hash, role)
+            VALUES ($1, $2, $3)
+            RETURNING *
+            """,
+            username, password_hash, role,
+        )
+
+
+async def get_user_by_username(pool: asyncpg.Pool, username: str) -> Optional[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM users WHERE username = $1", username)
+
+
+async def get_user_by_id(pool: asyncpg.Pool, user_id: UUID) -> Optional[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM users WHERE id = $1", user_id)
+
+
+async def list_users(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT id, username, role, is_active, created_at, last_login_at
+            FROM users ORDER BY created_at
+            """,
+        )
+
+
+async def update_user_password(pool: asyncpg.Pool, user_id: UUID, password_hash: str) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET password_hash = $2 WHERE id = $1", user_id, password_hash,
+        )
+
+
+async def update_user_last_login(pool: asyncpg.Pool, user_id: UUID) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET last_login_at = now() WHERE id = $1", user_id,
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# AUDIT LOG  (written by app/auth.py's AuditLogMiddleware — one row per
+# state-changing request that reached the ASGI app, not by individual
+# routers; see the middleware's own docstring)
+# ═════════════════════════════════════════════════════════════════════
+
+async def record_audit_log(
+    pool: asyncpg.Pool,
+    user_id: Optional[UUID],
+    username: Optional[str],
+    method: str,
+    path: str,
+    status_code: Optional[int],
+    request_body: Optional[dict],
+    remote_addr: Optional[str],
+) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO audit_log
+                (user_id, username, method, path, status_code, request_body, remote_addr)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            """,
+            user_id, username, method, path, status_code, request_body, remote_addr,
+        )
+
+
+async def list_audit_log(
+    pool: asyncpg.Pool, offset: int = 0, limit: int = 200,
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT * FROM audit_log
+            ORDER BY occurred_at DESC
+            OFFSET $1 LIMIT $2
+            """,
+            offset, limit,
+        )

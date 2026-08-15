@@ -482,6 +482,7 @@ tr.trade-detail-row td {
     <a class="nav-item" data-nav="catalog" href="#/catalog">Strategy Catalog</a>
     <a class="nav-item" data-nav="deployments" href="#/deployments">Deployed Strategies</a>
     <a class="nav-item" data-nav="instruments" href="#/instruments">Instruments</a>
+    <a class="nav-item" data-nav="account" href="#/account">Account</a>
     <div class="sidebar-footer">
       <div class="status-bar" id="statusBar">
         <span class="badge bad"><span class="dot"></span> checking…</span>
@@ -609,6 +610,22 @@ tr.trade-detail-row td {
         </h2>
         <div id="instSubscribedList"><div class="empty"><span class="spinner"></span> Loading…</div></div>
       </section>
+    </div>
+
+    <!-- ═══ Account ═══ -->
+    <div id="view-account" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Account</h1>
+          <div class="view-sub">This app's own login — users, password, audit trail</div>
+        </div>
+      </div>
+      <div class="tabs" id="accountTabs">
+        <button class="active" data-tab="profile" onclick="Account.switchTab('profile')">Profile</button>
+        <button data-tab="users" onclick="Account.switchTab('users')">Users</button>
+        <button data-tab="audit" onclick="Account.switchTab('audit')">Audit Log</button>
+      </div>
+      <div id="accountBody"><div class="empty"><span class="spinner"></span> Loading…</div></div>
     </div>
 
   </main>
@@ -769,6 +786,7 @@ tr.trade-detail-row td {
 <script src="/js/deployments.js"></script>
 <script src="/js/detail.js"></script>
 <script src="/js/instruments.js"></script>
+<script src="/js/account.js"></script>
 <script>
 // ── App shell: auth status polling + hash-based view routing ─────────
 // Deliberately no frontend framework — same vanilla-JS style as the
@@ -989,9 +1007,9 @@ function connectTickerSocket() {
 }
 
 // ── Router ────────────────────────────────────────────────────────────
-// Five real views + one drill-down (detail, reached only by navigating
+// Six real views + one drill-down (detail, reached only by navigating
 // to #/deployments/{id}, never a sidebar destination of its own).
-const VIEWS = ['dashboard', 'catalog', 'deployments', 'detail', 'instruments'];
+const VIEWS = ['dashboard', 'catalog', 'deployments', 'detail', 'instruments', 'account'];
 
 function router() {
   const hash = (window.location.hash || '#/dashboard').replace(/^#\/?/, '');
@@ -1015,6 +1033,7 @@ function router() {
   else if (view === 'deployments') Deployments.load();
   else if (view === 'detail') Detail.load(param);
   else if (view === 'instruments') Instruments.load();
+  else if (view === 'account') Account.load();
 
   _startAutoRefresh(view);
 }

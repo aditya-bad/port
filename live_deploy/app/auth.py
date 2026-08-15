@@ -1,18 +1,31 @@
 """
 live_deploy — application-level authentication.
 
-This is a single-user personal tool, not a multi-tenant service: ONE
-shared secret (`app_auth_secret` in config.json) is both the login
-password and the cookie-signing key. No user table, no per-user
-anything — deliberately as simple as the threat model allows.
+Multiple named users can log in (see the `users` table, migration
+0005) — but there's still no multi-tenancy: every authenticated user
+sees the same shared set of deployments, and there's no RBAC yet (see
+app/rbac.py's docstring for the deliberately-a-no-op extension point
+that's meant to make adding RBAC later NOT a rearchitecture).
+`app_auth_secret` in config.json is no longer the ongoing login
+credential — it's a one-time bootstrap seed for the first user's
+password (see main.py's startup) — but it's kept around afterward
+because it's ALSO the session-cookie signing key and the X-API-Key
+value for scripted/API access, neither of which the user table
+replaces.
 
 Two ways to authenticate, either is accepted:
   1. A session cookie, for the browser UI — obtained via POST
-     /auth/login, verified/signed using Starlette's own SessionMiddleware
-     (see HostAwareSessionMiddleware below).
+     /auth/login (now username + password, bcrypt-verified against the
+     `users` table), verified/signed using Starlette's own
+     SessionMiddleware (see HostAwareSessionMiddleware below). The
+     session stores `user_id` + `username`, not just an `authed` flag,
+     so a request can attribute itself to a real user (audit logging,
+     "who am I").
   2. An `X-API-Key` header, for scripted/curl use — compared against
      `app_auth_secret` with secrets.compare_digest (constant-time, avoids
-     a timing side-channel on the comparison itself).
+     a timing side-channel on the comparison itself). This path has no
+     associated user (it authenticates the SCRIPT, not a person) — audit
+     log rows from API-key requests have a null user_id/username.
 
 Implemented as ASGI MIDDLEWARE, not per-route `Depends()`, on purpose:
 middleware fails CLOSED (anything not on the two-item allowlist needs
@@ -40,6 +53,8 @@ explicitly if a future monitoring setup needs it, don't let it happen by
 omission).
 """
 
+import json
+import logging
 import secrets
 from pathlib import Path
 from typing import Optional
@@ -48,6 +63,8 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import HTTPConnection
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+logger = logging.getLogger("live_deploy.audit")
 
 ALLOWLIST = frozenset({"/kite/callback", "/auth/login"})
 
@@ -119,7 +136,7 @@ class AuthMiddleware:
             return _FALLBACK_LOGIN_HTML
 
     def _session_ok(self, conn: HTTPConnection) -> bool:
-        return conn.session.get("authed") is True
+        return conn.session.get("user_id") is not None
 
     def _header_api_key_ok(self, conn: HTTPConnection) -> bool:
         supplied = conn.headers.get("x-api-key")
@@ -175,3 +192,135 @@ class AuthMiddleware:
                 status_code=401,
             )
         await response(scope, receive, send)
+
+
+# Body keys never written to the audit log verbatim — checked
+# case-insensitively at every nesting level (redaction walks the whole
+# JSON tree, not just the top level, since e.g. bulk/nested payloads
+# could carry a secret a level down and this costs nothing to get
+# right). Extend this set rather than special-casing an endpoint if a
+# new sensitive field shows up later.
+_AUDIT_REDACT_KEYS = frozenset({
+    "password", "new_password", "old_password", "current_password",
+    "app_auth_secret", "access_token", "api_secret", "request_token", "api_key",
+})
+
+
+def _redact(value):
+    if isinstance(value, dict):
+        return {
+            k: ("[redacted]" if k.lower() in _AUDIT_REDACT_KEYS else _redact(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(v) for v in value]
+    return value
+
+
+class AuditLogMiddleware:
+    """
+    Writes one `audit_log` row (see migration 0005) per state-changing
+    (POST/PUT/PATCH/DELETE) HTTP request that reaches this ASGI app —
+    implemented as middleware, not a per-router dependency, for the same
+    fail-closed reasoning AuthMiddleware itself uses: a new router added
+    later is audited automatically, without anyone remembering to wire
+    it in.
+
+    Placement in the stack matters and is deliberate (see main.py):
+    this sits BETWEEN HostAwareSessionMiddleware (outermost) and
+    AuthMiddleware (innermost) —
+      - Outside AuthMiddleware, so the row still gets written for a
+        request AuthMiddleware itself rejects with 401 — a rejected
+        state-changing attempt is exactly the kind of thing an audit
+        log exists to catch, not something to silently skip.
+      - Inside HostAwareSessionMiddleware, so `scope["session"]` is
+        already the decoded session dict by the time this runs, letting
+        a request attribute itself to a real user without a second
+        cookie-decode.
+
+    Reads the request body to log it (redacted — see _redact above) by
+    buffering every ASGI `http.request` message up front and replaying
+    them verbatim to the real `receive` the downstream app gets, so the
+    actual route handler still sees a normal, once-only-readable body —
+    it never knows this middleware looked at it first.
+    """
+
+    _AUDITED_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or scope["method"] not in self._AUDITED_METHODS:
+            await self.app(scope, receive, send)
+            return
+
+        # Buffer the full body up front (these are small JSON request
+        # bodies, never a large upload) and hand the downstream app a
+        # replay of the exact same messages — it can't tell the
+        # difference from reading `receive` directly.
+        messages = []
+        more_body = True
+        while more_body:
+            message = await receive()
+            messages.append(message)
+            more_body = message.get("more_body", False) if message["type"] == "http.request" else False
+
+        body_bytes = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.request")
+
+        idx = 0
+
+        async def replay_receive():
+            nonlocal idx
+            if idx < len(messages):
+                message = messages[idx]
+                idx += 1
+                return message
+            return await receive()
+
+        status_holder: dict = {}
+
+        async def capturing_send(message):
+            if message["type"] == "http.response.start":
+                status_holder["status"] = message["status"]
+            await send(message)
+
+        # Captured before the downstream app runs, as a fallback for
+        # e.g. logout (which clears the session during the request —
+        # without this we'd lose who logged out) — the post-request read
+        # below wins whenever it has a user, which is what makes login
+        # itself show the newly-authenticated username in its own row.
+        pre_session = scope.get("session") or {}
+        pre_user_id, pre_username = pre_session.get("user_id"), pre_session.get("username")
+
+        try:
+            await self.app(scope, replay_receive, capturing_send)
+        finally:
+            post_session = scope.get("session") or {}
+            user_id = post_session.get("user_id") or pre_user_id
+            username = post_session.get("username") or pre_username
+
+            request_body = None
+            if body_bytes:
+                try:
+                    request_body = _redact(json.loads(body_bytes))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    request_body = {"_unparsed": True}
+
+            client = scope.get("client")
+            remote_addr = client[0] if client else None
+
+            pool = getattr(getattr(scope.get("app"), "state", None), "db_pool", None)
+            if pool is not None:
+                try:
+                    from .db import queries  # local import: avoids a hard import-time
+                                              # dependency from this module on the DB layer
+                    await queries.record_audit_log(
+                        pool, user_id, username, scope["method"], scope["path"],
+                        status_holder.get("status"), request_body, remote_addr,
+                    )
+                except Exception:
+                    # Audit logging must never be the reason a real
+                    # request fails — log and move on.
+                    logger.exception("Failed to write audit_log row for %s %s",
+                                      scope["method"], scope["path"])

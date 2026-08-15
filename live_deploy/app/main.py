@@ -45,7 +45,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import strategies  # noqa: F401 — importing runs every @register_strategy in it
 from .strategies.registry import list_strategies
-from .auth import AuthMiddleware, HostAwareSessionMiddleware
+from .auth import AuditLogMiddleware, AuthMiddleware, HostAwareSessionMiddleware
 from .broadcaster import TickBroadcaster
 from .cache import AggregateCache
 from .config import load_config, load_tokens
@@ -93,10 +93,16 @@ app.include_router(aggregate_router.router)
 # Middleware order matters: add_middleware() makes the MOST RECENTLY
 # added one OUTERMOST (it runs first on the way in, last on the way
 # out) — see app/auth.py's HostAwareSessionMiddleware docstring. Adding
-# AuthMiddleware first, then HostAwareSessionMiddleware, means a
-# request's session cookie is decoded (by HostAwareSessionMiddleware)
-# BEFORE AuthMiddleware inspects it.
+# AuthMiddleware first (innermost), then AuditLogMiddleware, then
+# HostAwareSessionMiddleware last (outermost) means:
+#   1. The session cookie is decoded (HostAwareSessionMiddleware) before
+#      anything else sees the request.
+#   2. AuditLogMiddleware can read that decoded session for user
+#      attribution, AND still observes the real final status code even
+#      when AuthMiddleware (further in) rejects the request with a 401
+#      — see AuditLogMiddleware's own docstring for why both matter.
 app.add_middleware(AuthMiddleware, secret=config["app_auth_secret"], static_dir=STATIC_DIR)
+app.add_middleware(AuditLogMiddleware)
 app.add_middleware(HostAwareSessionMiddleware, secret_key=config["app_auth_secret"])
 
 
@@ -119,7 +125,25 @@ async def startup() -> None:
     # docstring.
     await queries.ensure_strategy_settings(db_pool, [s["name"] for s in list_strategies()])
     app.state.kite_config = config   # api_key/api_secret, for the login/callback router
-    app.state.app_auth_secret = config["app_auth_secret"]   # this app's own front door — see auth router
+    app.state.app_auth_secret = config["app_auth_secret"]   # session-signing key + X-API-Key value — see auth router
+
+    # ── First-boot user bootstrap: config.json's app_auth_secret used to
+    # BE the login credential; now it's only a one-time seed for the
+    # first user's password, so upgrading from the old single-secret
+    # world doesn't lock anyone out. Runs every boot but is a no-op past
+    # the very first one — `users` has at least one row from then on.
+    if await queries.count_users(db_pool) == 0:
+        bootstrap_username = "admin"
+        await queries.create_user(
+            db_pool, bootstrap_username,
+            auth_router.hash_password(config["app_auth_secret"]),
+        )
+        logger.info(
+            "No users existed yet — created initial user '%s' from config.json's "
+            "app_auth_secret (log in with that as the password, then change it via "
+            "POST /auth/change-password).",
+            bootstrap_username,
+        )
 
     # ── Kite session: DB (freshest, survives a same-day restart) wins,
     # config.json's access_token (if any) is only a first-ever-boot

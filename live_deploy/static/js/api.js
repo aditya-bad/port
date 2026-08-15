@@ -134,6 +134,42 @@ const Api = {
     const data = await r.json();
     return { ok: r.ok, data };
   },
+
+  // ── This app's own auth: users, password, audit log ────────────
+  // (the "who's currently logged in" cookie/session dance is
+  // login.html/index.html's logout() — this is everything reachable
+  // from inside the app once already logged in.)
+  async me() {
+    const r = await fetch('/auth/me');
+    if (!r.ok) throw new Error(`Could not load current user (${r.status})`);
+    return r.json();
+  },
+  async changePassword(oldPassword, newPassword) {
+    const r = await fetch('/auth/change-password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
+  async listUsers() {
+    const r = await fetch('/auth/users');
+    if (!r.ok) throw new Error(`Could not load users (${r.status})`);
+    return r.json();
+  },
+  async createUser(username, password) {
+    const r = await fetch('/auth/users', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
+  async getAuditLog(limit = 200) {
+    const r = await fetch(`/auth/audit-log?limit=${limit}`);
+    if (!r.ok) throw new Error(`Could not load audit log (${r.status})`);
+    return r.json();
+  },
 };
 
 // ── Formatting helpers, shared by every view ───────────────────────

@@ -2015,6 +2015,101 @@ and every new Stats metric renders the exact expected value (profit
 factor 2.50 from a ₹5,000 win against a ₹2,000 loss, max drawdown
 exactly ₹10,000 / 9.52% from the seeded snapshot sequence).
 
+## What's here (Step 28: real user accounts, replacing the one shared password)
+
+Pre-launch requirement: `app_auth_secret` doubling as the actual,
+ongoing login credential doesn't scale past "one person, forever" — no
+way to change it without editing config.json and restarting, no way to
+tell who did what, no way to add a second person their own login. Three
+additions, all schema in `app/db/migrations/0005_users_and_audit.sql`:
+
+**Real user accounts** (`users` table). `app_auth_secret` is now only a
+**first-boot bootstrap seed** — on the very first startup with an empty
+`users` table, it becomes the initial `admin` user's starting password
+(see `app/main.py`'s startup); every boot after that is a no-op there,
+same idempotent-on-every-restart shape as the migration runner itself.
+From then on, real login is username + password (bcrypt-hashed, never
+stored or logged in plaintext — see the audit log point below). New
+endpoints: `POST /auth/change-password`, `POST /auth/users` (create),
+`GET /auth/users` (list — never returns `password_hash`), `GET
+/auth/me`. `POST /auth/login` now takes `{username, password}`; a
+wrong password and a nonexistent username return the identical 401
+message, so a login attempt can't be used to enumerate valid usernames.
+The X-API-Key path (`app_auth_secret` in an `X-API-Key` header, for
+scripted/curl access) is completely unchanged — it authenticates the
+*script*, not a person, and has no associated user in audit rows
+(`user_id`/`username` both null).
+
+**No RBAC — on purpose, but built to be added later without a
+rearchitecture.** Every logged-in user can see every deployment and
+manage every other user today; there's no per-user data scoping and no
+permission check anywhere. What exists instead is `app/rbac.py`'s
+`can(user, action) -> bool`, a single always-`True` choke point, plus a
+real (if currently unused) `role` column on `users` (defaults
+`'member'`). Adding real RBAC later means writing the actual rule in
+`can()` and adding `if not rbac.can(user, "...")` checks at the call
+sites already commented with exactly what they'd check — not touching
+the schema or the session model again.
+
+**Audit logging** (`audit_log` table, `app/auth.py`'s
+`AuditLogMiddleware`). Every POST/PUT/PATCH/DELETE request the app
+handles gets one row — implemented as ASGI middleware, not a per-router
+dependency, for the identical fail-closed reasoning `AuthMiddleware`
+itself already uses: a new router added later is audited automatically,
+with nobody needing to remember to wire it in. Placement in the
+middleware stack is deliberate: it sits between `AuthMiddleware`
+(innermost) and `HostAwareSessionMiddleware` (outermost) so it can (a)
+read the already-decoded session to attribute a request to a real user,
+and (b) still observe the real final status code even for a request
+`AuthMiddleware` itself rejects with a 401 — a rejected mutating
+attempt is exactly the kind of thing an audit trail exists to catch,
+not something to silently skip. Request bodies are captured via the
+standard buffer-then-replay ASGI pattern (the real route handler still
+sees a completely normal, once-only-readable body) and redacted before
+being written — `password`, `new_password`, `old_password`,
+`app_auth_secret`, `access_token`, `api_secret`, `request_token`,
+`api_key`, at any nesting depth, all become `"[redacted]"`. GET requests
+are never logged (read-only, nothing state-changing to audit). A new
+Account → Audit Log tab in the UI reads it back via `GET
+/auth/audit-log`.
+
+**New UI**: an "Account" nav item — Profile (who am I, change my own
+password), Users (create a new account, see everyone), Audit Log
+(everything above, browsable). `login.html` gained a username field.
+
+**Verified** end-to-end against a real server + real Postgres (no
+mocks): the bootstrap admin logs in with `app_auth_secret` as its seed
+password; wrong-password and unknown-username both 401 with the
+identical message; change-password rejects the wrong current password
+and accepts the right one, after which the old password stops working
+and the new one works; a second user can be created, rejects a
+duplicate username (409) and a too-short password (422), and logs in
+independently; that second, non-admin user can read `/deployments` and
+list users too, confirming "no RBAC yet, shared visibility" is real,
+not just documented; `GET /auth/users` never leaks `password_hash`;
+logout actually invalidates the session. On the audit log specifically:
+no plaintext password ever appears in any stored row (checked by
+searching every row for the literal password strings used in the test,
+not just checking the field name); a create-user attempt shows up with
+the right actor, path, and status for both its 200 success and its 409
+duplicate-rejection retry; a rejected 401 login attempt is captured;
+a mutating request `AuthMiddleware` itself blocks (401, before reaching
+any route handler) is *still* captured; GET requests are confirmed
+absent from the log; and a successful login's own row shows the
+username that request just authenticated as (session mutations made
+during the request are visible to the middleware reading the session
+after the handler returns). The UI was verified through a real browser
+too: username-field login, the full change-password round trip, create-user
+end-to-end with the new user appearing in the table, the Audit Log tab
+rendering with no plaintext password anywhere in the rendered page,
+and logout returning to the login form.
+
+**Flagged, not resolved — a product decision, not a bug**: user
+accounts have no deactivate/delete UI yet (`is_active` exists on the
+schema and is checked at login, but nothing sets it false) — creating
+one is one-way for now. Reasonable for "a handful of trusted people I
+personally invite," worth revisiting if that assumption changes.
+
 ## Setup
 
 ```bash
@@ -2048,10 +2143,15 @@ to you (it already includes `sslmode=require`, which asyncpg honors
 automatically).
 
 `app_auth_secret` is **unrelated to Kite entirely** — it's this app's
-own front door (see "Step 7" below), required, no default. Pick a real
-password; it doubles as both the UI login password and the value you
-pass as `X-API-Key` for scripted access. The service refuses to start
-without it.
+own front door (see "Step 7" below), required, no default. It's still
+the value you pass as `X-API-Key` for scripted access, and it's still
+the session-cookie signing key — but as of Step 28 it's **no longer
+the ongoing UI login password**: it's a one-time seed, used only on the
+very first boot (when no user account exists yet) to create an initial
+`admin` user with this as its starting password. Log in with it once,
+then change it via Account → Profile in the UI (or `POST
+/auth/change-password`) — see Step 28 below for the full multi-user
+story. The service refuses to start without this value either way.
 
 **Schema setup is automatic.** On every startup, the app applies any
 `app/db/migrations/*.sql` file not yet recorded as applied (tracked in a
