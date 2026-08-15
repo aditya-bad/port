@@ -222,6 +222,20 @@ tr.trade-row:focus-visible {
   display: flex; flex-direction: column; gap: 10px;
 }
 
+/* `display: contents` = "this element doesn't exist" for layout
+   purposes — its children (the nav items + footer) become direct
+   flex items of .sidebar, exactly as before this wrapper was added.
+   Only the mobile media query below turns it into a real,
+   independently toggleable block. */
+.sidebar-nav-group { display: contents; }
+
+.mobile-menu-toggle {
+  display: none;   /* shown only in the mobile media query below */
+  margin-left: auto; background: var(--paper); border: 3px solid var(--line);
+  width: 38px; height: 38px; font-size: 16px; line-height: 1; cursor: pointer; flex-shrink: 0;
+}
+.mobile-menu-toggle:hover { background: var(--stone); }
+
 .main { flex: 1; min-width: 0; padding: 28px 32px 60px; max-width: 1300px; }
 .view { display: none; }
 .view.active { display: block; }
@@ -448,28 +462,37 @@ tr.trade-detail-row td {
 
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 8px; }
 
-/* ── Responsive baseline: the sidebar collapses to a top bar below a
-   phone/small-tablet width; cards, stat-grid, catalog grid, and
-   tables already reflow via flex-wrap / grid auto-fit / overflow-x. */
+/* ── Responsive baseline: below a phone/small-tablet width, the
+   sidebar becomes a slim top bar — brand + a hamburger toggle — with
+   the actual nav list and account/status block hidden behind it as a
+   collapsible menu, not permanently wrapped inline (an earlier attempt
+   at the latter kept fighting overlap/alignment bugs as content grew —
+   see README's note on this revision for the real fix: stop trying to
+   fit a whole sidebar's worth of content into a wrapping row at all).
+   Desktop is completely untouched by this block. Cards, stat-grid,
+   catalog grid, and tables reflow separately via flex-wrap / grid
+   auto-fit / overflow-x, unrelated to this. */
 @media (max-width: 760px) {
   .app-shell { flex-direction: column; }
   .sidebar {
-    width: 100%; height: auto; position: static; flex-direction: row; flex-wrap: wrap;
-    align-items: center; padding: 14px 16px; border-right: none; border-bottom: 3px solid var(--line);
+    width: 100%; height: auto; position: static; flex-direction: column;
+    padding: 14px 16px; border-right: none; border-bottom: 3px solid var(--line);
   }
-  .sidebar-brand { padding: 0 16px 0 0; border-bottom: none; margin-bottom: 0; }
-  .nav-item { margin: 0 8px 8px 0; }
-  /* `width: 100%` is what actually matters here: inside a wrapping flex
-     row, a 100%-wide item forces a line break before itself — that's
-     what makes the footer drop cleanly onto its OWN row below however
-     many rows the nav items wrapped into, instead of (the previous bug)
-     latching onto whatever row still had leftover space via
-     `margin-left: auto`, which visually collided with "Account" — see
-     README's own note on this fix for the screenshot that caught it. */
+  .sidebar-brand { padding: 0; border-bottom: none; margin-bottom: 0; }
+  .mobile-menu-toggle { display: block; }
+
+  /* Hidden by default — .open (toggled by toggleMobileNav(), see the
+     app shell script) switches it to a plain vertical block, i.e. a
+     dropdown menu below the top bar, not another wrapping row. */
+  .sidebar-nav-group {
+    display: none; flex-direction: column; margin-top: 14px; padding-top: 14px;
+    border-top: 3px solid var(--line);
+  }
+  .sidebar-nav-group.open { display: flex; }
+  .nav-item { margin: 0 0 8px; }
   .sidebar-footer {
-    width: 100%; margin-top: 10px; margin-left: 0; padding: 12px 0 0;
-    border-top: 3px solid var(--line); border-left: none;
-    flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px;
+    margin-top: 6px; padding: 14px 0 0; border-top: 3px solid var(--line);
+    flex-direction: column; align-items: stretch; gap: 10px;
   }
   .main { padding: 18px 16px 40px; }
 }
@@ -485,17 +508,29 @@ tr.trade-detail-row td {
         <b>live_deploy</b>
         <div class="subtitle">Data dispatcher · paper trading</div>
       </div>
+      <!-- Mobile-only — see the sub-760px media query. Hidden entirely
+           on desktop, where the sidebar is always fully visible and
+           there's nothing to toggle. -->
+      <button class="mobile-menu-toggle" id="mobileMenuToggle" onclick="toggleMobileNav()" aria-label="Menu" aria-expanded="false">☰</button>
     </div>
-    <a class="nav-item" data-nav="dashboard" href="#/dashboard">Dashboard</a>
-    <a class="nav-item" data-nav="catalog" href="#/catalog">Strategy Catalog</a>
-    <a class="nav-item" data-nav="deployments" href="#/deployments">Deployed Strategies</a>
-    <a class="nav-item" data-nav="instruments" href="#/instruments">Instruments</a>
-    <a class="nav-item" data-nav="account" href="#/account">Account</a>
-    <div class="sidebar-footer">
-      <div class="status-bar" id="statusBar">
-        <span class="badge bad"><span class="dot"></span> checking…</span>
+    <!-- `display: contents` on desktop (see CSS) makes this wrapper
+         invisible to the flex layout — its children behave exactly as
+         if they were direct children of .sidebar, unchanged from
+         before this existed. Only on mobile does it become a real,
+         independently show/hide-able block — the collapsible menu
+         body toggled by the hamburger button above. -->
+    <div class="sidebar-nav-group" id="sidebarNavGroup">
+      <a class="nav-item" data-nav="dashboard" href="#/dashboard">Dashboard</a>
+      <a class="nav-item" data-nav="catalog" href="#/catalog">Strategy Catalog</a>
+      <a class="nav-item" data-nav="deployments" href="#/deployments">Deployed Strategies</a>
+      <a class="nav-item" data-nav="instruments" href="#/instruments">Instruments</a>
+      <a class="nav-item" data-nav="account" href="#/account">Account</a>
+      <div class="sidebar-footer">
+        <div class="status-bar" id="statusBar">
+          <span class="badge bad"><span class="dot"></span> checking…</span>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="logout()">Logout</button>
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="logout()">Logout</button>
     </div>
   </nav>
 
@@ -836,6 +871,22 @@ async function logout() {
   window.location.href = '/';
 }
 
+// ── Mobile collapsible nav — desktop never calls these (the toggle
+// button itself is display:none there, so nothing ever invokes
+// toggleMobileNav), and closeMobileNav() removing a class that's never
+// present on desktop is a harmless no-op, not a guard that needs its
+// own width check.
+function toggleMobileNav() {
+  const group = document.getElementById('sidebarNavGroup');
+  const btn = document.getElementById('mobileMenuToggle');
+  const open = group.classList.toggle('open');
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+function closeMobileNav() {
+  document.getElementById('sidebarNavGroup').classList.remove('open');
+  document.getElementById('mobileMenuToggle').setAttribute('aria-expanded', 'false');
+}
+
 async function loginWithKite() {
   const r = await fetch('/kite/login-url');
   const { login_url } = await r.json();
@@ -1035,6 +1086,7 @@ function router() {
   document.querySelectorAll('.nav-item').forEach(el => {
     el.classList.toggle('active', el.dataset.nav === (view === 'detail' ? 'deployments' : view));
   });
+  closeMobileNav();   // picking a destination is exactly when a mobile menu should collapse again
 
   if (view === 'dashboard') Dashboard.load();
   else if (view === 'catalog') Catalog.load();

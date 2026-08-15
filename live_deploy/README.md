@@ -2144,6 +2144,38 @@ iPhone-sized screen), reproducing the exact broken layout first,
 confirming the fix visually resolves it, and confirming a 1440×900
 desktop screenshot is pixel-identical before and after.
 
+## What's here (Step 30: mobile nav is now a real collapsible menu)
+
+Step 29 fixed the immediate overlap bug but kept the underlying
+approach — try to fit a whole sidebar's worth of content (5 nav items +
+a status badge + 3 buttons) into a wrapping row. That was always going
+to keep needing touch-ups as content grows. This replaces the approach
+itself: on mobile, the sidebar is now a slim top bar (brand + a
+hamburger toggle) with the nav list and account/status block hidden
+behind it as an actual dropdown menu, not a permanently-visible wrapped
+block.
+
+Mechanically: the nav items + `.sidebar-footer` are now wrapped in a
+`.sidebar-nav-group` div. On desktop this div is `display: contents` —
+functionally invisible to the flex layout, so its children behave
+exactly as direct children of `.sidebar`, identical to before this
+existed (confirmed via a pixel-identical desktop screenshot). Only the
+mobile media query gives it real behavior: hidden by default, toggled
+to a plain vertical block by a new `.mobile-menu-toggle` (☰) button —
+itself `display: none` outside mobile, so desktop never even renders
+it. Picking a destination closes the menu automatically (hooked into
+the existing `router()`, not each nav item individually — a new nav
+item added later gets this for free).
+
+**Verified** via Playwright at a real 390×844 mobile viewport: the
+closed state shows only the slim top bar with live prices immediately
+visible underneath (no more scrolling past a nav block at all, closed
+or open); the open state shows the full menu as a clean vertical list
+with the active view highlighted; clicking a nav item both navigates
+AND closes the menu back down (checked programmatically, not just
+visually); and a 1440×900 desktop screenshot is pixel-identical to
+before this change.
+
 ## Setup
 
 ```bash
