@@ -53,6 +53,7 @@ explicitly if a future monitoring setup needs it, don't let it happen by
 omission).
 """
 
+import ipaddress
 import json
 import logging
 import secrets
@@ -75,6 +76,30 @@ ALLOWLIST = frozenset({"/kite/callback", "/auth/login"})
 # boundary is the password/API key).
 _LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
+# Tailscale's own address ranges (CGNAT /10 for IPv4, its ULA /48 for
+# IPv6 — same ranges for every tailnet, not account-specific) — a
+# recommended deployment shape for this app (see RUN_GUIDE.md) is
+# reachable ONLY over a tailnet address, over plain HTTP, because
+# WireGuard already encrypts the whole hop; there's no TLS terminator
+# in front to make a `Secure`-flagged cookie make sense. Without this,
+# HostAwareSessionMiddleware fell through to the "assume a real public
+# HTTPS deployment" branch for a tailnet IP, which sets `Secure` on the
+# session cookie — the browser then silently refuses to send it back
+# over plain HTTP, so login appears to succeed (200, server-side session
+# set) but the very next request looks logged-out again. Found by
+# exactly that symptom during a real Tailscale-only deployment.
+_TAILSCALE_V4_RANGE = ipaddress.ip_network("100.64.0.0/10")
+_TAILSCALE_V6_RANGE = ipaddress.ip_network("fd7a:115c:a1e0::/48")
+
+
+def _is_tailscale_ip(host: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return False   # a real hostname, not a bare IP -- not our concern here
+    return addr in _TAILSCALE_V4_RANGE or addr in _TAILSCALE_V6_RANGE
+
+
 _FALLBACK_LOGIN_HTML = (
     "<!doctype html><html><body style=\"font-family:sans-serif;text-align:center;"
     "padding-top:3em;\"><h2>Login</h2><p>static/login.html is missing — "
@@ -95,13 +120,17 @@ class HostAwareSessionMiddleware:
     SessionMiddleware (no new package needed — itsdangerous is already
     a Starlette dependency) — but SessionMiddleware's `https_only` flag
     is fixed once at construction, and "Secure cookie when reached
-    over anything other than localhost" is inherently a PER-REQUEST
-    decision (the same running process might be hit as both
-    http://localhost:8000 during dev and through a real reverse proxy
-    in front of it). Delegates each request to one of two
-    SessionMiddleware instances — both signing with the identical
+    over anything other than localhost or a tailnet address" is
+    inherently a PER-REQUEST decision (the same running process might
+    be hit as http://localhost:8000 during dev, http://100.x.x.x:8000
+    over Tailscale in production, or through a real reverse proxy
+    terminating HTTPS in front of it). Delegates each request to one of
+    two SessionMiddleware instances — both signing with the identical
     secret, so a cookie either one issues is valid to the other too —
-    chosen by whether the request's Host header looks like localhost.
+    chosen by whether the request's Host header looks like localhost or
+    a Tailscale address (both cases where a `Secure`-only cookie would
+    just silently break the browser's ability to send it back, with no
+    matching security benefit — see _is_tailscale_ip's own comment).
     """
 
     def __init__(self, app: ASGIApp, secret_key: str):
@@ -112,7 +141,9 @@ class HostAwareSessionMiddleware:
         if scope["type"] not in ("http", "websocket"):
             await self._insecure(scope, receive, send)
             return
-        target = self._insecure if _request_host(scope) in _LOCALHOST_HOSTS else self._secure
+        host = _request_host(scope)
+        insecure_ok = host in _LOCALHOST_HOSTS or _is_tailscale_ip(host)
+        target = self._insecure if insecure_ok else self._secure
         await target(scope, receive, send)
 
 
