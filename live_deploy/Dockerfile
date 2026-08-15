@@ -9,10 +9,8 @@
 # Kite session — lives in Postgres. A container built from this image
 # can be killed and replaced at any time without losing anything that
 # matters; config.json/tokens.json are the only inputs it needs handed
-# back on the next run (via env vars, a mounted file, or — for an AWS
-# deployment — AWS Systems Manager Parameter Store; see RUN_GUIDE.md's
-# "AWS deployment: SSM Parameter Store" section), and Postgres already
-# has everything else.
+# back on the next run (via env vars or a mounted file — see below),
+# and Postgres already has everything else.
 #
 # Build:
 #   docker build -t live-deploy .

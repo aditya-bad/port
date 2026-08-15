@@ -2015,38 +2015,6 @@ and every new Stats metric renders the exact expected value (profit
 factor 2.50 from a ₹5,000 win against a ₹2,000 loss, max drawdown
 exactly ₹10,000 / 9.52% from the seeded snapshot sequence).
 
-## What's here (Step 28: AWS Systems Manager Parameter Store for credentials)
-
-Reported: not comfortable with `api_key`/`api_secret`/`database_url`/
-`app_auth_secret` sitting in `config.json` ahead of an actual AWS
-deployment. RUN_GUIDE.md's own Credential hardening section had already
-flagged this exact next step — "a REAL secrets manager... only worth
-building against a specific hosting target once one's actually chosen"
-— and AWS is now that target.
-
-New `scripts/fetch_ssm_secrets.sh`: fetches all four credentials from
-AWS Systems Manager Parameter Store (SecureString — free for standard
-parameters, encrypted at rest via KMS, access controlled by IAM rather
-than a file's Unix permissions) in one API call, exports them as env
-vars, and `exec`s whatever command it's given — `config.json` isn't
-needed on the instance at all, since `load_config()` already treats it
-as fully optional once every required key arrives via env var. See
-RUN_GUIDE.md's new "AWS deployment: SSM Parameter Store" section for
-the one-time `aws ssm put-parameter` setup, a least-privilege IAM
-policy scoped to just this parameter path, and how to wire the script
-into supervisord/systemd/Docker.
-
-**Verified end-to-end**: the REAL app — full FastAPI lifespan,
-migrations, dispatcher, deployment manager — booted successfully
-through the script against a mocked SSM, with `config.json` genuinely
-absent from disk; the SSM-sourced `app_auth_secret` confirmed LIVE (the
-correct value authorizes, a wrong one still 401s) and `GET /health`
-returned healthy against the SSM-sourced `DATABASE_URL`. Both failure
-paths verified too: a wrong parameter prefix fails loudly with a clear
-"missing from SSM" message naming exactly what wasn't found, and
-running with no command argument prints a usage message — neither
-silently launches with empty credentials.
-
 ## Setup
 
 ```bash
