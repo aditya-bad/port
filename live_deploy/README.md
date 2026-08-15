@@ -1976,6 +1976,45 @@ deploying each strategy with ONLY the NEW key name(s) set to a
 distinctive non-default value, confirming it lands correctly on the
 live strategy instance for all 4 strategies.
 
+## What's here (Step 27: a richer Deployment Detail page)
+
+Two additions, one of them a real gap fix.
+
+**New "Activity" tab** — `GET /deployments/{id}/events` has existed
+since the very first version of this API and has NEVER been called by
+the frontend. It's the audit trail behind every pause/resume and every
+fill, plus — this is the part that actually matters — `strategy_error`:
+a strategy's own `on_tick` raising an exception (a bad resolver call, a
+transient `NoKiteSession`, anything) is caught at the runner level and
+recorded here instead of crashing the deployment. Which means a
+strategy that's silently failing — still showing "active," never
+actually trading — was previously invisible ANYWHERE in the UI; the
+only way to find out was reading server logs directly. This tab is that
+visibility: a warning banner counts recorded errors up front, each
+event is tagged by type (color-coded — errors in loss-red, fills in
+info-blue, pause/resume matching their existing status colors), and a
+row with metadata expands on click, reusing the same JSON-block
+renderer the Trades tab's trigger metadata already uses.
+
+**Enhanced Stats tab**: total return (realized + unrealized against the
+FIXED `initial_capital` reference, not the compounding cash balance —
+same basis several strategies themselves size against), profit factor
+and largest win/largest loss (from each closed position's own
+`realized_pnl` — position-level, not per-lot, so a multi-lot close
+isn't double-counted), max drawdown (largest peak-to-trough decline
+across the equity-snapshot series already being fetched for the equity
+chart, no extra request), and a deployed-since / last-activity line for
+quick operational context ("is this thing actually doing anything").
+
+**Verified** with real runner fills (one profitable closed position,
+one losing one, one still open), a real strategy_error event, and
+seeded equity snapshots with a known drawdown, through a real browser:
+the Activity tab correctly shows paused/resumed/fill/strategy_error
+events with correct counts, the error row expands to show its message,
+and every new Stats metric renders the exact expected value (profit
+factor 2.50 from a ₹5,000 win against a ₹2,000 loss, max drawdown
+exactly ₹10,000 / 9.52% from the seeded snapshot sequence).
+
 ## Setup
 
 ```bash

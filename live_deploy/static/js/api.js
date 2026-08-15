@@ -80,6 +80,11 @@ const Api = {
     if (!r.ok) throw new Error(`Could not load report (${r.status})`);
     return r.json();
   },
+  async getEvents(id, limit = 200) {
+    const r = await fetch(`/deployments/${id}/events?limit=${limit}`);
+    if (!r.ok) throw new Error(`Could not load events (${r.status})`);
+    return r.json();
+  },
   async getSnapshots(id, limit = 1000) {
     const r = await fetch(`/deployments/${id}/snapshots?limit=${limit}`);
     if (!r.ok) throw new Error(`Could not load snapshots (${r.status})`);

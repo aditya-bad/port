@@ -63,7 +63,7 @@ const Detail = {
   },
 
   renderTabs() {
-    const tabs = [['config', 'Config'], ['positions', 'Positions'], ['trades', 'Trades'], ['stats', 'Stats']];
+    const tabs = [['config', 'Config'], ['positions', 'Positions'], ['trades', 'Trades'], ['stats', 'Stats'], ['events', 'Activity']];
     document.getElementById('detailTabs').innerHTML = tabs.map(([key, label]) =>
       `<button class="${this._tab === key ? 'active' : ''}" onclick="Detail.switchTab('${key}')">${label}</button>`
     ).join('');
@@ -86,6 +86,7 @@ const Detail = {
       if (this._tab === 'positions') return await this.renderPositions();
       if (this._tab === 'trades') return await this.renderTrades();
       if (this._tab === 'stats') return await this.renderStats();
+      if (this._tab === 'events') return await this.renderEvents();
     } catch (e) {
       console.error('Detail tab render failed:', e);
       document.getElementById('detailBody').innerHTML =
@@ -194,6 +195,66 @@ const Detail = {
     return html;
   },
 
+  // ── Activity (deployment_events) — the audit trail behind pause/
+  // resume/create and every fill, PLUS strategy_error: a strategy's own
+  // on_tick raising an exception (a bad resolver call, a transient
+  // NoKiteSession, anything) is caught at the runner level and recorded
+  // here rather than crashing the deployment — which means a silently
+  // failing strategy (still "active", never trading) was previously
+  // invisible anywhere in the UI. This tab is that visibility. ─────────
+  _openEventRows: new Set(),
+
+  async renderEvents() {
+    this._events = await Api.getEvents(this._id, 200);
+    this._openEventRows = new Set();
+    const body = document.getElementById('detailBody');
+    if (!this._events.length) {
+      body.innerHTML = emptyHtml('No activity recorded yet.');
+      return;
+    }
+    const errorCount = this._events.filter(e => e.event_type === 'strategy_error').length;
+    body.innerHTML = `
+      ${errorCount > 0 ? `<div class="table-note" style="color:var(--loss); margin-bottom:10px;">
+        ⚠ ${errorCount} strategy error${errorCount === 1 ? '' : 's'} recorded — click a
+        <span class="tag tag-error" style="margin:0 2px;">strategy_error</span> row below for details.
+      </div>` : ''}
+      <div class="table-wrap">
+      <table><thead><tr><th>Time</th><th>Event</th><th>Message</th></tr></thead>
+      <tbody>${this._events.map((e, i) => this._eventRowHtml(e, i)).join('')}</tbody></table>
+      </div>
+    `;
+  },
+
+  _eventTagClass(eventType) {
+    if (eventType === 'strategy_error') return 'tag-error';
+    if (eventType === 'paused') return 'tag-paused';
+    if (eventType === 'resumed' || eventType === 'created') return 'tag-active';
+    if (eventType.startsWith('fill_')) return 'tag-info';
+    return 'tag-warn';
+  },
+
+  _eventRowHtml(event, i) {
+    const open = this._openEventRows.has(i);
+    const hasMeta = event.metadata && Object.keys(event.metadata).length > 0;
+    return `
+      <tr class="trade-row ${open ? 'open' : ''}" ${hasMeta ? `onclick="Detail.toggleEventRow(${i})"` : ''}>
+        <td>${fmtDateTime(event.created_at)}</td>
+        <td><span class="tag ${this._eventTagClass(event.event_type)}">${escapeHtml(event.event_type)}</span></td>
+        <td>${escapeHtml(event.message || '')}</td>
+      </tr>
+      ${hasMeta ? `<tr class="trade-detail-row" id="event-detail-${i}" style="display:${open ? 'table-row' : 'none'}">
+        <td colspan="3">${renderJsonBlock('metadata', event.metadata)}</td>
+      </tr>` : ''}
+    `;
+  },
+
+  toggleEventRow(i) {
+    const row = document.getElementById(`event-detail-${i}`);
+    const isOpen = this._openEventRows.has(i);
+    if (isOpen) { this._openEventRows.delete(i); row.style.display = 'none'; }
+    else { this._openEventRows.add(i); row.style.display = 'table-row'; }
+  },
+
   // ── Stats ───────────────────────────────────────────────────────
   async renderStats() {
     const [report, allTrades, closedPositions, snapshots] = await Promise.all([
@@ -220,7 +281,51 @@ const Detail = {
       .map(p => new Date(p.closed_at) - new Date(p.opened_at));
     const avgHoldMs = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
 
+    // Profit factor + largest win/loss -- from each CLOSED position's
+    // own realized_pnl (position-level, not per-lot: a position can
+    // span several lots, but realized_pnl already nets the whole thing,
+    // so summing per-position avoids double-counting a multi-lot close).
+    const pnls = closedPositions.map(p => p.realized_pnl).filter(v => v != null);
+    const grossWin = pnls.filter(v => v > 0).reduce((a, b) => a + b, 0);
+    const grossLoss = pnls.filter(v => v < 0).reduce((a, b) => a + b, 0);   // negative
+    const profitFactor = grossLoss < 0 ? grossWin / Math.abs(grossLoss) : (grossWin > 0 ? Infinity : null);
+    const largestWin = pnls.length ? Math.max(...pnls, 0) : null;
+    const largestLoss = pnls.length ? Math.min(...pnls, 0) : null;
+
+    // Total return -- realized + unrealized against the FIXED
+    // initial_capital reference (same "capital, not compounding cash"
+    // basis several strategies themselves size against — see e.g.
+    // strangle_monthly_v2's Section 3/4).
+    const totalPnl = (this._dep.realized_pnl || 0) + (this._dep.unrealized_pnl || 0);
+    const totalReturnPct = this._dep.initial_capital ? (totalPnl / this._dep.initial_capital) * 100 : null;
+
+    // Max drawdown -- largest peak-to-trough decline in the equity
+    // curve's own total_value series (the same snapshot data already
+    // fetched for the chart below, no extra request).
+    let maxDrawdownPct = null, maxDrawdownAbs = null;
+    if (snapshots.length >= 2) {
+      let peak = snapshots[0].total_value;
+      snapshots.forEach(s => {
+        if (s.total_value > peak) peak = s.total_value;
+        const dd = peak - s.total_value;
+        if (maxDrawdownAbs == null || dd > maxDrawdownAbs) {
+          maxDrawdownAbs = dd;
+          maxDrawdownPct = peak > 0 ? (dd / peak) * 100 : 0;
+        }
+      });
+    }
+
+    // Deployed-since / last-activity — operational context: is this
+    // thing actually doing anything, and how long has it been running.
+    const deployedMs = Date.now() - new Date(this._dep.created_at).getTime();
+    const lastFill = allTrades.lots.length ? allTrades.lots[0] : null;   // newest-first, see GET .../trades
+
     body.innerHTML = `
+      <div class="card-meta" style="margin-bottom:16px;">
+        <span>Deployed <b>${fmtDuration(deployedMs)} ago</b> (${fmtDateTime(this._dep.created_at)})</span>
+        <span>Last activity <b>${lastFill ? fmtDateTime(lastFill.executed_at) : '—'}</b></span>
+      </div>
+
       <div class="stat-grid">
         <div class="stat-card">
           <div class="stat-label">Realized P&amp;L</div>
@@ -229,6 +334,15 @@ const Detail = {
             <div class="row"><span>Win rate</span><b>${fmtPct(report.win_rate_pct)}</b></div>
             <div class="row"><span>Avg win</span><b class="pos">${fmtMoney(report.avg_win)}</b></div>
             <div class="row"><span>Avg loss</span><b class="neg">${fmtMoney(report.avg_loss)}</b></div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total return</div>
+          <div class="stat-value ${totalReturnPct != null ? pnlClass(totalReturnPct) : ''}">${totalReturnPct != null ? fmtSignedMoney(totalPnl) + ` (${totalReturnPct >= 0 ? '+' : ''}${totalReturnPct.toFixed(2)}%)` : '—'}</div>
+          <div class="stat-sub">
+            <div class="row"><span>Profit factor</span><b>${profitFactor == null ? '—' : profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}</b></div>
+            <div class="row"><span>Largest win</span><b class="pos">${largestWin != null ? fmtMoney(largestWin) : '—'}</b></div>
+            <div class="row"><span>Largest loss</span><b class="neg">${largestLoss != null ? fmtMoney(largestLoss) : '—'}</b></div>
           </div>
         </div>
         <div class="stat-card">
@@ -253,6 +367,10 @@ const Detail = {
 
       <section>
         <h2>Equity Curve</h2>
+        ${maxDrawdownAbs != null ? `<div class="card-meta" style="margin-bottom:10px;">
+          <span>Max drawdown <b class="neg">${fmtMoney(maxDrawdownAbs)} (${maxDrawdownPct.toFixed(2)}%)</b>
+            — largest peak-to-trough decline across every recorded snapshot</span>
+        </div>` : ''}
         ${renderEquityChart(snapshots)}
       </section>
     `;
