@@ -1931,6 +1931,51 @@ selector quirk in the test itself along the way (`:not(.open)` +
 once before in this project — fixed by waiting on the plain selector's
 hidden state instead), not an app bug.
 
+## What's here (Step 26: clearer config param names)
+
+Reported: some config params were bare `_pct` names that don't say
+WHICH basis they measure — the exact kind of param a config-editing user
+can misread by assuming it matches a sibling param's basis. Renamed the
+ambiguous ones, scoped to the pattern actually reported (a param whose
+name gives no clue whether it's per-leg or combined, premium or
+capital) — left alone the params that already name their own concept
+clearly in context (`monthly_target_pct` already says "monthly",
+`strike_selection_capital_pct` already says "capital",
+`convergence_stop_pct`/`adjustment_*` are already scoped by their own
+documented section). Flagging this scoping as a judgment call, not
+something confirmed against every param in every strategy file.
+
+Renamed:
+- `decay_pct` → `combined_premium_profit_pct` (intraday_dtt_simple,
+  intraday_dtt_adjusted, intraday_dtt_advanced) — the profit target is a
+  fraction of the COMBINED (CE+PE) entry premium, not a per-leg or
+  capital-based figure.
+- `spike_pct` → `per_leg_stop_loss_pct` (intraday_dtt_simple) — the stop
+  loss is a fraction of EACH leg's OWN entry premium, checked
+  independently per leg — the exact "wl is per leg, profit is of
+  concluded premium" distinction that prompted this.
+- `checkpoint_pct` → `checkpoint_profit_pct_of_capital`
+  (strangle_monthly_v2) — a fraction of `initial_capital`, a genuinely
+  DIFFERENT basis than the DTT family's premium-based profit params;
+  named explicitly so a config-editing user comparing the two never
+  assumes the same basis.
+
+**Every rename keeps reading the OLD key name as a fallback**
+(`cfg.get(new_name, cfg.get(old_name, default))`) — a deployment created
+before this rename has its config already persisted in Postgres under
+the old key, and this makes it keep behaving identically after an
+upgrade with zero manual migration. A fresh deploy only ever sees the
+new name (the only one in `default_config`, so it's the only one the
+structured Deploy form ever renders).
+
+**Verified two ways**: re-ran the full existing regression suite for
+all 4 affected strategies UNCHANGED — those tests deploy using the OLD
+key names, so passing them directly proves the backward-compatible
+fallback works, not just that it compiles. Then a dedicated test
+deploying each strategy with ONLY the NEW key name(s) set to a
+distinctive non-default value, confirming it lands correctly on the
+live strategy instance for all 4 strategies.
+
 ## Setup
 
 ```bash

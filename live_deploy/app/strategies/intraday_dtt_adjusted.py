@@ -112,9 +112,9 @@ RULES:
    this multiple times, closing legs one at a time.
 
 6. PROFIT TARGET — the SAME 10% combined-premium idea from
-   intraday_dtt_simple (config: `decay_pct`, default 0.10), but redefined
-   as a running TOTAL PROFIT check that stays active continuously, even
-   while adjustment legs are open:
+   intraday_dtt_simple (config: `combined_premium_profit_pct`, default
+   0.10), but redefined as a running TOTAL PROFIT check that stays
+   active continuously, even while adjustment legs are open:
 
        total_profit = realized_pnl_today (every leg closed earlier today
                         via reversal-unwind, each one's own entry premium
@@ -123,7 +123,7 @@ RULES:
                         (each one's own entry premium minus its current
                         premium, summed)
 
-   Target = `decay_pct * combined_entry_premium` — the ORIGINAL 2-leg
+   Target = `combined_premium_profit_pct * combined_entry_premium` — the ORIGINAL 2-leg
    entry premium ONLY (1200 in the spec's worked example -> target 120),
    NOT the total premium collected across every leg including
    adjustments. THIS IS A DELIBERATE, CONFIRMED CHOICE, not a silent
@@ -220,8 +220,10 @@ meaning as intraday_dtt_simple — see that module's docstring):
   "instrument_tokens", "symbol", "options_underlying", "expiry_selector",
   "entry_time", "force_exit_time" (required, non-null), "lots_per_trade",
   "catch_up_late_entry", "allow_expiry_day_entry" — identical.
-  "decay_pct": 0.10 (default) — the total-profit target, as a fraction of
-      the ORIGINAL 2-leg combined entry premium (see "PROFIT TARGET").
+  "combined_premium_profit_pct": 0.10 (default) — the total-profit
+      target, as a fraction of the ORIGINAL 2-leg combined entry
+      premium (see "PROFIT TARGET"). Named `decay_pct` before this was
+      renamed for clarity — still read as a fallback, see on_start.
   "adjustment_trigger_ratio": 0.5 (default) — Section 2's trigger ratio.
   "adjustment_size_pct": 0.25 (default) — Section 3's sizing fraction.
   "max_adjustments": 2 (default) — Section 4's lifetime cap.
@@ -291,7 +293,7 @@ def _legs_snapshot(legs: dict) -> dict:
         "expiry_selector": "THIS_WEEK",
         "entry_time": "10:00",
         "force_exit_time": "15:00",
-        "decay_pct": 0.10,
+        "combined_premium_profit_pct": 0.10,
         "adjustment_trigger_ratio": 0.5,
         "adjustment_size_pct": 0.25,
         "max_adjustments": 2,
@@ -337,7 +339,11 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             )
         self.force_exit_time = _parse_hhmm(raw_force_exit)
 
-        self.decay_pct = float(cfg.get("decay_pct", 0.10))
+        # decay_pct is the pre-rename name -- read as a fallback so a
+        # deployment created before this rename keeps working unchanged.
+        self.combined_premium_profit_pct = float(
+            cfg.get("combined_premium_profit_pct", cfg.get("decay_pct", 0.10))
+        )
         self.adjustment_trigger_ratio = float(cfg.get("adjustment_trigger_ratio", 0.5))
         if not 0 < self.adjustment_trigger_ratio < 1:
             # The adjustment trigger (smaller <= ratio * bigger) and the
@@ -707,12 +713,13 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                 for side_legs in self.legs.values() for leg in side_legs
             )
             total_profit = self.realized_pnl_today + unrealized
-            target = self.decay_pct * self.combined_entry_premium
+            target = self.combined_premium_profit_pct * self.combined_entry_premium
             if total_profit >= target:
                 await self._flatten_all(runner, ts, "profit_target_total", trigger_values={
                     "realized_pnl_today": round(self.realized_pnl_today, 2),
                     "unrealized": round(unrealized, 2), "total_profit": round(total_profit, 2),
-                    "target": round(target, 2), "decay_pct": self.decay_pct,
+                    "target": round(target, 2),
+                    "combined_premium_profit_pct": self.combined_premium_profit_pct,
                     "combined_entry_premium": round(self.combined_entry_premium, 2),
                 })
                 return

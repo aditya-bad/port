@@ -92,13 +92,17 @@ logic before and needs its own isolated verification.
 `monthly_target_pct` (default 2%) is INFORMATIONAL ONLY — logged
 alongside every checkpoint fill so cumulative progress against it is
 visible, but never itself a hard stop ("a target to aim past... don't
-artificially stop"). The actual live trigger is `checkpoint_pct`
-(default 0.5% of capital), checked EVERY tick, same total-profit shape
-already proven in `intraday_dtt_adjusted`:
+artificially stop"). The actual live trigger is
+`checkpoint_profit_pct_of_capital` (default 0.5% of CAPITAL — not
+premium, unlike the DTT family's combined_premium_profit_pct; named
+explicitly to say so, since a config-editing user comparing this
+against a premium-based sibling could otherwise assume the same basis),
+checked EVERY tick, same total-profit shape already proven in
+`intraday_dtt_adjusted`:
 
     total_cycle_profit = self.cycle_realized_pnl
                         + unrealized P&L of every leg currently open
-    target = checkpoint_pct * runner.initial_capital
+    target = checkpoint_profit_pct_of_capital * runner.initial_capital
 
 REVISED from an earlier version of this file, which used the
 compounding `runner.cash` here — the bar to clear each cycle is now
@@ -491,7 +495,7 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
         "instrument": "NIFTY",
         "strike_selection_capital_pct": 0.03,
         "monthly_target_pct": 0.02,
-        "checkpoint_pct": 0.005,
+        "checkpoint_profit_pct_of_capital": 0.005,
         "entry_time": "10:00",
         "enter_immediately_on_deploy": False,
         "enable_hedging": False,
@@ -532,7 +536,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
 
         self.strike_selection_capital_pct = float(cfg.get("strike_selection_capital_pct", 0.03))
         self.monthly_target_pct = float(cfg.get("monthly_target_pct", 0.02))   # informational only
-        self.checkpoint_pct = float(cfg.get("checkpoint_pct", 0.005))
+        # checkpoint_pct is the pre-rename name -- read as a fallback so
+        # a deployment created before this rename keeps working unchanged.
+        self.checkpoint_profit_pct_of_capital = float(
+            cfg.get("checkpoint_profit_pct_of_capital", cfg.get("checkpoint_pct", 0.005))
+        )
         self.entry_time = _parse_hhmm(cfg.get("entry_time", "10:00"))
         if self.entry_time is None:
             raise ValueError("strangle_monthly_v2 requires a non-null entry_time")
@@ -783,7 +791,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # unlike intraday_dtt_adjusted's own analogous check (which stays
         # self-consistent by comparing a points-sum against a points-
         # based target derived from combined_entry_premium), this
-        # strategy's target (`checkpoint_pct * runner.initial_capital`)
+        # strategy's target (`checkpoint_profit_pct_of_capital *
+        # runner.initial_capital`)
         # is an explicit RUPEE figure, so the two sides of the comparison
         # would otherwise be in mismatched units whenever qty != 1 (i.e.
         # always, since qty = lots_per_trade * lot_size).
@@ -796,7 +805,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             for side_legs in self.legs.values() for leg in side_legs
         )
         total_cycle_profit = self.cycle_realized_pnl + unrealized
-        checkpoint_target = self.checkpoint_pct * runner.initial_capital
+        checkpoint_target = self.checkpoint_profit_pct_of_capital * runner.initial_capital
         if total_cycle_profit >= checkpoint_target:
             await self._flatten_all(
                 runner, ts, "checkpoint_target",

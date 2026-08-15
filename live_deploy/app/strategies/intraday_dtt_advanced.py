@@ -116,14 +116,14 @@ DIFFERENCE 2 — break-even band width is configurable:
 STILL APPLIES, ALL INHERITED UNCHANGED FROM intraday_dtt_adjusted:
   - Entry: 10:00 ATM CE+PE, `allow_expiry_day_entry`/`catch_up_late_entry`,
     exactly one entry attempt per day, no same-day re-entry.
-  - Profit target (`decay_pct`, default 10%): running total profit =
-    realized P&L from every leg closed earlier today (via reversal-
-    unwind OR a roll's close-half — both are ordinary closed positions
-    with a `realized_pnl`, counted identically) + unrealized P&L of
-    every currently-open leg, compared against
-    `decay_pct * combined_entry_premium` (the ORIGINAL 2-leg premium,
-    fixed for the day — this was already the confirmed reading in
-    intraday_dtt_adjusted, not a new decision here).
+  - Profit target (`combined_premium_profit_pct`, default 10%): running
+    total profit = realized P&L from every leg closed earlier today (via
+    reversal-unwind OR a roll's close-half — both are ordinary closed
+    positions with a `realized_pnl`, counted identically) + unrealized
+    P&L of every currently-open leg, compared against
+    `combined_premium_profit_pct * combined_entry_premium` (the ORIGINAL
+    2-leg premium, fixed for the day — this was already the confirmed
+    reading in intraday_dtt_adjusted, not a new decision here).
   - 3:00 PM hard exit — closes everything regardless of state.
   - Priority order every tick: force_exit > break-even > profit_target >
     adjustment-or-roll > reversal-unwind. Identical to
@@ -167,7 +167,7 @@ logger = logging.getLogger("live_deploy.strategies.intraday_dtt_advanced")
         "expiry_selector": "THIS_WEEK",
         "entry_time": "10:00",
         "force_exit_time": "15:00",
-        "decay_pct": 0.10,
+        "combined_premium_profit_pct": 0.10,
         "adjustment_trigger_ratio": 0.5,
         "adjustment_size_pct": 0.25,
         "max_adjustments": 2,

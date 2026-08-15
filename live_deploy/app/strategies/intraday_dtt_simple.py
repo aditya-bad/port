@@ -10,16 +10,16 @@ RULES:
       same lot count both legs.
   Exit — checked continuously once both legs are open, in this priority
       order:
-    1. Stop loss: EITHER leg's own premium has risen `spike_pct` (default
-       40%) from ITS OWN entry premium -> exit BOTH legs, even though
-       only one leg breached. Checked first — a sharp one-sided move
-       that spikes one leg while the other leg's decay drags the
-       COMBINED premium past decay_pct too (on the same tick) is real
-       one-sided directional exposure, not calm two-sided decay, and the
-       risk stop should win that tie.
+    1. Stop loss: EITHER leg's own premium has risen `per_leg_stop_loss_pct`
+       (default 40%) from ITS OWN entry premium -> exit BOTH legs, even
+       though only one leg breached. Checked first — a sharp one-sided
+       move that spikes one leg while the other leg's decay drags the
+       COMBINED premium past combined_premium_profit_pct too (on the
+       same tick) is real one-sided directional exposure, not calm
+       two-sided decay, and the risk stop should win that tie.
     2. Profit target: combined premium (CE price + PE price) has decayed
-       `decay_pct` (default 10%) from the combined ENTRY premium -> exit
-       both legs.
+       `combined_premium_profit_pct` (default 10%) from the combined
+       ENTRY premium -> exit both legs.
     3. Time stop: if neither has fired, force-exit both legs at
        `force_exit_time` (default 15:00) — required for this strategy,
        not optional, since the hard exit is one of its three defining
@@ -82,10 +82,14 @@ CONFIG:
   "force_exit_time": "15:00" (default) — REQUIRED (cannot be null) for
       this strategy; the hard 3pm exit is one of its defining rules, not
       an optional extra the way it is for pivot_supertrend.
-  "decay_pct": 0.10 (default) — combined-premium profit-target decay,
-      as a fraction (0.10 = 10%).
-  "spike_pct": 0.40 (default) — single-leg stop-loss threshold, as a
-      fraction (0.40 = 40%).
+  "combined_premium_profit_pct": 0.10 (default) — profit target: how far
+      the COMBINED (CE+PE) premium must decay from the combined ENTRY
+      premium, as a fraction (0.10 = 10%). Named `decay_pct` before this
+      was renamed for clarity — still read as a fallback, see on_start.
+  "per_leg_stop_loss_pct": 0.40 (default) — stop loss: how far EITHER
+      leg's OWN premium may rise from ITS OWN entry premium before
+      exiting both, as a fraction (0.40 = 40%) — a PER-LEG threshold,
+      not combined. Named `spike_pct` before this was renamed.
   "lots_per_trade": 1 (default) — lots sold per leg (same for both).
   "catch_up_late_entry": true (default) — see "LATE START" above.
   "allow_expiry_day_entry": false (default) — set true to allow selling
@@ -165,8 +169,8 @@ async def resolve_atm_straddle_legs(
         "expiry_selector": "THIS_WEEK",
         "entry_time": "10:00",
         "force_exit_time": "15:00",
-        "decay_pct": 0.10,
-        "spike_pct": 0.40,
+        "combined_premium_profit_pct": 0.10,
+        "per_leg_stop_loss_pct": 0.40,
         "lots_per_trade": 1,
         "catch_up_late_entry": True,
         "allow_expiry_day_entry": False,
@@ -208,8 +212,17 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             )
         self.force_exit_time = _parse_hhmm(raw_force_exit)
 
-        self.decay_pct = float(cfg.get("decay_pct", 0.10))
-        self.spike_pct = float(cfg.get("spike_pct", 0.40))
+        # decay_pct/spike_pct are the pre-rename names -- read as a
+        # fallback so a deployment created before this rename (config
+        # already persisted in Postgres with the old keys) keeps working
+        # unchanged; a fresh deploy only ever sees the new names via
+        # default_config above.
+        self.combined_premium_profit_pct = float(
+            cfg.get("combined_premium_profit_pct", cfg.get("decay_pct", 0.10))
+        )
+        self.per_leg_stop_loss_pct = float(
+            cfg.get("per_leg_stop_loss_pct", cfg.get("spike_pct", 0.40))
+        )
         self.lots_per_trade = int(cfg.get("lots_per_trade") or 1)
         if self.lots_per_trade < 1:
             raise ValueError(f"lots_per_trade must be >= 1, got {self.lots_per_trade}")
@@ -421,29 +434,30 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             return   # no live tick yet for one of the legs — check again next tick
 
         # Risk stop checked BEFORE the profit target: if a sharp
-        # one-sided move spikes one leg past spike_pct while the other
-        # leg collapses enough that the combined sum ALSO nets past
-        # decay_pct on the same tick, that's real one-sided directional
-        # exposure, not calm two-sided decay — the risk stop should win
-        # that tie, not the profit target.
-        ce_spike_threshold = self.ce_entry_price * (1 + self.spike_pct)
-        pe_spike_threshold = self.pe_entry_price * (1 + self.spike_pct)
+        # one-sided move spikes one leg past per_leg_stop_loss_pct while
+        # the other leg collapses enough that the combined sum ALSO nets
+        # past combined_premium_profit_pct on the same tick, that's real
+        # one-sided directional exposure, not calm two-sided decay — the
+        # risk stop should win that tie, not the profit target.
+        ce_spike_threshold = self.ce_entry_price * (1 + self.per_leg_stop_loss_pct)
+        pe_spike_threshold = self.pe_entry_price * (1 + self.per_leg_stop_loss_pct)
         if ce_now >= ce_spike_threshold or pe_now >= pe_spike_threshold:
             await self._exit_both(runner, ts, "leg_spike_stop", ce_now, pe_now, trigger_values={
                 "ce_now": round(ce_now, 2), "pe_now": round(pe_now, 2),
                 "ce_entry_price": round(self.ce_entry_price, 2), "pe_entry_price": round(self.pe_entry_price, 2),
-                "spike_pct": self.spike_pct,
+                "per_leg_stop_loss_pct": self.per_leg_stop_loss_pct,
                 "ce_threshold": round(ce_spike_threshold, 2), "pe_threshold": round(pe_spike_threshold, 2),
             })
             return
 
         combined_entry = self.ce_entry_price + self.pe_entry_price
         combined_now = ce_now + pe_now
-        target_combined = combined_entry * (1 - self.decay_pct)
+        target_combined = combined_entry * (1 - self.combined_premium_profit_pct)
         if combined_now <= target_combined:
             await self._exit_both(runner, ts, "profit_target_decay", ce_now, pe_now, trigger_values={
                 "combined_entry": round(combined_entry, 2), "combined_now": round(combined_now, 2),
-                "decay_pct": self.decay_pct, "target_combined": round(target_combined, 2),
+                "combined_premium_profit_pct": self.combined_premium_profit_pct,
+                "target_combined": round(target_combined, 2),
             })
             return
 
