@@ -236,6 +236,8 @@ tr.trade-row:focus-visible {
 }
 .mobile-menu-toggle:hover { background: var(--stone); }
 
+.mobile-nav-backdrop { display: none; }   /* only ever shown inside the mobile media query below */
+
 .main { flex: 1; min-width: 0; padding: 28px 32px 60px; max-width: 1300px; }
 .view { display: none; }
 .view.active { display: block; }
@@ -463,15 +465,14 @@ tr.trade-detail-row td {
 .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-top: 8px; }
 
 /* ── Responsive baseline: below a phone/small-tablet width, the
-   sidebar becomes a slim top bar — brand + a hamburger toggle — with
-   the actual nav list and account/status block hidden behind it as a
-   collapsible menu, not permanently wrapped inline (an earlier attempt
-   at the latter kept fighting overlap/alignment bugs as content grew —
-   see README's note on this revision for the real fix: stop trying to
-   fit a whole sidebar's worth of content into a wrapping row at all).
-   Desktop is completely untouched by this block. Cards, stat-grid,
-   catalog grid, and tables reflow separately via flex-wrap / grid
-   auto-fit / overflow-x, unrelated to this. */
+   sidebar becomes a slim top bar — brand + a hamburger toggle — and
+   the actual nav list + account/status block become a slide-in drawer
+   from the left, over a dimmed backdrop, rather than a dropdown that
+   pushes page content down (tried first — see README's notes on Steps
+   29/30/31 for how this evolved). Desktop is completely untouched by
+   this block. Cards, stat-grid, catalog grid, and tables reflow
+   separately via flex-wrap / grid auto-fit / overflow-x, unrelated to
+   this. */
 @media (max-width: 760px) {
   .app-shell { flex-direction: column; }
   .sidebar {
@@ -481,21 +482,58 @@ tr.trade-detail-row td {
   .sidebar-brand { padding: 0; border-bottom: none; margin-bottom: 0; }
   .mobile-menu-toggle { display: block; }
 
-  /* Hidden by default — .open (toggled by toggleMobileNav(), see the
-     app shell script) switches it to a plain vertical block, i.e. a
-     dropdown menu below the top bar, not another wrapping row. */
+  /* A real fixed-position drawer, not display:none/flex — `transform`
+     (rather than display) is what makes the slide-in/out an actual
+     animation instead of an instant cut. Off-screen by default
+     (translateX(-100%)); .open (toggled by toggleMobileNav()) brings
+     it fully on-screen. min(82vw, 320px): wide enough to read
+     comfortably, capped so it never becomes the whole screen on a
+     small phone (a sliver of dimmed page stays visible behind it,
+     which is what makes the backdrop's tap-to-close affordance obvious
+     at a glance). */
   .sidebar-nav-group {
-    display: none; flex-direction: column; margin-top: 14px; padding-top: 14px;
-    border-top: 3px solid var(--line);
+    display: flex; flex-direction: column;
+    position: fixed; top: 0; left: 0; height: 100vh; width: min(82vw, 320px);
+    margin: 0; padding: 20px 16px; box-sizing: border-box;
+    background: var(--panel); border-top: none; border-right: 3px solid var(--line);
+    box-shadow: var(--shadow); z-index: 50; overflow-y: auto;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
   }
-  .sidebar-nav-group.open { display: flex; }
+  .sidebar-nav-group.open { transform: translateX(0); }
   .nav-item { margin: 0 0 8px; }
+  /* Pinned to the drawer's own bottom (margin-top: auto, inherited
+     unchanged from the desktop rule) rather than sitting right after
+     the nav items — separates "where am I going" (top) from "who am I
+     / connection state" (bottom), the same split the persistent
+     desktop sidebar already has. */
   .sidebar-footer {
-    margin-top: 6px; padding: 14px 0 0; border-top: 3px solid var(--line);
+    padding: 14px 0 0; border-top: 3px solid var(--line);
     flex-direction: column; align-items: stretch; gap: 10px;
   }
+
+  /* Dims the page behind the open drawer and IS the tap-outside-to-
+     close target (see the div's onclick in the HTML) — faded via
+     opacity/pointer-events rather than display so it can transition in
+     lockstep with the drawer's own slide animation instead of popping. */
+  .mobile-nav-backdrop {
+    display: block; position: fixed; inset: 0; z-index: 40;
+    background: rgba(27, 17, 48, 0.5);
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  .mobile-nav-backdrop.open { opacity: 1; pointer-events: auto; }
+
   .main { padding: 18px 16px 40px; }
 }
+
+/* Blocks the page behind the drawer from scrolling while it's open —
+   toggled on <body> alongside the drawer/backdrop's own .open classes
+   (see toggleMobileNav()/closeMobileNav()). Declared outside the media
+   query on purpose: harmless if this class is ever present at a
+   desktop width (nothing there ever sets it), so it doesn't need its
+   own width guard. */
+body.mobile-nav-open { overflow: hidden; }
 </style>
 </head>
 <body>
@@ -533,6 +571,12 @@ tr.trade-detail-row td {
       </div>
     </div>
   </nav>
+
+  <!-- Mobile-only drawer backdrop — dims the page behind the slide-in
+       menu and doubles as a tap-outside-to-close target. display:none
+       on desktop (see CSS), and hidden even on mobile until .open is
+       toggled alongside .sidebar-nav-group itself. -->
+  <div class="mobile-nav-backdrop" id="mobileNavBackdrop" onclick="closeMobileNav()"></div>
 
   <main class="main">
 
@@ -871,20 +915,28 @@ async function logout() {
   window.location.href = '/';
 }
 
-// ── Mobile collapsible nav — desktop never calls these (the toggle
-// button itself is display:none there, so nothing ever invokes
-// toggleMobileNav), and closeMobileNav() removing a class that's never
-// present on desktop is a harmless no-op, not a guard that needs its
-// own width check.
-function toggleMobileNav() {
-  const group = document.getElementById('sidebarNavGroup');
+// ── Mobile slide-in nav drawer — desktop never calls these (the
+// toggle button itself is display:none there, so nothing ever invokes
+// toggleMobileNav), and closeMobileNav() removing classes that are
+// never present on desktop is a harmless no-op, not a guard that needs
+// its own width check. Four things move together, always in lockstep
+// (never just the drawer alone): the drawer's own slide, the
+// backdrop's fade, the hamburger icon (☰ ⇄ ✕, doubling as an explicit
+// close affordance once open), and the body scroll-lock.
+function _setMobileNavOpen(open) {
+  document.getElementById('sidebarNavGroup').classList.toggle('open', open);
+  document.getElementById('mobileNavBackdrop').classList.toggle('open', open);
+  document.body.classList.toggle('mobile-nav-open', open);
   const btn = document.getElementById('mobileMenuToggle');
-  const open = group.classList.toggle('open');
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  btn.textContent = open ? '✕' : '☰';
+}
+function toggleMobileNav() {
+  const isOpen = document.getElementById('sidebarNavGroup').classList.contains('open');
+  _setMobileNavOpen(!isOpen);
 }
 function closeMobileNav() {
-  document.getElementById('sidebarNavGroup').classList.remove('open');
-  document.getElementById('mobileMenuToggle').setAttribute('aria-expanded', 'false');
+  _setMobileNavOpen(false);
 }
 
 async function loginWithKite() {

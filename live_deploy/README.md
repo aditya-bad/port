@@ -2176,6 +2176,52 @@ AND closes the menu back down (checked programmatically, not just
 visually); and a 1440×900 desktop screenshot is pixel-identical to
 before this change.
 
+## What's here (Step 31: mobile menu is now a slide-in drawer, not a dropdown)
+
+Requested directly: the dropdown from Step 30 pushed page content down
+when opened — asked for a proper side drawer instead, the more
+familiar mobile pattern.
+
+`.sidebar-nav-group` is now `position: fixed`, off-screen by default
+(`transform: translateX(-100%)`) and slid fully on-screen by `.open`
+(`translateX(0)`) — an actual slide animation, not an instant
+show/hide, and it now floats OVER the page (capped at `min(82vw,
+320px)` wide) instead of pushing it down. A new dimmed backdrop
+(`#mobileNavBackdrop`, `rgba(27,17,48,0.5)`, fading in/out alongside
+the drawer) covers the rest of the screen while it's open and doubles
+as the tap-outside-to-close target. Three more things now move in
+lockstep with the drawer, all through one shared `_setMobileNavOpen()`
+helper rather than being toggled separately in different places (the
+exact kind of thing that drifts out of sync if left as 3-4 independent
+toggles): the hamburger icon swaps to ✕ while open (a persistent,
+always-reachable close affordance, not just tap-outside), and the page
+behind it is scroll-locked (`body.mobile-nav-open { overflow: hidden;
+}`) so you can't accidentally scroll the dimmed dashboard underneath
+the open menu.
+
+**Investigated during verification, turned out not to be a bug**:
+initial screenshots seemed to show the hamburger/✕ button staying
+visible ABOVE the dimmed backdrop rather than being dimmed with
+everything else. Checked properly before "fixing" it — sampled the
+actual pixel color at that exact spot before/after opening the drawer,
+which showed it going from near-white to near-black, confirming the
+backdrop WAS correctly darkening that area the whole time. The ✕ glyph
+just stayed legible because it's rendered in dark ink to begin with, so
+"dark symbol on a now-dark background" still reads fine — not a
+stacking bug, a real (and arguably nice) property of a translucent
+scrim. An unnecessary z-index "fix" was written, then reverted once
+the pixel check disproved the theory behind it, rather than shipped
+speculatively.
+
+**Verified** via Playwright at a real 390×844 mobile viewport: the
+drawer slides fully on-screen with the backdrop fading in; the icon
+switches to ✕ and `<body>` gets scroll-locked while open (checked
+programmatically); tapping the backdrop closes the drawer; picking a
+nav item both navigates and closes it; and a 1440×900 desktop
+screenshot is pixel-identical to before this change (`.sidebar-brand`
+and `.sidebar` are untouched — only `.sidebar-nav-group`'s positioning
+mechanism changed, and only inside the sub-760px media query).
+
 ## Setup
 
 ```bash
