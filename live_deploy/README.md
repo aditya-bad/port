@@ -2110,6 +2110,40 @@ schema and is checked at login, but nothing sets it false) — creating
 one is one-way for now. Reasonable for "a handful of trusted people I
 personally invite," worth revisiting if that assumption changes.
 
+## What's here (Step 29: mobile sidebar/status-bar overlap, found during real deployment)
+
+Found on a real phone during the actual first deployment of this app,
+not in a desktop browser's device emulator: on a narrow viewport, the
+sidebar's "footer" (Kite-connection badge, running/ws-client count,
+Re-login/Enter-manually/Logout buttons) didn't wrap onto its own row
+below the nav items — it used `margin-left: auto` to hug the right edge
+of whatever row still had space, which meant it could end up sharing a
+row with a wrapped nav item (e.g. "Account") instead of cleanly
+dropping below the whole nav block, producing a visually overlapping
+mess.
+
+Fix: `width: 100%` on the mobile `.sidebar-footer` — inside a wrapping
+flex row, a 100%-wide item forces a line break before itself, which is
+what actually guarantees "always starts its own fresh row," not the
+`margin-left: auto` trick that only worked by coincidence on wider
+screens. Also gave the footer its own `flex-wrap` so its contents
+(badge, count, three buttons) wrap internally on very narrow phones
+instead of overflowing, and switched its divider from a left border
+(made sense stacked inline; didn't once it's its own row) to a top one.
+
+Side effect, not a separate fix: the live-price ticker (previously
+buried below the broken, taller-than-it-needed-to-be nav block — "the
+live prices should be on top, why is it at the bottom" was the actual
+complaint) is now visible without scrolling on a normal phone screen,
+simply because the nav block above it shrank back down to its correct
+height. Desktop is completely unaffected — this media query only
+applies below 760px.
+
+**Verified** via Playwright at a real 390×844 mobile viewport (an
+iPhone-sized screen), reproducing the exact broken layout first,
+confirming the fix visually resolves it, and confirming a 1440×900
+desktop screenshot is pixel-identical before and after.
+
 ## Setup
 
 ```bash

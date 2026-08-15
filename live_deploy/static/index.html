@@ -458,10 +458,18 @@ tr.trade-detail-row td {
     align-items: center; padding: 14px 16px; border-right: none; border-bottom: 3px solid var(--line);
   }
   .sidebar-brand { padding: 0 16px 0 0; border-bottom: none; margin-bottom: 0; }
-  .nav-item { margin: 0 8px 0 0; }
+  .nav-item { margin: 0 8px 8px 0; }
+  /* `width: 100%` is what actually matters here: inside a wrapping flex
+     row, a 100%-wide item forces a line break before itself — that's
+     what makes the footer drop cleanly onto its OWN row below however
+     many rows the nav items wrapped into, instead of (the previous bug)
+     latching onto whatever row still had leftover space via
+     `margin-left: auto`, which visually collided with "Account" — see
+     README's own note on this fix for the screenshot that caught it. */
   .sidebar-footer {
-    margin-top: 0; margin-left: auto; padding: 0 0 0 14px; border-top: none; border-left: 3px solid var(--line);
-    flex-direction: row; align-items: center;
+    width: 100%; margin-top: 10px; margin-left: 0; padding: 12px 0 0;
+    border-top: 3px solid var(--line); border-left: none;
+    flex-direction: row; flex-wrap: wrap; align-items: center; gap: 10px;
   }
   .main { padding: 18px 16px 40px; }
 }
