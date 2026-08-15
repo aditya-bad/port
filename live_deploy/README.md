@@ -1848,6 +1848,51 @@ now reads `cache.get("db_health")` instead of querying live.
 digit milliseconds (was 700-800ms), `database_connected` still
 correctly reflects real DB state.
 
+## What's here (Step 24: a 7th strategy — `calendar_btst`)
+
+A new strategy, `app/strategies/calendar_btst.py`: an ATM calendar
+spread held overnight (Buy-Today-Sell-Tomorrow). Sells an ATM CE+PE
+straddle in THIS_WEEK's expiry and buys an ATM CE+PE straddle at the
+SAME strike in NEXT_WEEK's expiry — 4 legs, one entry, resolved from a
+single spot-price read so the strike can never drift between the two
+expiries' leg lookups. Entered near end-of-day (`entry_time`, default
+15:20) and unwound in the first few minutes of the next trading day
+(`exit_time`, default 09:20) — both configurable, per the request.
+"Next day" is tick-driven, not calendar math (same pattern every other
+day-boundary check in this package uses): it's just the first tick
+whose date differs from the entry day, so a weekend or holiday is
+skipped automatically without any holiday-calendar logic. Same
+expiry-day entry guard as `intraday_dtt_simple` (`allow_expiry_day_entry`,
+default False) — selling THIS_WEEK's straddle on its own expiry day at
+15:20 is effectively already-at-expiry.
+
+Resume-safety reconstructs open legs from the DB by SIDE (short →
+buy back on exit, long → sell off on exit), not by which expiry each
+leg was originally resolved from — exit only ever needs to know which
+direction to close a leg, never its expiry.
+
+**A real bug found and fixed via the test itself, not assumed away**:
+the first version correctly resumed a mid-cycle position, but a second
+BTST cycle later the same day silently failed to enter. Root cause —
+resume set `entered_today = True` (correct, an entry genuinely already
+happened) but left `self.today` at `None`, so the next tick's day-
+boundary check took the "very first tick ever" branch instead of a
+genuine day-change, and the stale `entered_today` flag never got reset
+for the new day. Fixed by seeding `self.today = entry_day` on resume so
+the following day-boundary crossing is detected correctly.
+
+**Verified** with a real synthetic 2-expiry options chain (THIS_WEEK +
+NEXT_WEEK instrument rows) through the real dispatcher → broadcaster →
+DeploymentRunner → strategy → OptionsResolver → Postgres pipeline:
+entry fires exactly at `entry_time` with all 4 legs at the same strike,
+shorts genuinely resolve to THIS_WEEK contracts and longs to NEXT_WEEK,
+no action on a later same-day tick, still holding the next morning
+before `exit_time`, a real pause+resume mid-cycle (forcing a genuine
+on_stop/on_start DB reload, not simulated) correctly reconstructs all 4
+legs, exit at `exit_time` closes everything with the right buy/sell
+direction per leg, and a second cycle enters normally that same evening
+— 8 entry fills + 4 exit fills total, exactly as expected.
+
 ## Setup
 
 ```bash

@@ -25,3 +25,4 @@ from . import pivot_supertrend_options_inverse  # noqa: F401  (registers on impo
 from . import intraday_dtt_adjusted  # noqa: F401  (registers on import)
 from . import intraday_dtt_advanced  # noqa: F401  (registers on import)
 from . import strangle_monthly_v2  # noqa: F401  (registers on import)
+from . import calendar_btst  # noqa: F401  (registers on import)
