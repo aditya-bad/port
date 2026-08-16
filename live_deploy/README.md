@@ -2425,6 +2425,47 @@ even counted as flattened). The full flow was also clicked through a
 real browser: the button, the `confirm()` dialog with the expected
 wording, and the summary `alert()` afterward.
 
+## What's here (Step 36: named config presets in the Deploy modal)
+
+Second of the in-app feature batch. Some strategies (`intraday_dtt_
+adjusted`) have 14 config fields — deploying the same setup repeatedly
+meant retyping every one of them each time. `strategy_presets`
+(migration 0007) stores a named snapshot of just the config object
+(never `deployment_name`/`mode`/`initial_capital` — those are
+per-deployment metadata, not part of what a preset remembers), scoped
+to `(strategy_name, preset_name)` rather than a globally unique name —
+the same preset name can mean something different for two unrelated
+strategies, and there's no reason to force distinct names across
+strategies that have nothing to do with each other.
+
+The Deploy modal gained a "Preset" row: a dropdown of saved presets for
+whichever strategy the modal's currently open for, a "Save current"
+button that snapshots exactly what `_readConfigFromFields()` would
+submit, and a delete button once a real preset is selected. Selecting
+a preset re-renders the simple form from its config (dropping out of
+Advanced/raw-JSON mode first if that was open, so the loaded values are
+actually visible) — the same `_renderConfigFields()` the strategy's own
+`default_config` already uses, so a preset behaves exactly like a
+different starting point for the same form, not a separate code path.
+Not cached server-side (`app/cache.py`) — this is opened occasionally
+from inside a modal, nowhere near the traffic the hot-read endpoints
+that actually needed caching see.
+
+**Verified** against a real server + real Postgres: config round-trips
+through save/list exactly as submitted; a duplicate preset name for the
+SAME strategy correctly 409s, the identical name for a DIFFERENT
+strategy is correctly allowed (proving the scoping, not just the
+uniqueness); a blank name 400s; deleting a real preset under the wrong
+`strategy_name` in the URL 404s rather than silently deleting across
+strategies; deleting an already-deleted preset 404s rather than
+crashing; and unauthenticated access is rejected like every other
+endpoint. The full UI flow was also clicked through a real browser:
+saving auto-selects the new preset, changing a field then reloading the
+preset correctly restores the saved value, the preset survives closing
+and reopening the modal (proving it's real server-side storage, not
+just in-memory for one modal session), and deleting removes it from
+the dropdown.
+
 ## Setup
 
 ```bash

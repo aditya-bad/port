@@ -766,6 +766,16 @@ body.mobile-nav-open { overflow: hidden; }
         <input type="number" id="deployCapital" value="100000" min="1">
       </div>
     </div>
+    <div class="field" id="deployPresetRow" style="display:none;">
+      <label>Preset — load a saved config for this strategy</label>
+      <div style="display:flex; gap:8px; align-items:stretch;">
+        <select id="deployPresetSelect" style="flex:1;" onchange="Catalog.loadPreset()">
+          <option value="">— none —</option>
+        </select>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="Catalog.saveAsPreset()">💾 Save current</button>
+        <button type="button" class="btn btn-danger btn-sm" id="deployPresetDeleteBtn" style="display:none;" onclick="Catalog.deleteSelectedPreset()">🗑</button>
+      </div>
+    </div>
     <div class="field">
       <label>Strategy configuration</label>
       <div id="deployConfigFields"></div>

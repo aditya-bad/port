@@ -777,3 +777,41 @@ async def list_audit_log(
             """,
             offset, limit,
         )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# STRATEGY PRESETS  (named, reusable config snapshots for the Deploy
+# modal — see migration 0007's own comment)
+# ═════════════════════════════════════════════════════════════════════
+
+async def create_preset(
+    pool: asyncpg.Pool, strategy_name: str, preset_name: str, config: dict,
+) -> asyncpg.Record:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            """
+            INSERT INTO strategy_presets (strategy_name, preset_name, config)
+            VALUES ($1, $2, $3)
+            RETURNING *
+            """,
+            strategy_name, preset_name, config,
+        )
+
+
+async def list_presets(pool: asyncpg.Pool, strategy_name: str) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            "SELECT * FROM strategy_presets WHERE strategy_name = $1 ORDER BY preset_name",
+            strategy_name,
+        )
+
+
+async def get_preset(pool: asyncpg.Pool, preset_id: UUID) -> Optional[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM strategy_presets WHERE id = $1", preset_id)
+
+
+async def delete_preset(pool: asyncpg.Pool, preset_id: UUID) -> bool:
+    async with pool.acquire() as conn:
+        result = await conn.execute("DELETE FROM strategy_presets WHERE id = $1", preset_id)
+        return result != "DELETE 0"

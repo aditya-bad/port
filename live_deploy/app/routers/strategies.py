@@ -5,7 +5,15 @@ layered on top of the registry: registration itself stays pure Python/
 import-time (see registry.py's own docstring), this is only the
 "should this show up in the catalog / be deployable" flag on top of
 that, persisted so it survives a restart.
+
+And named config presets (queries.strategy_presets, migration 0007) —
+saved snapshots of a strategy's `config` object (the Deploy modal's own
+fields, not deployment_name/mode/initial_capital) so redeploying the
+same strategy with the same values doesn't mean retyping a dozen-plus
+fields every time.
 """
+
+from uuid import UUID
 
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
@@ -18,6 +26,11 @@ router = APIRouter(prefix="/strategies", tags=["strategies"])
 
 class StrategyEnabledIn(BaseModel):
     enabled: bool
+
+
+class PresetIn(BaseModel):
+    preset_name: str
+    config: dict
 
 
 async def fetch_strategies(pool) -> list[dict]:
@@ -62,3 +75,54 @@ async def set_strategy_enabled(strategy_name: str, payload: StrategyEnabledIn, r
     # look like it didn't do anything.
     await request.app.state.cache.refresh_now("strategies")
     return {"strategy_name": strategy_name, "enabled": payload.enabled}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# CONFIG PRESETS — not cached (opened occasionally from inside the
+# Deploy modal, nowhere near hot-read territory the way /strategies or
+# /deployments are)
+# ═════════════════════════════════════════════════════════════════════
+
+def _preset_out(row) -> dict:
+    return {
+        "id": str(row["id"]),
+        "strategy_name": row["strategy_name"],
+        "preset_name": row["preset_name"],
+        "config": row["config"],
+        "created_at": row["created_at"].isoformat(),
+    }
+
+
+@router.get("/{strategy_name}/presets")
+async def list_strategy_presets(strategy_name: str, request: Request):
+    rows = await queries.list_presets(request.app.state.db_pool, strategy_name)
+    return [_preset_out(r) for r in rows]
+
+
+@router.post("/{strategy_name}/presets")
+async def create_strategy_preset(strategy_name: str, payload: PresetIn, request: Request):
+    name = payload.preset_name.strip()
+    if not name:
+        raise HTTPException(400, "Preset name cannot be blank")
+    pool = request.app.state.db_pool
+    existing = await queries.list_presets(pool, strategy_name)
+    if any(p["preset_name"] == name for p in existing):
+        raise HTTPException(409, f"A preset named '{name}' already exists for this strategy")
+    row = await queries.create_preset(pool, strategy_name, name, payload.config)
+    return _preset_out(row)
+
+
+@router.delete("/{strategy_name}/presets/{preset_id}")
+async def delete_strategy_preset(strategy_name: str, preset_id: UUID, request: Request):
+    pool = request.app.state.db_pool
+    preset = await queries.get_preset(pool, preset_id)
+    # Scoped to strategy_name in the URL even though preset_id alone
+    # already uniquely identifies the row -- a delete request for a
+    # preset that doesn't belong to the strategy in the URL is almost
+    # certainly a frontend bug (stale dropdown against a switched
+    # strategy) worth surfacing as 404, not silently deleting the wrong
+    # strategy's preset.
+    if preset is None or preset["strategy_name"] != strategy_name:
+        raise HTTPException(404, "No such preset for this strategy")
+    await queries.delete_preset(pool, preset_id)
+    return {"ok": True}

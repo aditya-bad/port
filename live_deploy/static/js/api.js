@@ -17,6 +17,24 @@ const Api = {
     const data = await r.json();
     return { ok: r.ok, data };
   },
+  async listPresets(strategyName) {
+    const r = await fetch(`/strategies/${encodeURIComponent(strategyName)}/presets`);
+    if (!r.ok) throw new Error(`Could not load presets (${r.status})`);
+    return r.json();
+  },
+  async createPreset(strategyName, presetName, config) {
+    const r = await fetch(`/strategies/${encodeURIComponent(strategyName)}/presets`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ preset_name: presetName, config }),
+    });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
+  async deletePreset(strategyName, presetId) {
+    const r = await fetch(`/strategies/${encodeURIComponent(strategyName)}/presets/${presetId}`, { method: 'DELETE' });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
 
   // ── Deployments (CRUD/lifecycle) ───────────────────────────────
   async listDeployments() {

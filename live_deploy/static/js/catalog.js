@@ -198,8 +198,74 @@ const Catalog = {
     document.getElementById('deployConfigFields').style.removeProperty('display');
     document.getElementById('deployConfig').style.display = 'none';
     this._renderConfigFields(defaultConfig || {});
+    this._loadPresets(strategyName);
 
     document.getElementById('deployModal').classList.add('open');
+  },
+
+  // ── Config presets: save/load/delete a named snapshot of the config
+  // fields for THIS strategy, so redeploying with the same values
+  // doesn't mean retyping a dozen-plus fields every time. Scoped to
+  // strategyName, never to deployment_name/mode/initial_capital — those
+  // are per-deployment metadata, not part of what a preset remembers. ──
+  _presets: [],
+
+  async _loadPresets(strategyName) {
+    const row = document.getElementById('deployPresetRow');
+    const select = document.getElementById('deployPresetSelect');
+    try {
+      this._presets = await Api.listPresets(strategyName);
+    } catch (e) {
+      this._presets = [];
+    }
+    select.innerHTML = '<option value="">— none —</option>' +
+      this._presets.map(p => `<option value="${p.id}">${escapeHtml(p.preset_name)}</option>`).join('');
+    row.style.display = 'block';
+    document.getElementById('deployPresetDeleteBtn').style.display = 'none';
+  },
+
+  loadPreset() {
+    const id = document.getElementById('deployPresetSelect').value;
+    document.getElementById('deployPresetDeleteBtn').style.display = id ? 'block' : 'none';
+    if (!id) return;
+    const preset = this._presets.find(p => p.id === id);
+    if (!preset) return;
+    // Loading a preset re-renders the SIMPLE form from its config — if
+    // Advanced (raw JSON) was open, drop back to the form view so the
+    // loaded values are actually visible, not silently sitting in a
+    // hidden textarea nobody's looking at.
+    document.getElementById('deployAdvancedToggle').checked = false;
+    document.getElementById('deployConfigFields').style.removeProperty('display');
+    document.getElementById('deployConfig').style.display = 'none';
+    this._renderConfigFields(preset.config);
+  },
+
+  async saveAsPreset() {
+    const name = prompt('Name this preset (for this strategy only):');
+    if (!name || !name.trim()) return;
+    const config = this._readConfigFromFields();
+    const { ok, data } = await Api.createPreset(this._currentDeploy.strategyName, name.trim(), config);
+    if (!ok) {
+      alert(data.detail || 'Could not save preset');
+      return;
+    }
+    await this._loadPresets(this._currentDeploy.strategyName);
+    document.getElementById('deployPresetSelect').value = data.id;
+    document.getElementById('deployPresetDeleteBtn').style.display = 'block';
+  },
+
+  async deleteSelectedPreset() {
+    const select = document.getElementById('deployPresetSelect');
+    const id = select.value;
+    if (!id) return;
+    const preset = this._presets.find(p => p.id === id);
+    if (!confirm(`Delete the preset "${preset ? preset.preset_name : id}"? This can't be undone.`)) return;
+    const { ok, data } = await Api.deletePreset(this._currentDeploy.strategyName, id);
+    if (!ok) {
+      alert(data.detail || 'Could not delete preset');
+      return;
+    }
+    await this._loadPresets(this._currentDeploy.strategyName);
   },
 
   // ── Structured-form <-> raw-JSON config editing ──────────────────
