@@ -17,14 +17,21 @@ const Reports = {
     document.getElementById('reportsByStrategy').innerHTML = spinnerHtml();
     document.getElementById('reportsByDeployment').innerHTML = spinnerHtml();
     document.getElementById('reportsTrend').innerHTML = spinnerHtml();
+    document.getElementById('reportsCalendar').innerHTML = spinnerHtml();
     document.getElementById('reportsNextBtn').disabled = this._offset === 0;
     document.getElementById('reportsLatestBtn').disabled = this._offset === 0;
 
     this._restoreSectionState();
 
-    const [report, trend] = await Promise.all([
+    // The calendar is portfolio-wide and always DAILY, independent of
+    // the Daily/Weekly/Monthly tabs and Prev/Next nav above it -- it
+    // re-fetches on every load() same as everything else here for
+    // simplicity, not because its own data depends on this._period/
+    // this._offset (it never does).
+    const [report, trend, calendarRows] = await Promise.all([
       Api.getPnlReport(this._period, this._offset),
       Api.getPnlDigest(this._period, 14),
+      Api.getPnlDigest('day', 371),
     ]);
 
     document.getElementById('reportsPeriodLabel').textContent = report.label;
@@ -33,6 +40,7 @@ const Reports = {
     this.renderByDeployment(report);
     this._trendRows = trend;
     this.renderTrend(trend);
+    document.getElementById('reportsCalendar').innerHTML = renderPnlHeatmap(calendarRows);
   },
 
   switchPeriod(period) {
@@ -198,7 +206,7 @@ const Reports = {
     localStorage.setItem(this._collapseKey(sectionId), collapsed ? '1' : '0');
   },
   _restoreSectionState() {
-    ['reportsSectionStrategy', 'reportsSectionDeployment', 'reportsSectionTrend'].forEach(id => {
+    ['reportsSectionStrategy', 'reportsSectionDeployment', 'reportsSectionTrend', 'reportsSectionCalendar'].forEach(id => {
       const el = document.getElementById(id);
       if (!el) return;
       el.classList.toggle('collapsed', localStorage.getItem(this._collapseKey(id)) === '1');

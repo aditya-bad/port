@@ -188,6 +188,29 @@
   --chart-5: #E87BA4;   /* magenta */
   --chart-6: #008300;   /* green */
 
+  /* ── P&L calendar heatmap — a DIVERGING ramp (polarity: loss vs
+     gain), not the categorical --chart-* set above, so it follows the
+     dataviz skill's diverging rule instead (two hues + neutral
+     midpoint, monotone lightness per arm) rather than the six-hue
+     validator, which validates identity palettes and fails-by-design
+     on a ramp like this. Each arm is 4 steps interpolated in OKLab
+     between this app's own --loss-soft/--gain-soft (weakest, but
+     already 15% toward full — not IDENTICAL to *-soft, which is
+     reserved so the weakest heatmap cell never reads as identical to
+     the neutral "no activity" cell) and --loss/--gain (level 4, exactly
+     the same hex as the existing tokens) — see README's Step 49 for
+     the derivation. Neutral reuses --panel; cell borders reuse
+     --row-line — no bespoke tokens for either, since both already
+     exist for exactly this "distinguishable but quiet" job. */
+  --heat-loss-1: #EFC8C9;
+  --heat-loss-2: #DC9899;
+  --heat-loss-3: #C96C71;
+  --heat-loss-4: #B23A48;
+  --heat-gain-1: #C1DCCE;
+  --heat-gain-2: #8CB9A4;
+  --heat-gain-3: #5B9A80;
+  --heat-gain-4: #1F7A5C;
+
   --shadow: 12px 12px 0 rgba(27, 17, 48, 0.14);
   --shadow-sm: 6px 6px 0 rgba(27, 17, 48, 0.14);
   --shadow-lg: 18px 18px 0 rgba(27, 17, 48, 0.16);   /* modals */
@@ -250,6 +273,15 @@
     --chart-4: #C98500;
     --chart-5: #D55181;
     --chart-6: #008300;
+
+    --heat-loss-1: #572A31;
+    --heat-loss-2: #8E4A52;
+    --heat-loss-3: #C46972;
+    --heat-loss-4: #FF8B95;
+    --heat-gain-1: #1E4F3E;
+    --heat-gain-2: #2F7D60;
+    --heat-gain-3: #3EA981;
+    --heat-gain-4: #4FD9A4;
 
     --shadow: 12px 12px 0 rgba(0, 0, 0, 0.55);
     --shadow-sm: 6px 6px 0 rgba(0, 0, 0, 0.5);
@@ -555,6 +587,27 @@ tr.trade-detail-row td {
 /* ── Equity curve ─────────────────────────────────────────────────── */
 .equity-wrap { background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm); padding: 16px 18px; }
 .equity-chart { width: 100%; height: 160px; display: block; }
+
+/* ── P&L calendar heatmap — GitHub-contribution-graph shaped, but
+   DIVERGING (a day can lose, not just contribute-more-or-less), colored
+   from the --heat-loss-*/--heat-gain-* ramp (see :root's own comment
+   for the derivation). One column per week, oldest at the left, ending
+   at today; hover a cell for the exact date + P&L (the "relief channel"
+   the dataviz skill requires whenever a fill's contrast against its own
+   surface runs low — several of the weaker ramp steps do, being close
+   to --panel by design so intensity actually reads as a gradient) — a
+   native title attribute, not a custom tooltip framework, since this is
+   a small addition to an already-DOM-heavy grid. Every cell gets a
+   --row-line border regardless of fill, so the grid stays legible even
+   where the fill itself is closest to the card surface. ────────────── */
+.pnl-heatmap-wrap { background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm); padding: 16px 18px; overflow-x: auto; }
+.pnl-heatmap-months { display: grid; grid-auto-flow: column; grid-auto-columns: 13px; gap: 3px; margin-bottom: 4px; margin-left: 3px; height: 14px; }
+.pnl-heatmap-month-label { font-size: 10px; color: var(--parchment); font-weight: 700; white-space: nowrap; }
+.pnl-heatmap-grid { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 13px); grid-auto-columns: 13px; gap: 3px; width: max-content; }
+.pnl-heatmap-cell { width: 13px; height: 13px; border: 1px solid var(--row-line); box-sizing: border-box; }
+.pnl-heatmap-cell.empty { background: transparent; border-color: transparent; }   /* padding day before the series starts */
+.pnl-heatmap-legend { display: flex; align-items: center; gap: 4px; margin-top: 12px; padding-top: 12px; border-top: 2px solid var(--row-line); font-size: 10.5px; color: var(--parchment); font-weight: 700; }
+.pnl-heatmap-legend .pnl-heatmap-cell { width: 11px; height: 11px; }
 
 /* ── Chart legend — required for every 2+-series chart (Strategy
    Comparison's multi-line curve), see the dataviz skill's "identity is
@@ -1059,6 +1112,17 @@ body.mobile-nav-open { overflow: hidden; }
           <h2 style="margin-bottom:0;">Recent Periods</h2>
         </div>
         <div class="report-section-content" id="reportsTrend"></div>
+      </div>
+
+      <!-- Portfolio-wide, not period-scoped like the sections above --
+           see Reports.load()'s own comment for why this fetches once,
+           independent of the day/week/month tabs and Prev/Next nav. -->
+      <div class="report-section" id="reportsSectionCalendar">
+        <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionCalendar')">
+          <span class="report-section-chevron">▼</span>
+          <h2 style="margin-bottom:0;">Daily P&amp;L Calendar</h2>
+        </div>
+        <div class="report-section-content" id="reportsCalendar"></div>
       </div>
     </div>
 

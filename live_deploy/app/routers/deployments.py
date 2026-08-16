@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from ..db import queries
 from ..deployments.schemas import (
     DeploymentCreate, DeploymentOut, DeploymentUpdate, EventOut, LotsPage,
-    PositionOut, ReportOut, SnapshotOut,
+    PnlDigestRow, PositionOut, ReportOut, SnapshotOut,
 )
 from ..strategies.registry import is_registered
 
@@ -263,6 +263,28 @@ async def get_snapshots(deployment_id: UUID, request: Request, limit: int = 1000
     if dep is None:
         raise HTTPException(404, "No such deployment")
     rows = await queries.list_snapshots(pool, deployment_id, limit=limit)
+    return [dict(r) for r in rows]
+
+
+@router.get("/{deployment_id}/pnl-digest", response_model=list[PnlDigestRow])
+async def get_pnl_digest(deployment_id: UUID, request: Request, period: str = "day", limit: int = 400):
+    """This deployment's own daily/weekly realized-P&L digest — same
+    shape and realized-only philosophy as GET /portfolio/pnl-digest
+    (see queries.list_pnl_digest's docstring), just scoped to one
+    deployment instead of the whole portfolio. The Detail page's
+    Calendar tab is the actual consumer (a GitHub-style heatmap), which
+    is why the default `limit` is high enough for a full year of daily
+    buckets rather than the portfolio digest's handful-of-recent-
+    periods default.
+    """
+    pool = request.app.state.db_pool
+    dep = await queries.get_deployment(pool, deployment_id)
+    if dep is None:
+        raise HTTPException(404, "No such deployment")
+    try:
+        rows = await queries.list_pnl_digest_for_deployment(pool, deployment_id, period=period, limit=limit)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return [dict(r) for r in rows]
 
 

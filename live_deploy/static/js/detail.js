@@ -63,7 +63,7 @@ const Detail = {
   },
 
   renderTabs() {
-    const tabs = [['config', 'Config'], ['positions', 'Positions'], ['trades', 'Trades'], ['stats', 'Stats'], ['events', 'Activity']];
+    const tabs = [['config', 'Config'], ['positions', 'Positions'], ['trades', 'Trades'], ['stats', 'Stats'], ['calendar', 'Calendar'], ['events', 'Activity']];
     document.getElementById('detailTabs').innerHTML = tabs.map(([key, label]) =>
       `<button class="${this._tab === key ? 'active' : ''}" onclick="Detail.switchTab('${key}')">${label}</button>`
     ).join('');
@@ -86,6 +86,7 @@ const Detail = {
       if (this._tab === 'positions') return await this.renderPositions();
       if (this._tab === 'trades') return await this.renderTrades();
       if (this._tab === 'stats') return await this.renderStats();
+      if (this._tab === 'calendar') return await this.renderCalendar();
       if (this._tab === 'events') return await this.renderEvents();
     } catch (e) {
       console.error('Detail tab render failed:', e);
@@ -432,6 +433,23 @@ const Detail = {
             — largest peak-to-trough decline across every recorded snapshot</span>
         </div>` : ''}
         ${renderEquityChart(snapshots)}
+      </section>
+    `;
+  },
+
+  // ── Calendar — this deployment's own daily P&L as a GitHub-style
+  // heatmap (see renderPnlHeatmap, api.js), backed by GET
+  // /deployments/{id}/pnl-digest (deployment-scoped twin of the
+  // Reports page's portfolio-wide GET /portfolio/pnl-digest). Its own
+  // tab rather than folded into Stats -- a full-year grid is a big
+  // enough visual element to earn one, and Stats was already dense.
+  async renderCalendar() {
+    const rows = await Api.getPnlDigestForDeployment(this._id, 'day', 400);
+    const body = document.getElementById('detailBody');
+    body.innerHTML = `
+      <section>
+        <h2>P&amp;L Calendar</h2>
+        ${renderPnlHeatmap(rows)}
       </section>
     `;
   },

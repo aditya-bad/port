@@ -113,6 +113,11 @@ const Api = {
     if (!r.ok) throw new Error(`Could not load snapshots (${r.status})`);
     return r.json();
   },
+  async getPnlDigestForDeployment(id, period = 'day', limit = 400) {
+    const r = await fetch(`/deployments/${id}/pnl-digest?period=${period}&limit=${limit}`);
+    if (!r.ok) throw new Error(`Could not load the P&L calendar data (${r.status})`);
+    return r.json();
+  },
 
   // ── Cross-deployment aggregates (Dashboard) ────────────────────
   async getAllPositions(status = 'open') {
@@ -419,6 +424,137 @@ function computeMaxDrawdown(snapshots) {
     }
   });
   return { abs, pct };
+}
+
+// ── P&L calendar heatmap ─────────────────────────────────────────────
+// GitHub-contribution-graph shaped, but DIVERGING (loss AND gain, not
+// just "more contributions"). Shared by Detail's own Calendar tab (one
+// deployment) and Reports' portfolio-wide section — both just need a
+// list of `{period_start, realized_pnl, positions_closed, wins,
+// losses, fills}` day-bucketed rows (the PnlDigestRow shape, period=
+// "day"), from either GET /deployments/{id}/pnl-digest or GET
+// /portfolio/pnl-digest.
+//
+// Calendar days are bucketed IST (Asia/Kolkata) on the backend (see
+// queries.list_pnl_digest's own docstring) -- "today" here is computed
+// the same way (toLocaleDateString with an explicit IST timeZone, not
+// the browser's local date) so a user in a different timezone still
+// sees the grid end on the SAME calendar day the backend actually
+// bucketed data into, not one day off around midnight IST.
+//
+// Intensity is QUANTILE-based, not a fixed rupee scale: a deployment
+// running on ₹10,000 capital and one on ₹10,00,000 capital have wildly
+// different absolute P&L, so bucketing by fixed thresholds would leave
+// the smaller one's whole calendar looking uniformly pale (or the
+// larger one's uniformly saturated). Gains and losses are quantiled
+// SEPARATELY against each other (not against combined |pnl|), so an
+// asymmetric win/loss distribution doesn't skew one side's color
+// spread relative to the other's.
+function _isoDateIST(date) {
+  return date.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });   // en-CA => YYYY-MM-DD
+}
+function _addDaysToIsoDate(isoDate, n) {
+  const d = new Date(isoDate + 'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+function _dayOfWeekIsoDate(isoDate) {
+  return new Date(isoDate + 'T00:00:00Z').getUTCDay();   // 0=Sun..6=Sat
+}
+function _quantileBucket(sortedAbsValues, value) {
+  // 1 (weakest) .. 4 (strongest), by where `value` ranks among
+  // sortedAbsValues (ascending, all >= 0). A single-value series (or
+  // empty) always buckets to 1 -- there's no meaningful "quartile" to
+  // spread across yet, and defaulting to 1 (not 4) means a lone small
+  // move doesn't paint itself as the most extreme day it's ever seen.
+  if (!sortedAbsValues.length) return 1;
+  let idx = sortedAbsValues.findIndex(v => v >= value);
+  if (idx === -1) idx = sortedAbsValues.length - 1;
+  const rank = idx / Math.max(1, sortedAbsValues.length - 1);
+  if (rank < 0.25) return 1;
+  if (rank < 0.5) return 2;
+  if (rank < 0.75) return 3;
+  return 4;
+}
+
+function renderPnlHeatmap(rows, opts = {}) {
+  const weeks = opts.weeks || 53;
+  const byDate = new Map();
+  rows.forEach(r => byDate.set(_isoDateIST(new Date(r.period_start)), r));
+
+  const today = _isoDateIST(new Date());
+  let rangeStart = _addDaysToIsoDate(today, -(weeks * 7 - 1));
+  rangeStart = _addDaysToIsoDate(rangeStart, -_dayOfWeekIsoDate(rangeStart));   // snap back to that week's Sunday
+  const rangeEndPadded = _addDaysToIsoDate(today, 6 - _dayOfWeekIsoDate(today)); // snap forward to this week's Saturday
+
+  // Quantile buckets computed ONLY from real, in-range days (never the
+  // padding cells either side, which carry no data by construction).
+  const gainAbs = [], lossAbs = [];
+  for (const [date, r] of byDate.entries()) {
+    if (date < rangeStart || date > today || !r.realized_pnl) continue;
+    (r.realized_pnl > 0 ? gainAbs : lossAbs).push(Math.abs(r.realized_pnl));
+  }
+  gainAbs.sort((a, b) => a - b);
+  lossAbs.sort((a, b) => a - b);
+
+  const cells = [];
+  for (let d = rangeStart; d <= rangeEndPadded; d = _addDaysToIsoDate(d, 1)) cells.push(d);
+
+  let totalPnl = 0, winDays = 0, lossDays = 0, bestDay = null, worstDay = null;
+  const cellHtml = cells.map(date => {
+    if (date > today) return `<div class="pnl-heatmap-cell empty"></div>`;
+    const row = byDate.get(date);
+    let bg = 'var(--panel)';
+    let title = `${fmtDate(date)}: no activity`;
+    if (row) {
+      const pnl = row.realized_pnl || 0;
+      if (pnl > 0) { bg = `var(--heat-gain-${_quantileBucket(gainAbs, pnl)})`; winDays++; }
+      else if (pnl < 0) { bg = `var(--heat-loss-${_quantileBucket(lossAbs, Math.abs(pnl))})`; lossDays++; }
+      totalPnl += pnl;
+      if (bestDay == null || pnl > bestDay.pnl) bestDay = { date, pnl };
+      if (worstDay == null || pnl < worstDay.pnl) worstDay = { date, pnl };
+      title = `${fmtDate(date)}: ${fmtSignedMoney(pnl)}` +
+        (row.positions_closed ? ` · ${row.positions_closed} closed (${row.wins}W/${row.losses}L)` : '') +
+        (row.fills ? ` · ${row.fills} fill${row.fills === 1 ? '' : 's'}` : '');
+    }
+    return `<div class="pnl-heatmap-cell" style="background:${bg}" title="${escapeHtml(title)}"></div>`;
+  }).join('');
+
+  // Month labels, one per column that starts a new calendar month —
+  // aligned to the grid below via matching grid-auto-columns/gap (CSS).
+  let monthHtml = '', lastMonth = null;
+  for (let i = 0; i < cells.length; i += 7) {
+    const month = cells[i].slice(0, 7);
+    if (month !== lastMonth) {
+      lastMonth = month;
+      const label = new Date(cells[i] + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' });
+      monthHtml += `<div class="pnl-heatmap-month-label">${label}</div>`;
+    } else {
+      monthHtml += `<div></div>`;
+    }
+  }
+
+  const summary = (winDays + lossDays) > 0
+    ? `${fmtSignedMoney(totalPnl)} total over the last ${weeks} weeks — ${winDays} winning day${winDays === 1 ? '' : 's'}, ` +
+      `${lossDays} losing day${lossDays === 1 ? '' : 's'}` +
+      (bestDay ? ` · best ${fmtDate(bestDay.date)} (${fmtSignedMoney(bestDay.pnl)})` : '') +
+      (worstDay && worstDay.pnl < 0 ? ` · worst ${fmtDate(worstDay.date)} (${fmtSignedMoney(worstDay.pnl)})` : '')
+    : `No realized P&L recorded in the last ${weeks} weeks yet.`;
+
+  return `
+    <div class="pnl-heatmap-wrap">
+      <div class="pnl-heatmap-months">${monthHtml}</div>
+      <div class="pnl-heatmap-grid">${cellHtml}</div>
+      <div class="pnl-heatmap-legend">
+        <span>Loss</span>
+        ${[4, 3, 2, 1].map(n => `<div class="pnl-heatmap-cell" style="background:var(--heat-loss-${n})"></div>`).join('')}
+        <div class="pnl-heatmap-cell" style="background:var(--panel)"></div>
+        ${[1, 2, 3, 4].map(n => `<div class="pnl-heatmap-cell" style="background:var(--heat-gain-${n})"></div>`).join('')}
+        <span>Gain</span>
+      </div>
+      <div class="table-note" style="margin-top:8px;">${summary}</div>
+    </div>
+  `;
 }
 
 // ── Trigger-type badges ─────────────────────────────────────────────

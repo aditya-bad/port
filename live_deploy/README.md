@@ -3230,6 +3230,76 @@ confirmed Compare's new column shows the right number for both, and
 that the existing Trigger breakdown card is untouched. Re-ran the
 Step 38 dark-mode suite afterward; still passes.
 
+## What's here (Step 49: P&L calendar heatmap — per-deployment AND portfolio-wide)
+
+The third of the three insight upgrades (Step 48 covered the other
+two). A GitHub-contribution-graph-shaped calendar — but DIVERGING, not
+just "more or less": a day can lose, not only contribute more or less,
+so it needed a genuinely different color treatment than a plain
+single-hue activity graph.
+
+**Where it lives**: a new "Calendar" tab on Detail (one deployment's
+own daily P&L — its own tab rather than folded into Stats, since a
+full-year grid is a big enough visual element to earn one and Stats
+was already dense), and a new collapsible "Daily P&L Calendar" section
+on Reports (portfolio-wide, following the same collapse/persist
+convention as By Strategy/By Deployment/Recent Periods). Both render
+through one shared `renderPnlHeatmap()` (api.js) — same function, fed
+either a deployment-scoped or portfolio-wide digest.
+
+**Backend**: the portfolio-wide side reuses the existing
+`GET /portfolio/pnl-digest` (just requested with a full year's worth
+of days instead of the Recent-Periods table's 14). The per-deployment
+side needed a genuinely new query — `list_pnl_digest_for_deployment`,
+the exact same closes/fills FULL OUTER JOIN shape as the existing
+`list_pnl_digest` (see that function's own docstring for the
+realized-only reasoning), with a `deployment_id` filter added to both
+CTEs — both `positions` and `position_lots` already carry
+`deployment_id` directly, so this was a straight WHERE addition, not a
+different join structure. New `GET /deployments/{id}/pnl-digest`
+endpoint exposes it.
+
+**Color**: run through the dataviz skill properly — this is a
+DIVERGING ramp (polarity: loss vs. gain), not the categorical
+`--chart-1..6` set Compare uses, so it follows the diverging rule (two
+hues + a neutral midpoint, monotone lightness per arm) rather than the
+six-hue CVD validator, which validates identity palettes and fails an
+intensity ramp by design. Each arm is 4 steps, interpolated in OKLab
+between this app's own `--loss-soft`/`--gain-soft` and `--loss`/`--gain`
+tokens (script-generated, not eyeballed hex) — level 4 lands on exactly
+the same hex as the existing semantic tokens, so "loss/gain" never
+means two different reds or greens across the app. The weakest step is
+15% of the way toward full, not identical to `-soft`, so it never
+visually collides with the neutral "no activity" cell (`--panel`,
+reused, no new token). Every cell gets a `--row-line` border regardless
+of fill — the relief channel the skill requires whenever a fill's own
+contrast against the surface runs low, which several of the weaker
+ramp steps do by design (that's what makes the gradient read as a
+gradient); the hover tooltip (exact date + P&L + closed/win-loss/fill
+counts) is the second relief channel. Intensity buckets are
+QUANTILE-based, computed separately for gains and losses within
+whatever window is showing — a fixed rupee scale would leave a
+₹10,000-capital deployment looking uniformly pale next to a
+₹10,00,000 one.
+
+**Verified** against a real server + real Postgres + a real browser,
+with ~4 months of seeded, varied daily P&L (deterministic seed, so
+reproducible): confirmed a specific day's hover tooltip matches a
+direct DB query bucketed by IST calendar day EXACTLY (`₹-600 · 1
+closed (0W/1L) · 2 fills`) — this caught a genuine test-methodology bug
+of my own along the way (an ad-hoc verification query using the
+Postgres session's UTC date cast instead of the app's own IST
+bucketing, which briefly looked like an app bug before the mismatch
+was traced to the query, not the code); confirmed month labels and the
+diverging Loss/Gain legend render; confirmed Reports' section collapses,
+expands, and persists collapsed state across a reload, same as its
+sibling sections; and confirmed a brand-new deployment with zero closed
+positions renders the correct empty-state message with an entirely
+neutral grid (zero colored cells) rather than a false "no data" read
+being silently miscolored. Re-ran the Step 38 dark-mode suite and the
+Step 47 minimize-deploy suite afterward since this touches shared
+index.html/api.js; both still pass.
+
 ## Setup
 
 ```bash
