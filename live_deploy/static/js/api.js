@@ -396,6 +396,31 @@ function renderEquityChart(snapshots, emptyMessage) {
   `;
 }
 
+// ── Max drawdown ─────────────────────────────────────────────────────
+// Largest peak-to-trough decline in an equity-curve snapshot series'
+// own total_value — shared by Detail's Stats tab (originally inline
+// there) and Compare's comparison table, so two views showing the same
+// concept can't quietly drift into two different definitions of it.
+// snapshots: [{total_value, ...}] in chronological order (both
+// deployment snapshots and portfolio snapshots share this shape).
+// Returns null if there isn't enough history to compute a real
+// peak-to-trough move (a single point has no "trough" relative to
+// anything).
+function computeMaxDrawdown(snapshots) {
+  if (!snapshots || snapshots.length < 2) return null;
+  let peak = snapshots[0].total_value;
+  let abs = null, pct = null;
+  snapshots.forEach(s => {
+    if (s.total_value > peak) peak = s.total_value;
+    const dd = peak - s.total_value;
+    if (abs == null || dd > abs) {
+      abs = dd;
+      pct = peak > 0 ? (dd / peak) * 100 : 0;
+    }
+  });
+  return { abs, pct };
+}
+
 // ── Trigger-type badges ─────────────────────────────────────────────
 // Keyword-based classification of a fill's own `reason` string into a
 // small, colored chip — lets a long trade list be scanned for every

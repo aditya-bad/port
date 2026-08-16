@@ -301,6 +301,31 @@ const Detail = {
     });
     const breakdown = Object.entries(counts).sort((a, b) => b[1] - a[1]);
 
+    // P&L by Exit Reason -- a DIFFERENT cut than the fill-count
+    // breakdown above: how much did closing for each reason actually
+    // make or lose, not just how often it fired. Every fill (entries,
+    // adjustments, exits alike) counts toward the breakdown above, but
+    // only a CLOSED position's own realized_pnl is real, settled money
+    // — and it's attributed to the reason of whichever lot actually
+    // closed it (that position's own last lot by executed_at), since a
+    // multi-lot position's earlier fills (an entry, an adjustment) may
+    // carry a different reason than what finally closed it out.
+    const lotsByPosition = {};
+    allTrades.lots.forEach(l => {
+      (lotsByPosition[l.position_id] = lotsByPosition[l.position_id] || []).push(l);
+    });
+    const pnlByReason = {};   // reason -> { pnl, count }
+    closedPositions.forEach(p => {
+      const posLots = (lotsByPosition[p.id] || []).slice()
+        .sort((a, b) => new Date(a.executed_at) - new Date(b.executed_at));
+      const lastLot = posLots[posLots.length - 1];
+      const reason = (lastLot && lastLot.reason) || '(no reason recorded)';
+      if (!pnlByReason[reason]) pnlByReason[reason] = { pnl: 0, count: 0 };
+      pnlByReason[reason].pnl += (p.realized_pnl || 0);
+      pnlByReason[reason].count += 1;
+    });
+    const pnlBreakdown = Object.entries(pnlByReason).sort((a, b) => b[1].pnl - a[1].pnl);
+
     // Average holding period, from closed positions' own opened_at/closed_at.
     const durations = closedPositions
       .filter(p => p.opened_at && p.closed_at)
@@ -327,19 +352,9 @@ const Detail = {
 
     // Max drawdown -- largest peak-to-trough decline in the equity
     // curve's own total_value series (the same snapshot data already
-    // fetched for the chart below, no extra request).
-    let maxDrawdownPct = null, maxDrawdownAbs = null;
-    if (snapshots.length >= 2) {
-      let peak = snapshots[0].total_value;
-      snapshots.forEach(s => {
-        if (s.total_value > peak) peak = s.total_value;
-        const dd = peak - s.total_value;
-        if (maxDrawdownAbs == null || dd > maxDrawdownAbs) {
-          maxDrawdownAbs = dd;
-          maxDrawdownPct = peak > 0 ? (dd / peak) * 100 : 0;
-        }
-      });
-    }
+    // fetched for the chart below, no extra request). Shared with
+    // Compare's own drawdown column via computeMaxDrawdown (api.js).
+    const drawdown = computeMaxDrawdown(snapshots);
 
     // Deployed-since / last-activity — operational context: is this
     // thing actually doing anything, and how long has it been running.
@@ -391,10 +406,29 @@ const Detail = {
         </div>
       </div>
 
+      ${pnlBreakdown.length ? `
+      <section>
+        <h2>P&amp;L by Exit Reason</h2>
+        <div class="table-note" style="margin-bottom:8px;">
+          Which trigger actually closed each position, and what it made or lost — not just how
+          often it fired (see Trigger breakdown above for that). Sorted by total contribution.
+        </div>
+        <div class="table-wrap">
+        <table><thead><tr><th>Reason</th><th>Positions closed</th><th>Total P&amp;L</th><th>Avg P&amp;L</th></tr></thead>
+        <tbody>${pnlBreakdown.map(([reason, v]) => `<tr>
+          <td>${escapeHtml(reason)}${triggerBadgeHtml(reason)}</td>
+          <td>${v.count}</td>
+          <td class="${pnlClass(v.pnl)}">${fmtSignedMoney(v.pnl)}</td>
+          <td class="${pnlClass(v.pnl / v.count)}">${fmtSignedMoney(v.pnl / v.count)}</td>
+        </tr>`).join('')}</tbody></table>
+        </div>
+      </section>
+      ` : ''}
+
       <section>
         <h2>Equity Curve</h2>
-        ${maxDrawdownAbs != null ? `<div class="card-meta" style="margin-bottom:10px;">
-          <span>Max drawdown <b class="neg">${fmtMoney(maxDrawdownAbs)} (${maxDrawdownPct.toFixed(2)}%)</b>
+        ${drawdown ? `<div class="card-meta" style="margin-bottom:10px;">
+          <span>Max drawdown <b class="neg">${fmtMoney(drawdown.abs)} (${drawdown.pct.toFixed(2)}%)</b>
             — largest peak-to-trough decline across every recorded snapshot</span>
         </div>` : ''}
         ${renderEquityChart(snapshots)}

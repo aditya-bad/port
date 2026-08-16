@@ -3185,6 +3185,51 @@ chip leaves the other untouched; and re-confirmed Cancel still fully
 clears with no draft left behind. Re-ran the Step 38 dark-mode suite
 afterward since this touches shared modal/dock CSS; still passes.
 
+## What's here (Step 48: P&L by Exit Reason on Detail, Max Drawdown on Compare)
+
+Requested as two of three insight upgrades to the Detail and Compare
+pages (the third, a P&L calendar heatmap, is Step 49).
+
+**P&L by Exit Reason** (Detail's Stats tab): the existing Trigger
+breakdown card counts every fill by reason — entries, adjustments, and
+exits alike — which answers "how often did each trigger fire" but not
+"how much did closing for each reason actually make or lose." New
+section, same tab: for every CLOSED position, its `realized_pnl` is
+attributed to the reason on whichever lot actually closed it (that
+position's own last lot by `executed_at` — a multi-lot position's
+earlier fills, an entry or an adjustment, may carry a different reason
+than what finally closed it out), summed per reason and sorted by
+total contribution. Deliberately a separate section from Trigger
+breakdown rather than merged into it — mixing "count of every fill"
+with "P&L of only the closing ones" in one table would leave entries
+and adjustments showing a meaningless blank P&L column. Reuses the
+existing `triggerBadgeHtml` classifier for the same stop/profit/adjust
+coloring already used elsewhere, so one reason never reads two
+different ways across the page.
+
+**Max Drawdown column** (Compare): Compare's table showed which
+deployment grew more, not which one made you sweat more to get there.
+The drawdown math itself already existed, inline in Detail's Stats
+tab — extracted to a shared `computeMaxDrawdown()` (api.js) so both
+views compute "largest peak-to-trough decline" identically rather than
+risking two definitions drifting apart, and Compare now runs it
+against each selected deployment's own raw (rupee) snapshot series —
+not the chart's already-%-indexed points, since drawdown is peak-
+relative by definition and computing it a second time off an
+already-indexed series would double that relativity for no reason.
+
+**Verified** against a real server + real Postgres + a real browser,
+with deterministic seeded data so the numbers could be checked by hand
+rather than just "a table appeared": four closed positions across
+three exit reasons with known P&L (`profit_target` ×2 summing to
++₹1,300, `stop_loss` −₹200, `force_exit` −₹50) — confirmed every row's
+count/total/average and the sort order; two deployments' snapshot
+series with a known drawdown (peak ₹110,000 → trough ₹90,000 = exactly
+₹20,000 / 18.18%) and a monotonically-increasing one (zero drawdown) —
+confirmed Compare's new column shows the right number for both, and
+that the existing Trigger breakdown card is untouched. Re-ran the
+Step 38 dark-mode suite afterward; still passes.
+
 ## Setup
 
 ```bash

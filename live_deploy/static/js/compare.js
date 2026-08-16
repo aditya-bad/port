@@ -94,7 +94,13 @@ const Compare = {
         total_value: s.total_value,
         pct: base ? ((s.total_value - base) / base) * 100 : 0,
       }));
-      return { deployment: d, points };
+      // computeMaxDrawdown wants the RAW snaps (rupee total_value), not
+      // the indexed % points -- drawdown as a % is already peak-relative
+      // by definition, so computing it off the already-indexed series
+      // would just double that peak-relativity for no reason. Same
+      // shared helper Detail's own Stats tab uses (api.js), so "max
+      // drawdown" can't mean two different things in two views.
+      return { deployment: d, points, drawdown: computeMaxDrawdown(snaps) };
     });
 
     this._lastResult = result;
@@ -173,15 +179,17 @@ const Compare = {
         <td>${n}</td>
         <td class="${last ? pnlClass(last.pct) : ''}">${last ? `${last.pct >= 0 ? '+' : ''}${last.pct.toFixed(2)}%` : '—'}</td>
         <td>${last ? fmtMoney(last.total_value) : '—'}</td>
+        <td class="${r.drawdown ? 'neg' : ''}">${r.drawdown ? `${fmtMoney(r.drawdown.abs)} (${r.drawdown.pct.toFixed(2)}%)` : '—'}</td>
       </tr>`;
     }).join('');
     wrap.innerHTML += `
       <div class="table-wrap" style="margin-top:14px;">
       <table><thead><tr>
-        <th>Deployment</th><th>Strategy</th><th>Status</th><th>Snapshots</th><th>Return</th><th>Current equity</th>
+        <th>Deployment</th><th>Strategy</th><th>Status</th><th>Snapshots</th><th>Return</th><th>Current equity</th><th>Max drawdown</th>
       </tr></thead>
       <tbody>${rows}</tbody></table>
       </div>
+      <div class="table-note">Max drawdown — largest peak-to-trough decline in each deployment's own equity, same definition as its Stats tab.</div>
     `;
   },
 
