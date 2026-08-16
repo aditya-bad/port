@@ -2500,6 +2500,78 @@ from and sanitized from the deployment's own name), the exact header
 row, exactly 2 data rows, and that both fills' action/price/reason
 values round-tripped correctly into the file.
 
+## What's here (Step 38: dark mode)
+
+Fourth of the in-app feature batch. The whole UI (`static/index.html`
+and `static/login.html`) was already built on a CSS custom-property
+token system (`--bg`, `--paper`, `--ink`, `--accent`, etc., defined
+once on `:root`) — dark mode is mostly a second set of values for
+those same tokens, not a parallel stylesheet.
+
+The dark palette isn't a generic slate-grey theme bolted on — it reuses
+the light theme's own "stamped ledger" identity with ink and paper
+swapped: the light theme's near-black ink (`#1B1130`) becomes the dark
+theme's page ground, and the light theme's warm cream becomes the dark
+theme's ink. The semantic colors (`--gain`/`--loss`/`--brass`/`--info`)
+are brightened versions of their light-theme selves — legible as TEXT
+on a dark ground — and their `-soft` badge-background counterparts go
+dark-toned instead of pale, since a pale mint badge floating on a
+near-black page would look like a rendering bug, not a design choice.
+The signature offset "stamped" shadow motif (`--shadow`/`--shadow-sm`,
+plus a new `--shadow-lg` extracted from a rule that had it hardcoded)
+switches from a translucent-ink shadow to a translucent-black one, since
+an ink-colored shadow is invisible against an ink-colored background.
+
+Applied two ways, both driven by the same tokens: automatically via
+`prefers-color-scheme: dark` for anyone who hasn't chosen explicitly,
+and explicitly via a `[data-theme="dark"]` attribute on `<html>` once
+the sidebar's new "Dark mode" toggle is clicked (persisted in
+`localStorage`, with a `:not([data-theme="light"])` guard so an
+explicit light choice still beats a dark OS preference). A tiny inline
+`<script>` at the very top of `<head>` — in both `index.html` and
+`login.html` — reads that `localStorage` value and stamps the
+attribute before the stylesheet is even parsed, which is the only way
+to avoid a flash of the wrong theme on first paint; `toggleTheme()`
+(near the bottom of `index.html`'s own inline script) does the same
+thing on click, plus keeps the button's own label (🌙 Dark mode / ☀
+Light mode) truthful.
+
+Audited for stragglers: grepped both files for hex/rgba color literals
+declared *outside* the `:root` block — i.e. anywhere a dark-mode
+override of the root tokens alone wouldn't reach — and found nine:
+`.nav-item.active`, `.btn-primary` and its `:hover`, `.btn-danger:hover`,
+table row dividers, `.tabs button.active`, and the modal's box-shadow.
+All nine were converted to reference tokens (`--accent-hover`,
+`--loss-hover`, `--row-line`, `--shadow-lg` — new; the rest already
+existed) instead of literals, so nothing was left stuck at its
+light-theme-only value. Two more hardcoded rgba rules — the modal
+overlay backdrop and the mobile nav drawer's backdrop — were
+deliberately left alone: both are dimming scrims drawn *over* whatever
+content sits behind them, and a dark, ink-colored scrim reads correctly
+as "dimmed" against page content in either theme, so there was nothing
+theme-specific to fix there.
+
+**Verified** against a real server + real Postgres + a real browser,
+not just a code read of the CSS: confirmed via `getComputedStyle` that
+the app defaults to light when the OS is light and no choice is saved,
+follows `prefers-color-scheme: dark` automatically when the OS is dark
+and no choice is saved, that clicking the toggle flips the whole page
+instantly and flips the button's own label, that the choice persists
+to `localStorage` and survives a full reload with no flash (checked
+`data-theme` is already `"dark"` immediately, set by the pre-paint
+script rather than by later JS), and that an explicit light choice
+correctly overrides a dark OS preference. Then screenshotted every
+major view in dark mode — Dashboard, Strategy Catalog, the widened
+Deploy modal (with the Step 36 preset row), Deployed Strategies (with
+the Step 35 Flatten-All button), a deployment's Trades tab with an
+expanded trigger-metadata row, its Stats tab, Account, the mobile
+slide-in drawer, and the pre-login screen — checking each by eye for
+any element left unreadable (low-contrast text, a badge that didn't
+adapt, a shadow that vanished). Finally, re-ran the existing Step 36
+(config presets) and Step 37 (CSV export) Playwright suites against
+the changed markup/CSS end to end — both passed unchanged, confirming
+the token-recoloring didn't regress either feature's actual behavior.
+
 ## Setup
 
 ```bash

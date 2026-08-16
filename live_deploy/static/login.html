@@ -4,6 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>live_deploy — Login</title>
+<script>
+// Same flash-avoidance trick as static/index.html — if the user
+// already chose a theme post-login, honor it here too, before the
+// stylesheet below is parsed.
+(function () {
+  var saved = localStorage.getItem('theme');
+  if (saved === 'light' || saved === 'dark') {
+    document.documentElement.setAttribute('data-theme', saved);
+  }
+})();
+</script>
 <style>
   @font-face {
     font-family: 'IBM Plex Sans';
@@ -45,10 +56,30 @@
   :root {
     --bg: #F6F1E4; --paper: #FFFDF6; --panel: #EFE4C8; --line: #2A1B45;
     --ink: #1B1130; --parchment: #6B5A72;
-    --accent: #E2711D; --accent-soft: #F6C177; --loss: #B23A48; --loss-soft: #F7E1E1;
+    --accent: #E2711D; --accent-soft: #F6C177; --accent-hover: #C65F13;
+    --loss: #B23A48; --loss-soft: #F7E1E1;
     --shadow: 14px 14px 0 rgba(27, 17, 48, 0.16);
     --font-display: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
     --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  }
+  /* Same "ink and paper swapped" dark palette as static/index.html —
+     see that file's :root for the full reasoning. Kept to just the
+     tokens this page actually uses. */
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #150E22; --paper: #1E1533; --panel: #251A40; --line: #4C3D74;
+      --ink: #F1E8DC; --parchment: #B8A8C9;
+      --accent: #EB8A3D; --accent-soft: #8A5320; --accent-hover: #FF9950;
+      --loss: #FF8B95; --loss-soft: #3D1B22;
+      --shadow: 14px 14px 0 rgba(0, 0, 0, 0.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #150E22; --paper: #1E1533; --panel: #251A40; --line: #4C3D74;
+    --ink: #F1E8DC; --parchment: #B8A8C9;
+    --accent: #EB8A3D; --accent-soft: #8A5320; --accent-hover: #FF9950;
+    --loss: #FF8B95; --loss-soft: #3D1B22;
+    --shadow: 14px 14px 0 rgba(0, 0, 0, 0.6);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -80,7 +111,7 @@
     background: var(--accent); color: #fff; font-family: var(--font-body);
     font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em; cursor: pointer;
   }
-  button:hover { background: #c65f13; }
+  button:hover { background: var(--accent-hover); }
   button:disabled { opacity: 0.6; cursor: not-allowed; }
   .msg { margin-top: 12px; font-size: 12px; font-weight: 600; min-height: 18px; }
   .msg.error { color: var(--loss); }

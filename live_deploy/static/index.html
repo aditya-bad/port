@@ -4,6 +4,18 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>live_deploy</title>
+<script>
+// Applied synchronously, before the stylesheet below is parsed and
+// before <body> paints anything — the only way to avoid a flash of
+// the wrong theme on load. Mirrors the persistence half of
+// toggleTheme() near the end of this file; keep the two in sync.
+(function () {
+  var saved = localStorage.getItem('theme');   // 'light' | 'dark' | absent (follow OS)
+  if (saved === 'light' || saved === 'dark') {
+    document.documentElement.setAttribute('data-theme', saved);
+  }
+})();
+</script>
 <style>
 /* ── Self-hosted type — IBM Plex Sans carries both display (700,
    tight tracking) and body/UI roles; IBM Plex Mono for anything
@@ -147,10 +159,12 @@
 
   --accent: #E2711D;       /* marigold/saffron — links, primary actions, active nav */
   --accent-soft: #F6C177;  /* lighter marigold — logo fill */
+  --accent-hover: #C65F13; /* .btn-primary:hover shade */
   --gain: #1F7A5C;         /* jade — profit */
   --gain-soft: #DCEEE3;
   --loss: #B23A48;         /* sindoor — loss / danger */
   --loss-soft: #F7E1E1;
+  --loss-hover: #F0C7CA;   /* .btn-danger:hover shade */
   --brass: #A6741A;        /* turmeric/ochre — paused / adjust / warn */
   --brass-soft: #F3E6C8;
   --info: #2D5C7A;         /* indigo-teal — neutral/entry accent */
@@ -158,6 +172,8 @@
 
   --shadow: 12px 12px 0 rgba(27, 17, 48, 0.14);
   --shadow-sm: 6px 6px 0 rgba(27, 17, 48, 0.14);
+  --shadow-lg: 18px 18px 0 rgba(27, 17, 48, 0.16);   /* modals */
+  --row-line: rgba(42, 27, 69, 0.14);                /* table row divider */
 
   --font-display: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
   --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
@@ -171,6 +187,84 @@
      app-wide picks up the theme's own accent instead of that blue. */
   accent-color: var(--accent);
 }
+
+/* ── Dark theme — same "stamped ledger" identity, ink and paper
+   swapped rather than a generic slate-grey dark mode: the light
+   theme's near-black ink (#1B1130) becomes the dark theme's page
+   ground, and the light theme's warm cream becomes the dark theme's
+   ink. Semantic colors (gain/loss/brass/info) are brightened for use
+   as TEXT against a dark ground, and their "-soft" badge-background
+   counterparts go dark-toned instead of pale, since a pale badge
+   floating on a dark page would look like a rendering bug. Applied
+   two ways: automatically via prefers-color-scheme for anyone who
+   hasn't chosen, explicitly via [data-theme] once they click the
+   toggle (persisted in localStorage — see the inline script in
+   <head> and toggleTheme() near the bottom of this file). The
+   :not([data-theme="light"]) guard lets an explicit light choice
+   still beat a dark OS preference. ───────────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #150E22;
+    --paper: #1E1533;
+    --panel: #251A40;
+    --stone: #2E2049;
+    --sand: #291C44;
+    --ink: #F1E8DC;
+    --parchment: #B8A8C9;
+    --line: #4C3D74;
+
+    --accent: #EB8A3D;
+    --accent-soft: #8A5320;
+    --accent-hover: #FF9950;
+    --gain: #4FD9A4;
+    --gain-soft: #163A2E;
+    --loss: #FF8B95;
+    --loss-soft: #3D1B22;
+    --loss-hover: #4A2530;
+    --brass: #E6B04A;
+    --brass-soft: #3E2E10;
+    --info: #7FC1E8;
+    --info-soft: #16303F;
+
+    --shadow: 12px 12px 0 rgba(0, 0, 0, 0.55);
+    --shadow-sm: 6px 6px 0 rgba(0, 0, 0, 0.5);
+    --shadow-lg: 18px 18px 0 rgba(0, 0, 0, 0.6);
+    --row-line: rgba(200, 180, 230, 0.14);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #150E22;
+  --paper: #1E1533;
+  --panel: #251A40;
+  --stone: #2E2049;
+  --sand: #291C44;
+  --ink: #F1E8DC;
+  --parchment: #B8A8C9;
+  --line: #4C3D74;
+
+  --accent: #EB8A3D;
+  --accent-soft: #8A5320;
+  --accent-hover: #FF9950;
+  --gain: #4FD9A4;
+  --gain-soft: #163A2E;
+  --loss: #FF8B95;
+  --loss-soft: #3D1B22;
+  --loss-hover: #4A2530;
+  --brass: #E6B04A;
+  --brass-soft: #3E2E10;
+  --info: #7FC1E8;
+  --info-soft: #16303F;
+
+  --shadow: 12px 12px 0 rgba(0, 0, 0, 0.55);
+  --shadow-sm: 6px 6px 0 rgba(0, 0, 0, 0.5);
+  --shadow-lg: 18px 18px 0 rgba(0, 0, 0, 0.6);
+  --row-line: rgba(200, 180, 230, 0.14);
+}
+/* Theme changes (bg/paper/ink/etc.) should feel instant, but leaving
+   `background`/`color`/`border-color` globally transitioned would also
+   catch hover/focus states and make THOSE feel sluggish — so this is
+   deliberately left untransitioned; the toggle is a snap-cut, matching
+   the app's flat "stamped" visual language rather than a soft fade. */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: var(--font-body); background: var(--bg); color: var(--ink);
@@ -284,11 +378,11 @@ tr.trade-row:focus-visible {
   transition: background 0.15s;
 }
 .btn-primary { background: var(--accent); color: #fff; border-color: var(--line); }
-.btn-primary:hover { background: #c65f13; }
+.btn-primary:hover { background: var(--accent-hover); }
 .btn-secondary { background: var(--panel); color: var(--ink); }
 .btn-secondary:hover { background: var(--stone); }
 .btn-danger { background: var(--loss-soft); color: var(--loss); }
-.btn-danger:hover { background: #f0c7ca; }
+.btn-danger:hover { background: var(--loss-hover); }
 .btn-sm { padding: 6px 10px; font-size: 9.5px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -339,7 +433,7 @@ table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th { text-align: left; padding: 10px 10px; color: var(--parchment); font-weight: 800;
   border-bottom: 3px solid var(--line); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.06em;
   font-family: var(--font-body); }
-td { padding: 9px 10px; border-bottom: 2px solid rgba(42, 27, 69, 0.14); font-family: var(--font-mono); }
+td { padding: 9px 10px; border-bottom: 2px solid var(--row-line); font-family: var(--font-mono); }
 .pos { color: var(--gain); font-weight: 700; }
 .neg { color: var(--loss); font-weight: 700; }
 .table-wrap { overflow-x: auto; border: 3px solid var(--line); background: var(--paper); box-shadow: var(--shadow-sm); }
@@ -438,7 +532,7 @@ tr.trade-detail-row td {
 }
 .modal-overlay.open { display: flex; }
 .modal {
-  background: var(--paper); border: 3px solid var(--line); box-shadow: 18px 18px 0 rgba(27, 17, 48, 0.16);
+  background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-lg);
   padding: 24px; max-width: 560px; width: 95%; max-height: 85vh; overflow-y: auto;
 }
 .modal h2 { font-family: var(--font-display); font-weight: 700; font-size: 20px; letter-spacing: -0.02em; margin-bottom: 16px; text-transform: none; }
@@ -593,6 +687,7 @@ body.mobile-nav-open { overflow: hidden; }
         <div class="status-bar" id="statusBar">
           <span class="badge bad"><span class="dot"></span> checking…</span>
         </div>
+        <button class="btn btn-secondary btn-sm" id="themeToggleBtn" onclick="toggleTheme()">🌙 Dark mode</button>
         <button class="btn btn-secondary btn-sm" onclick="logout()">Logout</button>
       </div>
     </div>
@@ -954,6 +1049,31 @@ async function logout() {
   window.location.href = '/';
 }
 
+// ── Theme toggle ────────────────────────────────────────────────────
+// The actual light/dark switching is pure CSS (custom-property
+// overrides under [data-theme="dark"] / prefers-color-scheme — see
+// static/index.html's <style>). This just flips the attribute,
+// persists the explicit choice, and keeps the button's own label
+// truthful. The very first paint's theme is set by the tiny inline
+// <script> at the top of <head> (before this file's own script even
+// runs) so there's no flash of the wrong theme on load.
+function _currentTheme() {
+  const explicit = document.documentElement.getAttribute('data-theme');
+  if (explicit === 'light' || explicit === 'dark') return explicit;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+function _applyThemeButtonLabel() {
+  const btn = document.getElementById('themeToggleBtn');
+  if (!btn) return;
+  btn.textContent = _currentTheme() === 'dark' ? '☀ Light mode' : '🌙 Dark mode';
+}
+function toggleTheme() {
+  const next = _currentTheme() === 'dark' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', next);
+  localStorage.setItem('theme', next);
+  _applyThemeButtonLabel();
+}
+
 // ── Mobile slide-in nav drawer — desktop never calls these (the
 // toggle button itself is display:none there, so nothing ever invokes
 // toggleMobileNav), and closeMobileNav() removing classes that are
@@ -1215,6 +1335,7 @@ function _startAutoRefresh(view) {
 
 window.addEventListener('hashchange', router);
 window.addEventListener('DOMContentLoaded', () => {
+  _applyThemeButtonLabel();
   pollHealth();
   router();
   setInterval(pollHealth, 5000);
