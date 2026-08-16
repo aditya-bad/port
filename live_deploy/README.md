@@ -1865,14 +1865,15 @@ expiries' leg lookups. Entered near end-of-day (`entry_time`, default
 day-boundary check in this package uses): it's just the first tick
 whose date differs from the entry day, so a weekend or holiday is
 skipped automatically without any holiday-calendar logic. Has
-its own expiry-day entry guard, config `allow_expiry_day_entry` (default
-False, unchanged by Step 46's rename of `intraday_dtt_simple`'s
-equivalent — see that strategy's own docstring; this one is a genuinely
-different trade shape, an overnight calendar spread rather than an
-intraday straddle, so it kept the skip-based guard on purpose rather
-than picking up the "never skip, switch expiry instead" behavior) —
-selling THIS_WEEK's straddle on its own expiry day at 15:20 is
-effectively already-at-expiry.
+its own expiry-day entry guard, config `switch_to_next_week_on_expiry`
+(default False) — see Step 52 for the full rationale, since this one
+got a materially different fix than the DTT family's own version of
+the same flag: Step 46 left this strategy's guard as a plain skip on
+purpose (a genuinely different trade shape, so no reason to assume the
+DTT fix applied unchanged); Step 52 revisited that and gave it the
+"never skip" treatment too, but shifting BOTH legs one week — not just
+the short one — since this is a calendar SPREAD, and shifting only one
+leg would collapse its defining one-week gap between SHORT and LONG.
 
 Resume-safety reconstructs open legs from the DB by SIDE (short →
 buy back on exit, long → sell off on exit), not by which expiry each
@@ -3435,6 +3436,80 @@ a real `alert()` with the deployment visibly staying "paused" in the
 header. Re-ran the Step 38 dark-mode suite and the Step 47 minimize-
 deploy suite afterward (the latter specifically because it depends on
 the exact config-form code that got extracted here); both still pass.
+
+## What's here (Step 52: calendar_btst never skips expiry day — shifts the whole spread instead)
+
+Prompted by a direct question about `calendar_btst`'s `allow_expiry_day_entry`
+config flag ("how will I enter [on BTST]?" plus a request to confirm the
+strategy really is SHORT THIS_WEEK ATM straddle / LONG NEXT_WEEK ATM
+straddle — it is). Tracing through what the flag actually did surfaced
+a real correctness gap, not just an awkward name: with the flag left
+`False` (its default), the strategy *skipped entry entirely* on
+THIS_WEEK's own expiry day — the exact same skip-based guard Step 46
+already replaced for the whole `intraday_dtt_*` family, for the same
+reason (a skip silently drops a trading day, and a paper account with
+one deployment isn't diversified enough to shrug that off). Flipping
+the flag to `True` avoided the skip, but did so by selling a short
+leg that expires *the same day it's entered* — which doesn't just look
+odd, it actively breaks: `_exit_all()` prices each leg from
+`runner.dispatcher.last_prices`, falling back to entry price only if
+that lookup is falsy/`None`. Kite stops streaming ticks for an expired
+contract rather than sending a settlement price, so `last_prices`
+doesn't go `None`, it goes *stale* — frozen at whatever the last tick
+was before expiry — so the fallback never fires and next-day's BTST
+exit would silently price that leg off a dead, pre-expiry tick. No
+crash, no error, just a quietly wrong P&L. Not something to leave
+opt-in and hope nobody flips it.
+
+**Why this isn't just Step 46's fix copy-pasted**: `intraday_dtt_*` is
+a single-expiry strategy — "switch to next week" means moving one
+resolved expiry forward by one step, done. `calendar_btst` is a
+*spread*: THIS_WEEK short + NEXT_WEEK long, always exactly one expiry-
+step apart — that one-week gap is the entire point, it's what the
+position is harvesting (differential theta decay between the two
+legs). Shifting only the short leg forward (mirroring Step 46 literally)
+would collapse both legs onto the *same* expiry — a degenerate combo,
+not a calendar spread. The fix instead shifts **both legs together**:
+short becomes whatever `OptionsResolver.resolve_expiry(underlying, 1)`
+currently resolves to (i.e. what "NEXT_WEEK" means today), long becomes
+`resolve_expiry(underlying, 2)` — the expiry after that. The spread
+itself doesn't change shape, it just starts one week later than usual,
+on the one day per cycle its usual THIS_WEEK/NEXT_WEEK pairing would
+otherwise be degenerate (short expiring same-day) or require a skip.
+
+**The change**: `allow_expiry_day_entry` (skip-or-not, opt-in to a
+same-day-expiry short leg) is replaced by `switch_to_next_week_on_expiry`
+(default `False`, matching the old default's caution) — never skips
+either way, the flag only controls *how* the expiry-day case is
+resolved. `False` keeps the old opt-in behavior available for parity
+(sells the same-day-expiry short leg as-is; the docstring is explicit
+this isn't recommended, given the stale-price gap above). `True` shifts
+the whole spread one week later as described. `on_start()`/
+`default_config`/the module docstring's RULES and CONFIG sections were
+all updated to match; `_enter()`'s expiry-resolution block now always
+proceeds to entry (three branches — switch+expiry-today,
+no-switch+expiry-today, not-expiry-today — none of them `return` early),
+and the fill metadata's `this_week_expiry`/`next_week_expiry` keys were
+renamed to `short_expiry`/`long_expiry` (clearer once "short" and "this
+week" can disagree, on a switched entry) with a new
+`trigger_values.switched_to_next_week` flag recording which path fired.
+Also fixed a stale docstring reference to the old "15:30 close" left
+over from before NSE's new 3:40 PM close (see the CAS discussion above)
+— now just "the close."
+
+**Verified** live against a real dispatcher/runner/resolver/Postgres
+pipeline with a synthetic three-expiry NFO options chain, forcing
+"today" to be THIS_WEEK's own expiry day via a real tick timestamp, for
+three scenarios: `switch=False` on expiry day → enters anyway (no skip),
+`short_expiry`/`long_expiry` both land on the two original unshifted
+expiries, `switched_to_next_week=False`; `switch=True` on the same
+expiry day → enters with `short_expiry`/`long_expiry` shifted to the
+next two expiries out, `switched_to_next_week=True`; and a regression
+check with `switch=True` on an ordinary non-expiry day → completely
+unaffected, `short_expiry`/`long_expiry` land on the normal THIS_WEEK/
+NEXT_WEEK pair, `switched_to_next_week=False`. All three confirmed via
+the actual open positions (4 legs: 2 short + 2 long) and entry-fill
+metadata, not just log output.
 
 ## Setup
 

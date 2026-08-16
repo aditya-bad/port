@@ -24,10 +24,12 @@ STRUCTURE (4 legs, one entry, resolved together):
 
 RULES:
   Entry (once per day, at `entry_time`, default 15:20 — a few minutes
-      before the 15:30 close, the "end of day" window): resolves the
-      shared ATM strike, sells THIS_WEEK's CE+PE, buys NEXT_WEEK's
-      CE+PE, all at that one strike. Only fires when flat (no cycle
-      currently open).
+      before the close, the "end of day" window): resolves the
+      shared ATM strike, sells the SHORT leg's CE+PE, buys the LONG
+      leg's CE+PE, all at that one strike. Only fires when flat (no
+      cycle currently open). Normally SHORT=THIS_WEEK/LONG=NEXT_WEEK —
+      see "NEVER SKIPS" below for the one case those aren't literally
+      "this/next calendar week."
   Exit (once per day, at `exit_time`, default 09:20 — the first ~5
       minutes after the 09:15 open): closes all 4 legs — buys back the
       2 short legs, sells the 2 long legs — but ONLY once the calendar
@@ -35,12 +37,45 @@ RULES:
       deliberately an OVERNIGHT hold; the position is never touched
       again on the same day it was opened, no matter what `exit_time`
       is set to).
-  No entry on THIS_WEEK's own expiry day (config: `allow_expiry_day_entry`,
-      default False) — selling a straddle that expires that same
-      afternoon at 15:20 is effectively already at/past expiry by the
-      time it would be sold; same guard `intraday_dtt_simple` uses for
-      the identical reason, checked against the ACTUAL resolved expiry
-      date, never a hardcoded weekday.
+  NEVER SKIPS a trading day, including THIS_WEEK's own expiry day
+      (config: `switch_to_next_week_on_expiry`, default False) — a
+      calendar spread's SHORT leg expiring the same afternoon it's sold
+      isn't just risky the way a bare short straddle's would be, it's
+      actively broken for THIS strategy specifically: BTST needs the
+      short leg to still exist tomorrow morning to buy it back, and a
+      contract that expired at today's close simply won't. This
+      strategy's own paper-trading engine has no expiry-settlement
+      simulation either — once Kite stops streaming ticks for an
+      expired contract, `_exit_all`'s price lookup would silently fall
+      back to a STALE pre-expiry tick, not the contract's real
+      settlement value, quietly corrupting that leg's P&L rather than
+      erroring. So unlike the DTT straddle family (where "sell the
+      already-expiring contract anyway" is at least a coherent same-day
+      trade), that's not a real option here — this decides which pair
+      of expiries to trade, always shifted BOTH one step together so
+      the spread's own one-week gap is preserved:
+        False (default) -> sell the same-day-expiry SHORT leg anyway,
+                            same as the old skip-guard's opt-in used to
+                            mean — accepted with eyes open to both the
+                            expiry-degenerate short leg AND the stale-
+                            price gap above. NOT recommended; exists
+                            for parity with every other strategy in
+                            this package never silently removing a
+                            config value's old meaning outright.
+        True             -> shift the WHOLE spread one week later
+                            instead: SHORT becomes what "NEXT_WEEK"
+                            currently resolves to, LONG becomes the
+                            expiry after THAT (offset 2 from today, not
+                            a second "NEXT_WEEK" call — see `_enter`).
+                            Shifting only the short leg while leaving
+                            long at the old NEXT_WEEK would collapse
+                            the spread to a zero-gap (same-expiry)
+                            combo, which isn't a calendar spread at
+                            all; shifting both preserves the one-week
+                            gap that defines this trade.
+      Checked against the ACTUAL resolved expiry date, never a
+      hardcoded weekday, same as every other expiry-day guard in this
+      package.
 
 WHY "next day" IS TICK-DRIVEN, NOT CALENDAR MATH: like every other
 day-boundary check in this package (see pivot_supertrend_options'
@@ -85,8 +120,12 @@ CONFIG:
       after the open.
   "lots_per_trade": 1 (default) — lots on EVERY leg (all 4 match).
   "catch_up_late_entry": true (default) — see "LATE START" above.
-  "allow_expiry_day_entry": false (default) — see the expiry-day guard
-      above.
+  "switch_to_next_week_on_expiry": false (default) — when THIS_WEEK's
+      contract expires today, false sells it anyway (same-day-expiry
+      short leg, same-day-expiry P&L risk); true shifts the whole
+      spread one week later instead (see "NEVER SKIPS" above). Either
+      way, today still gets an entry — this never causes a day to be
+      skipped.
 """
 
 import logging
@@ -117,7 +156,7 @@ logger = logging.getLogger("live_deploy.strategies.calendar_btst")
         "exit_time": "09:20",
         "lots_per_trade": 1,
         "catch_up_late_entry": True,
-        "allow_expiry_day_entry": False,
+        "switch_to_next_week_on_expiry": False,
     },
 )
 class CalendarBTSTStrategy(StrategyBase):
@@ -153,7 +192,7 @@ class CalendarBTSTStrategy(StrategyBase):
         if self.lots_per_trade < 1:
             raise ValueError(f"lots_per_trade must be >= 1, got {self.lots_per_trade}")
         self.catch_up_late_entry = bool(cfg.get("catch_up_late_entry", True))
-        self.allow_expiry_day_entry = bool(cfg.get("allow_expiry_day_entry", False))
+        self.switch_to_next_week_on_expiry = bool(cfg.get("switch_to_next_week_on_expiry", False))
 
         self.resolver = OptionsResolver(runner.dispatcher)
 
@@ -261,24 +300,47 @@ class CalendarBTSTStrategy(StrategyBase):
     async def _enter(self, runner, ts) -> None:
         try:
             this_week_expiry = await self.resolver.resolve_expiry(self.options_underlying, "THIS_WEEK")
-            if this_week_expiry == ts.date() and not self.allow_expiry_day_entry:
-                logger.info(
-                    "%s: skipping entry — THIS_WEEK's contract expires "
-                    "today (%s), and selling it at entry_time this "
-                    "afternoon is effectively already-at-expiry (set "
-                    "allow_expiry_day_entry=true to override)",
-                    runner.deployment_name, this_week_expiry,
-                )
-                return
-            next_week_expiry = await self.resolver.resolve_expiry(self.options_underlying, "NEXT_WEEK")
+            switched_to_next_week = False
+            if this_week_expiry == ts.date():
+                if self.switch_to_next_week_on_expiry:
+                    switched_to_next_week = True
+                    logger.info(
+                        "%s: THIS_WEEK's contract expires today (%s) — "
+                        "switch_to_next_week_on_expiry=true, shifting the "
+                        "whole calendar spread one week later instead of "
+                        "selling an already-expiring short leg.",
+                        runner.deployment_name, this_week_expiry,
+                    )
+                    # Both legs shift together, one step each, so the
+                    # spread's own one-week gap is preserved -- offset 1
+                    # is whatever "NEXT_WEEK" currently means, offset 2 is
+                    # the expiry after THAT (deliberately NOT a second
+                    # "NEXT_WEEK" resolve_expiry call, which would just
+                    # return the same date again).
+                    short_expiry = await self.resolver.resolve_expiry(self.options_underlying, 1)
+                    long_expiry = await self.resolver.resolve_expiry(self.options_underlying, 2)
+                else:
+                    logger.info(
+                        "%s: THIS_WEEK's contract expires today (%s) — "
+                        "switch_to_next_week_on_expiry=false, selling the "
+                        "same-day-expiry short leg as resolved (see this "
+                        "strategy's own module docstring for why that's "
+                        "NOT recommended here).",
+                        runner.deployment_name, this_week_expiry,
+                    )
+                    short_expiry = this_week_expiry
+                    long_expiry = await self.resolver.resolve_expiry(self.options_underlying, "NEXT_WEEK")
+            else:
+                short_expiry = this_week_expiry
+                long_expiry = await self.resolver.resolve_expiry(self.options_underlying, "NEXT_WEEK")
 
             spot = await self.resolver.get_spot_price(self.options_underlying)
-            strike = await self.resolver.get_atm_strike(self.options_underlying, this_week_expiry, spot_price=spot)
+            strike = await self.resolver.get_atm_strike(self.options_underlying, short_expiry, spot_price=spot)
 
-            short_ce = await self.resolver.get_leg(self.options_underlying, this_week_expiry, strike, "CE")
-            short_pe = await self.resolver.get_leg(self.options_underlying, this_week_expiry, strike, "PE")
-            long_ce = await self.resolver.get_leg(self.options_underlying, next_week_expiry, strike, "CE")
-            long_pe = await self.resolver.get_leg(self.options_underlying, next_week_expiry, strike, "PE")
+            short_ce = await self.resolver.get_leg(self.options_underlying, short_expiry, strike, "CE")
+            short_pe = await self.resolver.get_leg(self.options_underlying, short_expiry, strike, "PE")
+            long_ce = await self.resolver.get_leg(self.options_underlying, long_expiry, strike, "CE")
+            long_pe = await self.resolver.get_leg(self.options_underlying, long_expiry, strike, "PE")
 
             # Price all 4 BEFORE any fill -- a pricing failure here never
             # leaves a partial entry.
@@ -311,10 +373,14 @@ class CalendarBTSTStrategy(StrategyBase):
         trigger_values = {
             "tick_time": ts.time().isoformat(), "entry_time": self.entry_time.isoformat(),
             "late_start_today": self._late_start_today,
+            "switched_to_next_week": switched_to_next_week,
         }
+        # Named short_expiry/long_expiry, not this_week/next_week -- on
+        # a switched day neither leg is literally "this/next calendar
+        # week" anymore (see _enter's own switch branch above).
         common = {
-            "strike": strike, "this_week_expiry": this_week_expiry.isoformat(),
-            "next_week_expiry": next_week_expiry.isoformat(),
+            "strike": strike, "short_expiry": short_expiry.isoformat(),
+            "long_expiry": long_expiry.isoformat(),
         }
 
         async def _fill_leg(leg, price, action, side_label, resulting_state):
@@ -351,12 +417,12 @@ class CalendarBTSTStrategy(StrategyBase):
         self.entry_day = ts.date()
 
         logger.info(
-            "%s: entered calendar spread — SHORT %s@%.2f/%s@%.2f (this-week %s), "
-            "LONG %s@%.2f/%s@%.2f (next-week %s), strike=%s",
+            "%s: entered calendar spread — SHORT %s@%.2f/%s@%.2f (expiry %s), "
+            "LONG %s@%.2f/%s@%.2f (expiry %s), strike=%s%s",
             runner.deployment_name,
-            short_ce.tradingsymbol, short_ce_price, short_pe.tradingsymbol, short_pe_price, this_week_expiry,
-            long_ce.tradingsymbol, long_ce_price, long_pe.tradingsymbol, long_pe_price, next_week_expiry,
-            strike,
+            short_ce.tradingsymbol, short_ce_price, short_pe.tradingsymbol, short_pe_price, short_expiry,
+            long_ce.tradingsymbol, long_ce_price, long_pe.tradingsymbol, long_pe_price, long_expiry,
+            strike, " (switched to next week -- see above)" if switched_to_next_week else "",
         )
 
     # ── Exit ─────────────────────────────────────────────────────────────
