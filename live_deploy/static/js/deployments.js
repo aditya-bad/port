@@ -58,6 +58,7 @@ const Deployments = {
           <td>
             ${escapeHtml(d.deployment_name)}
             ${!d.strategy_registered ? '<span class="tag tag-warn">unregistered</span>' : ''}
+            ${d.notes ? `<div class="card-sub" style="margin-top:2px; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(d.notes)}">📝 ${escapeHtml(d.notes)}</div>` : ''}
           </td>
           <td>${escapeHtml(d.strategy_name)}</td>
           <td><span class="tag tag-${d.status}">${d.status}</span></td>

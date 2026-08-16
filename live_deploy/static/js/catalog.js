@@ -185,6 +185,7 @@ const Catalog = {
     document.getElementById('deployModalTitle').textContent = `Deploy: ${strategyName}`;
     document.getElementById('deployName').value = '';
     document.getElementById('deployCapital').value = '100000';
+    document.getElementById('deployNotes').value = '';
     document.getElementById('deployMsg').textContent = '';
 
     // Always reopen in simple-form mode, regardless of how the LAST
@@ -413,6 +414,7 @@ async function submitDeploy() {
     mode: document.getElementById('deployMode').value,
     initial_capital: Number(document.getElementById('deployCapital').value),
     config,
+    notes: document.getElementById('deployNotes').value,
   };
   if (!body.deployment_name) {
     msg.innerHTML = '<span style="color:var(--loss)">Deployment name is required</span>';

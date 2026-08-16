@@ -122,6 +122,7 @@ class DeploymentManager:
         row = await queries.create_deployment(
             self.pool, payload.deployment_name, payload.strategy_name,
             payload.mode, payload.initial_capital, payload.config,
+            notes=payload.notes,
         )
         try:
             await self._start_runner(row)

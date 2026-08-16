@@ -37,17 +37,18 @@ async def create_deployment(
     mode: str,
     initial_capital: float,
     config: dict,
+    notes: Optional[str] = None,
 ) -> asyncpg.Record:
     async with pool.acquire() as conn:
         return await conn.fetchrow(
             """
             INSERT INTO deployments
                 (deployment_name, strategy_name, mode, initial_capital,
-                 current_cash, config)
-            VALUES ($1, $2, $3, $4, $4, $5)
+                 current_cash, config, notes)
+            VALUES ($1, $2, $3, $4, $4, $5, $6)
             RETURNING *
             """,
-            deployment_name, strategy_name, mode, initial_capital, config,
+            deployment_name, strategy_name, mode, initial_capital, config, notes,
         )
 
 

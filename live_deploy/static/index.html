@@ -1121,6 +1121,11 @@ body.mobile-nav-open { overflow: hidden; }
       <input type="checkbox" id="deployAdvancedToggle" onchange="Catalog.toggleAdvanced()">
       <label for="deployAdvancedToggle">Advanced (edit raw JSON)</label>
     </div>
+    <div class="field">
+      <label>Description (optional)</label>
+      <textarea id="deployNotes" style="font-family:var(--font-body); min-height:70px;"
+        placeholder="Why this one — e.g. tighter stop than the usual conservative preset, testing a new target basis…"></textarea>
+    </div>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="closeDeployModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitDeploy()">Deploy</button>

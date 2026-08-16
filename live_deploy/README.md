@@ -3023,6 +3023,49 @@ sees the new "created" toast fire before the pause/resume ones it was
 already checking, which is the fix working as intended, not a
 regression) — both pass.
 
+## What's here (Step 45: deployment descriptions, set at deploy time)
+
+Requested, then clarified mid-build: a free-text description per
+deployment ("so I can know what is the purpose of that strategy") —
+and specifically settable in the Deploy modal itself, alongside the
+name, at deployment-creation time, not only afterward.
+
+Most of the plumbing already existed and just wasn't wired to
+creation: the `notes` column (migration `0004_deployment_notes.sql`),
+`DeploymentUpdate`, the `PATCH /deployments/{id}` endpoint, and an
+"Edit deployment" modal on the Detail page were all already there —
+added at some earlier point for post-creation renaming, but with no
+way to set notes at the moment a deployment is actually created,
+which is when "why this one" is easiest to write down, not something
+worth reconstructing from memory later via a separate modal.
+
+Closed the actual gap: `DeploymentCreate` gained an optional `notes`
+field, `queries.create_deployment` now inserts it, and
+`DeploymentManager.create_deployment` passes `payload.notes` through
+— no migration needed, the column was already there.
+`POST /deployments` itself needed no change; it already forwards the
+full payload object to the manager.
+
+On the frontend: the Deploy modal gained a "Description" textarea
+next to the config fields, submitted as `notes` alongside
+`deployment_name`/`mode`/`initial_capital`. The Deployed Strategies
+list table now shows it — a truncated, muted `📝 ...` line under the
+deployment name (full text on hover via `title`), the same visual
+convention the Detail page already used for notes, now consistent
+across both. The existing Edit modal is untouched and still the only
+way to change it after the fact.
+
+**Verified** against a real server + real Postgres + a real browser:
+deployed a strategy through the actual Deploy modal with a
+description typed into the new field, confirmed it POSTed correctly,
+showed up truncated on the Deployed Strategies list, showed up in
+full on the Detail page, confirmed the Edit modal correctly prefills
+with the notes set at deploy time (not blank), edited it there, and
+confirmed the new text replaced the old everywhere with no leftover
+trace of the original — the full create → display → edit round trip,
+not just the create half. Re-ran the Step 38 dark-mode suite
+afterward since this touches shared modal CSS; still passes.
+
 ## Setup
 
 ```bash

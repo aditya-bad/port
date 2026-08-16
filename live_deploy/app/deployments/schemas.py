@@ -13,6 +13,12 @@ class DeploymentCreate(BaseModel):
     mode: Literal["intraday", "positional"]
     initial_capital: float = Field(gt=0)
     config: dict = Field(default_factory=dict)
+    # Optional, set at deploy time -- "why this one" is easiest to write
+    # down while you're already looking at the config, not something to
+    # reconstruct later from memory via the separate Edit modal (still
+    # there, still the only way to change it afterward -- see
+    # DeploymentUpdate).
+    notes: Optional[str] = None
 
 
 class DeploymentUpdate(BaseModel):
