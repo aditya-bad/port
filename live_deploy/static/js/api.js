@@ -152,6 +152,11 @@ const Api = {
     const data = await r.json();
     return { ok: r.ok, data };
   },
+  async logoutEverywhere() {
+    const r = await fetch('/auth/logout-everywhere', { method: 'POST' });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
   async listUsers() {
     const r = await fetch('/auth/users');
     if (!r.ok) throw new Error(`Could not load users (${r.status})`);

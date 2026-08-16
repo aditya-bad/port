@@ -1,0 +1,19 @@
+-- Makes sessions actually revocable server-side. Before this, a
+-- session cookie was a purely self-contained signed token -- valid
+-- until it naturally expired, with no way to force it invalid sooner
+-- (changing your password didn't kick out an already-issued cookie,
+-- yours or a stolen one; nothing server-side ever held or checked
+-- anything about "is this specific session still supposed to work").
+--
+-- `session_version` is embedded in the session cookie's own payload at
+-- login time (see routers/auth.py's login()). Every authenticated
+-- request compares the cookie's embedded version against this column's
+-- CURRENT value (via a cached lookup, not a live query per request --
+-- see app/cache.py's new "user_session_versions" key) -- a mismatch
+-- means the session was issued before the last time this user's
+-- sessions were invalidated, so it's rejected even though its
+-- signature is still perfectly valid and it hasn't naturally expired.
+-- Bumping this one integer instantly invalidates every session ever
+-- issued for that user, without needing to track or store the
+-- sessions themselves anywhere.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS session_version INT NOT NULL DEFAULT 1;

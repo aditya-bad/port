@@ -198,6 +198,17 @@ async def startup() -> None:
     # got cached. A DB outage still surfaces within one interval, which
     # is the right trade for a status indicator.
     cache.register("db_health", lambda: check_db_health(db_pool), interval=15.0)
+    # Read by AuthMiddleware on every single authenticated request (see
+    # app/auth.py's _session_ok) -- has to be a cached in-memory read,
+    # not a live query per request, or this revocation check would add
+    # a Neon round trip to literally everything the app serves. The
+    # periodic 10s refresh is just a backstop; the actual "revoke this
+    # user's sessions right now" cases (change-password, explicit
+    # logout-everywhere -- see routers/auth.py) call
+    # cache.refresh_now() themselves right after bumping the version,
+    # same mutation-triggered-refresh pattern every other cached key
+    # here already uses.
+    cache.register("user_session_versions", lambda: queries.get_all_session_versions(db_pool), interval=10.0)
     await cache.start()
     app.state.cache = cache
 

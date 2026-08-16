@@ -707,6 +707,37 @@ async def update_user_last_login(pool: asyncpg.Pool, user_id: UUID) -> None:
         )
 
 
+async def bump_session_version(pool: asyncpg.Pool, user_id: UUID) -> int:
+    """Invalidates every session ever issued for this user — see
+    migration 0006's own comment. Callers follow this with
+    cache.refresh_now("user_session_versions") so the bump is visible
+    to AuthMiddleware immediately, not after the cache's next scheduled
+    refresh — the whole point is a leaked/stolen session stops working
+    the moment you act, not up to N seconds later. Returns the new
+    version so a caller can, if it wants to, immediately re-stamp its
+    OWN current session with it (see change_password's own use of
+    this — the account owner making the change stays logged in; every
+    OTHER already-issued session for this user does not)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "UPDATE users SET session_version = session_version + 1 WHERE id = $1 "
+            "RETURNING session_version",
+            user_id,
+        )
+        return row["session_version"]
+
+
+async def get_all_session_versions(pool: asyncpg.Pool) -> dict[str, int]:
+    """Powers the cached `user_session_versions` key AuthMiddleware
+    checks on every authenticated request (see app/cache.py) — one
+    query for every user's current version, not a live per-request DB
+    hit. Keyed by user_id as a STRING, matching how it's stored in the
+    session cookie's own JSON payload (see routers/auth.py's login())."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT id, session_version FROM users")
+        return {str(r["id"]): r["session_version"] for r in rows}
+
+
 # ═════════════════════════════════════════════════════════════════════
 # AUDIT LOG  (written by app/auth.py's AuditLogMiddleware — one row per
 # state-changing request that reached the ASGI app, not by individual

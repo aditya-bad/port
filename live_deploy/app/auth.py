@@ -133,9 +133,24 @@ class HostAwareSessionMiddleware:
     matching security benefit — see _is_tailscale_ip's own comment).
     """
 
+    # Starlette's own SessionMiddleware default is 14 DAYS if never set
+    # explicitly — never actually chosen, just inherited. Found via a
+    # real "still logged in a day later, even after a redeploy"
+    # observation. 24h mirrors the daily rhythm this app already has
+    # (Kite's own access_token also expires once a day) rather than
+    # introducing a second, unfamiliar one. Absolute from login time,
+    # not sliding on activity — Starlette sets Max-Age once at issue
+    # time and doesn't refresh it on every request, and that's fine
+    # here: "re-login once a day" is already the expected routine.
+    SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
+
     def __init__(self, app: ASGIApp, secret_key: str):
-        self._secure = SessionMiddleware(app, secret_key=secret_key, https_only=True)
-        self._insecure = SessionMiddleware(app, secret_key=secret_key, https_only=False)
+        self._secure = SessionMiddleware(
+            app, secret_key=secret_key, https_only=True, max_age=self.SESSION_MAX_AGE_SECONDS,
+        )
+        self._insecure = SessionMiddleware(
+            app, secret_key=secret_key, https_only=False, max_age=self.SESSION_MAX_AGE_SECONDS,
+        )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -166,8 +181,30 @@ class AuthMiddleware:
         except OSError:
             return _FALLBACK_LOGIN_HTML
 
-    def _session_ok(self, conn: HTTPConnection) -> bool:
-        return conn.session.get("user_id") is not None
+    async def _session_ok(self, conn: HTTPConnection) -> bool:
+        user_id = conn.session.get("user_id")
+        if user_id is None:
+            return False
+        # Beyond "is there a user_id in here at all" (the only check
+        # before this): the session's OWN embedded session_version,
+        # from whenever it was issued, must still match this user's
+        # CURRENT version — see migration 0006 + queries.
+        # bump_session_version's own comments. A session issued before
+        # this check existed at all carries no session_version, which
+        # never matches (every real user's column defaults to 1, not
+        # None) — so shipping this once, deliberately, invalidates
+        # every previously-issued session and forces one fresh login;
+        # after that, everything works as normal until the version is
+        # next bumped.
+        cache = getattr(getattr(conn.scope.get("app"), "state", None), "cache", None)
+        if cache is None:
+            # Only reachable before the ASGI lifespan startup event has
+            # finished (see app/cache.py) -- shouldn't happen for a
+            # real request at all, but degrade to the pre-revocation
+            # check rather than locking out every user over it.
+            return True
+        versions = await cache.get("user_session_versions")
+        return versions.get(user_id) == conn.session.get("session_version")
 
     def _header_api_key_ok(self, conn: HTTPConnection) -> bool:
         supplied = conn.headers.get("x-api-key")
@@ -184,8 +221,8 @@ class AuthMiddleware:
         supplied = conn.query_params.get("api_key")
         return bool(supplied) and secrets.compare_digest(supplied, self.secret)
 
-    def _is_authorized(self, conn: HTTPConnection) -> bool:
-        if self._session_ok(conn) or self._header_api_key_ok(conn):
+    async def _is_authorized(self, conn: HTTPConnection) -> bool:
+        if await self._session_ok(conn) or self._header_api_key_ok(conn):
             return True
         if conn.scope["type"] == "websocket" and self._query_api_key_ok(conn):
             return True
@@ -201,7 +238,7 @@ class AuthMiddleware:
             return
 
         conn = HTTPConnection(scope, receive)
-        if self._is_authorized(conn):
+        if await self._is_authorized(conn):
             await self.app(scope, receive, send)
             return
 

@@ -117,6 +117,12 @@ async def login(payload: LoginIn, request: Request):
 
     request.session["user_id"] = str(user["id"])
     request.session["username"] = user["username"]
+    # See migration 0006 + AuthMiddleware._session_ok: this session
+    # only keeps working for as long as it matches the user's CURRENT
+    # session_version — embedding it here is what makes a later bump
+    # (change-password, logout-everywhere) actually revoke THIS session
+    # too, not just future ones.
+    request.session["session_version"] = user["session_version"]
     await queries.update_user_last_login(pool, user["id"])
     logger.info("Login successful: %s", user["username"])
     return {"ok": True, "username": user["username"]}
@@ -155,7 +161,40 @@ async def change_password(payload: ChangePasswordIn, request: Request):
     if not user or not verify_password(payload.old_password, user["password_hash"]):
         raise HTTPException(401, "Current password is incorrect")
     await queries.update_user_password(pool, user["id"], hash_password(payload.new_password))
-    logger.info("Password changed: %s", user["username"])
+    # A password change is exactly the moment a leaked/stolen session
+    # should stop working — bump invalidates every session for this
+    # user, including whichever one might have been compromised.
+    # refresh_now() makes that immediate rather than waiting out the
+    # cache's periodic interval (see main.py's registration of this
+    # key). The one exception: THIS request's own session gets
+    # re-stamped with the new version right after, so the person who
+    # just changed their own password isn't logged out by their own
+    # action — every OTHER session for this user is still dead the
+    # instant they next make a request.
+    new_version = await queries.bump_session_version(pool, user["id"])
+    await request.app.state.cache.refresh_now("user_session_versions")
+    request.session["session_version"] = new_version
+    logger.info("Password changed: %s (all other sessions invalidated)", user["username"])
+    return {"ok": True}
+
+
+@router.post("/logout-everywhere")
+async def logout_everywhere(request: Request):
+    """Unlike change-password, this deliberately does NOT re-stamp the
+    current session afterward — "log out everywhere" means everywhere,
+    this browser included. Useful when you just want every session
+    gone (lost/stolen device, shared computer, general paranoia)
+    without also having to pick a new password to get there."""
+    user_id = request.session.get("user_id")
+    if not user_id:
+        raise HTTPException(400, "Log in with a user account to use this "
+                                  "(not available for X-API-Key access)")
+    pool = request.app.state.db_pool
+    username = request.session.get("username")
+    await queries.bump_session_version(pool, UUID(user_id))
+    await request.app.state.cache.refresh_now("user_session_versions")
+    request.session.clear()
+    logger.info("Logged out everywhere: %s", username)
     return {"ok": True}
 
 

@@ -2222,6 +2222,70 @@ screenshot is pixel-identical to before this change (`.sidebar-brand`
 and `.sidebar` are untouched — only `.sidebar-nav-group`'s positioning
 mechanism changed, and only inside the sub-760px media query).
 
+## What's here (Step 32: sessions now actually expire and can be revoked)
+
+Reported directly: logging in one day, the session was still active
+the next, even across a full container rebuild. Two separate root
+causes, both real:
+
+1. **Session lifetime was never explicitly set** — Starlette's
+   `SessionMiddleware` defaults to **14 days** when `max_age` isn't
+   passed, which it never was. Now explicit: 24 hours
+   (`HostAwareSessionMiddleware.SESSION_MAX_AGE_SECONDS`), chosen to
+   mirror the daily rhythm this app already has (Kite's own
+   `access_token` also expires once a day), not a new, unfamiliar one.
+   Absolute from login time, not sliding on activity — Starlette sets
+   `Max-Age` once at issue time, and "re-login once a day" is already
+   the expected routine here.
+
+2. **Sessions had no server-side revocation at all** — the actual
+   reason surviving a rebuild "worked": the cookie is a self-contained
+   signed token, never checked against anything live server-side. As
+   long as the signing key (`app_auth_secret`) is unchanged, ANY
+   previously-issued, unexpired cookie keeps validating forever,
+   rebuild or not — and critically, before this, changing your
+   password didn't invalidate any other already-issued session either.
+   Fixed with a `session_version` column on `users` (migration 0006),
+   embedded in the cookie's own payload at login. Every authenticated
+   request now checks the cookie's embedded version against the user's
+   CURRENT version — a mismatch rejects the session even though its
+   signature is still perfectly valid and it hasn't naturally expired.
+   Bumping that one integer instantly invalidates every session ever
+   issued for that user. Read from a new cached key
+   (`user_session_versions`, 10s periodic refresh, `refresh_now()`
+   after every bump — the same mutation-triggered-refresh pattern every
+   other cached key in `app/cache.py` already uses) rather than a live
+   query per request — this check runs on literally every authenticated
+   request the whole app serves, so it can't be allowed to add a Neon
+   round trip to each one.
+
+   Two triggers bump it: **changing your password** (the account owner
+   stays logged in — their OWN session is re-stamped with the new
+   version in the same response — but every OTHER session for that
+   user, including a possibly-stolen one, is dead on its very next
+   request), and a new **"Log out everywhere"** button (Account →
+   Profile) for when you want every session gone, current device
+   included, without also having to pick a new password to get there.
+
+**One deliberate, expected side effect**: shipping this invalidates
+every session that existed before it — anyone (including whoever's
+testing this) needs to log in once more after deploying. After that,
+everything works normally until the version is next bumped.
+
+**Verified** against a real server + real Postgres: the cookie's
+`Max-Age` is confirmed as `86400`, not the old 14-day default; a
+second, independent login as the same user (simulating a second
+device) is confirmed to keep working right up until the first device
+changes its password, at which point the second device's session gets
+a real 401 on its very next request while the first device's
+re-stamped session keeps working with no re-login needed; "log out
+everywhere" is confirmed to invalidate BOTH sessions, current device
+included; authenticated request latency was measured before/after
+(≈2ms average over 20 requests) to confirm the new check reads the
+cache, not Postgres, per request; and the new UI button was clicked
+through a real browser, correctly ending with a redirect back to the
+login page.
+
 ## Setup
 
 ```bash
