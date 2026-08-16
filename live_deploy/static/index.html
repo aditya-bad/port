@@ -1352,10 +1352,11 @@ body.mobile-nav-open { overflow: hidden; }
   </div>
 </div>
 
-<!-- Edit deployment (rename + free-text notes) — the only two fields
-     editable after creation; see DeploymentUpdate's own docstring
-     (app/deployments/schemas.py) for why strategy/mode/capital/config
-     aren't here. -->
+<!-- Edit deployment (rename + free-text notes) — editable regardless of
+     status, a rename/note is never a risky action. Config editing is a
+     SEPARATE modal (#editConfigModal, below) gated to paused-only; see
+     DeploymentUpdate's own docstring (app/deployments/schemas.py) for
+     why strategy/mode/capital still aren't editable anywhere. -->
 <div class="modal-overlay" id="editDeploymentModal">
   <div class="modal">
     <h2>Edit deployment</h2>
@@ -1373,6 +1374,43 @@ body.mobile-nav-open { overflow: hidden; }
       <button class="btn btn-primary" onclick="submitEditDeployment()">Save</button>
     </div>
     <div class="modal-msg" id="editDeploymentMsg"></div>
+  </div>
+</div>
+
+<!-- Edit config — Detail's Config tab, PAUSED deployments only (see
+     Detail.renderConfig's own comment for why the button is only ever
+     shown then, and DeploymentUpdate's docstring for why paused
+     specifically is what makes this safe at all: pause() already tears
+     the live strategy instance down, resume() already reconstructs it
+     fresh from the DB row, config included — editing the row while
+     that instance doesn't exist is the same resume-safety path a real
+     process restart already relies on, not a new mechanism). Reuses
+     the exact same per-key field widgets as the Deploy modal
+     (configFieldHtml/configFieldsContainerHtml/readConfigFromFields,
+     api.js) — a different id prefix (editCfgField_ vs cfgField_) is
+     the only thing that keeps the two modals' fields from colliding,
+     since both exist in the DOM at once. -->
+<div class="modal-overlay" id="editConfigModal">
+  <div class="modal modal-deploy">
+    <h2 id="editConfigModalTitle">Edit config</h2>
+    <div class="card-sub" style="margin-bottom:14px;">
+      Applies the next time this deployment is resumed — it's paused right
+      now, so nothing changes until you resume it.
+    </div>
+    <div class="field">
+      <label>Strategy configuration</label>
+      <div id="editConfigFields"></div>
+      <textarea id="editConfigJson" style="display:none; margin-top:8px;"></textarea>
+    </div>
+    <div class="checkbox-row">
+      <input type="checkbox" id="editConfigAdvancedToggle" onchange="Detail.toggleEditConfigAdvanced()">
+      <label for="editConfigAdvancedToggle">Advanced (edit raw JSON)</label>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeEditConfigModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="submitEditConfig()">Save</button>
+    </div>
+    <div class="modal-msg" id="editConfigMsg"></div>
   </div>
 </div>
 

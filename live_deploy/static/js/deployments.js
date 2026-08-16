@@ -83,7 +83,15 @@ const Deployments = {
     this.load();
   },
   async resume(id) {
-    await Api.resumeDeployment(id);
+    // Can now genuinely fail (409) if config was edited while paused
+    // into something the strategy's own on_start() rejects -- see
+    // DeploymentManager.resume's rollback-to-paused comment. Same
+    // ok-check pattern stop() already uses below.
+    const r = await Api.resumeDeployment(id);
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert(data.detail || 'Could not resume — check its config on the Detail page.');
+    }
     this.load();
   },
   async stop(id) {

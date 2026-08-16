@@ -23,21 +23,46 @@ class DeploymentCreate(BaseModel):
 
 class DeploymentUpdate(BaseModel):
     """
-    PATCH /deployments/{id} — partial update, both fields optional so a
-    caller can rename without touching notes or vice versa. Deliberately
-    narrow: deployment_name (identity) and notes (free-text metadata,
-    e.g. "why this was deployed") are the only fields editable after
-    creation. strategy_name/mode/initial_capital/config are NOT here on
-    purpose — the running strategy instance and every P&L calculation
-    already assume those are fixed for the deployment's lifetime (e.g.
-    initial_capital is the fixed reference value several strategies size
-    against); changing them post-creation without a real reset/restart
-    semantics would silently corrupt state rather than do anything
-    useful. Stop and redeploy fresh for a genuine strategy/capital/config
-    change.
+    PATCH /deployments/{id} — partial update, every field optional so a
+    caller can touch just one of them without disturbing the others.
+
+    deployment_name (identity) and notes (free-text metadata, e.g. "why
+    this was deployed") are editable regardless of status — a rename or
+    a note is never a risky action.
+
+    config is editable too, but ONLY while the deployment is `paused`
+    (enforced in the router, not here) — never while `active`, never
+    while `stopped`. The reasoning that used to keep config off this
+    schema entirely still holds for a RUNNING deployment: the live
+    strategy instance holds its own config-derived state in plain
+    Python attributes, set once in on_start() — overwriting the DB row
+    underneath it would be invisible to that instance until something
+    re-reads config from scratch. What makes editing config SAFE while
+    paused is that "something" already exists: pause() fully tears the
+    runner down (DeploymentManager.pause -> runner.stop(), popped from
+    the manager's runners dict) and resume() fully reconstructs it
+    (DeploymentManager.resume -> _start_runner -> a brand-new strategy
+    instance whose on_start() re-derives everything from the DB row,
+    config included) — the EXACT SAME reconstruction path a real
+    process restart already relies on for resume-safety. So editing
+    config while paused and letting the next resume pick it up isn't a
+    new mechanism bolted on top; it's the existing one, entered through
+    a second door. A stopped deployment is deliberately excluded even
+    though it also has no live runner — resume() itself refuses to ever
+    resume a stopped one, so an edit there would never actually take
+    effect; allowing it would just be confusing.
+
+    strategy_name/mode/initial_capital are still NOT here, and still
+    won't be: initial_capital is the fixed reference value several
+    strategies size against and current_cash has already diverged from
+    it through real P&L, so there's no clean "reload" semantics the way
+    config gets from a pause/resume cycle; mode determines the whole
+    runner setup, not something on_start() can pick back up mid-life.
+    Stop and redeploy fresh for a genuine strategy/mode/capital change.
     """
     deployment_name: Optional[str] = None
     notes: Optional[str] = None
+    config: Optional[dict] = None
 
 
 class DeploymentOut(BaseModel):

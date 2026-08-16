@@ -629,6 +629,121 @@ function renderPnlHeatmap(rows, opts = {}) {
   `;
 }
 
+// ── Strategy config field widgets ────────────────────────────────────
+// Shared by the Deploy modal (Catalog) AND the Edit Config modal
+// (Detail, Step 51) — one <div class="field"> per config key, widget
+// chosen from the key's own value (boolean -> dropdown, array ->
+// comma-separated token list, known enum strings -> dropdown,
+// "HH:MM"-shaped strings -> a time picker, everything else -> a plain
+// box) — built straight from the strategy's own registered
+// default_config (Deploy) or the deployment's own currently-stored
+// config (Edit), so this never drifts out of sync with what a strategy
+// actually accepts the way a hand-maintained parallel schema could.
+// Originally lived only in Catalog (as `_configFieldHtml`); extracted
+// here once a second, independent form (Detail's Edit Config modal)
+// needed the exact same per-key widget logic — the STATEFUL pieces
+// around it (which container/textarea/toggle ids, the current
+// _configBase) stay separate per caller, only this pure
+// key/value-in, HTML-out piece is actually shared.
+
+// String-valued config keys with a real, fixed set of valid values —
+// verified directly against each strategy's own source (pivot_type/
+// atr_smoothing's docstrings in pivot_supertrend.py, expiry_selector's
+// accepted selectors in options/resolver.py's _resolve_expiry, and
+// convergence_mode's own `if ... not in (...)` validation in
+// strangle_monthly_v2.py) — not guessed. Any OTHER string field (symbol,
+// options_underlying, instrument, or a key none of today's strategies
+// use yet) falls back to a plain text box instead of a dropdown.
+const CONFIG_ENUM_OPTIONS = {
+  pivot_type: ['classic', 'fibonacci', 'camarilla', 'woodie'],
+  atr_smoothing: ['wilder', 'sma', 'ema'],
+  expiry_selector: ['THIS_WEEK', 'NEXT_WEEK', 'THIS_MONTH', 'NEXT_MONTH'],
+  convergence_mode: ['fixed_stop', 'trailing_stop', 'active_management'],
+};
+const CONFIG_TIME_FIELD_RE = /^\d{2}:\d{2}$/;
+
+// idPrefix keeps the Deploy modal's fields (cfgField_*) and the Edit
+// Config modal's fields (editCfgField_*, say) from colliding on
+// element ids -- both modals exist in the DOM at once (just hidden via
+// .open), so duplicate ids would be invalid HTML even though nothing
+// today does a global getElementById lookup on them specifically.
+function configFieldHtml(key, value, idPrefix = 'cfgField_') {
+  const label = escapeHtml(key.replace(/_/g, ' '));
+  const id = `${idPrefix}${key}`;
+
+  if (CONFIG_ENUM_OPTIONS[key]) {
+    const opts = CONFIG_ENUM_OPTIONS[key]
+      .map(o => `<option value="${o}" ${o === value ? 'selected' : ''}>${o}</option>`).join('');
+    return `<div class="field"><label for="${id}">${label}</label>` +
+      `<select id="${id}" data-cfg-key="${escapeHtml(key)}" data-cfg-type="string">${opts}</select></div>`;
+  }
+  if (typeof value === 'boolean') {
+    return `<div class="field"><label for="${id}">${label}</label>` +
+      `<select id="${id}" data-cfg-key="${escapeHtml(key)}" data-cfg-type="boolean">` +
+      `<option value="true" ${value === true ? 'selected' : ''}>true</option>` +
+      `<option value="false" ${value === false ? 'selected' : ''}>false</option>` +
+      `</select></div>`;
+  }
+  if (Array.isArray(value)) {
+    // instrument_tokens is the one array-shaped field across every
+    // strategy's default_config today — a comma-separated list of
+    // numbers in, a real array of numbers back out on submit.
+    return `<div class="field"><label for="${id}">${label} (comma-separated)</label>` +
+      `<input type="text" id="${id}" data-cfg-key="${escapeHtml(key)}" data-cfg-type="number-array" ` +
+      `value="${escapeHtml(value.join(', '))}" placeholder="256265, 260105"></div>`;
+  }
+  if (typeof value === 'number') {
+    const step = Number.isInteger(value) ? '1' : 'any';
+    return `<div class="field"><label for="${id}">${label}</label>` +
+      `<input type="number" id="${id}" data-cfg-key="${escapeHtml(key)}" data-cfg-type="number" step="${step}" value="${value}"></div>`;
+  }
+  if (typeof value === 'string' && CONFIG_TIME_FIELD_RE.test(value)) {
+    return `<div class="field"><label for="${id}">${label} (HH:MM)</label>` +
+      `<input type="time" id="${id}" data-cfg-key="${escapeHtml(key)}" data-cfg-type="string" value="${value}"></div>`;
+  }
+  // Plain string fallback — symbol, options_underlying, instrument,
+  // or any key none of today's strategies use yet.
+  return `<div class="field"><label for="${id}">${label}</label>` +
+    `<input type="text" id="${id}" data-cfg-key="${escapeHtml(key)}" data-cfg-type="string" value="${escapeHtml(String(value))}"></div>`;
+}
+
+// Builds the whole fields container's innerHTML for one config object
+// -- shared by both modals' render step. `idPrefix` forwarded straight
+// to configFieldHtml above.
+function configFieldsContainerHtml(config, idPrefix = 'cfgField_') {
+  const simpleKeys = Object.keys(config).filter(k => config[k] !== null && config[k] !== undefined);
+  const advancedOnlyKeys = Object.keys(config).filter(k => config[k] === null || config[k] === undefined);
+  if (!simpleKeys.length && !advancedOnlyKeys.length) {
+    return emptyHtml('This strategy has no default config fields — use Advanced to add any.');
+  }
+  return simpleKeys.map(k => configFieldHtml(k, config[k], idPrefix)).join('')
+    + (advancedOnlyKeys.length
+        ? `<div class="table-note">${advancedOnlyKeys.map(k => `<code>${escapeHtml(k)}</code>`).join(', ')} ` +
+          `left at ${advancedOnlyKeys.length > 1 ? 'their' : 'its'} default (null) — switch to Advanced to set ` +
+          `${advancedOnlyKeys.length > 1 ? 'them' : 'it'}.</div>`
+        : '');
+}
+
+// Reads a fields container back into a config object -- shared read
+// step. Starts from `configBase` (not an empty {}) so advanced/null-
+// valued keys the simple form never showed still round-trip into the
+// result untouched, rather than silently disappearing because the box
+// editor never displayed them.
+function readConfigFromFields(containerId, configBase) {
+  const config = { ...configBase };
+  document.querySelectorAll(`#${containerId} [data-cfg-key]`).forEach(el => {
+    const key = el.dataset.cfgKey;
+    const type = el.dataset.cfgType;
+    const raw = el.value;
+    if (type === 'boolean') config[key] = raw === 'true';
+    else if (type === 'number') config[key] = raw === '' ? null : Number(raw);
+    else if (type === 'number-array') {
+      config[key] = raw.split(',').map(s => s.trim()).filter(s => s !== '').map(Number);
+    } else config[key] = raw;
+  });
+  return config;
+}
+
 // ── Trigger-type badges ─────────────────────────────────────────────
 // Keyword-based classification of a fill's own `reason` string into a
 // small, colored chip — lets a long trade list be scanned for every

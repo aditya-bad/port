@@ -87,18 +87,37 @@ async def list_deployments(pool: asyncpg.Pool, status: Optional[str] = None) -> 
         return await conn.fetch("SELECT * FROM deployments ORDER BY created_at")
 
 
-async def update_deployment_metadata(
+async def update_deployment_fields(
     pool: asyncpg.Pool, deployment_id: UUID,
     deployment_name: Optional[str] = None, notes: Optional[str] = None,
+    config: Optional[dict] = None,
 ) -> Optional[asyncpg.Record]:
     """
     Partial update for PATCH /deployments/{id} — only the field(s)
     actually passed get written; omitted ones (None) are left untouched,
     NOT overwritten with NULL (a caller renaming a deployment shouldn't
-    accidentally blank out its notes, and vice versa). Uses COALESCE
-    against the row's own current value rather than a dynamically-built
-    SQL string — same fixed query every call, no string-built column
-    list to get wrong.
+    accidentally blank out its notes or config, and vice versa). Uses
+    COALESCE against the row's own current value rather than a
+    dynamically-built SQL string — same fixed query every call, no
+    string-built column list to get wrong.
+
+    Renamed from update_deployment_metadata once `config` joined
+    deployment_name/notes here — deliberately still just this one call
+    site's own concern, NOT where the "only while paused" restriction on
+    editing config lives (see DeploymentUpdate's own docstring) — that's
+    a status check the router makes before ever calling this, since it
+    needs the deployment's CURRENT row to decide, and this function's
+    job is purely "write whatever fields were passed," not "decide
+    whether it's currently allowed to."
+
+    config=None (the default, meaning "field omitted") relies on
+    asyncpg never invoking the jsonb type codec for a bare Python None —
+    None always maps straight to SQL NULL regardless of column type, so
+    COALESCE(NULL, config) correctly keeps the existing value. An
+    explicit config={} is NOT None, so it DOES get encoded and DOES
+    overwrite — "clear every config key" is a real, distinct intent
+    from "don't touch config," same distinction notes already draws
+    between omitted (None) and explicitly-blanked ("").
     """
     async with pool.acquire() as conn:
         return await conn.fetchrow(
@@ -106,11 +125,12 @@ async def update_deployment_metadata(
             UPDATE deployments
             SET deployment_name = COALESCE($2, deployment_name),
                 notes = COALESCE($3, notes),
+                config = COALESCE($4, config),
                 updated_at = now()
             WHERE id = $1
             RETURNING *
             """,
-            deployment_id, deployment_name, notes,
+            deployment_id, deployment_name, notes, config,
         )
 
 

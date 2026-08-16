@@ -161,12 +161,13 @@ async def get_deployment(deployment_id: UUID, request: Request):
 @router.patch("/{deployment_id}", response_model=DeploymentOut)
 async def update_deployment(deployment_id: UUID, payload: DeploymentUpdate, request: Request):
     """
-    Rename a deployment and/or edit its free-text notes — the only
-    fields editable after creation (see DeploymentUpdate's own
-    docstring for why strategy_name/mode/initial_capital/config aren't
-    here). Works regardless of status (active/paused/stopped) — a
-    rename or a note is never a risky action, unlike anything that would
-    touch trading state.
+    Rename a deployment, edit its free-text notes, and/or (new) edit its
+    config — see DeploymentUpdate's own docstring for the full reasoning,
+    including why strategy_name/mode/initial_capital still aren't here.
+    Rename/notes work regardless of status, same as before. config is
+    the one field gated here: only while `paused` — the deployment
+    itself already knows this the moment it's asked, so the check lives
+    here rather than in the Pydantic model.
     """
     pool = request.app.state.db_pool
     existing = await queries.get_deployment(pool, deployment_id)
@@ -183,15 +184,26 @@ async def update_deployment(deployment_id: UUID, payload: DeploymentUpdate, requ
                 raise HTTPException(409, f"deployment_name {stripped!r} already exists")
         payload.deployment_name = stripped
 
-    row = await queries.update_deployment_metadata(
+    if payload.config is not None and existing["status"] != "paused":
+        raise HTTPException(
+            409,
+            f"Config can only be edited while paused (this deployment is "
+            f"{existing['status']!r}). Pause it first, edit, then resume "
+            f"to apply the change.",
+        )
+
+    row = await queries.update_deployment_fields(
         pool, deployment_id,
         deployment_name=payload.deployment_name, notes=payload.notes,
+        config=payload.config,
     )
     out = _annotate(row)
     await _enrich_pnl_one(pool, request.app.state.dispatcher, deployment_id, out)
     # A rename changes what the cached LIST shows for this row (notes
     # aren't shown in the list today, but the name is) -- refresh now so
-    # the very next GET /deployments already reflects it.
+    # the very next GET /deployments already reflects it. Config isn't
+    # in the cached list either, but refreshing here is cheap and this
+    # cache key doesn't get its own separate reasoning to skip it.
     await request.app.state.cache.refresh_now("deployments")
     return out
 

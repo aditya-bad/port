@@ -174,7 +174,27 @@ class DeploymentManager:
 
         await queries.set_status(self.pool, deployment_id, "active")
         row = await queries.get_deployment(self.pool, deployment_id)
-        await self._start_runner(row)
+        try:
+            await self._start_runner(row)
+        except Exception:
+            # A resume that fails to actually start (most reachable
+            # cause now: config was edited while paused into something
+            # a strategy's own on_start() validation rejects, e.g. a
+            # malformed instrument_tokens list -- see DeploymentUpdate's
+            # docstring for how that editing is meant to work) must NOT
+            # leave the row claiming "active" with no runner actually
+            # tracking it -- that's a silently-broken deployment: still
+            # shows as running, never processes another tick, and
+            # nothing about its own state says so. Roll back to paused
+            # (its state immediately before this call) so the failure is
+            # recoverable -- fix the config and resume again -- rather
+            # than needing a server restart to notice and self-heal via
+            # load_active_on_startup. The original exception (typically
+            # the strategy's own descriptive ValueError) still propagates
+            # to the caller, which already turns a ValueError into a
+            # clean 409 (see the router's resume endpoint).
+            await queries.set_status(self.pool, deployment_id, "paused")
+            raise
         await self._record_event(deployment_id, row["deployment_name"], row["strategy_name"], "resumed")
         logger.info("Resumed deployment %s", row["deployment_name"])
         return row

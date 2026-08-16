@@ -3358,6 +3358,84 @@ does NOT also collapse the section while clicking the header itself
 still does (no regression on Step 41's existing behavior). Re-ran the
 Step 38 dark-mode suite afterward; still passes.
 
+## What's here (Step 51: edit a deployment's config, after the fact — while paused)
+
+Requested directly ("Can you add config edit option for all the
+strategies?" / "post deployment"), and it reopens a boundary drawn
+deliberately back when `DeploymentUpdate` was first built: config was
+kept off that schema on purpose, because a RUNNING strategy instance
+holds its own config-derived state in plain Python attributes, set
+once in `on_start()` — overwriting the DB row underneath a live
+instance would be invisible to it until something re-reads config from
+scratch. That reasoning hasn't changed. What's new is recognizing that
+"something" already exists and is already trustworthy: `pause()` fully
+tears the runner down (`DeploymentManager.pause` → `runner.stop()`,
+popped from the manager's own `runners` dict) and `resume()` fully
+reconstructs it (`_start_runner` → a brand-new strategy instance whose
+`on_start()` re-derives everything from the DB row, config included) —
+the *exact same* reconstruction path a real process restart already
+relies on for resume-safety (see every strategy's own "RESUME-SAFETY"
+docstring section). So config is now editable, but through a gate, not
+a free-for-all: **only while `paused`**. Not `active` (the running
+instance wouldn't see it), not `stopped` (it can never be resumed, so
+an edit there would never take effect — `resume()` has always refused
+a stopped deployment, unchanged). strategy_name/mode/initial_capital
+are still off-limits, still for their own original reasons (no clean
+"reload" semantics the way config gets from pause/resume) — this
+didn't relitigate those, only config.
+
+**A real gap this surfaced and closed**: making a bad edited config a
+genuinely reachable failure mode at resume time exposed that
+`DeploymentManager.resume()` set status to `active` in the DB *before*
+attempting to actually start the runner — if `on_start()` then raised
+(exactly what a bad edited config does), the deployment was left
+claiming `active` with no runner actually tracking it: a silently-
+broken deployment, invisible until a server restart happened to self-
+heal it via `load_active_on_startup`. `resume()` now wraps the start
+attempt and rolls the status back to `paused` on failure before
+re-raising — the same descriptive `ValueError` a bad config already
+produced, still surfaces as a clean 409, but now leaves the deployment
+in a state you can actually fix and retry from, not one that silently
+lies about what's running. `Detail.resume()`/`Deployments.resume()`
+(the two UI call sites) were themselves fire-and-forget before this —
+neither had ever needed to check for a resume failure, because there
+was no way to cause one — both now surface it as a real alert.
+
+**"For all the strategies"**: the actual editing UI is the exact same
+generic, schema-agnostic form the Deploy modal already uses — per-key
+widgets (dropdown for known enums, boolean toggle, comma-separated
+array, number, HH:MM time picker, plain text fallback) built straight
+from whatever the deployment's own config actually contains, plus the
+same "Advanced (edit raw JSON)" escape hatch for anything the simple
+form doesn't have a widget for. Extracted the field-building logic
+(`configFieldHtml`/`configFieldsContainerHtml`/`readConfigFromFields`)
+out of Catalog and into api.js as pure, reusable functions once a
+second, independent consumer (Detail's new Edit Config modal) needed
+the exact same per-key type inference — the stateful pieces around it
+(which container/textarea ids, each modal's own `_configBase`) stay
+separate per caller on purpose, only the actual "what widget for this
+key" logic is shared, so this works identically for every registered
+strategy without a strategy-specific line of code anywhere.
+
+**Verified** against a real server + real Postgres + a real browser —
+both the API contract directly and the full UI flow: editing config
+while `active` → 409; while `stopped` → 409; while `paused` → succeeds,
+and the edit is CONFIRMED to actually take effect on resume, not just
+sit in the DB (round-tripped `entry_time` through pause → edit →
+resume → re-fetch); the resume-failure rollback specifically — edited
+`instrument_tokens` to `[]` (a real strategy validation rejects this),
+confirmed resume fails with the strategy's own message, confirmed the
+deployment lands back on `paused` (not stuck `active`), then confirmed
+a normal resume succeeds again once the config's fixed. Same sequence
+repeated through the actual browser UI end to end: no Edit Config
+button while active (explanatory note instead), button appears once
+paused, modal pre-fills the deployment's real current values, saving
+updates the read-only Config tab, and the bad-config resume path shows
+a real `alert()` with the deployment visibly staying "paused" in the
+header. Re-ran the Step 38 dark-mode suite and the Step 47 minimize-
+deploy suite afterward (the latter specifically because it depends on
+the exact config-form code that got extracted here); both still pass.
+
 ## Setup
 
 ```bash

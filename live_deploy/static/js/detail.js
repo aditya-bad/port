@@ -96,15 +96,28 @@ const Detail = {
   },
 
   // ── Config ──────────────────────────────────────────────────────
+  // Editable, but ONLY while paused (see DeploymentUpdate's own
+  // docstring, app/deployments/schemas.py, for the full reasoning) —
+  // the button only ever renders in that state; every other status
+  // gets an explanatory note instead of a disabled/confusing button.
   renderConfig() {
     const cfg = this._dep.config || {};
     const keys = Object.keys(cfg).sort();
     const body = document.getElementById('detailBody');
+    const paused = this._dep.status === 'paused';
+    const editRow = `
+      <div class="table-note" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <span>${paused
+          ? 'This deployment is paused — safe to edit config now, applies on next Resume.'
+          : `Pause this deployment to edit its config${this._dep.status === 'stopped' ? ' (a stopped deployment can\'t be resumed, so editing here would never take effect)' : ''}.`}</span>
+        ${paused ? `<button class="btn btn-secondary btn-sm" onclick="Detail.openEditConfigModal()">Edit config</button>` : ''}
+      </div>
+    `;
     if (!keys.length) {
-      body.innerHTML = emptyHtml('No config stored for this deployment.');
+      body.innerHTML = editRow + emptyHtml('No config stored for this deployment.');
       return;
     }
-    body.innerHTML = `
+    body.innerHTML = editRow + `
       <div class="table-wrap"><table class="kv-table"><tbody>
         ${keys.map(k => `<tr><td>${escapeHtml(k)}</td><td>${formatConfigValue(cfg[k])}</td></tr>`).join('')}
       </tbody></table></div>
@@ -461,8 +474,69 @@ const Detail = {
     document.getElementById('editDeploymentMsg').textContent = '';
     document.getElementById('editDeploymentModal').classList.add('open');
   },
+
+  // ── Edit config (Step 51) — only ever opened from renderConfig's own
+  // paused-only button, but the paused check is enforced server-side
+  // too (see the PATCH handler), not just gated by hiding the button.
+  // Reuses the exact same field-widget machinery as the Deploy modal
+  // (configFieldHtml family, api.js) with its own idPrefix/container
+  // ids and its own _editConfigBase, entirely independent of Catalog's
+  // own deploy-time state. ─────────────────────────────────────────────
+  _editConfigBase: {},
+
+  openEditConfigModal() {
+    document.getElementById('editConfigModalTitle').textContent = `Edit config: ${this._dep.deployment_name}`;
+    document.getElementById('editConfigAdvancedToggle').checked = false;
+    document.getElementById('editConfigFields').style.removeProperty('display');
+    document.getElementById('editConfigJson').style.display = 'none';
+    this._renderEditConfigFields(this._dep.config || {});
+    document.getElementById('editConfigMsg').textContent = '';
+    document.getElementById('editConfigModal').classList.add('open');
+  },
+
+  _renderEditConfigFields(config) {
+    this._editConfigBase = { ...config };
+    document.getElementById('editConfigFields').innerHTML = configFieldsContainerHtml(config, 'editCfgField_');
+  },
+
+  toggleEditConfigAdvanced() {
+    const on = document.getElementById('editConfigAdvancedToggle').checked;
+    const fieldsEl = document.getElementById('editConfigFields');
+    const jsonEl = document.getElementById('editConfigJson');
+    if (on) {
+      const config = readConfigFromFields('editConfigFields', this._editConfigBase);
+      jsonEl.value = JSON.stringify(config, null, 2);
+      fieldsEl.style.display = 'none';
+      jsonEl.style.display = 'block';
+    } else {
+      let parsed;
+      try {
+        parsed = JSON.parse(jsonEl.value || '{}');
+      } catch (e) {
+        document.getElementById('editConfigAdvancedToggle').checked = true;
+        alert(`Invalid JSON — fix it first, or it can't be converted back to fields:\n${e.message}`);
+        return;
+      }
+      this._renderEditConfigFields(parsed);
+      fieldsEl.style.removeProperty('display');
+      jsonEl.style.display = 'none';
+    }
+  },
   async pause() { await Api.pauseDeployment(this._id); this.load(this._id); },
-  async resume() { await Api.resumeDeployment(this._id); this.load(this._id); },
+  async resume() {
+    // No longer a guaranteed no-op fire-and-forget: resume can now
+    // genuinely fail (409) if config was edited while paused into
+    // something the strategy's own on_start() rejects -- see
+    // DeploymentManager.resume's own rollback-to-paused comment. Same
+    // ok-check pattern stop() already used, just not previously needed
+    // here.
+    const r = await Api.resumeDeployment(this._id);
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert(data.detail || 'Could not resume — check its config on the Config tab.');
+    }
+    this.load(this._id);
+  },
   async stop() {
     const forceClose = confirm(
       'Stop this deployment.\n\nOK = force-close any open position at the last known price.\nCancel = only stop if already flat.'
@@ -517,4 +591,33 @@ async function submitEditDeployment() {
   if (!ok) { msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(data.detail || 'Failed')}</span>`; return; }
   msg.innerHTML = '<span style="color:var(--gain)">✓ Saved</span>';
   setTimeout(() => { closeEditDeploymentModal(); Detail.load(Detail._id); }, 500);
+}
+
+// ── Edit config modal (Step 51) ─────────────────────────────────────
+function closeEditConfigModal() {
+  document.getElementById('editConfigModal').classList.remove('open');
+}
+async function submitEditConfig() {
+  const msg = document.getElementById('editConfigMsg');
+  const advancedOn = document.getElementById('editConfigAdvancedToggle').checked;
+  let config;
+  if (advancedOn) {
+    try {
+      config = JSON.parse(document.getElementById('editConfigJson').value || '{}');
+    } catch (e) {
+      msg.innerHTML = `<span style="color:var(--loss)">Invalid config JSON: ${escapeHtml(e.message)}</span>`;
+      return;
+    }
+  } else {
+    config = readConfigFromFields('editConfigFields', Detail._editConfigBase);
+  }
+  msg.innerHTML = '<span class="spinner"></span> Saving…';
+  // The server re-checks "still paused?" itself (a status change could
+  // have happened in another tab while this modal was open) -- a 409
+  // here reads the same as the one Resume can now return, not a new
+  // error shape to handle.
+  const { ok, data } = await Api.updateDeployment(Detail._id, { config });
+  if (!ok) { msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(data.detail || 'Failed')}</span>`; return; }
+  msg.innerHTML = '<span style="color:var(--gain)">✓ Saved — applies on next Resume</span>';
+  setTimeout(() => { closeEditConfigModal(); Detail.load(Detail._id); }, 700);
 }
