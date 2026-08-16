@@ -3138,6 +3138,53 @@ recorded in trade metadata (not the symbol text alone, since two
 same-month synthetic expiries can share a week tag) — neither ever
 skips.
 
+## What's here (Step 47: minimize a deploy in progress instead of losing it)
+
+Reported directly: the Deploy modal only offered Save (a config preset
+— strategy-scoped, not the deployment name/mode/capital/notes actually
+typed) or Cancel (which discards everything). Wanting to check
+something elsewhere in the app mid-deploy meant either losing the
+in-progress form or leaving the modal open and blocking the rest of
+the UI behind its backdrop. Added a third option, modeled explicitly
+on the two references given — Gmail's minimized compose window and
+Jira/LinkedIn's minimized panes: a **Minimize** button that tucks the
+whole form away into a bottom-right dock instead of discarding it,
+restorable exactly as left.
+
+- **What's captured**: deployment name, mode, capital, notes, and the
+  config in whichever mode it was left in — the simple form's current
+  field values, or the raw JSON text verbatim if Advanced was open
+  (best-effort parsed too, so the hidden simple fields underneath stay
+  roughly in sync for a later toggle back, same as normal Advanced
+  use).
+- **A stack, not a single slot**: minimizing while deploying a
+  different strategy — or the same one again — queues up another
+  independent chip rather than overwriting the first, matching how
+  Jira lets several minimized issue panes sit side by side. Each chip
+  restores or discards on its own.
+- **Where it lives**: the dock (`#minimizedDock`) sits as a top-level
+  sibling of `.app-shell`, same placement as the alert toast stack
+  (Step 42) — outside every router view container, so it survives
+  navigating anywhere else in the app. In-memory only, no localStorage
+  behind it (unlike the dark-mode toggle) — a full page reload still
+  clears it, matching Gmail's own minimized-compose behavior, not a
+  durable draft-saving feature.
+- **Cancel is unchanged** — still fully discards, no minimize entry
+  created. Minimize is strictly additive, a third option next to the
+  two that already existed.
+
+**Verified** against a real server + real Postgres + a real browser:
+minimized a partially-filled simple-form draft, confirmed the modal
+closes without submitting and a chip appears in the dock; navigated to
+a different view and confirmed the chip survives; restored it and
+confirmed name/capital/notes come back exactly; separately minimized
+and restored an Advanced/raw-JSON draft, confirming the exact JSON
+text and the checked toggle state both round-trip; stacked two
+independent drafts at once and confirmed discarding one via its own
+chip leaves the other untouched; and re-confirmed Cancel still fully
+clears with no draft left behind. Re-ran the Step 38 dark-mode suite
+afterward since this touches shared modal/dock CSS; still passes.
+
 ## Setup
 
 ```bash

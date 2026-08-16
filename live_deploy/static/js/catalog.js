@@ -26,6 +26,7 @@ const Catalog = {
   _strategies: [],   // every REGISTERED strategy (enabled or not) — the Admin tab's own source of truth
   _activeCounts: {},
   _tab: 'browse',    // 'browse' | 'admin'
+  _minimizedDrafts: [],   // see minimizeDeploy/restoreDraft/discardDraft below
 
   // quiet=true: event-driven background refresh -- see Dashboard.load()'s
   // own comment for why the spinner reset is skipped in that case.
@@ -204,6 +205,106 @@ const Catalog = {
     this._loadPresets(strategyName);
 
     document.getElementById('deployModal').classList.add('open');
+  },
+
+  // ── Minimize / restore / discard — "Cancel" clears the form; this
+  // instead tucks the whole in-progress deploy (name, mode, capital,
+  // notes, config in whichever mode — simple fields or raw JSON — it
+  // was left in) into a dock the user can come back to, same idea as
+  // Gmail's minimized compose window or Jira's minimized issue panes.
+  // A stack, not a single slot: several drafts can queue up here at
+  // once, each independently restorable or discardable. In-memory only
+  // (survives navigating between views, since the dock/modal live
+  // outside the router's view containers — see index.html's own
+  // comment — but NOT a full page reload; there's no localStorage
+  // backing this, unlike e.g. the dark-mode toggle). ──────────────────
+
+  minimizeDeploy() {
+    const advancedOn = document.getElementById('deployAdvancedToggle').checked;
+    const rawJson = document.getElementById('deployConfig').value;
+    // Capture configValues from whichever view is CURRENTLY authoritative
+    // -- the raw JSON if Advanced is on (best-effort parsed, so the
+    // hidden simple-form fields restore reasonably close to it even if
+    // toggleAdvanced was never used to formally sync them), the simple
+    // fields otherwise.
+    let configValues;
+    if (advancedOn) {
+      try { configValues = JSON.parse(rawJson || '{}'); }
+      catch (e) { configValues = this._configBase; }
+    } else {
+      configValues = this._readConfigFromFields();
+    }
+    this._minimizedDrafts.push({
+      id: `draft_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      strategyName: this._currentDeploy.strategyName,
+      defaultConfig: this._currentDeploy.defaultConfig,
+      deployName: document.getElementById('deployName').value,
+      mode: document.getElementById('deployMode').value,
+      capital: document.getElementById('deployCapital').value,
+      notes: document.getElementById('deployNotes').value,
+      advancedOn, rawJson, configValues,
+    });
+    document.getElementById('deployModal').classList.remove('open');
+    this._renderMinimizedDock();
+  },
+
+  restoreDraft(id) {
+    const idx = this._minimizedDrafts.findIndex(d => d.id === id);
+    if (idx === -1) return;
+    const draft = this._minimizedDrafts[idx];
+    this._minimizedDrafts.splice(idx, 1);
+    this._renderMinimizedDock();
+
+    this._currentDeploy = { strategyName: draft.strategyName, defaultConfig: draft.defaultConfig };
+    document.getElementById('deployModalTitle').textContent = `Deploy: ${draft.strategyName}`;
+    document.getElementById('deployName').value = draft.deployName;
+    document.getElementById('deployMode').value = draft.mode;
+    document.getElementById('deployCapital').value = draft.capital;
+    document.getElementById('deployNotes').value = draft.notes;
+    document.getElementById('deployMsg').textContent = '';
+
+    document.getElementById('deployAdvancedToggle').checked = draft.advancedOn;
+    // Fields are rebuilt from configValues either way, so _configBase
+    // (and the hidden form underneath, if we're restoring straight into
+    // Advanced) stay consistent for a later toggle back — same
+    // "removeProperty, not '= block'" reasoning as openDeployModal.
+    this._renderConfigFields(draft.configValues || draft.defaultConfig || {});
+    if (draft.advancedOn) {
+      document.getElementById('deployConfigFields').style.display = 'none';
+      document.getElementById('deployConfig').style.display = 'block';
+      document.getElementById('deployConfig').value = draft.rawJson;
+    } else {
+      document.getElementById('deployConfigFields').style.removeProperty('display');
+      document.getElementById('deployConfig').style.display = 'none';
+    }
+    this._loadPresets(draft.strategyName);
+
+    document.getElementById('deployModal').classList.add('open');
+  },
+
+  discardDraft(id, event) {
+    if (event) event.stopPropagation();   // don't also trigger the chip's own restore click
+    const idx = this._minimizedDrafts.findIndex(d => d.id === id);
+    if (idx === -1) return;
+    const draft = this._minimizedDrafts[idx];
+    const label = draft.deployName || draft.strategyName;
+    if (!confirm(`Discard the minimized draft "${label}"? This can't be undone.`)) return;
+    this._minimizedDrafts.splice(idx, 1);
+    this._renderMinimizedDock();
+  },
+
+  _renderMinimizedDock() {
+    const dock = document.getElementById('minimizedDock');
+    dock.classList.toggle('has-drafts', this._minimizedDrafts.length > 0);
+    dock.innerHTML = this._minimizedDrafts.map(d => `
+      <div class="minimized-chip" onclick="Catalog.restoreDraft('${d.id}')" title="Click to resume this deploy">
+        <div style="min-width:0;">
+          <div class="minimized-chip-label">📝 ${escapeHtml(d.deployName || '(unnamed)')}</div>
+          <div class="minimized-chip-sub">${escapeHtml(d.strategyName)}</div>
+        </div>
+        <button class="minimized-chip-close" onclick="Catalog.discardDraft('${d.id}', event)" aria-label="Discard draft">✕</button>
+      </div>
+    `).join('');
   },
 
   // ── Config presets: save/load/delete a named snapshot of the config

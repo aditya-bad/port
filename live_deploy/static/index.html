@@ -652,6 +652,43 @@ tr.trade-detail-row td {
   .toast-stack { left: 16px; right: 16px; max-width: none; top: 12px; }
 }
 
+/* ── Minimized Deploy drafts — the Deploy modal's "Minimize" button
+   (see Catalog.minimizeDeploy) tucks the in-progress form here instead
+   of discarding it, same idea as Gmail's minimized compose window or a
+   browser's minimized tab strip. Bottom-right, opposite the toast
+   stack's top-right corner, so the two never compete for the same
+   screen real estate. Below modals (z-index 90 vs 100) on purpose — a
+   freshly opened modal should sit on top of the dock, not fight it for
+   clicks. Multiple drafts can queue up here at once, each independently
+   restorable or discardable, same as Jira letting several minimized
+   issue panes stack up. ─────────────────────────────────────────────── */
+.minimized-dock {
+  position: fixed; bottom: 16px; right: 16px; z-index: 90; display: none;
+  flex-wrap: wrap-reverse; gap: 10px; justify-content: flex-end;
+  max-width: calc(100% - 32px);
+}
+.minimized-dock.has-drafts { display: flex; }
+.minimized-chip {
+  background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm);
+  padding: 9px 10px 9px 12px; display: flex; align-items: center; gap: 10px;
+  max-width: 240px; cursor: pointer; transition: background 0.12s;
+}
+.minimized-chip:hover { background: var(--sand); }
+.minimized-chip-label {
+  font-size: 12px; font-weight: 700; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; min-width: 0;
+}
+.minimized-chip-sub { font-size: 10px; color: var(--parchment); font-weight: 500; }
+.minimized-chip-close {
+  cursor: pointer; color: var(--parchment); background: none; border: none;
+  padding: 0; font-size: 14px; line-height: 1; flex-shrink: 0;
+}
+.minimized-chip-close:hover { color: var(--loss); }
+@media (max-width: 760px) {
+  .minimized-dock { left: 16px; right: 16px; justify-content: flex-start; }
+  .minimized-chip { max-width: calc(50% - 5px); }
+}
+
 /* ── Modals — the biggest offset shadow in the app, so "floating
    above everything" reads unmistakably. ───────────────────────────── */
 .modal-overlay {
@@ -1127,12 +1164,21 @@ body.mobile-nav-open { overflow: hidden; }
         placeholder="Why this one — e.g. tighter stop than the usual conservative preset, testing a new target basis…"></textarea>
     </div>
     <div class="btn-row">
+      <button class="btn btn-secondary" style="margin-right:auto;" onclick="Catalog.minimizeDeploy()"
+        title="Tuck this away without losing what you've filled in — resume it later from the bottom-right dock">
+        🗕 Minimize
+      </button>
       <button class="btn btn-secondary" onclick="closeDeployModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitDeploy()">Deploy</button>
     </div>
     <div class="modal-msg" id="deployMsg"></div>
   </div>
 </div>
+
+<!-- Minimized Deploy drafts dock — see Catalog.minimizeDeploy/
+     restoreDraft/discardDraft and the .minimized-dock CSS's own
+     comment for why this lives here, outside any router view. -->
+<div class="minimized-dock" id="minimizedDock"></div>
 
 <!-- Manual instrument subscribe modal -->
 <div class="modal-overlay" id="instrumentModal">
