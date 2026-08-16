@@ -79,6 +79,7 @@ trade.
 """
 
 import logging
+from datetime import date
 from typing import Optional
 
 from ..deployments.strategy_base import StrategyBase
@@ -199,6 +200,14 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             )
             break
 
+        # Prefer whatever this deployment last persisted (see
+        # get_persistable_state below) over the static config seed —
+        # same reasoning as pivot_supertrend.py's identical block. Only
+        # a first-ever start falls through to the config seed.
+        persisted = await runner.load_state()
+        if persisted and self._restore_from_state(runner, persisted):
+            return
+
         seeded_trend, derived = apply_seed_to_state(
             runner.deployment_name, self.st, self.atr_method, cfg, self.prev_day_ohlc,
             log=logger,
@@ -221,6 +230,56 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 "until then).", runner.deployment_name,
             )
         self.prev_trend = self.st.trend
+
+    def _restore_from_state(self, runner, state: dict) -> bool:
+        """See pivot_supertrend.py's identical method for the full
+        rationale. Returns False (nothing mutated) on anything
+        malformed, so the caller falls through to the config-seed path."""
+        try:
+            if state.get("version") != 1:
+                return False
+            self.st = SuperTrendState.from_snapshot(state["supertrend"])
+            self.prev_trend = state.get("prev_trend")
+            self.prev_day_ohlc = state.get("prev_day_ohlc")
+            self.pivots = state.get("pivots")
+            today_str = state.get("today")
+            self.today = date.fromisoformat(today_str) if today_str else None
+            self.today_high = state.get("today_high")
+            self.today_low = state.get("today_low")
+            self.today_last_close = state.get("today_last_close")
+        except (KeyError, TypeError, ValueError):
+            logger.exception(
+                "%s: persisted state was malformed — ignoring it and "
+                "falling back to the config seed instead", runner.deployment_name,
+            )
+            return False
+        logger.info(
+            "%s: resumed from persisted live state (trend=%s, pivots=%s) — "
+            "ignoring any static seed config, since this is more current",
+            runner.deployment_name, self.st.trend, bool(self.pivots),
+        )
+        return True
+
+    def get_persistable_state(self) -> Optional[dict]:
+        """See StrategyBase's own docstring for when this gets called.
+        Note this ONLY persists the SuperTrend/pivot signal-generation
+        state -- the currently-open option leg (if any) doesn't need to
+        be in here at all, since that's already resume-safe via the DB
+        (see the "Resume-safety" reattach block above, which reads it
+        straight from runner.open_positions on every on_start)."""
+        if self.st.trend is None:
+            return None
+        return {
+            "version": 1,
+            "supertrend": self.st.snapshot(),
+            "prev_trend": self.prev_trend,
+            "prev_day_ohlc": self.prev_day_ohlc,
+            "pivots": self.pivots,
+            "today": self.today.isoformat() if self.today else None,
+            "today_high": self.today_high,
+            "today_low": self.today_low,
+            "today_last_close": self.today_last_close,
+        }
 
     # ── Tick consumption — identical control flow to pivot_supertrend ──
 

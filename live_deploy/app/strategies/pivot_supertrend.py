@@ -538,22 +538,82 @@ class PivotSupertrendStrategy(StrategyBase):
         self.pending_entry: Optional[dict] = None
         self.prev_trend: Optional[str] = None
 
-        self._apply_seed(runner, cfg)
-
-        if self.prev_day_ohlc:
-            self.pivots = compute_pivots(
-                self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
-                self.prev_day_ohlc["close"], self.pivot_type,
-            )
-            logger.info("%s: pivots seeded from prev_day_ohlc -> %s",
-                       runner.deployment_name,
-                       {k: round(v, 2) for k, v in self.pivots.items()})
+        # Prefer whatever this deployment last persisted (see
+        # get_persistable_state below) over the static config seed —
+        # it's genuinely more current, having been captured live at the
+        # last graceful stop rather than typed in once at initial
+        # deploy. Only a first-ever start (or a strategy that's never
+        # made it past cold-start) falls through to the config seed.
+        persisted = await runner.load_state()
+        if persisted and self._restore_from_state(runner, persisted):
+            pass
         else:
-            logger.warning(
-                "%s: no prev_day_ohlc/seed_candles given — pivots unavailable "
-                "until a full trading day has been observed live (no entries "
-                "until then).", runner.deployment_name,
+            self._apply_seed(runner, cfg)
+            if self.prev_day_ohlc:
+                self.pivots = compute_pivots(
+                    self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
+                    self.prev_day_ohlc["close"], self.pivot_type,
+                )
+                logger.info("%s: pivots seeded from prev_day_ohlc -> %s",
+                           runner.deployment_name,
+                           {k: round(v, 2) for k, v in self.pivots.items()})
+            else:
+                logger.warning(
+                    "%s: no prev_day_ohlc/seed_candles given — pivots unavailable "
+                    "until a full trading day has been observed live (no entries "
+                    "until then).", runner.deployment_name,
+                )
+
+    def _restore_from_state(self, runner, state: dict) -> bool:
+        """Restore from a persisted deployment_state blob (see
+        get_persistable_state below). Returns False (and leaves nothing
+        mutated) on anything malformed/incompatible, so the caller falls
+        through to the normal config-seed path instead of crashing on
+        e.g. a future/incompatible state version."""
+        try:
+            if state.get("version") != 1:
+                return False
+            self.st = SuperTrendState.from_snapshot(state["supertrend"])
+            self.prev_trend = state.get("prev_trend")
+            self.prev_day_ohlc = state.get("prev_day_ohlc")
+            self.pivots = state.get("pivots")
+            today_str = state.get("today")
+            self.today = date.fromisoformat(today_str) if today_str else None
+            self.today_high = state.get("today_high")
+            self.today_low = state.get("today_low")
+            self.today_last_close = state.get("today_last_close")
+        except (KeyError, TypeError, ValueError):
+            logger.exception(
+                "%s: persisted state was malformed — ignoring it and "
+                "falling back to the config seed instead", runner.deployment_name,
             )
+            return False
+        logger.info(
+            "%s: resumed from persisted live state (trend=%s, pivots=%s) — "
+            "ignoring any static seed config, since this is more current",
+            runner.deployment_name, self.st.trend, bool(self.pivots),
+        )
+        return True
+
+    def get_persistable_state(self) -> Optional[dict]:
+        """See StrategyBase's own docstring for when this gets called.
+        Persists nothing (returns None) until SuperTrend has actually
+        warmed up (self.st.trend is not None) — a deployment that's
+        never gotten that far has nothing more useful to hand back than
+        cold-start already gives it."""
+        if self.st.trend is None:
+            return None
+        return {
+            "version": 1,
+            "supertrend": self.st.snapshot(),
+            "prev_trend": self.prev_trend,
+            "prev_day_ohlc": self.prev_day_ohlc,
+            "pivots": self.pivots,
+            "today": self.today.isoformat() if self.today else None,
+            "today_high": self.today_high,
+            "today_low": self.today_low,
+            "today_last_close": self.today_last_close,
+        }
 
     def _apply_seed(self, runner, cfg: dict) -> None:
         prev_trend, derived = apply_seed_to_state(

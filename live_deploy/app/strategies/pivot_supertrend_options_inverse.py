@@ -221,12 +221,53 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             )
             break
 
+        # Prefer whatever this deployment last persisted (see
+        # get_persistable_state below) over the static config seed —
+        # same reasoning as pivot_supertrend.py's identical block. Only
+        # a first-ever start falls through to the config seed.
+        persisted = await runner.load_state()
+        if persisted and self._restore_from_state(runner, persisted):
+            return
+
         apply_seed_to_state(
             runner.deployment_name, self.st, self.atr_method, cfg,
             current_prev_day_ohlc=None,   # this strategy never uses pivots/prev_day_ohlc
             log=logger,
         )
         self.prev_trend = self.st.trend
+
+    def _restore_from_state(self, runner, state: dict) -> bool:
+        """See pivot_supertrend.py's identical method for the full
+        rationale. No pivots/today tracking here (this strategy never
+        uses them at all), so there's just SuperTrend + prev_trend to
+        restore. Returns False (nothing mutated) on anything malformed,
+        so the caller falls through to the config-seed path."""
+        try:
+            if state.get("version") != 1:
+                return False
+            self.st = SuperTrendState.from_snapshot(state["supertrend"])
+            self.prev_trend = state.get("prev_trend")
+        except (KeyError, TypeError, ValueError):
+            logger.exception(
+                "%s: persisted state was malformed — ignoring it and "
+                "falling back to the config seed instead", runner.deployment_name,
+            )
+            return False
+        logger.info(
+            "%s: resumed from persisted live state (trend=%s) — ignoring "
+            "any static seed config, since this is more current",
+            runner.deployment_name, self.st.trend,
+        )
+        return True
+
+    def get_persistable_state(self) -> Optional[dict]:
+        """See StrategyBase's own docstring for when this gets called.
+        The currently-held option leg (if any) doesn't need to be in
+        here — it's already resume-safe via the DB (see the "Resume-
+        safety" reattach block above)."""
+        if self.st.trend is None:
+            return None
+        return {"version": 1, "supertrend": self.st.snapshot(), "prev_trend": self.prev_trend}
 
     # ── Tick consumption — no day-rollover needed: no pivots, and
     # SuperTrend itself runs continuously across day boundaries (never

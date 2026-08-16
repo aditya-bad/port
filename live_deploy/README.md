@@ -3511,6 +3511,86 @@ NEXT_WEEK pair, `switched_to_next_week=False`. All three confirmed via
 the actual open positions (4 legs: 2 short + 2 long) and entry-fill
 metadata, not just log output.
 
+## What's here (Step 53: strategy state survives a real restart, not just a resume)
+
+A follow-up question about `pivot_supertrend`'s SuperTrend/pivot seeding
+("is it night, do I need to give seed_candles again?") led to a bigger
+one: what actually happens to that live-learned state — the SuperTrend
+line, the pivots recomputed from yesterday's real OHLC — when the
+server itself gets stopped and restarted, not just paused/resumed?
+Answer at the time: nothing good. `self.st`/`self.pivots` only ever
+lived in that one Python process's memory; every `on_start()` re-read
+whatever was typed into `prev_day_ohlc`/`seed_candles`/`supertrend_seed`
+at initial deploy time, so a restart silently reverted days (or weeks)
+of live-learned state back to a stale, one-time seed — a real gap, not
+hypothetical, given "I am bound to stop and run server" (redeploys,
+routine maintenance) is exactly the normal operating condition here.
+
+**Design, per direct instruction ("this can be a simple metadata field
+in current table or a new table, you decide, but give me a plan
+first")**: a new table, `deployment_state` — one row per deployment,
+JSONB, wholesale-overwritten on every dump (a resumable snapshot, not
+an event log). Deliberately NOT a field on `deployments.config` — that
+column is user-owned (the Step 51 config-edit feature lets you hand-
+edit it while paused), and mixing strategy-computed runtime state into
+it risks your edit clobbering the strategy's state or vice versa.
+Different owner, different write cadence, different lifecycle — same
+reasoning `positions`/`deployment_events`/`deployment_snapshots` already
+get their own tables instead of everything piling onto `deployments`.
+
+**The mechanism is generic, not pivot_supertrend-specific**: one new
+optional hook on `StrategyBase`, `get_persistable_state() -> Optional[dict]`
+(default `None` — every existing strategy is entirely unaffected unless
+it opts in), and `runner.load_state()` to read it back. The trigger
+point turned out to be free: `DeploymentRunner.stop()` already ran
+`strategy.on_stop()` on pause, on stop, AND on a graceful full-server
+shutdown (`DeploymentManager.shutdown_all()`, wired to FastAPI's own
+shutdown event) — so "dump state right after `on_stop()`" covers a
+deliberate restart with zero new scheduling logic. It does NOT fire on
+an ungraceful kill (SIGKILL/OOM/crash) — accepted: that just means one
+restart resumes from the last graceful stop instead of that exact
+instant, same "up to one step of imprecision" tradeoff this codebase
+already accepts elsewhere (e.g. the last, still-forming candle at any
+real day boundary).
+
+**Wired into all three pivot/SuperTrend strategies**
+(`pivot_supertrend`, `pivot_supertrend_options`,
+`pivot_supertrend_options_inverse` — the three that actually carry
+indicator state beyond what positions already capture).
+`SuperTrendState` gained `snapshot()`/`from_snapshot()` to round-trip
+its FULL internals exactly, including the raw ATR TR-buffer — needed
+for `atr_smoothing="sma"` (which reads a whole rolling window on every
+update, not just during warmup) to keep producing a trend immediately
+post-restore rather than silently re-entering warmup. Each strategy's
+`on_start()` now tries `await runner.load_state()` FIRST, before
+applying any config seed, and only falls through to
+`prev_day_ohlc`/`seed_candles`/`supertrend_seed` on a genuine first-ever
+start (nothing persisted yet). A malformed/incompatible persisted blob
+(future format, corrupted) is caught and logged, falling through to the
+config-seed path rather than crashing `on_start()`.
+
+**Verified** live, end to end, with zero config seed anywhere in the
+run (the strongest possible proof this isn't just re-deriving from a
+seed that happened to still be present): deployed `pivot_supertrend`
+cold, warmed SuperTrend (`atr_smoothing="wilder"`) and triggered a real
+day-rollover purely from live ticks, paused it (dumping state),
+confirmed the `deployment_state` row directly in Postgres (trend, ATR,
+pivots, `today`, `prev_day_ohlc` all present and correct). Then
+simulated a genuine process restart — a brand-new `app.main` import,
+fresh `CandleAggregator`/`SuperTrendState` instances, same Postgres —
+resumed, and fed just 3 post-restart ticks: an entry fired, confirmed
+via the open position AND the fill's own `trigger_values`
+(`broken_level_key="S1"`, `trend="down"`). This is only possible if
+SuperTrend/pivots genuinely survived the restart — a real cold start
+needs 7 closed candles for ATR warmup alone, let alone any pivots,
+so 3 ticks producing a trade is proof by construction, not just a log
+line saying so. Re-ran the existing `pivot_supertrend`/
+`pivot_supertrend_options`/`pivot_supertrend_options_inverse` live and
+retrofit-verification suites afterward (all of which exercise the
+now-changed `on_start()` path) plus the real-process restart-survival
+check (kill the actual server, restart it, confirm the deployment and
+its open position survive) — all still pass.
+
 ## Setup
 
 ```bash
