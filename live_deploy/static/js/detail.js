@@ -448,39 +448,8 @@ function fmtDuration(ms) {
   return `${m}m`;
 }
 
-// Deliberately no charting library — a single inline <polyline>, same
-// "no framework, keep it simple" spirit as the rest of this UI. Not
-// meant to be a full-featured chart, just enough to see the shape of a
-// deployment's equity over time.
-function renderEquityChart(snapshots) {
-  if (snapshots.length < 2) {
-    return emptyHtml(
-      'Not enough snapshot data yet — equity snapshots are recorded roughly every 5 minutes per ' +
-      'active deployment. Check back once this deployment has been running a while.'
-    );
-  }
-  const values = snapshots.map(s => s.total_value);
-  const min = Math.min(...values), max = Math.max(...values);
-  const range = (max - min) || 1;
-  const W = 600, H = 150, PAD = 6;
-  const points = snapshots.map((s, i) => {
-    const x = PAD + (i / (snapshots.length - 1)) * (W - 2 * PAD);
-    const y = H - PAD - ((s.total_value - min) / range) * (H - 2 * PAD);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-  const color = values[values.length - 1] >= values[0] ? 'var(--gain)' : 'var(--loss)';
-  return `
-    <div class="equity-wrap">
-      <svg class="equity-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-        <polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" />
-      </svg>
-      <div class="table-note">
-        ${snapshots.length} snapshot(s) · ${fmtDateTime(snapshots[0].snapshot_at)} → ${fmtDateTime(snapshots[snapshots.length - 1].snapshot_at)}
-        · range ${fmtMoney(min)} – ${fmtMoney(max)}
-      </div>
-    </div>
-  `;
-}
+// renderEquityChart() now lives in api.js (shared with the Portfolio
+// view's combined curve, Step 39) — see there for the implementation.
 
 // ── Edit deployment (rename + notes) modal ─────────────────────────────
 function closeEditDeploymentModal() {

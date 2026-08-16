@@ -2572,6 +2572,86 @@ adapt, a shadow that vanished). Finally, re-ran the existing Step 36
 the changed markup/CSS end to end — both passed unchanged, confirming
 the token-recoloring didn't regress either feature's actual behavior.
 
+## What's here (Step 39: a Portfolio view — whole-account rollups the Dashboard doesn't try to be)
+
+Fifth and last of the in-app feature batch. The Dashboard already
+answers "what's happening right now" (live P&L, open positions, recent
+fills); Portfolio is deliberately scoped to the slower-moving questions
+a per-deployment view — even the Dashboard's own combined one — can't
+answer: how is combined equity trending over time, how much capital is
+actually deployed vs sitting idle, and whether unrelated strategies are
+unknowingly stacking exposure to the same underlying.
+
+Two of Portfolio's three sections needed no new backend at all —
+**capital utilization** (total capital vs idle cash across every
+active/paused deployment, broken down by strategy) and **exposure by
+symbol** (every open position across every deployment, grouped by
+symbol — three unrelated strategies each independently long NIFTY 50
+look completely fine in isolation, but that's real stacked exposure to
+one underlying that's only visible once everything is combined) are
+both computed client-side, purely from data the Dashboard already
+fetches (`Api.listDeployments()`, `Api.getAllPositions('open')`) — no
+N+1 problem to avoid here, unlike Step 4's aggregate positions/trades
+endpoints, since these are just different groupings of the same already-
+fetched rows, not per-deployment detail that would need its own request.
+
+The **combined equity curve** is the one piece that genuinely needed
+new backend work — summing time-series data server-side is exactly the
+kind of aggregation Step 4's own docstring already argues for doing in
+Postgres rather than the frontend. New `GET /portfolio/equity-curve`
+(`app/routers/aggregate.py`) + `queries.list_portfolio_equity_curve`
+bucket every deployment's `deployment_snapshots` rows into shared
+`bucket_seconds`-wide windows (default 300s, matching
+`DEFAULT_SNAPSHOT_INTERVAL_SECONDS`) and sum `total_value`/
+`realized_pnl_cumulative` within each bucket — needed because
+`snapshot_all_active()` calls `datetime.now()` once per deployment
+inside its own loop, so two deployments' snapshots from the same
+5-minute "tick" can differ by a few milliseconds and would otherwise
+land in their own separate single-row buckets instead of summing
+together. Deliberately not scoped to any particular deployment status:
+a bucket reflects however many deployments actually had a runner (i.e.
+were active) AT THAT POINT IN TIME — a since-paused deployment's older
+snapshots still contribute to its own past buckets (history doesn't
+retroactively change), it just stops contributing to new ones the
+moment it's no longer active. Cached the same way as Step 4's two
+endpoints (`app.state.cache`), but at a 30s interval instead of 6s —
+the underlying data only gets new rows every 300s, so polling any
+faster than a fraction of that would just re-serve identical rows.
+
+Reused, not reimplemented: `renderEquityChart()` — Detail's own
+per-deployment curve (Step 5) — moved from `detail.js` into `api.js`'s
+shared-helpers section so Portfolio's combined curve could call the
+exact same renderer instead of a second copy of the same SVG-polyline
+logic. It already only needs `{snapshot_at, total_value}` points, so
+Portfolio just maps its `bucket_at` field to `snapshot_at` before
+calling it, rather than the shared function learning two field names
+for the same concept.
+
+**Verified** against a real server + real Postgres + a real browser:
+seeded two deployments both independently long NIFTY 50 (one via the
+normal fill path affecting real `cash`/position rows, so capital
+utilization and exposure numbers are the real computed values, not
+fixtures) plus synthetic `deployment_snapshots` rows deliberately
+spaced a few seconds apart within the same 5-minute window (proving
+same-tick rows from different deployments get summed into one bucket)
+and a second, later bucket with only one deployment contributing
+(proving a bucket a deployment didn't reach isn't wrongly zeroed or
+dropped) — confirmed via the actual rendered page that the combined
+curve shows exactly 2 buckets (not 3 raw snapshot rows), capital
+utilization sums both deployments' capital/cash correctly, and the
+exposure table collapses both deployments' NIFTY 50 positions into one
+row with the correct combined net quantity. One real bug caught in my
+own test, not the app: seeding via direct `queries.record_fill()` calls
+bypasses the API mutation paths that call `cache.refresh_now()`
+themselves, so the first assertion run raced the `positions_open`
+cache's 6s background refresh and saw only one of the two seeded
+fills — fixed by waiting a cache cycle before asserting, the same
+staleness window a real user would see too, just not one worth
+querying live for. Re-ran the Step 37 CSV export suite (exercises
+`api.js`'s shared helpers) and a fresh check of Detail's own Stats tab
+equity chart afterward to confirm moving `renderEquityChart()` didn't
+regress the view it originally belonged to.
+
 ## Setup
 
 ```bash

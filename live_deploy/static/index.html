@@ -681,6 +681,7 @@ body.mobile-nav-open { overflow: hidden; }
       <a class="nav-item" data-nav="dashboard" href="#/dashboard">Dashboard</a>
       <a class="nav-item" data-nav="catalog" href="#/catalog">Strategy Catalog</a>
       <a class="nav-item" data-nav="deployments" href="#/deployments">Deployed Strategies</a>
+      <a class="nav-item" data-nav="portfolio" href="#/portfolio">Portfolio</a>
       <a class="nav-item" data-nav="instruments" href="#/instruments">Instruments</a>
       <a class="nav-item" data-nav="account" href="#/account">Account</a>
       <div class="sidebar-footer">
@@ -788,6 +789,35 @@ body.mobile-nav-open { overflow: hidden; }
         </select>
       </div>
       <div id="deploymentsTable"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+    </div>
+
+    <!-- ═══ Portfolio ═══ -->
+    <div id="view-portfolio" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Portfolio</h1>
+          <div class="view-sub">Whole-account rollups — combined equity over time, capital utilization, and exposure stacked across strategies</div>
+        </div>
+        <div class="view-header-actions">
+          <span class="updated-label" id="portfolioUpdatedLabel"></span>
+          <button class="btn btn-secondary btn-sm" onclick="Portfolio.load()">↻ Refresh</button>
+        </div>
+      </div>
+
+      <section>
+        <h2>Combined Equity Curve</h2>
+        <div id="portfolioEquity"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      </section>
+
+      <section>
+        <h2>Capital Utilization</h2>
+        <div id="portfolioCapital" class="stat-grid"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      </section>
+
+      <section>
+        <h2>Exposure by Symbol (open positions, all deployments)</h2>
+        <div id="portfolioExposure"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      </section>
     </div>
 
     <!-- ═══ Strategy Detail ═══ -->
@@ -1005,6 +1035,7 @@ body.mobile-nav-open { overflow: hidden; }
 <script src="/js/dashboard.js"></script>
 <script src="/js/catalog.js"></script>
 <script src="/js/deployments.js"></script>
+<script src="/js/portfolio.js"></script>
 <script src="/js/detail.js"></script>
 <script src="/js/instruments.js"></script>
 <script src="/js/account.js"></script>
@@ -1279,7 +1310,7 @@ function connectTickerSocket() {
 // ── Router ────────────────────────────────────────────────────────────
 // Six real views + one drill-down (detail, reached only by navigating
 // to #/deployments/{id}, never a sidebar destination of its own).
-const VIEWS = ['dashboard', 'catalog', 'deployments', 'detail', 'instruments', 'account'];
+const VIEWS = ['dashboard', 'catalog', 'deployments', 'portfolio', 'detail', 'instruments', 'account'];
 
 function router() {
   const hash = (window.location.hash || '#/dashboard').replace(/^#\/?/, '');
@@ -1302,6 +1333,7 @@ function router() {
   if (view === 'dashboard') Dashboard.load();
   else if (view === 'catalog') Catalog.load();
   else if (view === 'deployments') Deployments.load();
+  else if (view === 'portfolio') Portfolio.load();
   else if (view === 'detail') Detail.load(param);
   else if (view === 'instruments') Instruments.load();
   else if (view === 'account') Account.load();
@@ -1322,7 +1354,7 @@ function router() {
 // on purpose; polling them would just be re-paying the slow round trip
 // this whole cache exists to avoid.
 let _viewAutoRefreshTimer = null;
-const _AUTO_REFRESH_VIEWS = { dashboard: () => Dashboard.load(), catalog: () => Catalog.load(), deployments: () => Deployments.load() };
+const _AUTO_REFRESH_VIEWS = { dashboard: () => Dashboard.load(), catalog: () => Catalog.load(), deployments: () => Deployments.load(), portfolio: () => Portfolio.load() };
 function _startAutoRefresh(view) {
   if (_viewAutoRefreshTimer) clearInterval(_viewAutoRefreshTimer);
   _viewAutoRefreshTimer = null;

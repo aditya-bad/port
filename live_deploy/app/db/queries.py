@@ -520,6 +520,47 @@ async def list_snapshots(
         )
 
 
+async def list_portfolio_equity_curve(
+    pool: asyncpg.Pool, bucket_seconds: int = 300, limit: int = 1000,
+) -> list[asyncpg.Record]:
+    """One combined equity-curve point per time bucket, summed across
+    EVERY deployment's snapshots (not just currently-active ones) —
+    the Portfolio view's whole-account equity curve.
+
+    Snapshots for all active deployments are recorded in the same
+    snapshot_loop iteration (see DeploymentManager.snapshot_all_active),
+    but each deployment's own row still gets its own datetime.now() call,
+    so rows from the same "tick" can differ by a few milliseconds —
+    bucket_seconds (default 300, matching DEFAULT_SNAPSHOT_INTERVAL_SECONDS)
+    floors snapshot_at down to the nearest bucket so same-tick rows from
+    different deployments always land together instead of scattering
+    into their own single-row buckets.
+
+    Deliberately not scoped to any particular deployment status: a
+    bucket's sum reflects however many deployments actually had a
+    runner (i.e. were active) AT THAT POINT IN TIME — a since-paused
+    deployment's older snapshots still contribute to its own past
+    buckets (paper-trading history doesn't retroactively change), it
+    just stops contributing to NEW buckets the moment it's no longer
+    active, same as it stops accumulating its own per-deployment curve.
+    """
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT
+                to_timestamp(floor(extract(epoch FROM snapshot_at) / $1) * $1) AS bucket_at,
+                SUM(total_value) AS total_value,
+                SUM(realized_pnl_cumulative) AS realized_pnl_cumulative,
+                COUNT(DISTINCT deployment_id) AS deployments_count
+            FROM deployment_snapshots
+            GROUP BY bucket_at
+            ORDER BY bucket_at
+            LIMIT $2
+            """,
+            float(bucket_seconds), limit,
+        )
+
+
 # ═════════════════════════════════════════════════════════════════════
 # REPORTS
 # ═════════════════════════════════════════════════════════════════════

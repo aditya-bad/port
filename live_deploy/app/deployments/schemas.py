@@ -171,4 +171,18 @@ class SnapshotOut(BaseModel):
     open_positions_value: float
     total_value: float
     realized_pnl_cumulative: float
+
+
+class PortfolioSnapshotOut(BaseModel):
+    """One point on the Portfolio view's combined equity curve — see
+    queries.list_portfolio_equity_curve for the bucketing/summing.
+    Deliberately its own schema, not SnapshotOut reused: there's no
+    single `deployment_id` or `cash`/`open_positions_value` split once
+    multiple deployments are summed into one bucket, and
+    `deployments_count` (how many deployments actually contributed to
+    this bucket) has no per-deployment equivalent at all."""
+    bucket_at: datetime
+    total_value: float
+    realized_pnl_cumulative: float
+    deployments_count: int
     metadata: dict = {}

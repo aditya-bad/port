@@ -61,7 +61,7 @@ from .routers import health as health_router
 from .routers import instruments as instruments_router
 from .routers import kite_auth as kite_auth_router
 from .routers import strategies as strategies_router
-from .routers.aggregate import fetch_positions_open, fetch_trades_recent
+from .routers.aggregate import fetch_portfolio_equity_curve, fetch_positions_open, fetch_trades_recent
 from .routers.deployments import fetch_deployments_list
 from .routers.health import check_db_health
 from .routers.strategies import fetch_strategies
@@ -190,6 +190,11 @@ async def startup() -> None:
     cache.register("deployments", lambda: fetch_deployments_list(db_pool, dispatcher), interval=6.0)
     cache.register("positions_open", lambda: fetch_positions_open(db_pool, dispatcher), interval=6.0)
     cache.register("trades_recent", lambda: fetch_trades_recent(db_pool), interval=12.0)
+    # 30s, not 6s like the rest -- the underlying data (deployment_snapshots)
+    # only ever gets NEW rows every 300s (snapshot_loop's own interval;
+    # see queries.list_portfolio_equity_curve), so polling this any
+    # faster than a fraction of that would just re-serve identical rows.
+    cache.register("portfolio_equity_curve", lambda: fetch_portfolio_equity_curve(db_pool), interval=30.0)
     cache.register("strategies", lambda: fetch_strategies(db_pool), interval=20.0)
     # 15s: /health is polled by the frontend every 5s (pollHealth() in
     # index.html) -- without this it was the one endpoint left paying a
