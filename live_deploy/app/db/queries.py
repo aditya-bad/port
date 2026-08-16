@@ -561,6 +561,164 @@ async def list_portfolio_equity_curve(
         )
 
 
+_DIGEST_PERIODS = ("day", "week", "month")
+
+
+async def list_pnl_digest(
+    pool: asyncpg.Pool, period: str = "day", limit: int = 30,
+) -> list[asyncpg.Record]:
+    """Portfolio-wide realized-P&L digest, bucketed into calendar
+    days/weeks (Asia/Kolkata — this app's own timezone, matching the
+    ticker clock) — the "how much did I actually bank, and how much
+    did I trade" summary a periodic digest is supposed to answer,
+    across every deployment at once.
+
+    Deliberately REALIZED P&L only, not unrealized/mark-to-market —
+    that's what Dashboard/Portfolio's live views already show, and
+    mixing a live, only-true-right-now unrealized number into a
+    digest of past, settled days would misrepresent history (an open
+    position's unrealized P&L on a PAST day isn't a fact anymore, it's
+    just whatever the price happened to be — the position may have
+    since gone the other way entirely). positions.realized_pnl +
+    positions.closed_at are set exactly once, atomically, when a
+    position actually closes (see record_fill) — an honest, permanent
+    record of what was actually booked and when, unlike trying to
+    diff deployment_snapshots' cumulative totals across days (which
+    would silently under-count any day a deployment was paused and
+    recording no snapshots at all).
+
+    Two source tables, closes (realized P&L, only present when a
+    position actually closed) and fills (every buy/sell, entries
+    included — the "how much did I actually trade" half of the
+    digest) don't share a row-per-row grain, so they're bucketed
+    separately as CTEs and combined with a FULL OUTER JOIN — a period
+    with fills but no closes yet (a position opened today, still
+    open) is real and must still appear with realized_pnl=0, not be
+    silently dropped.
+    """
+    if period not in _DIGEST_PERIODS:
+        raise ValueError(f"period must be one of {_DIGEST_PERIODS}, got {period!r}")
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            WITH closes AS (
+                SELECT
+                    (date_trunc($1, closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    SUM(realized_pnl) AS realized_pnl,
+                    COUNT(*) AS positions_closed,
+                    COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
+                    COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses
+                FROM positions
+                WHERE status = 'closed' AND closed_at IS NOT NULL
+                GROUP BY 1
+            ),
+            fills AS (
+                SELECT
+                    (date_trunc($1, executed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    COUNT(*) AS fills
+                FROM position_lots
+                GROUP BY 1
+            )
+            SELECT
+                COALESCE(closes.period_start, fills.period_start) AS period_start,
+                COALESCE(closes.realized_pnl, 0)::float8 AS realized_pnl,
+                COALESCE(closes.positions_closed, 0) AS positions_closed,
+                COALESCE(closes.wins, 0) AS wins,
+                COALESCE(closes.losses, 0) AS losses,
+                COALESCE(fills.fills, 0) AS fills
+            FROM closes
+            FULL OUTER JOIN fills USING (period_start)
+            ORDER BY period_start DESC
+            LIMIT $2
+            """,
+            period, limit,
+        )
+
+
+async def pnl_summary_for_range(
+    pool: asyncpg.Pool, start: datetime, end: datetime,
+) -> dict[str, Any]:
+    """Portfolio-wide realized P&L + activity for one exact [start, end)
+    window — the Reports page's per-period stat-card row. Same
+    realized-only philosophy as list_pnl_digest (see its docstring),
+    just for a single caller-chosen window instead of many calendar
+    buckets at once — used to compute both the SELECTED period's
+    numbers and the PREVIOUS period's (for the delta shown next to
+    each stat), two calls with different [start, end) rather than one
+    query trying to do both at once.
+    """
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                COALESCE(SUM(realized_pnl), 0)::float8 AS realized_pnl,
+                COUNT(*) AS positions_closed,
+                COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
+                COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses
+            FROM positions
+            WHERE status = 'closed' AND closed_at >= $1 AND closed_at < $2
+            """,
+            start, end,
+        )
+        fills = await conn.fetchval(
+            "SELECT COUNT(*) FROM position_lots WHERE executed_at >= $1 AND executed_at < $2",
+            start, end,
+        )
+        return {**dict(row), "fills": fills}
+
+
+async def pnl_by_strategy_for_range(
+    pool: asyncpg.Pool, start: datetime, end: datetime,
+) -> list[asyncpg.Record]:
+    """Realized P&L within [start, end), grouped by strategy_name --
+    the Reports page's "By Strategy" breakdown (this app's analogue of
+    a personal-finance report's spend-by-category table): which
+    strategies actually made or lost money in the SELECTED period,
+    not all-time — a strategy that's up all-time but had a bad week
+    should show that clearly here, not get hidden behind its own
+    lifetime total."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT
+                d.strategy_name,
+                SUM(p.realized_pnl)::float8 AS realized_pnl,
+                COUNT(*) AS positions_closed
+            FROM positions p
+            JOIN deployments d ON d.id = p.deployment_id
+            WHERE p.status = 'closed' AND p.closed_at >= $1 AND p.closed_at < $2
+            GROUP BY d.strategy_name
+            ORDER BY realized_pnl DESC
+            """,
+            start, end,
+        )
+
+
+async def pnl_by_deployment_for_range(
+    pool: asyncpg.Pool, start: datetime, end: datetime,
+) -> list[asyncpg.Record]:
+    """Realized P&L within [start, end), grouped by deployment -- the
+    Reports page's "By Deployment" leaderboard, sorted best to worst
+    for the selected period specifically."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT
+                d.id AS deployment_id,
+                d.deployment_name,
+                d.strategy_name,
+                SUM(p.realized_pnl)::float8 AS realized_pnl,
+                COUNT(*) AS positions_closed
+            FROM positions p
+            JOIN deployments d ON d.id = p.deployment_id
+            WHERE p.status = 'closed' AND p.closed_at >= $1 AND p.closed_at < $2
+            GROUP BY d.id, d.deployment_name, d.strategy_name
+            ORDER BY realized_pnl DESC
+            """,
+            start, end,
+        )
+
+
 # ═════════════════════════════════════════════════════════════════════
 # REPORTS
 # ═════════════════════════════════════════════════════════════════════

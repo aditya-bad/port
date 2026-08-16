@@ -2739,6 +2739,77 @@ afterward, since this added a new categorical palette to the same
 `:root`/`[data-theme="dark"]` blocks that suite already covers — still
 passes unchanged.
 
+## What's here (Step 41: Reports — a real single-period statement, not just a digest)
+
+Second of two follow-up features. Started as a simpler "P&L digest"
+(one table, every day/week's realized P&L in a list), then the user
+pointed at a mature personal-finance app's own Reports page (period
+navigation, stat cards with vs-previous-period deltas, category/holding
+breakdown tables, collapsible sections) and asked for that page's
+*feature set* — not its visual style — adapted here. What shipped is a
+genuine rework, not a coat of paint on the original digest: a
+single-period drill-down you navigate through like a statement, with
+the original digest table demoted to a supporting "Recent Periods"
+trend section underneath it.
+
+**Deliberately mapped, not copied wholesale.** The reference app has
+sections with no honest equivalent here — Net Worth (assets vs
+liabilities) and Investment Holdings (a personal brokerage's Top
+Holdings) don't correspond to anything in a paper-trading app; the
+closest analogue to a running net-worth chart is already the Portfolio
+view (Step 39), so Reports doesn't duplicate it. What DOES map cleanly:
+its period-type + prev/next/latest navigation, its four-stat-card row
+with a "vs previous period" delta, and its category-breakdown tables
+became **By Strategy** and **By Deployment** — this app's own
+equivalent of "which spending category" and "which holding," i.e.
+which strategy and which specific deployment actually made or lost
+money in the period you're looking at, not all-time. Its
+draggable-and-persisted section reordering was deliberately left out —
+real engineering cost (drag-and-drop + server-side layout persistence)
+for a single-user app where section order rarely needs to change;
+collapse/expand shipped instead (persisted per-section in
+`localStorage`), which gets most of the decluttering value for a
+fraction of the cost. Its CSV-export-per-section and "Open in Google
+Sheets" links were narrowed to one Export CSV button for the trend
+table specifically — the single-period breakdown above it is already
+fully on screen, so a one-row CSV of it would be a file for no reason.
+
+**Backend, all new:** `period_bounds(period, offset)`
+(`app/routers/aggregate.py`) is pure-Python date math — no DB round
+trip — computing the `[start, end)` window for "day/week/month, N
+periods before now," in this app's own Asia/Kolkata timezone (matching
+the ticker clock and Step 40's digest bucketing) so "today" means what
+someone watching IST markets expects, not the server's UTC day
+boundary. Week is Monday-start, matching Postgres's own
+`date_trunc('week', ...)` convention already used by
+`list_pnl_digest`, so the single-period view and the trend table never
+disagree about where a week starts. Three new queries —
+`pnl_summary_for_range`, `pnl_by_strategy_for_range`,
+`pnl_by_deployment_for_range` — all take an exact `[start, end)` and
+stay REALIZED-P&L-only, same reasoning as Step 40's digest (a live
+unrealized number has no honest place in a report of a SETTLED past
+period — an open position's paper P&L on a bygone day isn't a fact
+anymore). New `GET /portfolio/pnl-report?period=&offset=` composes all
+three plus the previous period's summary (for the delta) into one
+payload; not cached, same reasoning as the digest endpoint (cheap
+GROUP BY at this app's scale, no hot polling path to protect since
+Reports isn't in `_AUTO_REFRESH_VIEWS`).
+
+**Verified** against a real server + real Postgres + a real browser:
+seeded two deployments on two different strategies with closed
+positions spread across two different (real, backdated) days —
+confirmed the exact realized P&L, the exact vs-previous-period delta,
+and the exact By Strategy / By Deployment attribution all compute
+correctly; stepped Prev into yesterday and confirmed the numbers
+change to yesterday's (not today's) and Next re-disables only once
+back at the present; switched period type to Weekly and confirmed both
+seeded days correctly combine into one week's total; collapsed a
+section, reloaded the full page, and confirmed it stayed collapsed
+(persisted, not just in-memory); and downloaded the trend CSV and
+confirmed its header/shape. Re-ran the Step 38 dark-mode suite
+afterward since this added new CSS token usage to the same
+`:root`/`[data-theme="dark"]` blocks — still passes unchanged.
+
 ## Setup
 
 ```bash

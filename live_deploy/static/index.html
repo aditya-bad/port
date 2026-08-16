@@ -578,6 +578,54 @@ tr.trade-detail-row td {
 .compare-pick-name { font-weight: 700; font-size: 12.5px; }
 .compare-pick-meta { font-size: 10.5px; color: var(--parchment); margin-top: 2px; }
 
+/* ── Reports page — period-bucketed P&L bar, NOT the Compare view's
+   categorical --chart-N palette: here color encodes an actual
+   gain/loss POLARITY, exactly what --gain/--loss already mean
+   everywhere else in this app (ticker changes, trade cells), so
+   reusing them here is correct where reusing them as "series 3" in
+   Compare would not have been. Track is a fixed-width rail; the fill
+   grows from a shared zero-line in the middle, right for gains, left
+   for losses — a diverging bar, not a bar-from-left-edge, so the
+   reader can compare periods by fill LENGTH regardless of sign. ──── */
+.report-bar-track {
+  position: relative; width: 160px; height: 14px; background: var(--stone);
+  border: 1px solid var(--line); flex-shrink: 0;
+}
+.report-bar-zero { position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; background: var(--line); }
+.report-bar-fill { position: absolute; top: 1px; bottom: 1px; }
+.report-bar-fill.gain { background: var(--gain); left: 50%; }
+.report-bar-fill.loss { background: var(--loss); right: 50%; }
+.report-row-value { display: flex; align-items: center; gap: 10px; }
+
+/* ── Reports page — period navigation: prev/next arrows either side
+   of the current period's label, plus a jump-to-latest shortcut. ──── */
+.report-period-nav { display: flex; align-items: center; gap: 10px; margin: 4px 0 20px; }
+.report-period-label { font-family: var(--font-display); font-weight: 700; font-size: 16px; min-width: 160px; text-align: center; }
+.report-period-nav .btn:disabled { opacity: 0.35; }
+
+/* Single-direction win-rate fill (0-100%, left to right) -- distinct
+   from the bipolar report-bar-* above: a win rate has no "negative"
+   side, so a from-the-left fill (like the app's existing budget/meter
+   language) is the correct shape here, not a diverging one. */
+.report-winrate-track { width: 100%; height: 8px; background: var(--stone); border: 1px solid var(--line); margin-top: 8px; }
+.report-winrate-fill { height: 100%; background: var(--gain); }
+
+/* ── Reports page — collapsible sections. Instant show/hide (no
+   transition), matching how Catalog's "Advanced (raw JSON)" toggle
+   already behaves elsewhere in this app -- a functional collapse, not
+   a decorative animation. ──────────────────────────────────────────── */
+.report-section { margin-bottom: 20px; }
+.report-section-header {
+  display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
+  padding: 10px 0; border-bottom: 3px solid var(--line); margin-bottom: 14px;
+}
+.report-section-header h2 { margin-bottom: 0; }
+.report-section-chevron { font-size: 10px; color: var(--parchment); transition: transform 0.15s; }
+.report-section.collapsed .report-section-chevron { transform: rotate(-90deg); }
+.report-section.collapsed .report-section-content { display: none; }
+
+.report-delta { font-size: 11px; font-weight: 700; margin-top: 6px; }
+
 /* ── Modals — the biggest offset shadow in the app, so "floating
    above everything" reads unmistakably. ───────────────────────────── */
 .modal-overlay {
@@ -737,6 +785,7 @@ body.mobile-nav-open { overflow: hidden; }
       <a class="nav-item" data-nav="deployments" href="#/deployments">Deployed Strategies</a>
       <a class="nav-item" data-nav="portfolio" href="#/portfolio">Portfolio</a>
       <a class="nav-item" data-nav="compare" href="#/compare">Compare</a>
+      <a class="nav-item" data-nav="reports" href="#/reports">Reports</a>
       <a class="nav-item" data-nav="instruments" href="#/instruments">Instruments</a>
       <a class="nav-item" data-nav="account" href="#/account">Account</a>
       <div class="sidebar-footer">
@@ -890,6 +939,59 @@ body.mobile-nav-open { overflow: hidden; }
 
       <div id="comparePicker" class="compare-picker"><div class="empty"><span class="spinner"></span> Loading…</div></div>
       <div id="compareResult"></div>
+    </div>
+
+    <!-- ═══ Reports ═══ -->
+    <div id="view-reports" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Reports</h1>
+          <div class="view-sub">Realized P&amp;L for one period at a time, broken down by strategy and by deployment — settled results, not a live mark-to-market view</div>
+        </div>
+        <div class="view-header-actions">
+          <button class="btn btn-secondary btn-sm" id="reportsExportBtn" onclick="Reports.exportCsv()">⭳ Export CSV</button>
+          <button class="btn btn-secondary btn-sm" onclick="Reports.load()">↻ Refresh</button>
+        </div>
+      </div>
+
+      <div class="tabs" id="reportsPeriodTabs">
+        <button class="active" data-period="day" onclick="Reports.switchPeriod('day')">Daily</button>
+        <button data-period="week" onclick="Reports.switchPeriod('week')">Weekly</button>
+        <button data-period="month" onclick="Reports.switchPeriod('month')">Monthly</button>
+      </div>
+
+      <div class="report-period-nav">
+        <button class="btn btn-sm" id="reportsPrevBtn" onclick="Reports.step(1)" title="Previous period">← Prev</button>
+        <span class="report-period-label" id="reportsPeriodLabel">—</span>
+        <button class="btn btn-sm" id="reportsNextBtn" onclick="Reports.step(-1)" title="Next period" disabled>Next →</button>
+        <button class="btn btn-secondary btn-sm" id="reportsLatestBtn" onclick="Reports.jumpToLatest()" disabled>Latest</button>
+      </div>
+
+      <div id="reportsStats" class="stat-grid"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+
+      <div class="report-section" id="reportsSectionStrategy">
+        <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionStrategy')">
+          <span class="report-section-chevron">▼</span>
+          <h2 style="margin-bottom:0;">By Strategy</h2>
+        </div>
+        <div class="report-section-content" id="reportsByStrategy"></div>
+      </div>
+
+      <div class="report-section" id="reportsSectionDeployment">
+        <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionDeployment')">
+          <span class="report-section-chevron">▼</span>
+          <h2 style="margin-bottom:0;">By Deployment</h2>
+        </div>
+        <div class="report-section-content" id="reportsByDeployment"></div>
+      </div>
+
+      <div class="report-section" id="reportsSectionTrend">
+        <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionTrend')">
+          <span class="report-section-chevron">▼</span>
+          <h2 style="margin-bottom:0;">Recent Periods</h2>
+        </div>
+        <div class="report-section-content" id="reportsTrend"></div>
+      </div>
     </div>
 
     <!-- ═══ Strategy Detail ═══ -->
@@ -1109,6 +1211,7 @@ body.mobile-nav-open { overflow: hidden; }
 <script src="/js/deployments.js"></script>
 <script src="/js/portfolio.js"></script>
 <script src="/js/compare.js"></script>
+<script src="/js/reports.js"></script>
 <script src="/js/detail.js"></script>
 <script src="/js/instruments.js"></script>
 <script src="/js/account.js"></script>
@@ -1383,7 +1486,7 @@ function connectTickerSocket() {
 // ── Router ────────────────────────────────────────────────────────────
 // Six real views + one drill-down (detail, reached only by navigating
 // to #/deployments/{id}, never a sidebar destination of its own).
-const VIEWS = ['dashboard', 'catalog', 'deployments', 'portfolio', 'compare', 'detail', 'instruments', 'account'];
+const VIEWS = ['dashboard', 'catalog', 'deployments', 'portfolio', 'compare', 'reports', 'detail', 'instruments', 'account'];
 
 function router() {
   const hash = (window.location.hash || '#/dashboard').replace(/^#\/?/, '');
@@ -1408,6 +1511,7 @@ function router() {
   else if (view === 'deployments') Deployments.load();
   else if (view === 'portfolio') Portfolio.load();
   else if (view === 'compare') Compare.load();
+  else if (view === 'reports') Reports.load();
   else if (view === 'detail') Detail.load(param);
   else if (view === 'instruments') Instruments.load();
   else if (view === 'account') Account.load();

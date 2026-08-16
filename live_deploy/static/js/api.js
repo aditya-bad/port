@@ -128,6 +128,16 @@ const Api = {
     if (!r.ok) throw new Error(`Could not load the portfolio equity curve (${r.status})`);
     return r.json();
   },
+  async getPnlDigest(period = 'day', limit = 30) {
+    const r = await fetch(`/portfolio/pnl-digest?period=${period}&limit=${limit}`);
+    if (!r.ok) throw new Error(`Could not load the P&L digest (${r.status})`);
+    return r.json();
+  },
+  async getPnlReport(period = 'day', offset = 0) {
+    const r = await fetch(`/portfolio/pnl-report?period=${period}&offset=${offset}`);
+    if (!r.ok) throw new Error(`Could not load the P&L report (${r.status})`);
+    return r.json();
+  },
 
   // ── Instruments ─────────────────────────────────────────────────
   async listInstruments() {
@@ -239,6 +249,18 @@ function fmtDateTime(iso) {
     year: 'numeric', month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   });
+}
+
+// Date only, no time-of-day -- the P&L Digest's own period_start is
+// already a calendar-day (or calendar-week) boundary; showing hours/
+// minutes/seconds on it would just be misleading precision, not more
+// information (the digest doesn't know or care WHAT hour the day
+// "starts" at from the user's point of view, only which day it is).
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 function pnlClass(n) {

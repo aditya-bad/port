@@ -186,3 +186,58 @@ class PortfolioSnapshotOut(BaseModel):
     realized_pnl_cumulative: float
     deployments_count: int
     metadata: dict = {}
+
+
+class PnlDigestRow(BaseModel):
+    """One day's (or week's) portfolio-wide realized-P&L summary — see
+    queries.list_pnl_digest. Deliberately REALIZED only (no
+    unrealized/mark-to-market field at all, not even as an optional
+    one) — see that function's own docstring for why mixing a live
+    number into a digest of settled history would misrepresent it."""
+    period_start: datetime
+    realized_pnl: float
+    positions_closed: int
+    wins: int
+    losses: int
+    fills: int
+
+
+class PnlStrategyBreakdown(BaseModel):
+    """One strategy's realized P&L within a single Reports-page period
+    — see queries.pnl_by_strategy_for_range."""
+    strategy_name: str
+    realized_pnl: float
+    positions_closed: int
+
+
+class PnlDeploymentBreakdown(BaseModel):
+    """One deployment's realized P&L within a single Reports-page
+    period — see queries.pnl_by_deployment_for_range."""
+    deployment_id: UUID
+    deployment_name: str
+    strategy_name: str
+    realized_pnl: float
+    positions_closed: int
+
+
+class PnlReportOut(BaseModel):
+    """The Reports page's full payload for ONE selected period
+    (period type + offset from now — see app/routers/aggregate.py's
+    period_bounds()): the period's own realized-P&L summary, the SAME
+    summary for the immediately preceding period (so the frontend can
+    show a "vs previous period" delta without a second round trip),
+    and the by-strategy / by-deployment breakdowns for the selected
+    period. All realized-P&L only, same reasoning as PnlDigestRow."""
+    period: str            # "day" | "week" | "month"
+    offset: int
+    period_start: datetime
+    period_end: datetime
+    label: str              # human-readable period name, e.g. "16 Aug 2026" / "Week of 11 Aug 2026" / "Aug 2026"
+    realized_pnl: float
+    positions_closed: int
+    wins: int
+    losses: int
+    fills: int
+    prev_realized_pnl: float
+    by_strategy: list[PnlStrategyBreakdown]
+    by_deployment: list[PnlDeploymentBreakdown]
