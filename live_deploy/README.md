@@ -2652,6 +2652,93 @@ querying live for. Re-ran the Step 37 CSV export suite (exercises
 equity chart afterward to confirm moving `renderEquityChart()` didn't
 regress the view it originally belonged to.
 
+## What's here (Step 40: Strategy Comparison — overlay equity curves, indexed to % return)
+
+First of two follow-up features requested after the original in-app
+batch shipped, done as an in-app page rather than wired to Telegram
+(which stays parked). A new "Compare" nav item: pick 2–6 deployments
+from a checklist (every deployment, not just active/paused — unlike
+Portfolio's live-only combined curve, "how did my old stopped strategy
+do against this one" is exactly the question this view exists to
+answer) and overlay their equity curves on one chart.
+
+**Indexed to % return, not raw rupees** — the one design decision the
+whole feature hinges on. Two deployments with ₹10,000 and ₹1,00,000
+initial capital are not comparable on a raw total_value chart: a ₹300
+move means completely different things at those two scales, and
+whichever deployment happens to be bigger would visually dominate the
+chart regardless of which one is actually performing better. Each
+curve is indexed to its OWN first snapshot (0% at the start, not
+initial_capital — a deployment's first snapshot may already reflect
+whatever cash/position state existed by the time the snapshot loop
+first ran), so the chart answers "which one grew faster," not "which
+one started with more money." No new backend endpoint needed — this
+reuses the existing per-deployment `GET /deployments/{id}/snapshots`
+(Step 5) and `GET /deployments` (Step 1), fetched once per selected
+deployment (bounded by the user's own 2–6 selection, not the N+1
+problem Step 4's aggregate endpoints exist to avoid).
+
+**Colors, done properly, not eyeballed:** loaded the `dataviz` skill
+before writing any chart code specifically because this is the app's
+first genuinely multi-series chart — every other chart here (Detail's
+equity curve, Portfolio's combined curve) is single-series, where a
+semantic up/down color is enough. A 6th series needs six named colors
+that stay tellable apart, and the app's own semantic tokens
+(`--gain`/`--loss`/`--brass`/`--info`) were the wrong tool for that
+job even though they're already 4 of the 6 colors this app has:
+reusing them as "series 3" would make them lie every other place
+they're on screen (they carry FIXED meaning — profit/loss/paused/entry
+— everywhere else). Ran the skill's own validated categorical
+six-color set through its `validate_palette.js` script against this
+app's actual light (`#FFFDF6`) and dark (`#1E1533`) chart surfaces
+before adopting it as new `--chart-1` through `--chart-6` tokens
+(fixed order, never cycled or reassigned per-chart — see the tokens'
+own comment in `index.html`'s `:root`) — full CVD-safety and contrast
+report for both themes is in the commit. The light-mode palette
+carries a contrast WARN on 3 of the 6 colors against the cream
+surface, which the skill's own rule says is legal only with "relief":
+a legend (always present for 2+ series, colored swatch + name + %
+value) and a full data table below the chart (every selected
+deployment, even ones the chart itself skips) — both already planned
+for other reasons, so the relief was free, not bolted on after the
+warning.
+
+**Export**, per the request that came with this feature: long/tidy-
+format CSV (`Deployment, Strategy, Time, Total Value, Pct Return` — one
+row per deployment per snapshot), not a wide table with one column per
+deployment — deployments' snapshot timestamps don't line up exactly
+(see the chart's own index-based, not wall-clock, X axis for the same
+reason), so a wide layout would need interpolation or ragged blank
+cells. Long format has no such problem and is the shape any of the
+usual next steps (Excel, pandas) actually want. Reuses the exact
+`toCsv`/`downloadCsv` helpers Step 37 built, unchanged.
+
+**Verified** against a real server + real Postgres + a real browser:
+seeded three deployments with deliberately different capital sizes and
+trajectories — a ₹10,000 deployment that grew to ₹10,700 (+7%), a
+₹1,00,000 deployment that DROPPED slightly in rupees but by a much
+smaller relative amount (₹99,800, -0.2%), and a third with only ONE
+snapshot — then confirmed on the actual rendered page that the small
+deployment's bigger % return correctly beats the big deployment's
+smaller one despite a much tinier absolute rupee move (the whole point
+of indexing), that the single-snapshot deployment is correctly
+excluded from the chart (needs 2+ points to draw a line) while still
+appearing in the table underneath (the relief rule in practice, not
+just in the CSS), that the legend's swatch colors are distinct per
+series, that the CSV downloads with the right long-format shape and
+row count, and that the 6-deployment cap actually disables further
+checkboxes once hit rather than only suggesting a limit. Caught one
+real bug in my own test, not the app: driving every checkbox through a
+tight click-loop raced Playwright's own post-click stability check
+against the picker's full re-render on every toggle (real users click
+one box, see it settle, then click the next — never mid-render like a
+scripted loop can) — fixed by exercising the first click for real and
+the rest through the same `Compare.toggle()` the checkboxes themselves
+call, not a special path. Also re-ran the Step 38 dark-mode suite
+afterward, since this added a new categorical palette to the same
+`:root`/`[data-theme="dark"]` blocks that suite already covers — still
+passes unchanged.
+
 ## Setup
 
 ```bash

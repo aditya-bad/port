@@ -170,6 +170,24 @@
   --info: #2D5C7A;         /* indigo-teal — neutral/entry accent */
   --info-soft: #DCEAF0;
 
+  /* Categorical chart palette (Strategy Comparison's multi-line chart,
+     Step 40) — deliberately NOT the semantic gain/loss/brass/info
+     tokens above: those carry fixed MEANING (profit/loss/paused/entry)
+     everywhere else in this app, so reusing them to mean "series 3" on
+     one chart would make them lie the rest of the time they're on
+     screen. This is a validated categorical set instead (six hues,
+     fixed order, run through the dataviz skill's CVD/contrast
+     validator for both this app's light AND dark chart surfaces — see
+     README's Step 40): assign in this exact order, never cycled or
+     reordered per-chart, and don't add a 7th slot without re-validating
+     the whole set — fold anything past 6 into "and N more" instead. */
+  --chart-1: #2A78D6;   /* blue */
+  --chart-2: #EB6834;   /* orange */
+  --chart-3: #1BAF7A;   /* aqua */
+  --chart-4: #EDA100;   /* yellow */
+  --chart-5: #E87BA4;   /* magenta */
+  --chart-6: #008300;   /* green */
+
   --shadow: 12px 12px 0 rgba(27, 17, 48, 0.14);
   --shadow-sm: 6px 6px 0 rgba(27, 17, 48, 0.14);
   --shadow-lg: 18px 18px 0 rgba(27, 17, 48, 0.16);   /* modals */
@@ -226,6 +244,13 @@
     --info: #7FC1E8;
     --info-soft: #16303F;
 
+    --chart-1: #3987E5;
+    --chart-2: #D95926;
+    --chart-3: #199E70;
+    --chart-4: #C98500;
+    --chart-5: #D55181;
+    --chart-6: #008300;
+
     --shadow: 12px 12px 0 rgba(0, 0, 0, 0.55);
     --shadow-sm: 6px 6px 0 rgba(0, 0, 0, 0.5);
     --shadow-lg: 18px 18px 0 rgba(0, 0, 0, 0.6);
@@ -254,6 +279,13 @@
   --brass-soft: #3E2E10;
   --info: #7FC1E8;
   --info-soft: #16303F;
+
+  --chart-1: #3987E5;
+  --chart-2: #D95926;
+  --chart-3: #199E70;
+  --chart-4: #C98500;
+  --chart-5: #D55181;
+  --chart-6: #008300;
 
   --shadow: 12px 12px 0 rgba(0, 0, 0, 0.55);
   --shadow-sm: 6px 6px 0 rgba(0, 0, 0, 0.5);
@@ -524,6 +556,28 @@ tr.trade-detail-row td {
 .equity-wrap { background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm); padding: 16px 18px; }
 .equity-chart { width: 100%; height: 160px; display: block; }
 
+/* ── Chart legend — required for every 2+-series chart (Strategy
+   Comparison's multi-line curve), see the dataviz skill's "identity is
+   never color-alone" rule: the swatch carries the series color, the
+   text stays in a text token, never the series color itself. ──────── */
+.chart-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 12px; padding-top: 12px; border-top: 2px solid var(--row-line); }
+.legend-item { display: flex; align-items: center; gap: 7px; font-size: 11px; font-weight: 700; }
+.legend-swatch { width: 10px; height: 10px; flex-shrink: 0; border-radius: 2px; }
+.legend-item .legend-name { color: var(--ink); }
+.legend-item .legend-value { font-family: var(--font-mono); }
+
+/* ── Deployment picker (Strategy Comparison) ─────────────────────────── */
+.compare-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.compare-pick-item {
+  display: flex; align-items: center; gap: 10px; border: 3px solid var(--line); background: var(--paper);
+  padding: 10px 12px; cursor: pointer; user-select: none;
+}
+.compare-pick-item.checked { background: var(--sand); }
+.compare-pick-item.disabled { opacity: 0.45; cursor: not-allowed; }
+.compare-pick-item input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; cursor: inherit; }
+.compare-pick-name { font-weight: 700; font-size: 12.5px; }
+.compare-pick-meta { font-size: 10.5px; color: var(--parchment); margin-top: 2px; }
+
 /* ── Modals — the biggest offset shadow in the app, so "floating
    above everything" reads unmistakably. ───────────────────────────── */
 .modal-overlay {
@@ -682,6 +736,7 @@ body.mobile-nav-open { overflow: hidden; }
       <a class="nav-item" data-nav="catalog" href="#/catalog">Strategy Catalog</a>
       <a class="nav-item" data-nav="deployments" href="#/deployments">Deployed Strategies</a>
       <a class="nav-item" data-nav="portfolio" href="#/portfolio">Portfolio</a>
+      <a class="nav-item" data-nav="compare" href="#/compare">Compare</a>
       <a class="nav-item" data-nav="instruments" href="#/instruments">Instruments</a>
       <a class="nav-item" data-nav="account" href="#/account">Account</a>
       <div class="sidebar-footer">
@@ -818,6 +873,23 @@ body.mobile-nav-open { overflow: hidden; }
         <h2>Exposure by Symbol (open positions, all deployments)</h2>
         <div id="portfolioExposure"><div class="empty"><span class="spinner"></span> Loading…</div></div>
       </section>
+    </div>
+
+    <!-- ═══ Strategy Comparison ═══ -->
+    <div id="view-compare" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Compare</h1>
+          <div class="view-sub">Pick 2–6 deployments to overlay their equity curves, indexed to % return so different capital sizes compare fairly</div>
+        </div>
+        <div class="view-header-actions">
+          <button class="btn btn-secondary btn-sm" id="compareExportBtn" onclick="Compare.exportCsv()" style="display:none;">⭳ Export CSV</button>
+          <button class="btn btn-primary btn-sm" id="compareRunBtn" onclick="Compare.run()" disabled>Compare selected</button>
+        </div>
+      </div>
+
+      <div id="comparePicker" class="compare-picker"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      <div id="compareResult"></div>
     </div>
 
     <!-- ═══ Strategy Detail ═══ -->
@@ -1036,6 +1108,7 @@ body.mobile-nav-open { overflow: hidden; }
 <script src="/js/catalog.js"></script>
 <script src="/js/deployments.js"></script>
 <script src="/js/portfolio.js"></script>
+<script src="/js/compare.js"></script>
 <script src="/js/detail.js"></script>
 <script src="/js/instruments.js"></script>
 <script src="/js/account.js"></script>
@@ -1310,7 +1383,7 @@ function connectTickerSocket() {
 // ── Router ────────────────────────────────────────────────────────────
 // Six real views + one drill-down (detail, reached only by navigating
 // to #/deployments/{id}, never a sidebar destination of its own).
-const VIEWS = ['dashboard', 'catalog', 'deployments', 'portfolio', 'detail', 'instruments', 'account'];
+const VIEWS = ['dashboard', 'catalog', 'deployments', 'portfolio', 'compare', 'detail', 'instruments', 'account'];
 
 function router() {
   const hash = (window.location.hash || '#/dashboard').replace(/^#\/?/, '');
@@ -1334,6 +1407,7 @@ function router() {
   else if (view === 'catalog') Catalog.load();
   else if (view === 'deployments') Deployments.load();
   else if (view === 'portfolio') Portfolio.load();
+  else if (view === 'compare') Compare.load();
   else if (view === 'detail') Detail.load(param);
   else if (view === 'instruments') Instruments.load();
   else if (view === 'account') Account.load();
