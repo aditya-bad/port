@@ -2338,6 +2338,50 @@ confirmed to still authenticate a follow-up request; and the full
 Step 32 revocation suite re-run afterward to confirm none of it
 regressed.
 
+## What's here (Step 34: the Deploy modal is wider on desktop, laid out in a grid)
+
+Reported directly: some strategies have a dozen-plus config fields,
+and filling them one full-width row at a time in a narrow, fixed-width
+box wasn't pleasant. Scoped to the Deploy modal specifically, not
+every modal — Clear All, Edit Deployment, and the rest have few enough
+fields that the existing 560px box is already fine, and widening those
+too would just be unused whitespace. Left completely alone on mobile,
+as asked — everything below is gated behind the existing 761px
+breakpoint this app's mobile layout already uses, so narrow stays
+narrow.
+
+Two changes, both above that breakpoint only: the modal itself grows
+to 900px (from 560px), and the deployment-name/mode/initial-capital
+row plus the strategy's own config fields both become CSS grids —
+`repeat(3, 1fr)` for the fixed top row, `repeat(auto-fit,
+minmax(240px, 1fr))` for the config fields, so a 4-field strategy and
+a 14-field one both just lay out in however many columns actually fit
+without needing a per-strategy column count anywhere.
+
+**Real bug found and fixed along the way, not assumed away**: the
+grid rule for `#deployConfigFields` computed correctly in the
+stylesheet but had zero visible effect — `catalog.js` was setting
+`element.style.display = 'block'` directly whenever the modal opens
+or the Advanced-JSON toggle switches back to the form view, and an
+inline style always wins over any stylesheet rule regardless of
+selector specificity. Caught by checking the actual computed style in
+a real browser rather than trusting the screenshot alone, fixed by
+switching those two call sites to `removeProperty('display')`, which
+lets the stylesheet (grid above the breakpoint, block below it)
+decide instead of a leftover inline override.
+
+**Verified** against a real server + real browser: a 14-field
+strategy's config now visibly lays out in a 3-column grid at
+1440×900, confirmed via computed style (not just eyeballing the
+screenshot) that `display: grid` actually took effect after the JS
+fix; the same modal at a real 390×844 mobile viewport is pixel-
+identical to before this change; the Advanced (raw JSON) toggle still
+correctly hides/shows the right element in both directions after
+switching off inline `display` overrides; and a real deployment was
+submitted through the new grid-laid-out form and confirmed via the API
+afterward to have saved with the correct config values — the layout
+change didn't corrupt anything being read back out of the form.
+
 ## Setup
 
 ```bash

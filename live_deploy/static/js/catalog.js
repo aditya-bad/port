@@ -189,7 +189,13 @@ const Catalog = {
     // modal session was left — a fresh deploy for a different strategy
     // shouldn't inherit "Advanced" just because the previous one did.
     document.getElementById('deployAdvancedToggle').checked = false;
-    document.getElementById('deployConfigFields').style.display = 'block';
+    // removeProperty, not "= 'block'" -- an inline style beats any
+    // stylesheet rule regardless of specificity, which silently broke
+    // #deployConfigFields's own CSS grid layout on wider screens (it
+    // computed to display:grid in the stylesheet, block from here won
+    // anyway). Clearing the inline override lets the actual CSS
+    // (grid above the mobile breakpoint, block below it) decide.
+    document.getElementById('deployConfigFields').style.removeProperty('display');
     document.getElementById('deployConfig').style.display = 'none';
     this._renderConfigFields(defaultConfig || {});
 
@@ -309,7 +315,7 @@ const Catalog = {
         return;
       }
       Catalog._renderConfigFields(parsed);
-      fieldsEl.style.display = 'block';
+      fieldsEl.style.removeProperty('display');   // see openDeployModal's own comment on why not '= block'
       jsonEl.style.display = 'none';
     }
   },

@@ -453,6 +453,32 @@ tr.trade-detail-row td {
 .modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
 .modal-msg { margin-top: 10px; font-size: 13px; font-weight: 600; }
 
+/* Deploy specifically (not every modal — Clear All, Edit Deployment
+   etc. have few enough fields that the default 560px is already
+   fine) gets more room above the mobile breakpoint: a strategy's
+   config can be a dozen-plus fields, and filling them one full-width
+   row at a time in a narrow box was the actual complaint. Left
+   completely alone below 761px on purpose — narrow is still correct
+   there, this is a laptop/desktop-only widening. */
+@media (min-width: 761px) {
+  .modal-deploy { max-width: 900px; }
+  .modal-deploy .field-row {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 14px;
+  }
+  /* auto-fit + minmax: however many fields a given strategy's config
+     has, they lay out in however many ~240px+ columns actually fit,
+     reflowing on its own — a 4-field strategy and a 14-field one both
+     just work without this needing a per-strategy column count. */
+  #deployConfigFields {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0 16px;
+  }
+  /* The "left at default" note for advanced-only (null) keys is a
+     sibling inside that same grid container -- without this it'd be
+     squeezed into a single ~240px column like a field, when it should
+     read across the whole row. */
+  #deployConfigFields > .table-note { grid-column: 1 / -1; }
+}
+
 .spinner {
   display: inline-block; width: 14px; height: 14px; border: 3px solid var(--line);
   border-top-color: var(--accent); border-radius: 50%; animation: spin 0.6s linear infinite;
@@ -720,22 +746,24 @@ body.mobile-nav-open { overflow: hidden; }
 
 <!-- Deploy modal -->
 <div class="modal-overlay" id="deployModal">
-  <div class="modal">
+  <div class="modal modal-deploy">
     <h2 id="deployModalTitle">Deploy strategy</h2>
-    <div class="field">
-      <label>Deployment name (unique)</label>
-      <input type="text" id="deployName" placeholder="pivot_st_conservative">
-    </div>
-    <div class="field">
-      <label>Mode</label>
-      <select id="deployMode">
-        <option value="intraday">intraday</option>
-        <option value="positional">positional</option>
-      </select>
-    </div>
-    <div class="field">
-      <label>Initial capital (₹)</label>
-      <input type="number" id="deployCapital" value="100000" min="1">
+    <div class="field-row">
+      <div class="field">
+        <label>Deployment name (unique)</label>
+        <input type="text" id="deployName" placeholder="pivot_st_conservative">
+      </div>
+      <div class="field">
+        <label>Mode</label>
+        <select id="deployMode">
+          <option value="intraday">intraday</option>
+          <option value="positional">positional</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Initial capital (₹)</label>
+        <input type="number" id="deployCapital" value="100000" min="1">
+      </div>
     </div>
     <div class="field">
       <label>Strategy configuration</label>
