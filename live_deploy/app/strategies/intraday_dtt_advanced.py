@@ -114,7 +114,7 @@ DIFFERENCE 2 — break-even band width is configurable:
   the key.
 
 STILL APPLIES, ALL INHERITED UNCHANGED FROM intraday_dtt_adjusted:
-  - Entry: 10:00 ATM CE+PE, `allow_expiry_day_entry`/`catch_up_late_entry`,
+  - Entry: 10:00 ATM CE+PE, `switch_to_next_week_on_expiry`/`catch_up_late_entry`,
     exactly one entry attempt per day, no same-day re-entry.
   - Profit target (`combined_premium_profit_pct`, default 10%): running
     total profit = realized P&L from every leg closed earlier today (via
@@ -175,7 +175,7 @@ logger = logging.getLogger("live_deploy.strategies.intraday_dtt_advanced")
         "breakeven_multiplier": 1.0,
         "lots_per_trade": 1,
         "catch_up_late_entry": True,
-        "allow_expiry_day_entry": False,
+        "switch_to_next_week_on_expiry": False,
     },
 )
 class IntradayDTTAdvancedStrategy(IntradayDTTAdjustedStrategy):

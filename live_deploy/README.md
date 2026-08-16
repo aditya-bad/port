@@ -467,16 +467,19 @@ live-premium threshold logic:
      this strategy's three defining rules.
 - **Exactly one entry per day.** Once exited for any of the 3 reasons,
   no same-day re-entry — it waits for the next day's `entry_time`.
-- **No entry on the resolved contract's own expiry day** (config:
-  `allow_expiry_day_entry`, default `false`): selling options that
-  expire that same afternoon is a fast-decay, sharp-gamma scenario this
-  strategy isn't designed for. Checked against the *actual resolved*
-  expiry date (`expiry == ts.date()`, right after `resolve_expiry()` —
-  before strike/leg resolution, before pricing, before subscribing
-  anything), not a hardcoded weekday, since the weekly expiry day has
-  changed before and isn't guaranteed to stay put. Set
-  `allow_expiry_day_entry: true` to opt back into selling the straddle
-  even on the contract's own expiry day.
+- **Never skips a trading day, including the resolved contract's own
+  expiry day** (config: `switch_to_next_week_on_expiry`, default
+  `false`): selling options that expire that same afternoon is a
+  fast-decay, sharp-gamma scenario, so this decides *which* contract
+  gets traded, not *whether* to trade. `false` sells the same-day-expiry
+  contract as resolved (opted into, same-day gamma and all); `true`
+  re-resolves `NEXT_WEEK` instead, for that one entry only —
+  `expiry_selector` itself is never touched, so every other day still
+  resolves however it's configured to. Checked against the *actual
+  resolved* expiry date (`expiry == ts.date()`, right after
+  `resolve_expiry()` — before strike/leg resolution, before pricing,
+  before subscribing anything), not a hardcoded weekday, since the
+  weekly expiry day has changed before and isn't guaranteed to stay put.
 
 **How continuous exit monitoring works without REST polling.** Once
 sold, both legs' `instrument_token`s are dynamically subscribed on the
@@ -520,7 +523,7 @@ curl -X POST localhost:8000/deployments \
     "spike_pct": 0.40,
     "lots_per_trade": 1,
     "catch_up_late_entry": true,
-    "allow_expiry_day_entry": false
+    "switch_to_next_week_on_expiry": false
   }
 }'
 ```
@@ -681,7 +684,7 @@ curl -X POST localhost:8000/deployments \
     "adjustment_strike_window": 40,
     "lots_per_trade": 1,
     "catch_up_late_entry": true,
-    "allow_expiry_day_entry": false
+    "switch_to_next_week_on_expiry": false
   }
 }'
 ```
@@ -776,7 +779,7 @@ curl -X POST localhost:8000/deployments \
     "breakeven_multiplier": 1.0,
     "lots_per_trade": 1,
     "catch_up_late_entry": true,
-    "allow_expiry_day_entry": false
+    "switch_to_next_week_on_expiry": false
   }
 }'
 ```
@@ -1861,10 +1864,15 @@ expiries' leg lookups. Entered near end-of-day (`entry_time`, default
 "Next day" is tick-driven, not calendar math (same pattern every other
 day-boundary check in this package uses): it's just the first tick
 whose date differs from the entry day, so a weekend or holiday is
-skipped automatically without any holiday-calendar logic. Same
-expiry-day entry guard as `intraday_dtt_simple` (`allow_expiry_day_entry`,
-default False) — selling THIS_WEEK's straddle on its own expiry day at
-15:20 is effectively already-at-expiry.
+skipped automatically without any holiday-calendar logic. Has
+its own expiry-day entry guard, config `allow_expiry_day_entry` (default
+False, unchanged by Step 46's rename of `intraday_dtt_simple`'s
+equivalent — see that strategy's own docstring; this one is a genuinely
+different trade shape, an overnight calendar spread rather than an
+intraday straddle, so it kept the skip-based guard on purpose rather
+than picking up the "never skip, switch expiry instead" behavior) —
+selling THIS_WEEK's straddle on its own expiry day at 15:20 is
+effectively already-at-expiry.
 
 Resume-safety reconstructs open legs from the DB by SIDE (short →
 buy back on exit, long → sell off on exit), not by which expiry each
@@ -3066,6 +3074,70 @@ trace of the original — the full create → display → edit round trip,
 not just the create half. Re-ran the Step 38 dark-mode suite
 afterward since this touches shared modal CSS; still passes.
 
+## What's here (Step 46: DTT straddle family never skips expiry day — switches to NEXT_WEEK instead)
+
+Requested directly: `intraday_dtt_simple`'s `allow_expiry_day_entry`
+(shared, via `resolve_atm_straddle_legs()`, by `intraday_dtt_adjusted`
+and inherited by `intraday_dtt_advanced`) used to have a skip path —
+default `false` meant "don't trade at all today" when the resolved
+contract happened to expire that same afternoon. Renamed to
+`switch_to_next_week_on_expiry` and the skip path removed entirely: the
+flag now picks *which* contract gets sold on an expiry day, never
+*whether* to sell one.
+
+- `false` (new default) — sell the same-day-expiry contract as
+  resolved, same-day gamma and all (this is what `true` used to mean
+  under the old name — the "opt into it" behavior didn't go away, it's
+  just what happens by default now that skipping isn't an option).
+- `true` — re-resolve using `"NEXT_WEEK"` instead, for that one entry
+  only. `expiry_selector` itself is never mutated, so every other day
+  of the week keeps resolving however it's actually configured
+  (`THIS_WEEK` or otherwise) — this is a one-day, one-entry
+  substitution, not a standing config change.
+
+This is a genuine behavior change, not a pure rename with a
+backward-compatible fallback the way `decay_pct`/`spike_pct` got in
+Step 26: the old key's `false` meant "skip," the new key's `false`
+means "trade the same-day contract anyway" — those aren't the same
+action, so silently mapping one to the other would misrepresent what
+an existing deployment's config actually says. The old key is simply
+no longer read; any deployment still carrying it in its persisted
+config just has an unused key and now gets the new default (never
+skip) instead of the old skip — which is exactly the fix, applied
+automatically. `calendar_btst` was explicitly left alone — it has its
+own, separately-named `allow_expiry_day_entry` and a genuinely
+different trade shape (an overnight calendar spread, not an intraday
+straddle), so it kept its skip-based guard on purpose rather than
+picking up this behavior.
+
+Implementation lives entirely in the one shared function
+(`resolve_atm_straddle_legs`, `intraday_dtt_simple.py`) both strategies
+already called through — no duplicated logic to keep in sync. It now
+always returns a 5-tuple (`ce_leg, pe_leg, expiry, strike,
+switched_to_next_week`) instead of sometimes returning `None`; both
+callers' `if resolved is None: return` skip branches were deleted
+along with it, since there's no longer a case that produces one. The
+resulting `switched_to_next_week` flag is recorded in the entry fill's
+own `trigger_values`, so it's visible in the Activity/trade log on any
+day it actually fired, not just inferable from which contract got
+traded.
+
+**Verified**: a direct unit test against the shared function with a
+stub resolver (four cases — non-expiry day ignores the flag entirely,
+expiry day + `false` trades the same-day contract, expiry day + `true`
+switches to `NEXT_WEEK`, and confirmed the function can no longer
+return `None` for either flag value), plus a full live integration
+test through the real dispatcher/runner/resolver/Postgres pipeline
+(in-process ASGI) with a synthetic two-expiry options chain — one
+expiry forced to the real current date (proving the check is date-based,
+not a hardcoded weekday) — covering both `intraday_dtt_simple` and
+`intraday_dtt_adjusted` on an actual expiry day: `false` opens a real
+straddle on today's own expiring contract, `true` opens one on
+`NEXT_WEEK`'s contract instead, both confirmed via the actual `expiry`
+recorded in trade metadata (not the symbol text alone, since two
+same-month synthetic expiries can share a week tag) — neither ever
+skips.
+
 ## Setup
 
 ```bash
@@ -3826,19 +3898,24 @@ with a synthetic NFO chain and a fake underlying tick feed:
   point — a decay exit fed *after* the restart still fired correctly,
   proving the resumed instance reconstructed each leg's `avg_entry_price`
   from the DB correctly, not just "noticed a position exists."
-- **No entry on the contract's own expiry day, plus the override**: a
-  synthetic chain whose *only* listed expiry is today's real date
-  (deliberately not tied to any particular weekday, so this proves the
-  check is date-based rather than a hardcoded "skip Thursdays") — with
-  `allow_expiry_day_entry` at its default `false`, confirmed no
-  position opens and *neither* leg is even resolved, priced, or
-  subscribed (checked directly against `dispatcher.status`, not just
-  "no position in the DB"); confirmed the skip latches for the rest of
-  that day, not just the triggering tick; confirmed
-  `allow_expiry_day_entry: true` on the identical expiry-today setup
-  sells the straddle normally instead; and, back on the original
-  THIS_WEEK chain (expiring later in the week, not today), confirmed a
-  normal day's entry is completely unaffected by the new check.
+- **Never skips the contract's own expiry day** (Step 46 superseded the
+  original skip-based `allow_expiry_day_entry` guard tested here — see
+  that Step's own entry for the rename/behavior-change rationale): a
+  synthetic chain with TWO listed expiries, one forced to today's real
+  date (deliberately not tied to any particular weekday, so this proves
+  the check is date-based rather than a hardcoded "skip Thursdays") and
+  one a week out — with `switch_to_next_week_on_expiry` at its default
+  `false`, confirmed a real straddle still opens, on today's own
+  expiring contract (checked against the actual `expiry` recorded in
+  trade metadata, not just symbol text, since a same-month NEXT_WEEK
+  contract can share a synthetic symbol's week tag); confirmed
+  `switch_to_next_week_on_expiry: true` on the identical expiry-today
+  setup instead opens on the NEXT_WEEK contract (again via metadata,
+  plus the `switched_to_next_week` trigger value), for both
+  `intraday_dtt_simple` and `intraday_dtt_adjusted` (proving the shared
+  `resolve_atm_straddle_legs` reuse still works after the change); and,
+  back on a normal THIS_WEEK chain (expiring later in the week, not
+  today), confirmed a normal day's entry is completely unaffected.
 - Full existing regression suite (auth, DB layer, deployment lifecycle,
   dynamic subscription, onboarding/UI, pivot_supertrend math + live,
   pivot_supertrend_options live, pivot_supertrend_options_inverse live,

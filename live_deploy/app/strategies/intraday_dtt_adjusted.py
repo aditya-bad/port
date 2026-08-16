@@ -42,7 +42,7 @@ that reuse:
 RULES:
 
 1. ENTRY — see intraday_dtt_simple's docstring; behavior is identical
-   here (`entry_time`, `allow_expiry_day_entry`, `catch_up_late_entry`,
+   here (`entry_time`, `switch_to_next_week_on_expiry`, `catch_up_late_entry`,
    ATM strike from spot, sell CE+PE, once per day, no same-day
    re-entry). Additionally records `entry_spot` (the live spot price at
    entry) and `combined_entry_premium` (CE + PE entry price, the
@@ -144,10 +144,10 @@ RULES:
    adjustment/reversal/profit-target logic would otherwise say.
 
 8. STILL APPLIES ON TOP OF ALL OF THE ABOVE: 3:00 PM hard exit (closes
-   everything regardless of state); no entry on the resolved contract's
-   own expiry day (`allow_expiry_day_entry`, reused from
-   intraday_dtt_simple, not reimplemented); exactly one entry attempt
-   per day, no same-day re-entry after any exit.
+   everything regardless of state); never skips a day, including the
+   resolved contract's own expiry day (`switch_to_next_week_on_expiry`,
+   reused from intraday_dtt_simple, not reimplemented); exactly one
+   entry attempt per day, no same-day re-entry after any exit.
 
 PRIORITY ORDER, every tick, once both original legs are open (CONFIRMED
 before writing this code — the spec states force_exit above everything
@@ -219,7 +219,7 @@ CONFIG (all shared entry/exit-scaffolding keys carry the exact same
 meaning as intraday_dtt_simple — see that module's docstring):
   "instrument_tokens", "symbol", "options_underlying", "expiry_selector",
   "entry_time", "force_exit_time" (required, non-null), "lots_per_trade",
-  "catch_up_late_entry", "allow_expiry_day_entry" — identical.
+  "catch_up_late_entry", "switch_to_next_week_on_expiry" — identical.
   "combined_premium_profit_pct": 0.10 (default) — the total-profit
       target, as a fraction of the ORIGINAL 2-leg combined entry
       premium (see "PROFIT TARGET"). Named `decay_pct` before this was
@@ -300,7 +300,7 @@ def _legs_snapshot(legs: dict) -> dict:
         "adjustment_strike_window": 40,
         "lots_per_trade": 1,
         "catch_up_late_entry": True,
-        "allow_expiry_day_entry": False,
+        "switch_to_next_week_on_expiry": False,
     },
 )
 class IntradayDTTAdjustedStrategy(StrategyBase):
@@ -377,7 +377,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         if self.lots_per_trade < 1:
             raise ValueError(f"lots_per_trade must be >= 1, got {self.lots_per_trade}")
         self.catch_up_late_entry = bool(cfg.get("catch_up_late_entry", True))
-        self.allow_expiry_day_entry = bool(cfg.get("allow_expiry_day_entry", False))
+        self.switch_to_next_week_on_expiry = bool(cfg.get("switch_to_next_week_on_expiry", False))
 
         self.resolver = OptionsResolver(runner.dispatcher)
 
@@ -585,11 +585,9 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         try:
             resolved = await resolve_atm_straddle_legs(
                 self.resolver, self.options_underlying, self.expiry_selector,
-                ts, self.allow_expiry_day_entry, runner.deployment_name,
+                ts, self.switch_to_next_week_on_expiry, runner.deployment_name,
             )
-            if resolved is None:
-                return
-            ce_leg, pe_leg, expiry, strike = resolved
+            ce_leg, pe_leg, expiry, strike, switched_to_next_week = resolved
             ce_price = await self.resolver.get_ltp(ce_leg)
             pe_price = await self.resolver.get_ltp(pe_leg)
             entry_spot = await self.resolver.get_spot_price(self.options_underlying)
@@ -618,6 +616,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         trigger_values = {
             "tick_time": ts.time().isoformat(), "entry_time": self.entry_time.isoformat(),
             "late_start_today": self._late_start_today,
+            "switched_to_next_week": switched_to_next_week,
         }
         common_meta = {
             "strike": strike, "expiry": expiry.isoformat(), "leg_role": "original",

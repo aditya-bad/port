@@ -26,15 +26,24 @@ RULES:
        rules.
   Exactly ONE entry per day. Once exited (any of the 3 reasons above), no
   same-day re-entry — it waits for the next day's `entry_time`.
-  No entry on the resolved contract's OWN expiry day (config:
-  `allow_expiry_day_entry`, default False): selling options that expire
-  that same afternoon is a fast-decay, sharp-gamma scenario this
-  strategy isn't designed for. Checked against the ACTUAL resolved
-  expiry date, not a hardcoded weekday — the weekly expiry day has
-  changed before and isn't guaranteed to stay put, so nothing here
-  assumes it lands on any particular day of the week. Set
-  `allow_expiry_day_entry: true` to opt back into the old
-  no-check behavior.
+  NEVER skips a trading day, including the resolved contract's OWN
+  expiry day (config: `switch_to_next_week_on_expiry`, default False) —
+  selling options that expire that same afternoon is a fast-decay,
+  sharp-gamma scenario, so this decides which contract gets traded
+  instead of whether to trade at all:
+    False (default) -> sell the same-day-expiry contract as resolved
+                        (the old no-check behavior — opt in with eyes
+                        open to same-day gamma).
+    True             -> re-resolve using NEXT_WEEK instead, just for
+                        today's entry (the configured `expiry_selector`
+                        itself is untouched for every other day).
+  Checked against the ACTUAL resolved expiry date, not a hardcoded
+  weekday — the weekly expiry day has changed before and isn't
+  guaranteed to stay put, so nothing here assumes it lands on any
+  particular day of the week. (Formerly `allow_expiry_day_entry`, which
+  could skip the day's entry entirely — that skip path no longer
+  exists; every day gets an entry attempt now, this only picks which
+  contract.)
 
 WHY NO CANDLE AGGREGATION (unlike pivot_supertrend): there's no OHLC-
 based signal here at all — entry is a plain time-of-day check against the
@@ -92,11 +101,11 @@ CONFIG:
       not combined. Named `spike_pct` before this was renamed.
   "lots_per_trade": 1 (default) — lots sold per leg (same for both).
   "catch_up_late_entry": true (default) — see "LATE START" above.
-  "allow_expiry_day_entry": false (default) — set true to allow selling
-      the straddle even when the resolved contract expires today (see
-      "Exactly ONE entry per day" above). Off by default because this
-      strategy's decay/spike exit logic isn't designed for same-day-
-      expiry gamma risk.
+  "switch_to_next_week_on_expiry": false (default) — when the resolved
+      contract expires today, false sells it anyway (same-day gamma);
+      true re-resolves NEXT_WEEK instead for that one entry (see
+      "NEVER skips a trading day" above). Either way, today still gets
+      an entry — this never causes a day to be skipped.
 
 No margin model, same simplification as pivot_supertrend_options — a
 short straddle's two SELL fills both credit premium (record_fill already
@@ -120,40 +129,61 @@ logger = logging.getLogger("live_deploy.strategies.intraday_dtt_simple")
 
 async def resolve_atm_straddle_legs(
     resolver: OptionsResolver, options_underlying: str, expiry_selector,
-    ts, allow_expiry_day_entry: bool, deployment_name: str,
-) -> Optional[tuple]:
+    ts, switch_to_next_week_on_expiry: bool, deployment_name: str,
+) -> tuple:
     """
     Shared by intraday_dtt_simple AND intraday_dtt_adjusted — both sell
     an ATM CE + ATM PE straddle at entry_time with the identical
-    expiry-day exclusion rule, so this is the ONE place that logic lives
+    expiry-day handling, so this is the ONE place that logic lives
     rather than being duplicated (and potentially drifting) across both
     strategy files.
 
     Resolves THIS_WEEK (or whatever expiry_selector says) ATM CE/PE legs
-    for an entry. Returns `(ce_leg, pe_leg, expiry, strike)` on success,
-    or `None` if entry should be skipped because the resolved contract
-    expires TODAY (`ts.date()`) and `allow_expiry_day_entry` is False —
-    checked as early as possible, right after resolve_expiry() and
-    before strike/leg resolution or pricing, so a same-day-expiry skip
-    never touches either leg.
+    for an entry. NEVER skips the entry — if the resolved contract
+    expires TODAY (`ts.date()`), `switch_to_next_week_on_expiry` decides
+    which contract gets traded instead of whether to trade at all:
+      False (default) -> proceed with the same-day-expiry contract as
+                          already resolved (same-day gamma, opted into).
+      True             -> re-resolve using "NEXT_WEEK" instead, for THIS
+                          entry only — `expiry_selector` itself is never
+                          mutated, so every other day still resolves
+                          however it's configured to.
+    That decision is made as early as possible, right after the first
+    resolve_expiry() and before strike/leg resolution or pricing.
+
+    Returns `(ce_leg, pe_leg, expiry, strike, switched_to_next_week)` —
+    always a 5-tuple, never `None` (there is no skip case left).
+    `switched_to_next_week` reflects what actually happened (true only
+    when the NEXT_WEEK re-resolution above fired), for callers that want
+    to record it in trade metadata.
 
     Does NOT catch NoKiteSession or any other exception — callers wrap
     this in their own try/except (both currently log and skip today's
     entry the same way, but that's a caller decision, not baked in here).
     """
     expiry = await resolver.resolve_expiry(options_underlying, expiry_selector)
-    if expiry == ts.date() and not allow_expiry_day_entry:
-        logger.info(
-            "%s: skipping entry — resolved %s contract expires today "
-            "(%s). Per strategy rule, no new straddle on the contract's "
-            "own expiry day (set allow_expiry_day_entry=true to "
-            "override).", deployment_name, expiry_selector, expiry,
-        )
-        return None
+    switched_to_next_week = False
+    if expiry == ts.date():
+        if switch_to_next_week_on_expiry:
+            switched_to_next_week = True
+            logger.info(
+                "%s: resolved %s contract expires today (%s) — "
+                "switch_to_next_week_on_expiry=true, re-resolving "
+                "NEXT_WEEK for today's entry instead.",
+                deployment_name, expiry_selector, expiry,
+            )
+            expiry = await resolver.resolve_expiry(options_underlying, "NEXT_WEEK")
+        else:
+            logger.info(
+                "%s: resolved %s contract expires today (%s) — "
+                "switch_to_next_week_on_expiry=false, selling the "
+                "same-day-expiry straddle as resolved.",
+                deployment_name, expiry_selector, expiry,
+            )
     strike = await resolver.get_atm_strike(options_underlying, expiry)
     ce_leg = await resolver.get_leg(options_underlying, expiry, strike, "CE")
     pe_leg = await resolver.get_leg(options_underlying, expiry, strike, "PE")
-    return ce_leg, pe_leg, expiry, strike
+    return ce_leg, pe_leg, expiry, strike, switched_to_next_week
 
 
 @register_strategy(
@@ -173,7 +203,7 @@ async def resolve_atm_straddle_legs(
         "per_leg_stop_loss_pct": 0.40,
         "lots_per_trade": 1,
         "catch_up_late_entry": True,
-        "allow_expiry_day_entry": False,
+        "switch_to_next_week_on_expiry": False,
     },
 )
 class IntradayDTTSimpleStrategy(StrategyBase):
@@ -227,7 +257,7 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         if self.lots_per_trade < 1:
             raise ValueError(f"lots_per_trade must be >= 1, got {self.lots_per_trade}")
         self.catch_up_late_entry = bool(cfg.get("catch_up_late_entry", True))
-        self.allow_expiry_day_entry = bool(cfg.get("allow_expiry_day_entry", False))
+        self.switch_to_next_week_on_expiry = bool(cfg.get("switch_to_next_week_on_expiry", False))
 
         self.resolver = OptionsResolver(runner.dispatcher)
 
@@ -335,11 +365,9 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         try:
             resolved = await resolve_atm_straddle_legs(
                 self.resolver, self.options_underlying, self.expiry_selector,
-                ts, self.allow_expiry_day_entry, runner.deployment_name,
+                ts, self.switch_to_next_week_on_expiry, runner.deployment_name,
             )
-            if resolved is None:
-                return   # expiry-day skip already logged inside resolve_atm_straddle_legs
-            ce_leg, pe_leg, expiry, strike = resolved
+            ce_leg, pe_leg, expiry, strike, switched_to_next_week = resolved
             ce_price = await self.resolver.get_ltp(ce_leg)
             pe_price = await self.resolver.get_ltp(pe_leg)
         except NoKiteSession:
@@ -368,6 +396,7 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         trigger_values = {
             "tick_time": ts.time().isoformat(), "entry_time": self.entry_time.isoformat(),
             "late_start_today": self._late_start_today,
+            "switched_to_next_week": switched_to_next_week,
         }
         common_meta = {"strike": strike, "expiry": expiry.isoformat()}
         await runner.sell(
