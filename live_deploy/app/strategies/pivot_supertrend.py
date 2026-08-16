@@ -274,6 +274,35 @@ class SuperTrendState:
         self.prev_close = close
         return self.trend
 
+    def snapshot(self) -> dict:
+        """Full internal state, JSON-serializable, sufficient for
+        from_snapshot() to resume EXACTLY where this left off on the
+        very next update() call — including the raw TR buffer, needed
+        for atr_method='sma' (which reads a full rolling window on
+        every update, not just during warmup) to keep producing a trend
+        immediately rather than re-entering warmup after a restore.
+        Used by the deployment-state persistence hook (see StrategyBase.
+        get_persistable_state) — NOT used by the lighter supertrend_seed
+        config path, which only ever approximates from a single chart
+        reading and was never meant to reconstruct this exactly."""
+        return {
+            "period": self.period, "multiplier": self.multiplier, "atr_method": self.atr_method,
+            "atr": self.atr, "final_upper": self.final_upper, "final_lower": self.final_lower,
+            "trend": self.trend, "prev_close": self.prev_close,
+            "tr_buffer": list(self._tr_buffer),
+        }
+
+    @classmethod
+    def from_snapshot(cls, snap: dict) -> "SuperTrendState":
+        st = cls(period=snap["period"], multiplier=snap["multiplier"], atr_method=snap["atr_method"])
+        st.atr = snap["atr"]
+        st.final_upper = snap["final_upper"]
+        st.final_lower = snap["final_lower"]
+        st.trend = snap["trend"]
+        st.prev_close = snap["prev_close"]
+        st._tr_buffer = deque(snap["tr_buffer"], maxlen=st.period)
+        return st
+
 
 def approx_missing_band(candle: dict, atr: float, multiplier: float, need: str) -> float:
     """

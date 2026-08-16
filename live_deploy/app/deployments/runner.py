@@ -104,6 +104,7 @@ class DeploymentRunner:
         self._running = False
         if self.strategy is not None:
             await self.strategy.on_stop(self)
+            await self._dump_state()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -115,6 +116,36 @@ class DeploymentRunner:
             await self.broadcaster.unsubscribe(self._queue)
             self._queue = None
         logger.info("Runner stopped: %s", self.deployment_name)
+
+    async def _dump_state(self) -> None:
+        """Called from stop() (pause, stop, AND a graceful full-server
+        shutdown all route through here — see StrategyBase.
+        get_persistable_state's own docstring for exactly when/why).
+        A strategy that doesn't override get_persistable_state gets None
+        back and this is a no-op, same as always — existing strategies
+        are entirely unaffected."""
+        try:
+            state = self.strategy.get_persistable_state()
+        except Exception:
+            logger.exception(
+                "%s: get_persistable_state() raised — skipping this "
+                "state dump (previous persisted state, if any, is left "
+                "untouched)", self.deployment_name,
+            )
+            return
+        if state is None:
+            return
+        await queries.save_deployment_state(self.pool, self.deployment_id, state)
+        logger.info("%s: persisted strategy state (%d top-level key(s))",
+                    self.deployment_name, len(state))
+
+    async def load_state(self) -> Optional[dict]:
+        """Whatever this deployment's strategy last persisted via
+        get_persistable_state(), or None if it never has (fresh deploy,
+        or a strategy that doesn't use this hook). Conventionally called
+        at the top of on_start(), before applying any config-provided
+        seed — see StrategyBase.get_persistable_state's docstring."""
+        return await queries.load_deployment_state(self.pool, self.deployment_id)
 
     async def _reload_positions(self) -> None:
         rows = await queries.list_open_positions(self.pool, self.deployment_id)

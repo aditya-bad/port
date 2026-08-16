@@ -142,6 +142,34 @@ async def set_status(pool: asyncpg.Pool, deployment_id: UUID, status: str) -> No
         )
 
 
+async def save_deployment_state(pool: asyncpg.Pool, deployment_id: UUID, state: dict) -> None:
+    """Upsert this deployment's latest resumable state blob — see
+    DeploymentRunner.stop() (the only caller) and StrategyBase.
+    get_persistable_state() for what actually goes in it. Wholesale
+    overwrite, not a merge — whatever the strategy returns IS the new
+    snapshot, replacing whatever was there before."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO deployment_state (deployment_id, state, updated_at)
+            VALUES ($1, $2, now())
+            ON CONFLICT (deployment_id) DO UPDATE SET state = $2, updated_at = now()
+            """,
+            deployment_id, state,
+        )
+
+
+async def load_deployment_state(pool: asyncpg.Pool, deployment_id: UUID) -> Optional[dict]:
+    """The last state blob this deployment's strategy persisted via
+    save_deployment_state, or None if it never has (fresh deploy, or a
+    strategy that doesn't use this hook at all)."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT state FROM deployment_state WHERE deployment_id = $1", deployment_id,
+        )
+    return row["state"] if row else None
+
+
 async def clear_all_deployments(pool: asyncpg.Pool) -> int:
     """
     Delete EVERY deployment row — cascades (ON DELETE CASCADE, see
