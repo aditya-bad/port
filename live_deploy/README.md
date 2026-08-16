@@ -2885,6 +2885,63 @@ direct frontend injection. Screenshotted the toast stack in both light
 and dark mode and on a real mobile viewport. Re-ran the Step 38
 dark-mode suite afterward — still passes unchanged.
 
+## What's here (Step 43: all-time strategy leaderboard)
+
+Third of the fresh feature round (in-app alerts, this). A new "All-Time
+Strategy Performance" section on the Portfolio page: one ranked row per
+strategy_name — realized P&L, win rate, profit factor, positions
+closed, and how many deployments ever ran it — answering "which
+strategy has actually made the most money since I started," a standing
+question neither Reports (always scoped to one period at a time) nor
+Portfolio's own Capital Utilization section (deliberately live-only,
+active+paused) tries to answer.
+
+**Deliberately ALL-TIME and NOT live-scoped** — the one design decision
+this feature turns on, and the opposite scoping choice from the section
+directly above it on the same page. Capital Utilization excludes
+stopped deployments because idle-vs-deployed capital is a "right now"
+question a stopped deployment has no answer to anymore. The
+leaderboard is the opposite: "which strategy made the most money" is a
+historical question, and a strategy you've since stopped running is
+very much part of that history — excluding it would make a
+still-good-on-paper strategy quietly vanish from its own scoreboard the
+moment you stop the deployment that proved it worked. New
+`queries.list_strategy_leaderboard` joins `positions` (closed only) to
+`deployments` with NO status filter and NO date bound at all, grouped
+by `strategy_name` alone — two deployments running the same strategy
+correctly collapse into one row (`deployments_count` says how many),
+same principle Reports' By Strategy breakdown already established, just
+without a period window.
+
+**Profit factor computed client-side, not server-side** — the backend
+ships raw `gross_win`/`gross_loss` sums, and the frontend divides them
+using the EXACT SAME convention Detail's own Stats tab already computes
+from raw closed-position P&Ls (gross win over absolute gross loss,
+`∞` when there's been a loss-free win, `—` when there's been neither) —
+reused rather than re-derived, so there's exactly one profit-factor
+formula in the whole app, not two that could quietly drift apart.
+
+New `GET /portfolio/strategy-leaderboard` — cached via
+`app.state.cache` (20s, matching the existing `strategies` key), unlike
+the Reports page's pnl-digest/pnl-report endpoints: Portfolio itself
+IS in `_AUTO_REFRESH_VIEWS` (polled every 6s), so leaving this one
+uncached would mean the same GROUP BY re-running on every single poll
+for a number that doesn't meaningfully change that often.
+
+**Verified** against a real server + real Postgres + a real browser:
+seeded two deployments of the SAME strategy (proving they combine into
+one row with `deployments_count=2`) plus a third deployment of a
+DIFFERENT strategy that was then STOPPED via the real `POST
+/deployments/{id}/stop` endpoint (proving a stopped deployment's
+history still counts) — confirmed exactly 2 rows for 3 deployments,
+the correct combined P&L/win-rate/profit-factor math for both
+(including the all-losses case: profit factor correctly shows `0.00`,
+not `∞` or a dash), and that Capital Utilization directly above it
+correctly shows only 1 "live" strategy while the leaderboard below
+shows both — the scoping difference working exactly as designed, on
+the same page, side by side. Screenshotted in light and dark. Re-ran
+the Step 38 dark-mode suite afterward — still passes unchanged.
+
 ## Setup
 
 ```bash

@@ -138,6 +138,11 @@ const Api = {
     if (!r.ok) throw new Error(`Could not load the P&L report (${r.status})`);
     return r.json();
   },
+  async getStrategyLeaderboard() {
+    const r = await fetch('/portfolio/strategy-leaderboard');
+    if (!r.ok) throw new Error(`Could not load the strategy leaderboard (${r.status})`);
+    return r.json();
+  },
 
   // ── Instruments ─────────────────────────────────────────────────
   async listInstruments() {

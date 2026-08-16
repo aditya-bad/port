@@ -20,6 +20,7 @@ from fastapi import APIRouter, HTTPException, Request
 from ..db import queries
 from ..deployments.schemas import (
     AggregatePositionOut, PnlDigestRow, PnlReportOut, PortfolioSnapshotOut, RecentTradeOut,
+    StrategyLeaderboardRow,
 )
 
 router = APIRouter(tags=["aggregate"])
@@ -220,3 +221,26 @@ async def pnl_report(request: Request, period: str = "day", offset: int = 0):
         "by_strategy": [dict(r) for r in by_strategy],
         "by_deployment": [dict(r) for r in by_deployment],
     }
+
+
+async def fetch_strategy_leaderboard(pool) -> list[dict]:
+    """No parameters -- this endpoint only ever has one shape (all-time,
+    every strategy), unlike pnl-digest/pnl-report which take period/
+    offset -- pulled out on its own so app.state.cache's background
+    loop can call it directly, same pattern as the other fetch_* helpers
+    in this file."""
+    rows = await queries.list_strategy_leaderboard(pool)
+    return [dict(r) for r in rows]
+
+
+@router.get("/portfolio/strategy-leaderboard", response_model=list[StrategyLeaderboardRow])
+async def strategy_leaderboard(request: Request):
+    """All-time realized P&L per strategy, ranked best to worst — the
+    Portfolio view's "which strategy has actually made the most money
+    since I started" answer, distinct from Reports' period-scoped By
+    Strategy breakdown. Cached (unlike pnl-digest/pnl-report): this one
+    IS in Portfolio's own auto-refresh cycle (_AUTO_REFRESH_VIEWS polls
+    Portfolio every 6s), so a live GROUP BY on every poll would be pure
+    waste the same way Portfolio's other sections already avoid via
+    app.state.cache."""
+    return await request.app.state.cache.get("strategy_leaderboard")

@@ -11,16 +11,19 @@ const Portfolio = {
     document.getElementById('portfolioEquity').innerHTML = spinnerHtml();
     document.getElementById('portfolioCapital').innerHTML = spinnerHtml();
     document.getElementById('portfolioExposure').innerHTML = spinnerHtml();
+    document.getElementById('portfolioLeaderboard').innerHTML = spinnerHtml();
 
-    const [curve, deployments, positions] = await Promise.all([
+    const [curve, deployments, positions, leaderboard] = await Promise.all([
       Api.getPortfolioEquityCurve(),
       Api.listDeployments(),
       Api.getAllPositions('open'),
+      Api.getStrategyLeaderboard(),
     ]);
 
     this.renderEquity(curve);
     this.renderCapital(deployments);
     this.renderExposure(positions);
+    this.renderLeaderboard(leaderboard);
     markUpdated('portfolioUpdatedLabel');
   },
 
@@ -120,6 +123,45 @@ const Portfolio = {
       <tbody>${rows}</tbody></table>
       </div>
       <div class="table-note">Net qty combines every deployment's position in that symbol — long and short legs across different strategies offset each other here, same as they would in one real account.</div>
+    `;
+  },
+
+  // ALL-TIME per-strategy P&L, across every deployment that ever ran
+  // it -- active, paused, AND stopped alike (unlike Capital Utilization
+  // above, which is deliberately live-only). Answers "which strategy
+  // has actually made the most money since I started," a standing
+  // question Reports' period-by-period breakdown doesn't try to answer.
+  renderLeaderboard(rows) {
+    const el = document.getElementById('portfolioLeaderboard');
+    if (!rows.length) {
+      el.innerHTML = emptyHtml('No closed positions recorded yet — this fills in once a strategy has actually closed a trade.');
+      return;
+    }
+    const body = rows.map(r => {
+      const decided = r.wins + r.losses;
+      const winRate = decided > 0 ? ((r.wins / decided) * 100).toFixed(1) + '%' : '—';
+      // Same profit-factor convention Detail's own Stats tab computes
+      // client-side from raw closed-position pnls (see detail.js) --
+      // gross_loss is a NEGATIVE sum here, so Math.abs() before dividing.
+      let profitFactor;
+      if (r.gross_loss < 0) profitFactor = (r.gross_win / Math.abs(r.gross_loss)).toFixed(2);
+      else profitFactor = r.gross_win > 0 ? '∞' : '—';
+      return `<tr>
+        <td>${escapeHtml(r.strategy_name)}</td>
+        <td class="${pnlClass(r.realized_pnl)}">${fmtSignedMoney(r.realized_pnl)}</td>
+        <td>${winRate}</td>
+        <td>${profitFactor}</td>
+        <td>${r.positions_closed}</td>
+        <td>${r.deployments_count}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `
+      <div class="table-wrap">
+      <table><thead><tr>
+        <th>Strategy</th><th>Realized P&amp;L</th><th>Win rate</th><th>Profit factor</th><th>Positions closed</th><th>Deployments</th>
+      </tr></thead>
+      <tbody>${body}</tbody></table>
+      </div>
     `;
   },
 };

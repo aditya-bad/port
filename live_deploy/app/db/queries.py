@@ -719,6 +719,45 @@ async def pnl_by_deployment_for_range(
         )
 
 
+async def list_strategy_leaderboard(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    """All-time (no date bound at all) realized P&L per strategy_name,
+    across every deployment that ever ran it — active, paused, AND
+    stopped alike. Deliberately not scoped to live deployments only
+    (unlike Portfolio's own capital-utilization section, a few lines
+    away in the frontend): "which strategy has actually made the most
+    money since I started" is a question a since-stopped strategy's
+    history is very much part of the answer to, not something that
+    should quietly disappear once you stop the deployment that
+    produced it.
+
+    Returns gross_win/gross_loss (sums of only the positive/negative
+    realized_pnl values) rather than a pre-computed profit factor —
+    same division-with-Infinity-and-null-edge-cases convention Detail's
+    own Stats tab already computes client-side from raw pnls (see
+    detail.js), so the frontend does the exact same math here instead
+    of a second, potentially-drifting server-side formula.
+    """
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT
+                d.strategy_name,
+                SUM(p.realized_pnl)::float8 AS realized_pnl,
+                COUNT(*) AS positions_closed,
+                COUNT(*) FILTER (WHERE p.realized_pnl > 0) AS wins,
+                COUNT(*) FILTER (WHERE p.realized_pnl < 0) AS losses,
+                COALESCE(SUM(p.realized_pnl) FILTER (WHERE p.realized_pnl > 0), 0)::float8 AS gross_win,
+                COALESCE(SUM(p.realized_pnl) FILTER (WHERE p.realized_pnl < 0), 0)::float8 AS gross_loss,
+                COUNT(DISTINCT d.id) AS deployments_count
+            FROM positions p
+            JOIN deployments d ON d.id = p.deployment_id
+            WHERE p.status = 'closed'
+            GROUP BY d.strategy_name
+            ORDER BY realized_pnl DESC
+            """,
+        )
+
+
 # ═════════════════════════════════════════════════════════════════════
 # REPORTS
 # ═════════════════════════════════════════════════════════════════════

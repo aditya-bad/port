@@ -220,6 +220,21 @@ class PnlDeploymentBreakdown(BaseModel):
     positions_closed: int
 
 
+class StrategyLeaderboardRow(BaseModel):
+    """One strategy's ALL-TIME realized P&L, across every deployment
+    that ever ran it — see queries.list_strategy_leaderboard. Ships
+    gross_win/gross_loss rather than a pre-computed profit factor; see
+    that query's own docstring for why."""
+    strategy_name: str
+    realized_pnl: float
+    positions_closed: int
+    wins: int
+    losses: int
+    gross_win: float
+    gross_loss: float
+    deployments_count: int
+
+
 class PnlReportOut(BaseModel):
     """The Reports page's full payload for ONE selected period
     (period type + offset from now — see app/routers/aggregate.py's

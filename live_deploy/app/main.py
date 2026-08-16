@@ -61,7 +61,9 @@ from .routers import health as health_router
 from .routers import instruments as instruments_router
 from .routers import kite_auth as kite_auth_router
 from .routers import strategies as strategies_router
-from .routers.aggregate import fetch_portfolio_equity_curve, fetch_positions_open, fetch_trades_recent
+from .routers.aggregate import (
+    fetch_portfolio_equity_curve, fetch_positions_open, fetch_strategy_leaderboard, fetch_trades_recent,
+)
 from .routers.deployments import fetch_deployments_list
 from .routers.health import check_db_health
 from .routers.strategies import fetch_strategies
@@ -206,6 +208,11 @@ async def startup() -> None:
     # faster than a fraction of that would just re-serve identical rows.
     cache.register("portfolio_equity_curve", lambda: fetch_portfolio_equity_curve(db_pool), interval=30.0)
     cache.register("strategies", lambda: fetch_strategies(db_pool), interval=20.0)
+    # 20s, matching "strategies" above -- an all-time leaderboard doesn't
+    # need to reflect a just-closed position within seconds the way
+    # positions_open does; Portfolio's own 6s auto-refresh would just be
+    # re-serving an identical GROUP BY most of the time otherwise.
+    cache.register("strategy_leaderboard", lambda: fetch_strategy_leaderboard(db_pool), interval=20.0)
     # 15s: /health is polled by the frontend every 5s (pollHealth() in
     # index.html) -- without this it was the one endpoint left paying a
     # live Neon round trip (700-800ms) on every single call, the exact
