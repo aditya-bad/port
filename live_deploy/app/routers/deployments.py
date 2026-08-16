@@ -313,6 +313,30 @@ async def stop_deployment(deployment_id: UUID, request: Request, force_close: bo
     return {"status": "stopped"}
 
 
+@router.post("/flatten-all")
+async def flatten_all_deployments(request: Request):
+    """
+    The panic button: closes every open position across every
+    deployment that isn't already stopped, at the last known price,
+    then pauses whichever ones were active (so nothing immediately
+    re-enters on the next tick). Deliberately NOT in the danger-zone
+    section below — unlike clear-all, this touches no history at all
+    (every position closed here is a normal, fully-recorded fill; the
+    deployments themselves still exist and can be resumed) — so it
+    doesn't need clear-all's password + typed-confirmation gate, just
+    the frontend's own confirm-before-calling.
+    """
+    manager = request.app.state.deployment_manager
+    result = await manager.flatten_all()
+    cache = request.app.state.cache
+    await asyncio.gather(
+        cache.refresh_now("deployments"),
+        cache.refresh_now("positions_open"),
+        cache.refresh_now("trades_recent"),
+    )
+    return result
+
+
 # ═════════════════════════════════════════════════════════════════════
 # DANGER ZONE — destructive, irreversible, deliberately last in the file
 # ═════════════════════════════════════════════════════════════════════

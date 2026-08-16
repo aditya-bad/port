@@ -200,6 +200,106 @@ class DeploymentManager:
         )
         logger.info("Stopped deployment %s (force_close=%s)", row["deployment_name"], force_close)
 
+    async def flatten(self, deployment_id: UUID) -> int:
+        """
+        The panic-button primitive: closes every open position for ONE
+        deployment at the last known price, then PAUSES it (not
+        stops) — deliberately in between the two existing primitives,
+        not a variant of either: pause() alone leaves positions open,
+        stop(force_close=True) closes them but permanently stops the
+        deployment (resume() explicitly refuses a 'stopped' one). This
+        is "get out of every position right now, decide what to do
+        about the deployment itself later" — same reversibility as a
+        manual pause, just with nothing left open when you get there.
+
+        Works on 'paused' deployments too, not just 'active' ones — a
+        paused deployment can absolutely still have open positions
+        (pause() never touches them), and flattening should mean
+        exactly that regardless of whether a runner is currently
+        ticking. A 'stopped' deployment has nothing left to flatten
+        (stop() already closed everything if it was force_close=True,
+        or the positions are staying open on a dead deployment by
+        design if it wasn't).
+
+        Returns how many positions were actually closed, so a bulk
+        caller (flatten_all, below) can report a real number rather
+        than "done" for however many deployments had nothing open.
+        """
+        row = await queries.get_deployment(self.pool, deployment_id)
+        if row is None:
+            raise KeyError(f"No such deployment: {deployment_id}")
+        if row["status"] == "stopped":
+            return 0
+
+        open_positions = await queries.list_open_positions(self.pool, deployment_id)
+        for pos in open_positions:
+            price = self.dispatcher.last_prices.get(int(pos["instrument_token"]))
+            if price is None:
+                price = float(pos["avg_entry_price"])
+                logger.warning(
+                    "No live price for token %s on flatten — using "
+                    "avg_entry_price %.2f (zero P&L on this close)",
+                    pos["instrument_token"], price,
+                )
+            await queries.force_close_position(
+                self.pool, deployment_id, pos, price,
+                datetime.now(timezone.utc), reason="flatten_all",
+            )
+
+        if row["status"] == "active":
+            runner = self.runners.pop(str(deployment_id), None)
+            if runner is not None:
+                await runner.stop()
+            await queries.set_status(self.pool, deployment_id, "paused")
+            await queries.record_event(
+                self.pool, deployment_id, "paused",
+                metadata={"reason": "flatten_all", "positions_closed": len(open_positions)},
+            )
+        elif open_positions:
+            # Already paused -- no runner/status transition needed, but
+            # still worth a row in the deployment's own Activity tab
+            # recording that this happened and how many positions it closed.
+            await queries.record_event(
+                self.pool, deployment_id, "flattened",
+                metadata={"positions_closed": len(open_positions)},
+            )
+
+        logger.info(
+            "Flattened deployment %s: %d position(s) closed", row["deployment_name"], len(open_positions),
+        )
+        return len(open_positions)
+
+    async def flatten_all(self) -> dict:
+        """The actual panic button: flatten() every deployment that
+        isn't already stopped. Never lets one deployment's failure
+        (e.g. a stale/missing price it can't recover from) abort the
+        rest — the whole point is "get out of everything," so a
+        partial failure should still flatten everything it can and
+        report which one(s) didn't, not silently do less than asked."""
+        rows = await queries.list_deployments(self.pool)
+        targets = [r for r in rows if r["status"] != "stopped"]
+
+        deployments_flattened = 0
+        positions_closed = 0
+        errors: list[dict] = []
+        for row in targets:
+            try:
+                closed = await self.flatten(row["id"])
+            except Exception as e:
+                logger.exception("flatten_all: failed to flatten deployment %s", row["deployment_name"])
+                errors.append({"deployment_name": row["deployment_name"], "error": str(e)})
+                continue
+            if closed:
+                deployments_flattened += 1
+                positions_closed += closed
+
+        return {
+            "deployments_checked": len(targets),
+            "deployments_flattened": deployments_flattened,
+            "positions_closed": positions_closed,
+            "errors": errors,
+        }
+
     # ── Equity-curve snapshots (periodic, not per-tick) ─────────────────
 
     async def snapshot_loop(self) -> None:

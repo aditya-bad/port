@@ -2382,6 +2382,49 @@ submitted through the new grid-laid-out form and confirmed via the API
 afterward to have saved with the correct config values — the layout
 change didn't corrupt anything being read back out of the form.
 
+## What's here (Step 35: "Flatten All" — a panic button, not a delete button)
+
+First of a batch of in-app features (Telegram alerts parked for
+separate setup). `POST /deployments/flatten-all` closes every open
+position, across every deployment that isn't already `stopped`, at
+the last known price — then pauses whichever were `active` so nothing
+immediately re-enters on the next tick. Deliberately its own thing,
+not a variant of an existing primitive: `pause()` alone leaves
+positions open; `stop(force_close=True)` closes them but permanently
+stops the deployment (`resume()` refuses a `stopped` one outright).
+This sits between them — get out of every position right now, decide
+what to do about the deployment itself later, same reversibility as a
+manual pause, just with nothing left open when you get there. Works on
+already-`paused` deployments too (pause never touches positions, so a
+paused deployment can absolutely still have one open) — those get
+flattened but stay paused, no unwanted status change. A `stopped`
+deployment is skipped entirely; there's nothing left to flatten by
+definition.
+
+One deployment's failure (most likely a stale/missing live price it
+can't recover a fallback price from) never aborts the rest —
+`flatten_all()` keeps going and reports which one(s) failed, since the
+entire point is "get out of everything," not "get out of everything
+until the first problem."
+
+Deliberately NOT gated behind clear-all's password + typed-confirmation
+— unlike Clear All, this touches no history at all (every closed
+position is a normal, fully-recorded fill; deployments still exist and
+can be resumed afterward), so a plain `confirm()` before calling it is
+proportionate to what it actually does.
+
+**Verified** against a real server + real Postgres, seeding genuine
+open positions directly (no live Kite ticks needed in this sandbox) to
+exercise all three cases at once: an `active` deployment with an open
+position (confirmed: position closed, deployment auto-paused, can be
+resumed afterward, an event recorded with `reason: flatten_all`), an
+already-`paused` deployment with an open position (confirmed: position
+closed, status untouched, a `flattened` event recorded instead), and a
+`stopped` deployment with none (confirmed: completely untouched, not
+even counted as flattened). The full flow was also clicked through a
+real browser: the button, the `confirm()` dialog with the expected
+wording, and the summary `alert()` afterward.
+
 ## Setup
 
 ```bash

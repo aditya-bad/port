@@ -677,6 +677,7 @@ body.mobile-nav-open { overflow: hidden; }
         </div>
         <div class="view-header-actions">
           <span class="updated-label" id="deploymentsUpdatedLabel"></span>
+          <button class="btn btn-danger btn-sm" onclick="Deployments.submitFlattenAll()" title="Close every open position across every deployment, then pause whichever were running">⚠ Flatten all</button>
           <button class="btn btn-secondary btn-sm" onclick="Deployments.load()">↻ Refresh</button>
         </div>
       </div>

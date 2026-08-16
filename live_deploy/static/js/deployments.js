@@ -94,4 +94,29 @@ const Deployments = {
     }
     this.load();
   },
+
+  // ── Flatten all: the panic button. Closes positions only, touches no
+  // history (unlike Clear All), so a plain confirm() is proportionate —
+  // no password/typed-confirmation gate needed for something you can
+  // recover from by just redeploying/resuming. ──────────────────────
+  async submitFlattenAll() {
+    if (!confirm(
+      'Close every open position across every deployment at the last known price, ' +
+      'then pause whichever were active.\n\nDeployments themselves are not stopped or ' +
+      'deleted — you can resume any of them afterward. Continue?'
+    )) return;
+    const { ok, data } = await Api.flattenAll();
+    if (!ok) {
+      alert(data.detail || 'Could not flatten — see server logs.');
+      return;
+    }
+    let msg = `Checked ${data.deployments_checked} deployment(s): ` +
+      `${data.positions_closed} position(s) closed across ${data.deployments_flattened} deployment(s).`;
+    if (data.errors && data.errors.length) {
+      msg += `\n\n${data.errors.length} deployment(s) failed to flatten:\n` +
+        data.errors.map(e => `- ${e.deployment_name}: ${e.error}`).join('\n');
+    }
+    alert(msg);
+    this.load();
+  },
 };
