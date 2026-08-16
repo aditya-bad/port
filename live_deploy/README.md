@@ -2942,6 +2942,87 @@ shows both — the scoping difference working exactly as designed, on
 the same page, side by side. Screenshotted in light and dark. Re-ran
 the Step 38 dark-mode suite afterward — still passes unchanged.
 
+## What's here (Step 44: killed the blind polling — event-driven refresh, no more flicker)
+
+Reported directly: Dashboard/Catalog/Deployments/Portfolio were
+re-fetching every 5-6 seconds even with the market closed and nothing
+actually changing, AND every one of those refreshes visibly flickered
+the whole view. Two real, separate bugs, both traced to their actual
+root cause rather than patched around:
+
+**The flicker's exact cause**: every view's `load()` unconditionally
+reset its containers to a loading spinner FIRST, then fetched, then
+rendered — correct for "I just navigated here" (there's nothing on
+screen yet), but that same function was also what the 6s auto-refresh
+timer called, so a view sitting open would blank to spinners and
+repopulate every few seconds even when the underlying numbers hadn't
+moved at all. Fixed with a `quiet` parameter: `Dashboard.load(true)`
+(and the same on Catalog/Deployments/Portfolio) skips the spinner
+reset entirely and goes straight from fetch to render — old content
+stays on screen until new content is ready, then swaps directly, no
+flash to blank.
+
+**The polling's exact redundancy**: auditing every `cache.refresh_now()`
+call site (grepped the whole backend) showed the app already refreshes
+`deployments`/`positions_open`/`trades_recent`/`strategies` at the
+EXACT moment of every mutation that could change them — deploy,
+pause, resume, stop, flatten, every fill, the strategy-enabled toggle.
+The 6s/12s/20s background poll intervals were pure redundancy on top
+of that already-complete coverage, re-serving identical data to a
+frontend that was ALSO polling on its own fixed timer independently —
+polling squared, doing the same wasted work at both ends of the wire
+for the exact same reason the user called out ("the market is closed,
+why would positions update").
+
+Two real gaps found and closed while auditing that coverage, both
+things this whole fix would have been undermined by if left alone:
+`portfolio_equity_curve` and `strategy_leaderboard` had NO mutation
+hook at all, purely poll-driven — now `refresh_now("portfolio_equity_curve")`
+fires once per snapshot round (`DeploymentManager.snapshot_all_active`)
+and `refresh_now("strategy_leaderboard")` fires alongside the existing
+fill-triggered refreshes. And creating a deployment had never recorded
+an event AT ALL, not even to the Activity tab — a "created"
+`deployment_events` row (and its own broadcast/toast) didn't exist
+until now, closed here rather than shipped as a known gap, since the
+whole point of this fix is that every real mutation is covered.
+
+**The actual fix, now that the previous two steps' `/ws/events` channel
+existed to build on**: the frontend no longer polls on a matching
+timer at all — `/ws/events` (Step 42) firing is the PRIMARY trigger for
+a quiet refresh of whichever view is currently open (debounced 500ms
+so a burst of events, e.g. Flatten All closing five positions at once,
+collapses into one refresh instead of five). The old 6s
+`setInterval(reload, 6000)` is now a 90s **defensive backstop only** —
+in case a websocket event is somehow missed (a dropped connection
+mid-reconnect) — calling the same quiet `load(true)`, never the
+spinner-resetting one. Backend poll intervals for the now-fully-
+mutation-covered cache keys moved from 6-20s to a matching 90-120s
+backstop, same reasoning: still there in case a `refresh_now()` call
+site gets missed by a future change, no longer doing any of the real
+work. `db_health` and `user_session_versions` were deliberately left
+alone — a genuine periodic connectivity check and a security-sensitive
+revocation backstop, respectively, neither one actually redundant.
+
+**Verified** against a real server + real Postgres + a real browser,
+not by reasoning about the code alone: instrumented a real
+`MutationObserver` on Dashboard's and Deployments' own containers
+*before* triggering a real mutation (deploying a strategy via the
+actual `POST /deployments` endpoint), then confirmed the spinner
+NEVER appeared at any point during the resulting live update while the
+new deployment's data correctly showed up anyway — the flicker fix and
+the live-update mechanism both proven true simultaneously, not just
+asserted. Separately, sat idle on the Dashboard for 12 real seconds
+with zero mutations happening and captured every outgoing request:
+confirmed exactly zero requests to `/deployments`, `/positions`,
+`/trades/recent`, `/strategies`, or `/portfolio/*` fired during that
+window — the actual complaint, proven false now rather than just
+reasoned about. Confirmed the new "created" event via a deployment's
+own Activity tab. Re-ran the Step 38 dark-mode suite and the Step 42
+alerts suite afterward (the latter needed one update: it now correctly
+sees the new "created" toast fire before the pause/resume ones it was
+already checking, which is the fix working as intended, not a
+regression) — both pass.
+
 ## Setup
 
 ```bash

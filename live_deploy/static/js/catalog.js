@@ -27,9 +27,11 @@ const Catalog = {
   _activeCounts: {},
   _tab: 'browse',    // 'browse' | 'admin'
 
-  async load() {
+  // quiet=true: event-driven background refresh -- see Dashboard.load()'s
+  // own comment for why the spinner reset is skipped in that case.
+  async load(quiet = false) {
     const el = document.getElementById('catalogList');
-    el.innerHTML = spinnerHtml();
+    if (!quiet) el.innerHTML = spinnerHtml();
 
     const [strategies, deployments] = await Promise.all([
       Api.listStrategies(),

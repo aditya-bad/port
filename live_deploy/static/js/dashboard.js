@@ -5,11 +5,21 @@
 // frontend fetching every deployment's own data and merging it here.
 
 const Dashboard = {
-  async load() {
-    document.getElementById('dashStats').innerHTML = spinnerHtml();
-    document.getElementById('dashPositions').innerHTML = spinnerHtml();
-    document.getElementById('dashActivity').innerHTML = spinnerHtml();
-    document.getElementById('dashInstruments').innerHTML = spinnerHtml();
+  // quiet=true is used for event-driven background refresh (see
+  // connectEventSocket() near the bottom of index.html) -- skips the
+  // spinner reset so already-rendered content just gets swapped for
+  // fresh content directly, instead of flashing to a spinner and back
+  // every time a fill/pause/whatever happens elsewhere in the app.
+  // Real navigation TO this view still wants the spinner (there's
+  // nothing on screen yet to hold onto), so this only ever passes
+  // quiet=true from the auto-refresh path, never from router().
+  async load(quiet = false) {
+    if (!quiet) {
+      document.getElementById('dashStats').innerHTML = spinnerHtml();
+      document.getElementById('dashPositions').innerHTML = spinnerHtml();
+      document.getElementById('dashActivity').innerHTML = spinnerHtml();
+      document.getElementById('dashInstruments').innerHTML = spinnerHtml();
+    }
 
     const [deployments, positions, trades, instruments] = await Promise.all([
       Api.listDeployments(),

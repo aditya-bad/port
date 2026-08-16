@@ -7,11 +7,15 @@
 // exposure to the same underlying across multiple strategies at once.
 
 const Portfolio = {
-  async load() {
-    document.getElementById('portfolioEquity').innerHTML = spinnerHtml();
-    document.getElementById('portfolioCapital').innerHTML = spinnerHtml();
-    document.getElementById('portfolioExposure').innerHTML = spinnerHtml();
-    document.getElementById('portfolioLeaderboard').innerHTML = spinnerHtml();
+  // quiet=true: event-driven background refresh -- see Dashboard.load()'s
+  // own comment for why the spinner reset is skipped in that case.
+  async load(quiet = false) {
+    if (!quiet) {
+      document.getElementById('portfolioEquity').innerHTML = spinnerHtml();
+      document.getElementById('portfolioCapital').innerHTML = spinnerHtml();
+      document.getElementById('portfolioExposure').innerHTML = spinnerHtml();
+      document.getElementById('portfolioLeaderboard').innerHTML = spinnerHtml();
+    }
 
     const [curve, deployments, positions, leaderboard] = await Promise.all([
       Api.getPortfolioEquityCurve(),

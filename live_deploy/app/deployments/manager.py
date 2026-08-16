@@ -137,6 +137,15 @@ class DeploymentManager:
             # got created.
             await queries.delete_deployment(self.pool, row["id"])
             raise
+        # Only after the runner actually started successfully (the
+        # rollback-on-failure path above must NOT announce a deployment
+        # that's about to be deleted) -- a genuine gap until now: no
+        # "created" deployment_event ever existed at all, so a new
+        # deployment was invisible to both the Activity tab AND the
+        # real-time alert toasts, undermining the whole point of moving
+        # off blind polling (see README's Step 44) if the one mutation
+        # that starts a deployment's whole existence wasn't covered.
+        await self._record_event(row["id"], row["deployment_name"], row["strategy_name"], "created")
         return row, is_registered(payload.strategy_name)
 
     async def pause(self, deployment_id: UUID) -> None:
@@ -340,6 +349,14 @@ class DeploymentManager:
                     "Failed to record an equity snapshot for %s — continuing",
                     runner.deployment_name,
                 )
+        # Once per round (not once per deployment) -- this IS the exact
+        # moment new deployment_snapshots rows exist, so
+        # portfolio_equity_curve's cache no longer needs to guess via a
+        # fixed poll interval when fresh data might be ready; it can
+        # just be told. self.cache is optional (see __init__) for the
+        # same reason as _on_fill_committed above.
+        if self.cache is not None:
+            await self.cache.refresh_now("portfolio_equity_curve")
 
     async def _snapshot_one(self, runner: DeploymentRunner) -> None:
         # Mark-to-market off the runner's OWN already-loaded
@@ -437,6 +454,15 @@ class DeploymentManager:
             self.cache.refresh_now("deployments"),
             self.cache.refresh_now("positions_open"),
             self.cache.refresh_now("trades_recent"),
+            # A fill can close a position (realized_pnl booked), which is
+            # the only thing the leaderboard's numbers depend on -- an
+            # opening fill makes this a harmless no-op refresh (nothing
+            # actually changed for that fill), but there's no cheap way
+            # to know which kind of fill just happened from here, and a
+            # refresh_now() is just a cache-store write, not another
+            # Neon round trip on the hot path -- see AggregateCache's own
+            # docstring for why this is safe to call speculatively.
+            self.cache.refresh_now("strategy_leaderboard"),
             return_exceptions=True,   # one failed refresh shouldn't crash the others -- see AggregateCache's own docstring on why a failed refresh degrades to stale, not an error
         )
 

@@ -198,21 +198,28 @@ async def startup() -> None:
     # reflected immediately, not after the next tick. Set up BEFORE the
     # DeploymentManager below, which needs a live cache reference to
     # pass to it.
+    # Every key below except db_health/user_session_versions is now
+    # fully covered by a cache.refresh_now() call at its own exact
+    # mutation point (deploy/pause/resume/stop/flatten/fill for
+    # deployments+positions_open+trades_recent+strategy_leaderboard;
+    # the strategy-enabled toggle for strategies; each snapshot round
+    # for portfolio_equity_curve — see DeploymentManager/
+    # routers/deployments.py/routers/strategies.py). These interval
+    # values are therefore no longer "how fresh can this be," they're
+    # purely a DEFENSIVE BACKSTOP against a missed refresh_now() call
+    # (a bug, a crash mid-mutation) — deliberately much longer than the
+    # tight few-seconds intervals this used to run at, since the
+    # frontend no longer blindly polls on a matching short timer either
+    # (see index.html's own _AUTO_REFRESH_VIEWS comment): the primary
+    # "the UI just updated" path is now /ws/events firing the instant a
+    # mutation happens, not either side polling the other.
     cache = AggregateCache()
-    cache.register("deployments", lambda: fetch_deployments_list(db_pool, dispatcher), interval=6.0)
-    cache.register("positions_open", lambda: fetch_positions_open(db_pool, dispatcher), interval=6.0)
-    cache.register("trades_recent", lambda: fetch_trades_recent(db_pool), interval=12.0)
-    # 30s, not 6s like the rest -- the underlying data (deployment_snapshots)
-    # only ever gets NEW rows every 300s (snapshot_loop's own interval;
-    # see queries.list_portfolio_equity_curve), so polling this any
-    # faster than a fraction of that would just re-serve identical rows.
-    cache.register("portfolio_equity_curve", lambda: fetch_portfolio_equity_curve(db_pool), interval=30.0)
-    cache.register("strategies", lambda: fetch_strategies(db_pool), interval=20.0)
-    # 20s, matching "strategies" above -- an all-time leaderboard doesn't
-    # need to reflect a just-closed position within seconds the way
-    # positions_open does; Portfolio's own 6s auto-refresh would just be
-    # re-serving an identical GROUP BY most of the time otherwise.
-    cache.register("strategy_leaderboard", lambda: fetch_strategy_leaderboard(db_pool), interval=20.0)
+    cache.register("deployments", lambda: fetch_deployments_list(db_pool, dispatcher), interval=90.0)
+    cache.register("positions_open", lambda: fetch_positions_open(db_pool, dispatcher), interval=90.0)
+    cache.register("trades_recent", lambda: fetch_trades_recent(db_pool), interval=90.0)
+    cache.register("portfolio_equity_curve", lambda: fetch_portfolio_equity_curve(db_pool), interval=90.0)
+    cache.register("strategies", lambda: fetch_strategies(db_pool), interval=120.0)
+    cache.register("strategy_leaderboard", lambda: fetch_strategy_leaderboard(db_pool), interval=90.0)
     # 15s: /health is polled by the frontend every 5s (pollHealth() in
     # index.html) -- without this it was the one endpoint left paying a
     # live Neon round trip (700-800ms) on every single call, the exact

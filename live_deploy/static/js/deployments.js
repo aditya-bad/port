@@ -8,9 +8,11 @@
 const Deployments = {
   _all: [],
 
-  async load() {
+  // quiet=true: event-driven background refresh -- see Dashboard.load()'s
+  // own comment for why the spinner reset is skipped in that case.
+  async load(quiet = false) {
     const el = document.getElementById('deploymentsTable');
-    el.innerHTML = spinnerHtml();
+    if (!quiet) el.innerHTML = spinnerHtml();
     this._all = await Api.listDeployments();
     this._populateStrategyFilter();
     this.render();

@@ -1530,6 +1530,7 @@ let eventSocket = null;
 const TOAST_LABELS = {
   fill_buy: 'Buy', fill_sell: 'Sell', strategy_error: 'Strategy error',
   paused: 'Paused', resumed: 'Resumed', stopped: 'Stopped', flattened: 'Flattened',
+  created: 'Deployed',
 };
 function _toastCategory(eventType) {
   if (eventType === 'strategy_error') return 'error';
@@ -1544,6 +1545,7 @@ function connectEventSocket() {
     try { ev = JSON.parse(msg.data); } catch (e) { return; }
     if (!ev || !ev.event_type) return;
     showToast(ev);
+    _scheduleLiveRefresh();
   };
   eventSocket.onclose = () => { setTimeout(connectEventSocket, 3000); };
   eventSocket.onerror = () => { eventSocket.close(); };
@@ -1606,6 +1608,7 @@ function router() {
   });
   closeMobileNav();   // picking a destination is exactly when a mobile menu should collapse again
 
+  _currentView = view;
   if (view === 'dashboard') Dashboard.load();
   else if (view === 'catalog') Catalog.load();
   else if (view === 'deployments') Deployments.load();
@@ -1616,31 +1619,46 @@ function router() {
   else if (view === 'instruments') Instruments.load();
   else if (view === 'account') Account.load();
 
-  _startAutoRefresh(view);
+  _startAutoRefresh();
 }
 
-// ── Auto-refresh: Dashboard/Catalog/Deployments now read from a
-// server-side cache (app/cache.py) instead of a fresh multi-second
-// Neon round trip per request, so polling them every few seconds is
-// cheap enough to give the page a genuinely "live" feel without the
-// user having to navigate away and back to see an update. One shared
-// timer, restarted (not stacked) on every route change so switching
-// views never leaves an old view's timer still firing in the
-// background. Detail (a single deployment someone is watching closely
-// — deliberately NOT cache-backed, see aggregate.py/deployments.py's
-// own comments on why) and Instruments (rarely changes) are left out
-// on purpose; polling them would just be re-paying the slow round trip
-// this whole cache exists to avoid.
+// ── Live refresh: event-driven, not polled ─────────────────────────
+// Used to be a plain setInterval(reload, 6000) on whichever view was
+// open — simple, but wrong on two counts: it re-paid a full fetch
+// every 6s even when NOTHING had changed (the backend already calls
+// cache.refresh_now() at every real mutation — see app/cache.py and
+// main.py's own comments — so most of those polls were re-serving
+// identical data), and reload() was the SAME function used for "I just
+// navigated here," which resets every section to a spinner first —
+// so the whole view visibly blanked and repopulated every few seconds
+// even when the numbers hadn't moved at all. Both are gone now: the
+// real trigger is /ws/events (see connectEventSocket() below), which
+// only fires when something ACTUALLY changed, and it calls each
+// view's load(quiet=true), which skips that spinner reset entirely —
+// content is replaced directly, no flash. _AUTO_REFRESH_VIEWS is now
+// purely a long-interval DEFENSIVE BACKSTOP (a missed/dropped
+// websocket event, a reconnect gap) — the primary path is the event,
+// not the timer.
+const _AUTO_REFRESH_VIEWS = { dashboard: () => Dashboard.load(true), catalog: () => Catalog.load(true), deployments: () => Deployments.load(true), portfolio: () => Portfolio.load(true) };
+let _currentView = null;
 let _viewAutoRefreshTimer = null;
-const _AUTO_REFRESH_VIEWS = { dashboard: () => Dashboard.load(), catalog: () => Catalog.load(), deployments: () => Deployments.load(), portfolio: () => Portfolio.load() };
-function _startAutoRefresh(view) {
+function _startAutoRefresh() {
   if (_viewAutoRefreshTimer) clearInterval(_viewAutoRefreshTimer);
-  _viewAutoRefreshTimer = null;
-  const reload = _AUTO_REFRESH_VIEWS[view];
-  if (!reload) return;
   _viewAutoRefreshTimer = setInterval(() => {
-    if (document.visibilityState === 'visible') reload();
-  }, 6000);
+    const reload = _AUTO_REFRESH_VIEWS[_currentView];
+    if (reload && document.visibilityState === 'visible') reload();
+  }, 90000);
+}
+
+// Debounced so a burst of events (Flatten All closing five positions
+// fires five events in the same instant) collapses into ONE quiet
+// refresh shortly after the burst settles, not five back-to-back ones.
+let _liveRefreshDebounce = null;
+function _scheduleLiveRefresh() {
+  const reload = _AUTO_REFRESH_VIEWS[_currentView];
+  if (!reload) return;   // current view doesn't do live refresh (Compare/Reports/Detail/etc.) -- nothing to do
+  clearTimeout(_liveRefreshDebounce);
+  _liveRefreshDebounce = setTimeout(reload, 500);
 }
 
 window.addEventListener('hashchange', router);
