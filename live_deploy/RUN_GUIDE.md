@@ -328,6 +328,23 @@ differently: via a mounted `config.json` (shown above) or by generating
 before `docker run` — config/secrets should never be baked into the
 image itself either way.
 
+**Redeploying** (pull the latest code, rebuild, restart) is the same
+four steps every time — `redeploy.sh` (committed alongside this guide)
+wraps them into one command, run ON the deployment box itself:
+
+```bash
+./redeploy.sh              # git pull, then rebuild + restart
+./redeploy.sh --no-pull    # skip the pull — rebuild + restart against
+                            #   whatever's already checked out
+```
+It cd's to its own directory first (so it works no matter where you
+invoke it from), and gracefully skips the stop/remove step on a
+first-ever deploy where no container exists yet. The `docker run` line
+inside it binds to `127.0.0.1:8000` (the Tailscale Serve setup from
+this guide's security section) — change that one line to `-p
+$(tailscale ip -4):8000:8000` if you're instead binding straight to
+the tailnet interface without Tailscale Serve in front.
+
 **Stateless, verified**: grepped the entire `app/` tree for any file
 read/write beyond `config.json`/`tokens.json` (both loaded once, at
 startup — `config.json` at import time, `tokens.json` inside the
