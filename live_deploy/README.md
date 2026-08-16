@@ -3300,6 +3300,64 @@ being silently miscolored. Re-ran the Step 38 dark-mode suite and the
 Step 47 minimize-deploy suite afterward since this touches shared
 index.html/api.js; both still pass.
 
+## What's here (Step 50: Daily P&L Calendar on Dashboard + reorderable sections)
+
+Two requests together: the Step 49 calendar heatmap on Dashboard too
+(portfolio-wide, same as Reports already got), and — reported directly,
+"I don't know if this is too much... can you give me customizability to
+re order those things and remember my preferences" — the ability to
+rearrange Dashboard's and Reports' own sections and have the layout
+stick.
+
+**Dashboard's Daily P&L Calendar**: a new section reusing the exact
+same `renderPnlHeatmap()` and `GET /portfolio/pnl-digest` Reports'
+version already uses (Step 49) — no new backend surface, just another
+caller with a full-year `limit` instead of Recent Periods' 14.
+
+**Reorderable sections**: every one of Dashboard's 5 sections (Overview,
+Daily P&L Calendar, Open Positions, Recent Activity, Subscribed
+Instruments) and Reports' 4 (By Strategy, By Deployment, Recent Periods,
+Daily P&L Calendar) now carries ▲/▼ move buttons in its own header,
+disabled at whichever edge it's already at. Deliberately buttons, not
+drag-and-drop — fully usable with keyboard or touch, no drag library,
+and the disabled-at-the-edges pattern was already established elsewhere
+in this app (Reports' own Prev/Next period nav). Reports' period
+tabs/nav/stat-cards are NOT reorderable — they're the controls that
+decide what every section below them shows, not an independent widget
+to relocate.
+
+One shared `SectionOrder` helper (api.js) backs both views: order is a
+plain list of section ids in localStorage, keyed per view
+(`sectionOrder:dashboard` / `sectionOrder:reports`), applied by
+reparenting each section's actual DOM element into its container in
+the saved order (`appendChild` on an already-correctly-placed node is
+a harmless no-op, so this runs on every `load()`, not just after an
+explicit move). A saved order is reconciled against the view's current
+default id list on every read, not trusted blindly: an id no longer
+valid is dropped, and any CURRENT id missing from an old saved order —
+exactly the situation for everyone who customized their layout before
+this Calendar section existed — is appended in its default relative
+position rather than silently hidden or jumping to the top. That
+reconciliation is what let this ship without a migration: an existing
+user's saved order (from a version that never had a Calendar section)
+still works, and the new section just shows up in a sensible place the
+first time they load either page.
+
+On Reports specifically, the move buttons live inside the same header
+that already toggles collapse on click (Step 41) — each button calls
+`event.stopPropagation()` so nudging a section up/down never also
+flips its collapse state.
+
+**Verified** against a real server + real Postgres + a real browser:
+confirmed Dashboard's Calendar section renders; confirmed the default
+order on both pages; moved a section and confirmed the DOM order
+actually changed, the correct edge button disabled itself, and the
+change reached `localStorage`; confirmed both survive a full page
+reload; and on Reports specifically, confirmed clicking a move button
+does NOT also collapse the section while clicking the header itself
+still does (no regression on Step 41's existing behavior). Re-ran the
+Step 38 dark-mode suite afterward; still passes.
+
 ## Setup
 
 ```bash

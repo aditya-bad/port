@@ -426,6 +426,78 @@ function computeMaxDrawdown(snapshots) {
   return { abs, pct };
 }
 
+// ── Reorderable sections ─────────────────────────────────────────────
+// Shared by Dashboard and Reports (Step 50) — each view lists its own
+// widget/section ids in its own default order, and lets the user move
+// any of them up/down; the resulting order is remembered per-view in
+// localStorage so it survives reload, same persistence convention as
+// Reports' own collapse state (Step 41).
+//
+// The saved order is a plain list of ids, filtered against the view's
+// CURRENT default list on every read — an id from a saved order that
+// no longer exists (a section removed in a later version) is silently
+// dropped, and any CURRENT id that's NOT in the saved order (a brand
+// new section shipped after the user last customized their layout) is
+// appended in its default relative position, never silently hidden or
+// jumped to the very top. This is what lets a new section like the
+// Step 50 Calendar one show up automatically for someone who already
+// has a saved order from before it existed.
+const SectionOrder = {
+  _key(viewKey) { return `sectionOrder:${viewKey}`; },
+
+  getOrder(viewKey, defaultIds) {
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem(this._key(viewKey)) || '[]'); }
+    catch (e) { saved = []; }
+    const kept = saved.filter(id => defaultIds.includes(id));
+    const missing = defaultIds.filter(id => !kept.includes(id));
+    return [...kept, ...missing];
+  },
+
+  setOrder(viewKey, order) {
+    localStorage.setItem(this._key(viewKey), JSON.stringify(order));
+  },
+
+  // Moves `id` one slot in direction `delta` (-1 up, +1 down) within
+  // the view's current order; a no-op (returns the order unchanged) if
+  // already at that edge. Persists and returns the resulting order.
+  move(viewKey, defaultIds, id, delta) {
+    const order = this.getOrder(viewKey, defaultIds);
+    const idx = order.indexOf(id);
+    const target = idx + delta;
+    if (idx === -1 || target < 0 || target >= order.length) return order;
+    [order[idx], order[target]] = [order[target], order[idx]];
+    this.setOrder(viewKey, order);
+    return order;
+  },
+
+  // Reparents each section element (looked up by id) into `container`
+  // in `order` -- appendChild on a node already in the right place is
+  // a harmless no-op, so this is safe to call on every load(), not
+  // just after an explicit reorder. Missing elements are skipped
+  // (defensive; getOrder's own filtering should prevent this anyway).
+  apply(container, order) {
+    order.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) container.appendChild(el);
+    });
+  },
+
+  // Sets the disabled state on each section's own ▲/▼ buttons (first
+  // section can't move up, last can't move down) -- call after every
+  // apply() so the controls stay in sync with the current order.
+  syncButtons(order) {
+    order.forEach((id, i) => {
+      const section = document.getElementById(id);
+      if (!section) return;
+      const up = section.querySelector('.reorder-btn.up');
+      const down = section.querySelector('.reorder-btn.down');
+      if (up) up.disabled = i === 0;
+      if (down) down.disabled = i === order.length - 1;
+    });
+  },
+};
+
 // ── P&L calendar heatmap ─────────────────────────────────────────────
 // GitHub-contribution-graph shaped, but DIVERGING (loss AND gain, not
 // just "more contributions"). Shared by Detail's own Calendar tab (one

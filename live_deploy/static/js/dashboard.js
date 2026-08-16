@@ -5,6 +5,12 @@
 // frontend fetching every deployment's own data and merging it here.
 
 const Dashboard = {
+  // Default order, also the full set of valid ids -- see SectionOrder
+  // (api.js) for how a saved order gets reconciled against this list
+  // (kept ids stay where the user put them, new ones like a future
+  // 6th section get appended rather than jumping to the top).
+  _sectionIds: ['dashSectionStats', 'dashSectionCalendar', 'dashSectionPositions', 'dashSectionActivity', 'dashSectionInstruments'],
+
   // quiet=true is used for event-driven background refresh (see
   // connectEventSocket() near the bottom of index.html) -- skips the
   // spinner reset so already-rendered content just gets swapped for
@@ -14,25 +20,38 @@ const Dashboard = {
   // nothing on screen yet to hold onto), so this only ever passes
   // quiet=true from the auto-refresh path, never from router().
   async load(quiet = false) {
+    const order = SectionOrder.getOrder('dashboard', this._sectionIds);
+    SectionOrder.apply(document.getElementById('dashboardSections'), order);
+    SectionOrder.syncButtons(order);
+
     if (!quiet) {
       document.getElementById('dashStats').innerHTML = spinnerHtml();
+      document.getElementById('dashCalendar').innerHTML = spinnerHtml();
       document.getElementById('dashPositions').innerHTML = spinnerHtml();
       document.getElementById('dashActivity').innerHTML = spinnerHtml();
       document.getElementById('dashInstruments').innerHTML = spinnerHtml();
     }
 
-    const [deployments, positions, trades, instruments] = await Promise.all([
+    const [deployments, calendarRows, positions, trades, instruments] = await Promise.all([
       Api.listDeployments(),
+      Api.getPnlDigest('day', 371),
       Api.getAllPositions('open'),
       Api.getRecentTrades(20),
       Api.listInstruments(),
     ]);
 
     this.renderStats(deployments);
+    document.getElementById('dashCalendar').innerHTML = renderPnlHeatmap(calendarRows);
     this.renderPositions(positions);
     this.renderActivity(trades);
     this.renderInstruments(instruments);
     markUpdated('dashUpdatedLabel');
+  },
+
+  moveSection(id, delta) {
+    const order = SectionOrder.move('dashboard', this._sectionIds, id, delta);
+    SectionOrder.apply(document.getElementById('dashboardSections'), order);
+    SectionOrder.syncButtons(order);
   },
 
   renderStats(deployments) {

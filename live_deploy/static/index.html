@@ -677,6 +677,28 @@ tr.trade-detail-row td {
 .report-section.collapsed .report-section-chevron { transform: rotate(-90deg); }
 .report-section.collapsed .report-section-content { display: none; }
 
+/* ── Reorderable sections — Dashboard and Reports (Step 50): a
+   section's own header carries ▲/▼ move buttons at its right edge
+   (`margin-left: auto` inside the header's own flex row, so this
+   drops into Reports' existing .report-section-header unchanged and
+   into Dashboard's new .dash-section-header identically). Deliberately
+   buttons, not drag-and-drop — fully keyboard/touch-usable with no
+   extra library, and the disabled-at-the-edges convention already
+   used elsewhere in this app (Reports' own Prev/Next period nav). ─── */
+.dash-section-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 0; border-bottom: 3px solid var(--line); margin-bottom: 14px;
+}
+.dash-section-header h2 { margin-bottom: 0; }
+.reorder-controls { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+.reorder-btn {
+  width: 22px; height: 22px; display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--line); background: var(--paper); color: var(--ink);
+  cursor: pointer; font-size: 10px; padding: 0; line-height: 1; flex-shrink: 0;
+}
+.reorder-btn:hover:not(:disabled) { background: var(--sand); }
+.reorder-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+
 .report-delta { font-size: 11px; font-weight: 700; margin-top: 6px; }
 
 /* ── Real-time alert toasts — fed by /ws/events (see
@@ -944,25 +966,67 @@ body.mobile-nav-open { overflow: hidden; }
           <button class="btn btn-secondary btn-sm" onclick="Dashboard.load()">↻ Refresh</button>
         </div>
       </div>
-      <div id="dashStats" class="stat-grid"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      <!-- Reorder container: only these 5 sections get reparented by
+           SectionOrder.apply() -- .view-header above stays put. Each
+           section carries its own ▲/▼ (Step 50, Dashboard.moveSection),
+           order remembered in localStorage. -->
+      <div id="dashboardSections">
+        <section id="dashSectionStats">
+          <div class="dash-section-header">
+            <h2>Overview</h2>
+            <div class="reorder-controls">
+              <button class="reorder-btn up" onclick="Dashboard.moveSection('dashSectionStats', -1)" title="Move up">▲</button>
+              <button class="reorder-btn down" onclick="Dashboard.moveSection('dashSectionStats', 1)" title="Move down">▼</button>
+            </div>
+          </div>
+          <div id="dashStats" class="stat-grid"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+        </section>
 
-      <section>
-        <h2>Open Positions (all deployments)</h2>
-        <div id="dashPositions"><div class="empty"><span class="spinner"></span> Loading…</div></div>
-      </section>
+        <section id="dashSectionCalendar">
+          <div class="dash-section-header">
+            <h2>Daily P&amp;L Calendar</h2>
+            <div class="reorder-controls">
+              <button class="reorder-btn up" onclick="Dashboard.moveSection('dashSectionCalendar', -1)" title="Move up">▲</button>
+              <button class="reorder-btn down" onclick="Dashboard.moveSection('dashSectionCalendar', 1)" title="Move down">▼</button>
+            </div>
+          </div>
+          <div id="dashCalendar"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+        </section>
 
-      <section>
-        <h2>Recent Activity</h2>
-        <div id="dashActivity"><div class="empty"><span class="spinner"></span> Loading…</div></div>
-      </section>
+        <section id="dashSectionPositions">
+          <div class="dash-section-header">
+            <h2>Open Positions (all deployments)</h2>
+            <div class="reorder-controls">
+              <button class="reorder-btn up" onclick="Dashboard.moveSection('dashSectionPositions', -1)" title="Move up">▲</button>
+              <button class="reorder-btn down" onclick="Dashboard.moveSection('dashSectionPositions', 1)" title="Move down">▼</button>
+            </div>
+          </div>
+          <div id="dashPositions"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+        </section>
 
-      <section>
-        <h2>
-          Subscribed Instruments
-          <button class="btn btn-secondary btn-sm" onclick="openInstrumentModal()">+ Subscribe</button>
-        </h2>
-        <div id="dashInstruments"><div class="empty"><span class="spinner"></span> Loading…</div></div>
-      </section>
+        <section id="dashSectionActivity">
+          <div class="dash-section-header">
+            <h2>Recent Activity</h2>
+            <div class="reorder-controls">
+              <button class="reorder-btn up" onclick="Dashboard.moveSection('dashSectionActivity', -1)" title="Move up">▲</button>
+              <button class="reorder-btn down" onclick="Dashboard.moveSection('dashSectionActivity', 1)" title="Move down">▼</button>
+            </div>
+          </div>
+          <div id="dashActivity"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+        </section>
+
+        <section id="dashSectionInstruments">
+          <div class="dash-section-header">
+            <h2>Subscribed Instruments</h2>
+            <div class="reorder-controls">
+              <button class="btn btn-secondary btn-sm" onclick="openInstrumentModal()">+ Subscribe</button>
+              <button class="reorder-btn up" onclick="Dashboard.moveSection('dashSectionInstruments', -1)" title="Move up">▲</button>
+              <button class="reorder-btn down" onclick="Dashboard.moveSection('dashSectionInstruments', 1)" title="Move down">▼</button>
+            </div>
+          </div>
+          <div id="dashInstruments"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+        </section>
+      </div>
     </div>
 
     <!-- ═══ Strategy Catalog ═══ -->
@@ -1090,39 +1154,63 @@ body.mobile-nav-open { overflow: hidden; }
 
       <div id="reportsStats" class="stat-grid"><div class="empty"><span class="spinner"></span> Loading…</div></div>
 
-      <div class="report-section" id="reportsSectionStrategy">
-        <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionStrategy')">
-          <span class="report-section-chevron">▼</span>
-          <h2 style="margin-bottom:0;">By Strategy</h2>
+      <!-- Reorder container (Step 50): only these 4 sections get
+           reparented by SectionOrder.apply() -- the period nav/stat
+           cards above stay put, they're inputs that control every
+           section below, not an independent widget to relocate. Each
+           header's ▲/▼ stops propagation so clicking them doesn't also
+           toggle the section's own collapse (its header's onclick). -->
+      <div id="reportsSections">
+        <div class="report-section" id="reportsSectionStrategy">
+          <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionStrategy')">
+            <span class="report-section-chevron">▼</span>
+            <h2 style="margin-bottom:0;">By Strategy</h2>
+            <div class="reorder-controls">
+              <button class="reorder-btn up" onclick="event.stopPropagation(); Reports.moveSection('reportsSectionStrategy', -1)" title="Move up">▲</button>
+              <button class="reorder-btn down" onclick="event.stopPropagation(); Reports.moveSection('reportsSectionStrategy', 1)" title="Move down">▼</button>
+            </div>
+          </div>
+          <div class="report-section-content" id="reportsByStrategy"></div>
         </div>
-        <div class="report-section-content" id="reportsByStrategy"></div>
-      </div>
 
-      <div class="report-section" id="reportsSectionDeployment">
-        <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionDeployment')">
-          <span class="report-section-chevron">▼</span>
-          <h2 style="margin-bottom:0;">By Deployment</h2>
+        <div class="report-section" id="reportsSectionDeployment">
+          <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionDeployment')">
+            <span class="report-section-chevron">▼</span>
+            <h2 style="margin-bottom:0;">By Deployment</h2>
+            <div class="reorder-controls">
+              <button class="reorder-btn up" onclick="event.stopPropagation(); Reports.moveSection('reportsSectionDeployment', -1)" title="Move up">▲</button>
+              <button class="reorder-btn down" onclick="event.stopPropagation(); Reports.moveSection('reportsSectionDeployment', 1)" title="Move down">▼</button>
+            </div>
+          </div>
+          <div class="report-section-content" id="reportsByDeployment"></div>
         </div>
-        <div class="report-section-content" id="reportsByDeployment"></div>
-      </div>
 
-      <div class="report-section" id="reportsSectionTrend">
-        <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionTrend')">
-          <span class="report-section-chevron">▼</span>
-          <h2 style="margin-bottom:0;">Recent Periods</h2>
+        <div class="report-section" id="reportsSectionTrend">
+          <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionTrend')">
+            <span class="report-section-chevron">▼</span>
+            <h2 style="margin-bottom:0;">Recent Periods</h2>
+            <div class="reorder-controls">
+              <button class="reorder-btn up" onclick="event.stopPropagation(); Reports.moveSection('reportsSectionTrend', -1)" title="Move up">▲</button>
+              <button class="reorder-btn down" onclick="event.stopPropagation(); Reports.moveSection('reportsSectionTrend', 1)" title="Move down">▼</button>
+            </div>
+          </div>
+          <div class="report-section-content" id="reportsTrend"></div>
         </div>
-        <div class="report-section-content" id="reportsTrend"></div>
-      </div>
 
-      <!-- Portfolio-wide, not period-scoped like the sections above --
-           see Reports.load()'s own comment for why this fetches once,
-           independent of the day/week/month tabs and Prev/Next nav. -->
-      <div class="report-section" id="reportsSectionCalendar">
-        <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionCalendar')">
-          <span class="report-section-chevron">▼</span>
-          <h2 style="margin-bottom:0;">Daily P&amp;L Calendar</h2>
+        <!-- Portfolio-wide, not period-scoped like the sections above --
+             see Reports.load()'s own comment for why this fetches once,
+             independent of the day/week/month tabs and Prev/Next nav. -->
+        <div class="report-section" id="reportsSectionCalendar">
+          <div class="report-section-header" onclick="Reports.toggleSection('reportsSectionCalendar')">
+            <span class="report-section-chevron">▼</span>
+            <h2 style="margin-bottom:0;">Daily P&amp;L Calendar</h2>
+            <div class="reorder-controls">
+              <button class="reorder-btn up" onclick="event.stopPropagation(); Reports.moveSection('reportsSectionCalendar', -1)" title="Move up">▲</button>
+              <button class="reorder-btn down" onclick="event.stopPropagation(); Reports.moveSection('reportsSectionCalendar', 1)" title="Move down">▼</button>
+            </div>
+          </div>
+          <div class="report-section-content" id="reportsCalendar"></div>
         </div>
-        <div class="report-section-content" id="reportsCalendar"></div>
       </div>
     </div>
 

@@ -12,7 +12,15 @@ const Reports = {
   _offset: 0,
   _trendRows: [],   // kept around for exportCsv()
 
+  // Default order / full valid-id set for the reorderable sections
+  // below the period nav -- see SectionOrder (api.js).
+  _sectionIds: ['reportsSectionStrategy', 'reportsSectionDeployment', 'reportsSectionTrend', 'reportsSectionCalendar'],
+
   async load() {
+    const order = SectionOrder.getOrder('reports', this._sectionIds);
+    SectionOrder.apply(document.getElementById('reportsSections'), order);
+    SectionOrder.syncButtons(order);
+
     document.getElementById('reportsStats').innerHTML = spinnerHtml();
     document.getElementById('reportsByStrategy').innerHTML = spinnerHtml();
     document.getElementById('reportsByDeployment').innerHTML = spinnerHtml();
@@ -41,6 +49,12 @@ const Reports = {
     this._trendRows = trend;
     this.renderTrend(trend);
     document.getElementById('reportsCalendar').innerHTML = renderPnlHeatmap(calendarRows);
+  },
+
+  moveSection(id, delta) {
+    const order = SectionOrder.move('reports', this._sectionIds, id, delta);
+    SectionOrder.apply(document.getElementById('reportsSections'), order);
+    SectionOrder.syncButtons(order);
   },
 
   switchPeriod(period) {
