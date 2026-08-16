@@ -72,18 +72,21 @@ const Account = {
       </section>
     ` : '';
 
-    // Sessions last 24h and changing your password already invalidates
-    // every OTHER session automatically (see the backend's own
-    // comments) — this is for "I just want every session gone right
-    // now" without also having to pick a new password to get there
-    // (lost/stolen device, shared computer, general paranoia).
+    // Sliding 2h idle timeout, not a flat daily one -- staying active
+    // keeps you logged in, but an unused/lost/stolen session closes
+    // fast. Changing your password already invalidates every OTHER
+    // session automatically (see the backend's own comments) — this is
+    // for "I just want every session gone right now" without also
+    // having to pick a new password to get there (lost/stolen device,
+    // shared computer, general paranoia).
     const sessionsSection = (via === 'session') ? `
       <section style="margin-top:26px; max-width:360px;">
         <h2>Sessions</h2>
         <div class="table-note" style="margin-bottom:10px;">
-          Sessions last 24 hours. Changing your password (above) already logs out every
-          OTHER device automatically — use this if you just want that without changing
-          your password. This also logs out this device, not just others.
+          Sessions stay active while you're using the app, and expire automatically
+          after 2 hours of inactivity. Changing your password (above) already logs out
+          every OTHER device automatically — use this if you just want that without
+          changing your password. This also logs out this device, not just others.
         </div>
         <button class="btn btn-secondary btn-sm" onclick="Account.submitLogoutEverywhere()">Log out everywhere</button>
         <div class="modal-msg" id="acctLogoutEverywhereMsg" style="margin-top:10px;"></div>

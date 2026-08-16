@@ -57,6 +57,7 @@ import ipaddress
 import json
 import logging
 import secrets
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -133,16 +134,21 @@ class HostAwareSessionMiddleware:
     matching security benefit — see _is_tailscale_ip's own comment).
     """
 
-    # Starlette's own SessionMiddleware default is 14 DAYS if never set
-    # explicitly — never actually chosen, just inherited. Found via a
-    # real "still logged in a day later, even after a redeploy"
-    # observation. 24h mirrors the daily rhythm this app already has
-    # (Kite's own access_token also expires once a day) rather than
-    # introducing a second, unfamiliar one. Absolute from login time,
-    # not sliding on activity — Starlette sets Max-Age once at issue
-    # time and doesn't refresh it on every request, and that's fine
-    # here: "re-login once a day" is already the expected routine.
-    SESSION_MAX_AGE_SECONDS = 24 * 60 * 60
+    # This is now an IDLE timeout, not an absolute one -- see
+    # AuthMiddleware._session_ok's own "touch" logic, which is what
+    # actually makes that true. Confirmed directly from Starlette's own
+    # source (not assumed): SessionMiddleware only re-signs and
+    # re-issues Set-Cookie when `session.modified` is true for that
+    # request (starlette/middleware/sessions.py) -- a plain read never
+    # extends anything on its own. itsdangerous's TimestampSigner
+    # embeds a fresh timestamp on every (re-)sign too, so a touched
+    # request refreshes the check at BOTH layers: the browser-visible
+    # Max-Age hint, and the server-side signature timestamp
+    # unsign(..., max_age=...) actually verifies against -- not just a
+    # client-trusted expiry. 2h: short enough that a lost/stolen,
+    # unused device or an abandoned tab closes the exposure window
+    # quickly, long enough not to interrupt anyone actively using it.
+    SESSION_MAX_AGE_SECONDS = 2 * 60 * 60
 
     def __init__(self, app: ASGIApp, secret_key: str):
         self._secure = SessionMiddleware(
@@ -204,7 +210,20 @@ class AuthMiddleware:
             # check rather than locking out every user over it.
             return True
         versions = await cache.get("user_session_versions")
-        return versions.get(user_id) == conn.session.get("session_version")
+        if versions.get(user_id) != conn.session.get("session_version"):
+            return False
+
+        # The actual sliding-window mechanic: writing to the session
+        # dict (any key, any value) is what makes Starlette's own
+        # SessionMiddleware re-sign and re-issue Set-Cookie for this
+        # response, which is what refreshes both the browser-visible
+        # Max-Age AND the server-verified itsdangerous timestamp — see
+        # SESSION_MAX_AGE_SECONDS's own comment on HostAwareSession
+        # Middleware. Only reached once a session has already passed
+        # the checks above, so this never touches (or creates) a
+        # session for a request that isn't genuinely, currently valid.
+        conn.session["last_seen"] = int(time.time())
+        return True
 
     def _header_api_key_ok(self, conn: HTTPConnection) -> bool:
         supplied = conn.headers.get("x-api-key")

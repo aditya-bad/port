@@ -2286,6 +2286,58 @@ cache, not Postgres, per request; and the new UI button was clicked
 through a real browser, correctly ending with a redirect back to the
 login page.
 
+## What's here (Step 33: sessions now slide on activity — 2h idle timeout, not a flat 24h one)
+
+Asked for directly, after Step 32's fix: something closer to a
+refresh-token model, "even more secure." Worth being precise about
+what changed and why: this app doesn't use JWTs (it's Starlette's
+signed session cookies, `itsdangerous` — no algorithm-confusion
+surface, no separate key-rotation story to get right), and a literal
+OAuth2-style access+refresh token pair was a disproportionate amount
+of new complexity for what this app actually is — a single first-party
+browser SPA on its own same-origin backend, not a multi-client system
+that needs a token usable outside a cookie jar. Building one for real
+would mean a second token type, a refresh endpoint, and 401-catch-
+refresh-retry logic wrapped around every call in `api.js`, to end up
+with roughly the same security property a shorter, sliding cookie
+already gets you — and a cookie is httpOnly, meaning JS (and therefore
+XSS) can't read it at all, which is actually a tighter spot to keep a
+credential than a token sitting in reachable client-side storage.
+
+What actually ships: `SESSION_MAX_AGE_SECONDS` dropped from Step 32's
+flat 24h to **2 hours**, and it's now a genuine sliding idle timeout,
+not a countdown from login. Mechanism confirmed directly from
+Starlette's own installed source (not assumed): `SessionMiddleware`
+only re-signs and re-issues `Set-Cookie` when the session dict is
+mutated during a request (`session.modified`) — so
+`AuthMiddleware._session_ok()` now writes a `last_seen` key on every
+request that passes its checks, which is what makes Starlette reissue
+the cookie with a fresh `Max-Age` AND a fresh `itsdangerous` signed
+timestamp on every touch. Both layers refresh together: the
+browser-visible `Max-Age` hint, and the server-side signature
+timestamp `unsign(..., max_age=...)` actually verifies against — not
+just a client-trusted expiry. The touch lives in the middleware's own
+gate check, not in individual route handlers, so it fires on ANY
+authenticated request, reads included — "activity" has to mean any
+real use of the app, not just requests that happen to write something.
+Session revocation (`session_version`, change-password, "log out
+everywhere") is unchanged — all of it still works exactly as Step 32
+built it, layered underneath this.
+
+**Verified** against a real server + real Postgres, including decoding
+the signed cookie directly with `itsdangerous.TimestampSigner` rather
+than trusting the `Set-Cookie` header alone: `Max-Age` confirmed as
+`7200` (2h), not the old `86400`; a pure read (`GET /auth/me`, which
+never itself writes to `request.session`) confirmed to STILL reissue
+`Set-Cookie` (proving the touch is middleware-level, not
+handler-level); the reissued cookie's own embedded `itsdangerous`
+timestamp confirmed strictly later than the original after a real
+1.2s sleep between requests (proving an actual server-side refresh,
+not just a header that looks right); the refreshed cookie itself
+confirmed to still authenticate a follow-up request; and the full
+Step 32 revocation suite re-run afterward to confirm none of it
+regressed.
+
 ## Setup
 
 ```bash
