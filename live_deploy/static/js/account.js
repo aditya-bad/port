@@ -93,7 +93,58 @@ const Account = {
       </section>
     ` : '';
 
-    body.innerHTML = identity + changePwForm + sessionsSection;
+    body.innerHTML = identity + changePwForm + sessionsSection + this._renderNotificationsSection();
+  },
+
+  // ── Notifications: opt-in browser push for the real-time alert
+  // toasts (see /ws/events + showToast() in index.html). Toasts
+  // already show up whenever a tab is open; this is ONLY for getting
+  // pinged while the tab is in the background — never fires while the
+  // tab is focused (the toast itself already covers that). Off by
+  // default — browsers require the permission prompt to come from a
+  // real click on this toggle, never fired ambiently on page load. ──
+  _renderNotificationsSection() {
+    const enabled = localStorage.getItem('browserNotificationsEnabled') === '1';
+    const supported = typeof Notification !== 'undefined';
+    const permission = supported ? Notification.permission : 'unsupported';
+    let statusLine;
+    if (!supported) {
+      statusLine = 'Not supported in this browser.';
+    } else if (permission === 'denied') {
+      statusLine = 'Blocked at the browser level — re-enable it in your browser\'s site settings, then reload this page.';
+    } else if (enabled && permission === 'granted') {
+      statusLine = 'On — you\'ll get a browser notification for alerts that arrive while this tab is in the background.';
+    } else {
+      statusLine = 'Off — alerts only show as in-app toasts while this tab is open and focused.';
+    }
+    return `
+      <section style="margin-top:26px; max-width:360px;">
+        <h2>Notifications</h2>
+        <div class="table-note" style="margin-bottom:10px;">${escapeHtml(statusLine)}</div>
+        ${supported && permission !== 'denied' ? `
+          <button class="btn btn-secondary btn-sm" onclick="Account.toggleBrowserNotifications()">
+            ${enabled ? 'Turn off browser notifications' : 'Turn on browser notifications'}
+          </button>
+        ` : ''}
+      </section>
+    `;
+  },
+
+  async toggleBrowserNotifications() {
+    const enabled = localStorage.getItem('browserNotificationsEnabled') === '1';
+    if (enabled) {
+      localStorage.setItem('browserNotificationsEnabled', '0');
+      this._renderProfile();
+      return;
+    }
+    // requestPermission() must be called from a real user gesture (this
+    // click) -- calling it any other way is exactly the "ambient popup"
+    // pattern browsers are designed to refuse.
+    const result = await Notification.requestPermission();
+    if (result === 'granted') {
+      localStorage.setItem('browserNotificationsEnabled', '1');
+    }
+    this._renderProfile();
   },
 
   async submitChangePassword() {

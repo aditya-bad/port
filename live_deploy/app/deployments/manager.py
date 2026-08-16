@@ -62,13 +62,22 @@ class DeploymentManager:
     def __init__(
         self, pool: asyncpg.Pool, broadcaster, dispatcher,
         snapshot_interval_seconds: float = DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
-        cache=None,
+        cache=None, event_broadcaster=None,
     ):
         self.pool = pool
         self.broadcaster = broadcaster
         self.dispatcher = dispatcher
         self.runners: dict[str, DeploymentRunner] = {}   # str(deployment_id) -> runner
         self.snapshot_interval_seconds = snapshot_interval_seconds
+        # Optional (app.state.event_broadcaster — see app/broadcaster.py).
+        # Used directly here for events this manager records itself
+        # (pause/resume/stop/flatten — see _record_event below) AND
+        # handed down to every DeploymentRunner this manager starts, so
+        # runner-originated events (fills, strategy errors) go out over
+        # the SAME broadcaster instance/websocket stream. None in any
+        # context that doesn't have one (e.g. tests), same
+        # optional-hook pattern as `cache` above.
+        self.event_broadcaster = event_broadcaster
         # Optional (app.state.cache — see app/cache.py). When given,
         # every runner this manager starts gets wired to call back in
         # here after each fill, so a strategy-driven trade shows up in
@@ -141,7 +150,7 @@ class DeploymentManager:
         if runner is not None:
             await runner.stop()
         await queries.set_status(self.pool, deployment_id, "paused")
-        await queries.record_event(self.pool, deployment_id, "paused")
+        await self._record_event(deployment_id, row["deployment_name"], row["strategy_name"], "paused")
         logger.info("Paused deployment %s", row["deployment_name"])
 
     async def resume(self, deployment_id: UUID) -> asyncpg.Record:
@@ -156,7 +165,7 @@ class DeploymentManager:
         await queries.set_status(self.pool, deployment_id, "active")
         row = await queries.get_deployment(self.pool, deployment_id)
         await self._start_runner(row)
-        await queries.record_event(self.pool, deployment_id, "resumed")
+        await self._record_event(deployment_id, row["deployment_name"], row["strategy_name"], "resumed")
         logger.info("Resumed deployment %s", row["deployment_name"])
         return row
 
@@ -194,8 +203,8 @@ class DeploymentManager:
             await runner.stop()
         self.dispatcher.release_instruments(self._deployment_tokens(row))
         await queries.set_status(self.pool, deployment_id, "stopped")
-        await queries.record_event(
-            self.pool, deployment_id, "stopped",
+        await self._record_event(
+            deployment_id, row["deployment_name"], row["strategy_name"], "stopped",
             metadata={"force_close": force_close, "positions_closed": len(open_positions)},
         )
         logger.info("Stopped deployment %s (force_close=%s)", row["deployment_name"], force_close)
@@ -251,16 +260,16 @@ class DeploymentManager:
             if runner is not None:
                 await runner.stop()
             await queries.set_status(self.pool, deployment_id, "paused")
-            await queries.record_event(
-                self.pool, deployment_id, "paused",
+            await self._record_event(
+                deployment_id, row["deployment_name"], row["strategy_name"], "paused",
                 metadata={"reason": "flatten_all", "positions_closed": len(open_positions)},
             )
         elif open_positions:
             # Already paused -- no runner/status transition needed, but
             # still worth a row in the deployment's own Activity tab
             # recording that this happened and how many positions it closed.
-            await queries.record_event(
-                self.pool, deployment_id, "flattened",
+            await self._record_event(
+                deployment_id, row["deployment_name"], row["strategy_name"], "flattened",
                 metadata={"positions_closed": len(open_positions)},
             )
 
@@ -381,10 +390,37 @@ class DeploymentManager:
         runner = DeploymentRunner(
             row, self.pool, self.broadcaster, self.dispatcher, strategy,
             on_fill=self._on_fill_committed,
+            event_broadcaster=self.event_broadcaster,
         )
         await runner.start()
         self.runners[str(row["id"])] = runner
         return runner
+
+    async def _record_event(
+        self, deployment_id: UUID, deployment_name: str, strategy_name: str,
+        event_type: str, message: Optional[str] = None, metadata: Optional[dict] = None,
+    ) -> None:
+        """DeploymentManager's own equivalent of DeploymentRunner._record_event
+        (see that one's docstring) — used here for events the MANAGER
+        records directly (pause/resume/stop/flatten), as opposed to
+        events a running strategy triggers (fills, strategy errors),
+        which go through the runner's own copy instead since a runner
+        doesn't hold a reference back to its manager. Same DB-write-then-
+        broadcast shape, deployment_name/strategy_name passed in rather
+        than re-fetched since every call site here already has `row` in
+        scope from its own earlier `get_deployment` call."""
+        await queries.record_event(self.pool, deployment_id, event_type, message=message, metadata=metadata)
+        if self.event_broadcaster is None:
+            return
+        await self.event_broadcaster.broadcast({
+            "deployment_id": str(deployment_id),
+            "deployment_name": deployment_name,
+            "strategy_name": strategy_name,
+            "event_type": event_type,
+            "message": message,
+            "metadata": metadata or {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
 
     def _on_fill_committed(self) -> None:
         """Passed to every DeploymentRunner as on_fill. Fire-and-forget

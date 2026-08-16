@@ -46,7 +46,7 @@ from fastapi.staticfiles import StaticFiles
 from . import strategies  # noqa: F401 — importing runs every @register_strategy in it
 from .strategies.registry import list_strategies
 from .auth import AuditLogMiddleware, AuthMiddleware, HostAwareSessionMiddleware
-from .broadcaster import TickBroadcaster
+from .broadcaster import Broadcaster
 from .cache import AggregateCache
 from .config import load_config, load_tokens
 from .db import queries
@@ -160,7 +160,7 @@ async def startup() -> None:
     # ws_ticks's own docstring for the full story.
     app.state.shutdown_event = asyncio.Event()
 
-    broadcaster = TickBroadcaster()
+    broadcaster = Broadcaster()
     dispatcher = LiveDataDispatcher(
         api_key=config["api_key"],
         tokens=tokens,
@@ -172,6 +172,16 @@ async def startup() -> None:
     dispatcher.bind_loop(loop)
     app.state.broadcaster = broadcaster
     app.state.dispatcher = dispatcher
+
+    # ── In-app real-time alerts: a SECOND, separate Broadcaster instance
+    # (same fan-out class as ticks, own subscriber set) carrying
+    # deployment events (fills, pause/resume/stop, strategy errors) out
+    # to /ws/events. Kept apart from the tick broadcaster on purpose —
+    # DeploymentRunner subscribes to the tick one to feed its own
+    # strategy, and would wrongly try to treat an event payload as a
+    # tick if the two streams were merged.
+    event_broadcaster = Broadcaster()
+    app.state.event_broadcaster = event_broadcaster
 
     # ── Aggregate-read cache: GET /deployments, /positions, /trades/
     # recent, /strategies were reported taking 3-6s to load on every
@@ -218,7 +228,7 @@ async def startup() -> None:
     app.state.cache = cache
 
     # ── Deployment lifecycle: resume everything still 'active' ────────
-    manager = DeploymentManager(db_pool, broadcaster, dispatcher, cache=cache)
+    manager = DeploymentManager(db_pool, broadcaster, dispatcher, cache=cache, event_broadcaster=event_broadcaster)
     resumed = await manager.load_active_on_startup()
     app.state.deployment_manager = manager
 
@@ -313,7 +323,7 @@ async def ws_ticks(websocket: WebSocket):
     (set first-thing in the shutdown() handler above) fixes both at once.
     """
     await websocket.accept()
-    broadcaster: TickBroadcaster = websocket.app.state.broadcaster
+    broadcaster: Broadcaster = websocket.app.state.broadcaster
     shutdown_event: asyncio.Event = websocket.app.state.shutdown_event
     queue = await broadcaster.subscribe()
 
@@ -329,6 +339,56 @@ async def ws_ticks(websocket: WebSocket):
                 return
 
     forward_task = asyncio.create_task(_forward_ticks())
+    disconnect_task = asyncio.create_task(_watch_for_client_disconnect())
+    shutdown_task = asyncio.create_task(shutdown_event.wait())
+    try:
+        await asyncio.wait(
+            [forward_task, disconnect_task, shutdown_task], return_when=asyncio.FIRST_COMPLETED,
+        )
+    except WebSocketDisconnect:
+        pass
+    finally:
+        for t in (forward_task, disconnect_task, shutdown_task):
+            t.cancel()
+        await asyncio.gather(forward_task, disconnect_task, shutdown_task, return_exceptions=True)
+        await broadcaster.unsubscribe(queue)
+        try:
+            await websocket.close()
+        except Exception:
+            pass   # already closed, e.g. the client-disconnect path above
+
+
+@app.websocket("/ws/events")
+async def ws_events(websocket: WebSocket):
+    """
+    Real-time in-app alerts — every deployment event (a fill, a
+    pause/resume/stop, a strategy error) as soon as it's recorded,
+    pushed to every connected browser tab. Same shape and same
+    shutdown/disconnect race as ws_ticks above (see its own docstring
+    for why the race is needed at all), just subscribed to
+    app.state.event_broadcaster instead of app.state.broadcaster —
+    deliberately NOT reusing the tick socket for this: mixing event
+    payloads into the tick stream would mean every existing tick
+    consumer (including every DeploymentRunner feeding its own
+    strategy) would need to start filtering out non-tick messages.
+    """
+    await websocket.accept()
+    broadcaster: Broadcaster = websocket.app.state.event_broadcaster
+    shutdown_event: asyncio.Event = websocket.app.state.shutdown_event
+    queue = await broadcaster.subscribe()
+
+    async def _forward_events():
+        while True:
+            event = await queue.get()
+            await websocket.send_json(event)
+
+    async def _watch_for_client_disconnect():
+        while True:
+            message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                return
+
+    forward_task = asyncio.create_task(_forward_events())
     disconnect_task = asyncio.create_task(_watch_for_client_disconnect())
     shutdown_task = asyncio.create_task(shutdown_event.wait())
     try:

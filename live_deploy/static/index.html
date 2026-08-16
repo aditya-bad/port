@@ -626,6 +626,32 @@ tr.trade-detail-row td {
 
 .report-delta { font-size: 11px; font-weight: 700; margin-top: 6px; }
 
+/* ── Real-time alert toasts — fed by /ws/events (see
+   connectEventSocket() near the bottom of this file). Top-right stack,
+   above everything including modals (z-index 200 vs modals' 100) since
+   an alert should surface even over an open dialog. Color is STATUS
+   (error/info/neutral), not the Compare view's categorical palette and
+   not bare gain/loss -- a fill's own P&L direction isn't knowable from
+   the event alone (a sell can be a stop-loss OR a profit-take), so
+   fills read as informational, not colored by an outcome the toast
+   can't actually verify. ─────────────────────────────────────────── */
+.toast-stack { position: fixed; top: 16px; right: 16px; z-index: 200; display: flex; flex-direction: column; gap: 10px; max-width: 360px; width: calc(100% - 32px); }
+.toast {
+  background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm);
+  padding: 12px 14px; display: flex; gap: 10px; align-items: flex-start;
+}
+.toast-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; background: var(--brass); }
+.toast.error .toast-dot { background: var(--loss); }
+.toast.info .toast-dot { background: var(--info); }
+.toast-body { flex: 1; min-width: 0; }
+.toast-title { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em; }
+.toast-message { font-size: 12px; color: var(--parchment); margin-top: 3px; line-height: 1.4; word-break: break-word; }
+.toast-close { cursor: pointer; color: var(--parchment); background: none; border: none; padding: 0; font-size: 15px; line-height: 1; flex-shrink: 0; }
+.toast-close:hover { color: var(--ink); }
+@media (max-width: 760px) {
+  .toast-stack { left: 16px; right: 16px; max-width: none; top: 12px; }
+}
+
 /* ── Modals — the biggest offset shadow in the app, so "floating
    above everything" reads unmistakably. ───────────────────────────── */
 .modal-overlay {
@@ -1043,6 +1069,12 @@ body.mobile-nav-open { overflow: hidden; }
 
   </main>
 </div>
+
+<!-- Real-time alerts — fed by /ws/events, see connectEventSocket() near
+     the bottom of this file's own <script>. Top-level sibling of
+     .app-shell (not inside .main) so a toast stays visible no matter
+     which view is currently active. -->
+<div class="toast-stack" id="toastStack"></div>
 
 <!-- Deploy modal -->
 <div class="modal-overlay" id="deployModal">
@@ -1483,6 +1515,69 @@ function connectTickerSocket() {
   tickerSocket.onerror = () => { tickerSocket.close(); };
 }
 
+// ── Real-time alerts ────────────────────────────────────────────────
+// A second, separate websocket (/ws/events, NOT /ws/ticks) — every
+// deployment event (a fill, a pause/resume/stop, a strategy error) as
+// soon as the backend records it. Same reconnect-on-close shape as
+// connectTickerSocket() above, deliberately separate connection: ticks
+// and events are unrelated streams with unrelated consumers.
+let eventSocket = null;
+const TOAST_LABELS = {
+  fill_buy: 'Buy', fill_sell: 'Sell', strategy_error: 'Strategy error',
+  paused: 'Paused', resumed: 'Resumed', stopped: 'Stopped', flattened: 'Flattened',
+};
+function _toastCategory(eventType) {
+  if (eventType === 'strategy_error') return 'error';
+  if (eventType === 'fill_buy' || eventType === 'fill_sell') return 'info';
+  return 'neutral';   // paused/resumed/stopped/flattened -- administrative, not a P&L outcome
+}
+function connectEventSocket() {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  eventSocket = new WebSocket(`${proto}//${window.location.host}/ws/events`);
+  eventSocket.onmessage = (msg) => {
+    let ev;
+    try { ev = JSON.parse(msg.data); } catch (e) { return; }
+    if (!ev || !ev.event_type) return;
+    showToast(ev);
+  };
+  eventSocket.onclose = () => { setTimeout(connectEventSocket, 3000); };
+  eventSocket.onerror = () => { eventSocket.close(); };
+}
+
+const TOAST_AUTO_DISMISS_MS = 8000;
+function showToast(ev) {
+  const stack = document.getElementById('toastStack');
+  if (!stack) return;
+  const category = _toastCategory(ev.event_type);
+  const label = TOAST_LABELS[ev.event_type] || ev.event_type;
+  const el = document.createElement('div');
+  el.className = `toast ${category}`;
+  el.innerHTML = `
+    <span class="toast-dot"></span>
+    <div class="toast-body">
+      <div class="toast-title">${escapeHtml(ev.deployment_name || '')} — ${escapeHtml(label)}</div>
+      <div class="toast-message">${escapeHtml(ev.message || '')}</div>
+    </div>
+    <button class="toast-close" aria-label="Dismiss" onclick="this.closest('.toast').remove()">✕</button>
+  `;
+  stack.appendChild(el);
+  setTimeout(() => el.remove(), TOAST_AUTO_DISMISS_MS);
+
+  // Browser push notification -- ONLY when the user has explicitly
+  // opted in (Account -> Profile) AND the tab isn't the one currently
+  // focused. Opted-out/no-permission is a silent no-op, never a
+  // prompt fired from here -- browsers require permission to be
+  // requested from a real user gesture (the toggle itself), not
+  // ambiently on every event.
+  if (localStorage.getItem('browserNotificationsEnabled') === '1'
+      && typeof Notification !== 'undefined' && Notification.permission === 'granted'
+      && document.visibilityState !== 'visible') {
+    try {
+      new Notification(`${ev.deployment_name || 'live_deploy'} — ${label}`, { body: ev.message || '' });
+    } catch (e) { /* some browsers throw on unsupported contexts -- never let this break the toast itself */ }
+  }
+}
+
 // ── Router ────────────────────────────────────────────────────────────
 // Six real views + one drill-down (detail, reached only by navigating
 // to #/deployments/{id}, never a sidebar destination of its own).
@@ -1553,6 +1648,7 @@ window.addEventListener('DOMContentLoaded', () => {
   setInterval(updateClock, 1000);
   connectTickerSocket();
   tickerFallbackTimer = setTimeout(fetchTickerFallback, 8000);
+  connectEventSocket();
 });
 </script>
 </body>

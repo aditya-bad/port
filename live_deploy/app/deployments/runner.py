@@ -1,7 +1,7 @@
 """
 live_deploy — DeploymentRunner.
 
-One instance per deployment. Subscribes to the SAME TickBroadcaster
+One instance per deployment. Subscribes to the SAME tick Broadcaster
 every other consumer uses (no extra Kite connection), filters ticks down
 to this deployment's own instrument_tokens, and — once a strategy is
 attached — feeds it those ticks. The strategy calls back into buy()/
@@ -38,6 +38,7 @@ class DeploymentRunner:
         dispatcher,
         strategy: Optional[StrategyBase] = None,
         on_fill: Optional[Callable[[], None]] = None,
+        event_broadcaster=None,
     ):
         self.deployment_id = deployment["id"]
         self.deployment_name = deployment["deployment_name"]
@@ -48,6 +49,12 @@ class DeploymentRunner:
         self.broadcaster = broadcaster
         self.dispatcher = dispatcher
         self.strategy = strategy
+        # Optional (app.state.event_broadcaster — see app/broadcaster.py
+        # and _record_event below). None in any context that doesn't
+        # have one (e.g. tests constructing a runner directly), same
+        # optional-hook shape as on_fill/self.cache elsewhere in this
+        # codebase — trading logic never depends on or blocks on it.
+        self.event_broadcaster = event_broadcaster
         # Optional, fire-and-forget: DeploymentManager passes a callback
         # here that schedules a background aggregate-cache refresh (see
         # app/cache.py) after every fill. The runner itself stays
@@ -113,6 +120,30 @@ class DeploymentRunner:
         rows = await queries.list_open_positions(self.pool, self.deployment_id)
         self.open_positions = {int(r["instrument_token"]): dict(r) for r in rows}
 
+    async def _record_event(
+        self, event_type: str, message: Optional[str] = None, metadata: Optional[dict] = None,
+    ) -> None:
+        """Records to deployment_events (unchanged persistence) AND, if
+        an event_broadcaster was given, fans the same event out live to
+        every connected /ws/events subscriber — the in-app real-time
+        alert feature. The two call sites below (strategy_error,
+        fill_buy/fill_sell) used to call queries.record_event directly;
+        routed through here instead so a trade a strategy makes shows up
+        as a toast in the browser the same instant it's recorded, not
+        just the next time someone opens the Activity tab."""
+        await queries.record_event(self.pool, self.deployment_id, event_type, message=message, metadata=metadata)
+        if self.event_broadcaster is None:
+            return
+        await self.event_broadcaster.broadcast({
+            "deployment_id": str(self.deployment_id),
+            "deployment_name": self.deployment_name,
+            "strategy_name": self.strategy_name,
+            "event_type": event_type,
+            "message": message,
+            "metadata": metadata or {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
     async def list_closed_positions(self) -> list[dict]:
         """
         Every CLOSED position ever recorded for this deployment, most-
@@ -149,8 +180,8 @@ class DeploymentRunner:
                             "Strategy on_tick raised for deployment %s — continuing",
                             self.deployment_name,
                         )
-                        await queries.record_event(
-                            self.pool, self.deployment_id, "strategy_error",
+                        await self._record_event(
+                            "strategy_error",
                             message="on_tick raised an exception; see server logs",
                         )
         except asyncio.CancelledError:
@@ -198,8 +229,8 @@ class DeploymentRunner:
         dep_row = await queries.get_deployment(self.pool, self.deployment_id)
         self.cash = float(dep_row["current_cash"])
 
-        await queries.record_event(
-            self.pool, self.deployment_id, f"fill_{action}",
+        await self._record_event(
+            f"fill_{action}",
             message=f"{action} {qty} {symbol} @ {price} ({reason or 'n/a'})",
             metadata={"position_id": str(result["position_id"]), **(metadata or {})},
         )

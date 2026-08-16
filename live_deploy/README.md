@@ -2810,6 +2810,81 @@ confirmed its header/shape. Re-ran the Step 38 dark-mode suite
 afterward since this added new CSS token usage to the same
 `:root`/`[data-theme="dark"]` blocks — still passes unchanged.
 
+## What's here (Step 42: in-app real-time alerts)
+
+The non-Telegram version of "push me an alert" — surfaced instead of
+Telegram alerts after discussing what Telegram would actually need
+(bot token, chat_id, still no interactive-command story worth building
+yet) and picking "the in-app version, zero external setup" as the
+thing to build first. Telegram itself stays parked.
+
+**Every deployment event — a fill, a pause/resume/stop, a strategy
+error — now reaches the browser the instant it's recorded**, as a
+toast in the top-right corner, on any view, not just a deployment's
+own Activity tab. New `/ws/events` websocket, same shape as the
+existing `/ws/ticks` (same accept/shutdown/disconnect race — see that
+handler's own docstring for why the race exists at all) but carrying
+event payloads instead of price ticks, fed by a **second, separate**
+instance of the same fan-out class ticks already used.
+
+That fan-out class used to be called `TickBroadcaster` — renamed to
+`Broadcaster` rather than writing a near-identical `EventBroadcaster`
+copy, since its subscribe/unsubscribe/backpressure mechanics never had
+anything tick-specific about them to begin with. Ticks and events still
+use **separate instances** (`app.state.broadcaster` vs
+`app.state.event_broadcaster`) deliberately — `DeploymentRunner`
+subscribes to the tick one specifically to feed its own strategy;
+merging the two streams would hand every strategy event payloads it'd
+wrongly try to process as ticks.
+
+**Where events get broadcast from:** the app already had a
+`deployment_events` table and `queries.record_event()` calls at exactly
+six call sites (`DeploymentManager.pause/resume/stop/flatten_all`,
+`DeploymentRunner`'s fill and strategy-error paths) — this is what the
+existing Activity tab already reads. Rather than bolting a broadcast
+call onto each of those six sites separately (easy to add a 7th event
+type later and forget the broadcast half), both classes got a small
+`_record_event()` helper that does the DB write AND the broadcast
+together, and all six call sites now go through it. One helper per
+class (not shared) since `DeploymentRunner` has no reference back to
+its manager — same duplication shape the codebase already uses for
+`on_fill`/cache-refresh hooks.
+
+**Toast styling is STATUS color, not the Compare view's categorical
+palette and not bare gain/loss** — a fill's own P&L direction isn't
+knowable from the event alone (a sell can be a stop-loss or a
+profit-take), so fills read as neutral/informational (`--info`) rather
+than colored by an outcome the toast can't actually verify;
+`strategy_error` is the one category that gets `--loss` (something
+actually needs attention); pause/resume/stop/flatten are administrative
+(`--brass`), not P&L-colored at all. Auto-dismisses after 8s, or close
+manually — both paths tested.
+
+**Optional browser push**, opted in via a new "Notifications" section
+in Account → Profile: fires a real `Notification` (works even with the
+tab backgrounded) but ONLY when the tab isn't currently focused —
+firing one while you're looking at the tab would just double up what
+the toast already shows. Off by default; `Notification.requestPermission()`
+is only ever called from the toggle's own click handler, never
+ambiently on page load, since browsers require that and would ignore
+(or the browser would rightly distrust) a permission prompt fired any
+other way.
+
+**Verified** against a real server + real Postgres + a real browser:
+triggered real pause/resume through the actual `POST /deployments/{id}/
+pause` and `/resume` endpoints (not direct DB/manager calls) — the full
+router → manager → `_record_event()` → broadcast → `/ws/events` →
+browser-toast path, exactly what a real user action goes through —
+and confirmed the toast appears with the correct deployment name and
+event label, gets the right category, dismisses both manually and
+automatically after ~8s, and that Account → Profile's Notifications
+section renders. Category mapping for fill/error events (identical
+`_record_event()` code path, just a different `event_type` string —
+nothing meaningfully different to re-prove end-to-end) verified via
+direct frontend injection. Screenshotted the toast stack in both light
+and dark mode and on a real mobile viewport. Re-ran the Step 38
+dark-mode suite afterward — still passes unchanged.
+
 ## Setup
 
 ```bash

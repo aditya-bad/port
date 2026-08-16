@@ -54,7 +54,7 @@ from typing import Callable, Optional
 
 from kiteconnect import KiteTicker
 
-from .broadcaster import TickBroadcaster
+from .broadcaster import Broadcaster
 
 logger = logging.getLogger("live_deploy.dispatcher")
 
@@ -84,7 +84,7 @@ class LiveDataDispatcher:
         api_key: str,
         tokens: list[dict],
         tick_mode: str,
-        broadcaster: TickBroadcaster,
+        broadcaster: Broadcaster,
         initial_access_token: Optional[str] = None,
         kite_ticker_cls=KiteTicker,   # injectable for testing without real Kite
         schedule_on_ticker_thread: Optional[Callable] = None,   # injectable for tests
