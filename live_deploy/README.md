@@ -2466,6 +2466,40 @@ and reopening the modal (proving it's real server-side storage, not
 just in-memory for one modal session), and deleting removes it from
 the dropdown.
 
+## What's here (Step 37: export a deployment's trades as CSV)
+
+Third of the in-app feature batch. Purely client-side, deliberately —
+this is a records/backup convenience, not a data interchange format
+anything else in this app reads back, so it doesn't need a backend
+endpoint at all: `toCsv()`/`downloadCsv()` (new, in `api.js` alongside
+the other shared formatting helpers) build the file from the exact
+same JSON the Trades tab already fetches to render its table, then
+trigger a real browser download via a `Blob` + a programmatic
+`<a download>` click.
+
+One thing worth being deliberate about: it exports the FULL trade
+history (`Api.getTrades(id, 100000)`), not just the up-to-200 rows the
+on-screen table caps itself at — a "back up my records" button that
+silently drops older fills because the table view happens to paginate
+would be a real, easy-to-miss bug. CSV cells are escaped per RFC 4180
+(quoted whenever a field contains a comma, quote, or newline — nested
+trigger metadata gets JSON-stringified into its own column, quotes
+doubled correctly), rows joined with `\r\n`, and the file is written
+with a UTF-8 BOM so Excel — still the most likely thing to open a
+"export my trades" button's output — reliably detects UTF-8 instead of
+guessing a legacy codepage and mangling anything non-ASCII, rather than
+assuming that risk was already covered.
+
+**Verified** against a real server + real Postgres + an actual
+triggered browser download (not a mocked assumption that a click
+"would" download something): seeded a genuine closed round-trip (a buy
+then a matching sell, both with real trigger reasons), clicked Export
+CSV in the Trades tab, captured Playwright's own `expect_download()`,
+and confirmed the downloaded file's exact suggested filename (derived
+from and sanitized from the deployment's own name), the exact header
+row, exactly 2 data rows, and that both fills' action/price/reason
+values round-tripped correctly into the file.
+
 ## Setup
 
 ```bash

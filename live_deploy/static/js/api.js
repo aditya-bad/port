@@ -251,6 +251,52 @@ function spinnerHtml(label = 'Loading…') {
   return `<div class="empty"><span class="spinner"></span> ${label}</div>`;
 }
 
+// ── CSV export — records-for-your-own-records, not a data interchange
+// format anything else in this app reads back, so this stays a plain
+// client-side formatter: no backend endpoint, no server round trip
+// beyond the JSON fetch the page already made to render the table in
+// the first place. ───────────────────────────────────────────────────
+function csvCell(value) {
+  if (value === null || value === undefined) return '';
+  const s = typeof value === 'object' ? JSON.stringify(value) : String(value);
+  // Quote whenever the field could otherwise be misread: contains the
+  // delimiter, a quote (doubled per RFC 4180), or a newline that would
+  // otherwise look like a new row.
+  if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+  return s;
+}
+
+function toCsv(rows, columns) {
+  // columns: [{ key, label }] — label becomes the header, key indexes
+  // into each row (or a function(row) for a computed/derived column).
+  const header = columns.map(c => csvCell(c.label)).join(',');
+  const lines = rows.map(row => columns.map(c => {
+    const value = typeof c.key === 'function' ? c.key(row) : row[c.key];
+    return csvCell(value);
+  }).join(','));
+  // \r\n per RFC 4180 -- Excel (still the most likely consumer of a
+  // "download my trades" button) is more consistent about column
+  // splitting with CRLF than a bare \n.
+  return [header, ...lines].join('\r\n');
+}
+
+function downloadCsv(filename, csvContent) {
+  // A leading UTF-8 BOM is what makes Excel correctly detect UTF-8
+  // rather than guessing a legacy codepage and mangling anything
+  // non-ASCII (e.g. the ₹ symbol, if it ever ends up in a cell) --
+  // invisible in every other CSV consumer, so there's no downside to
+  // always including it.
+  const blob = new Blob(['﻿' + csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // ── "Updated Xs ago" freshness labels ──────────────────────────────
 // Dashboard/Catalog/Deployments now read from a server-side cache (see
 // app/cache.py) instead of paying a fresh multi-second Neon round trip

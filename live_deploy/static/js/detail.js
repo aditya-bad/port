@@ -140,12 +140,38 @@ const Detail = {
       return;
     }
     body.innerHTML = `
+      <div class="table-note" style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+        <button class="btn btn-secondary btn-sm" onclick="Detail.exportTradesCsv()">⭳ Export CSV</button>
+      </div>
       <div class="table-wrap">
       <table><thead><tr><th>Time</th><th>Action</th><th>Symbol</th><th>Price</th><th>Reason</th></tr></thead>
       <tbody>${this._trades.map((l, i) => this._tradeRowHtml(l, i)).join('')}</tbody></table>
       </div>
       <div class="table-note">${data.total} total${data.total > this._trades.length ? ` (showing latest ${this._trades.length})` : ''} — click a row for the full trigger metadata</div>
     `;
+  },
+
+  // Exports the FULL trade history, not just the (possibly truncated
+  // to 200) rows currently rendered on screen — a records/backup export
+  // should never silently leave out older fills just because the table
+  // view caps what it displays. Purely client-side: no backend endpoint,
+  // this is a records convenience, not a data interchange format
+  // anything else in this app reads back (see toCsv/downloadCsv in
+  // api.js).
+  async exportTradesCsv() {
+    const data = await Api.getTrades(this._id, 100000);
+    if (!data.lots.length) { alert('No trades to export yet.'); return; }
+    const csv = toCsv(data.lots, [
+      { label: 'Time', key: r => fmtDateTime(r.executed_at) },
+      { label: 'Action', key: 'action' },
+      { label: 'Symbol', key: 'symbol' },
+      { label: 'Quantity', key: 'qty' },
+      { label: 'Price', key: 'price' },
+      { label: 'Reason', key: r => r.reason || '' },
+      { label: 'Metadata', key: r => (r.metadata && Object.keys(r.metadata).length) ? r.metadata : '' },
+    ]);
+    const safeName = (this._dep.deployment_name || this._id).replace(/[^a-z0-9_-]+/gi, '_');
+    downloadCsv(`${safeName}_trades.csv`, csv);
   },
 
   _tradeRowHtml(lot, i) {
