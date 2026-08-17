@@ -398,6 +398,32 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         self.breakeven_lower: Optional[float] = None
         self.breakeven_upper: Optional[float] = None
 
+        # Restore today/entered_today from a previous graceful stop, if
+        # any — covers the FLAT case specifically (no open legs), which
+        # _resume_from_db below deliberately leaves untouched (its own
+        # "nothing open -- see the docstring's known limitation note"
+        # early return). Without this, every restart makes the next
+        # tick look like this deployment's very first-ever observation,
+        # so a tick landing after entry_time gets wrongly treated as a
+        # fresh "late start" even for a deployment that's been running
+        # for weeks. _resume_from_db (next) still takes full precedence
+        # whenever legs ARE open — it unconditionally sets both fields
+        # itself from the DB in that case, more accurately than this
+        # ever could.
+        persisted = await runner.load_state()
+        if persisted and persisted.get("version") == 1:
+            try:
+                today_str = persisted.get("today")
+                self.today = date.fromisoformat(today_str) if today_str else None
+                self.entered_today = bool(persisted.get("entered_today", False))
+            except (KeyError, TypeError, ValueError):
+                logger.exception(
+                    "%s: persisted today/entered_today state was malformed — "
+                    "ignoring it", runner.deployment_name,
+                )
+                self.today = None
+                self.entered_today = False
+
         await self._resume_from_db(runner)
 
     async def _resume_from_db(self, runner) -> None:
@@ -952,3 +978,15 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             runner.deployment_name, len(self.legs["CE"]), len(self.legs["PE"]),
             self.adjustments_used, self.realized_pnl_today,
         )
+
+    def get_persistable_state(self) -> Optional[dict]:
+        """today/entered_today only — see on_start's restore block for
+        why this matters (the FLAT case specifically, which
+        _resume_from_db can't reconstruct from the DB since there's no
+        open/closed-today leg to reconstruct it from). Everything else
+        is already resume-safe via runner.open_positions/
+        list_closed_positions whenever a leg genuinely exists. None
+        once self.today is None -- nothing meaningful yet."""
+        if self.today is None:
+            return None
+        return {"version": 1, "today": self.today.isoformat(), "entered_today": self.entered_today}

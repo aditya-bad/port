@@ -3766,6 +3766,65 @@ entries (>= 09:15) still fire completely normally for all three
 strategies — this only narrows the window, nothing else about the
 signal logic changed.
 
+## What's here (Step 57: a restart shouldn't be able to look like a fresh "late start")
+
+Reported live, from an actual production symptom: 4 straddle
+deployments, all sharing `catch_up_late_entry: false`, all sitting flat
+well after their 10:00 `entry_time` with zero entries and no errors.
+The question that found the real bug: *"if a tick comes at 10:00:01,
+how is that not taking the trade? catch_up_late_entry is for deploying
+late the FIRST time — from day two onward it shouldn't need that logic
+at all."* Exactly right, and it's the same class of gap as Step 53,
+just for `today`/`entered_today` instead of SuperTrend/pivots.
+
+**The mechanism**: `self.today`/`entered_today` only ever lived in that
+Python process's memory. Every restart — redeploy, pause/resume,
+anything — starts a fresh instance with `self.today = None`. The FIRST
+tick that instance ever sees decides "late start or not" purely by
+checking `tick_time >= entry_time`, with no way to tell "this is
+genuinely my first tick ever" apart from "I've run fine for weeks and
+just happened to restart a second after entry_time." Both look
+identical from a fresh instance's point of view. With
+`catch_up_late_entry=false`, that misdiagnosis means silently skipping
+the entire day, every time a restart lands anywhere at/after
+entry_time — exactly what happened today, most likely from one of this
+session's own redeploys landing after 10:00.
+
+**Scope, confirmed precisely rather than assumed**: this pattern exists
+in `intraday_dtt_simple`, `intraday_dtt_adjusted` (inherited
+automatically by `intraday_dtt_advanced`, no separate change needed),
+and `calendar_btst` — all three. `strangle_monthly_v2` was checked and
+does NOT have this pattern at all (a plain `entry_time` gate, no
+`catch_up_late_entry` concept) — already correct, nothing to fix there.
+`pivot_supertrend`'s family has no daily-entry-limit concept either
+(can re-enter any number of times a day) — already covered by Step 53's
+persistence for the pieces that DO need to survive a restart
+(pivots/SuperTrend), so nothing more needed there.
+
+**The fix**: same `get_persistable_state()`/`load_state()` hooks from
+Step 53, now also persisting `today`+`entered_today` in these three
+strategies. Restored BEFORE each strategy's own existing DB-based
+resume-safety reattachment (which already correctly sets
+`entered_today=True` when a position is genuinely still open) — so the
+persisted values only ever matter for the FLAT case, which the existing
+reattachment logic has no way to reconstruct on its own (nothing in the
+DB says "I decided to skip today" the way an open position says "I
+already entered"). Once restored, a same-day restart takes neither of
+`on_tick`'s two day-tracking branches (`self.today is None` / `day !=
+self.today`) — meaning the late-start question is never even asked, and
+a 10:00:01 tick just enters normally, exactly as if the restart had
+never happened.
+
+**Verified live**: reproduced the exact bug first — `catch_up_late_entry
+=false`, established today (a tick before entry_time, then a graceful
+stop), simulated restart (fresh `app.main` import, same Postgres),
+first tick of the new instance landing at 10:30 — confirmed this
+produced ZERO entries pre-fix (the bug, reproduced faithfully) and a
+normal 2-leg (`intraday_dtt_adjusted`) / 4-leg (`calendar_btst`) entry
+post-fix. Re-ran the Step 24/46/52 switch-to-next-week suites (dynamic
+dates, unaffected by the unrelated stale-hardcoded-test-date issue from
+Step 54/55) afterward — still pass.
+
 ## Setup
 
 ```bash

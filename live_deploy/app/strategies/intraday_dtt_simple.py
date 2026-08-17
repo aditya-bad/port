@@ -265,6 +265,34 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         self.entered_today = False
         self._late_start_today = False
 
+        # Restore today/entered_today from a previous graceful stop, if
+        # any — see get_persistable_state below for why this matters:
+        # without it, EVERY restart (redeploy, pause/resume) makes the
+        # next tick look like this deployment's very first-ever
+        # observation, so if that tick happens to land after entry_time,
+        # it gets wrongly treated as a "late start" (catch_up_late_entry
+        # question) even for a deployment that's been running fine for
+        # weeks and simply had an operational restart. Restoring these
+        # two fields means a same-day restart just resumes exactly where
+        # it would have been — the late-start question only genuinely
+        # applies on this deployment's real first day. Only ever
+        # matters for the FLAT case; if a position is already open (the
+        # block below), entered_today=True is established from the DB
+        # regardless, unaffected by any of this.
+        persisted = await runner.load_state()
+        if persisted and persisted.get("version") == 1:
+            try:
+                today_str = persisted.get("today")
+                self.today = date.fromisoformat(today_str) if today_str else None
+                self.entered_today = bool(persisted.get("entered_today", False))
+            except (KeyError, TypeError, ValueError):
+                logger.exception(
+                    "%s: persisted today/entered_today state was malformed — "
+                    "ignoring it", runner.deployment_name,
+                )
+                self.today = None
+                self.entered_today = False
+
         # Leg state — two independent legs, unlike pivot_supertrend_options'
         # single active_leg_*.
         self.ce_token: Optional[int] = None
@@ -537,3 +565,14 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             "%s: strategy stopped (ce=%s, pe=%s)",
             runner.deployment_name, self.ce_symbol, self.pe_symbol,
         )
+
+    def get_persistable_state(self) -> Optional[dict]:
+        """today/entered_today only — see on_start's restore block for
+        why this matters (a restart shouldn't be able to look like a
+        fresh "late start" for a deployment that's been running for
+        days). Everything else (open legs, entry prices) is already
+        resume-safe via runner.open_positions, no need to duplicate it
+        here. None once self.today is None -- nothing meaningful yet."""
+        if self.today is None:
+            return None
+        return {"version": 1, "today": self.today.isoformat(), "entered_today": self.entered_today}
