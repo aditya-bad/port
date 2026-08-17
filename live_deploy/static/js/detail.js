@@ -13,6 +13,7 @@ const Detail = {
   _openTradeRows: new Set(),
 
   async load(id) {
+    this._stopLivePositionUpdates();   // leaving whatever deployment/tab was showing before
     this._id = id;
     this._trades = [];
     this._openTradeRows = new Set();
@@ -71,6 +72,7 @@ const Detail = {
   },
 
   async switchTab(tab) {
+    if (tab !== 'positions') this._stopLivePositionUpdates();   // leaving the positions tab
     this._tab = tab;
     this.renderTabs();
     document.getElementById('detailBody').innerHTML = spinnerHtml();
@@ -126,23 +128,71 @@ const Detail = {
   },
 
   // ── Positions ───────────────────────────────────────────────────
+  // Price/P&L cells update LIVE off the same /ws/ticks stream the
+  // ticker bar uses (see window.LiveTicks in index.html) — previously
+  // this table was a one-time snapshot from page load with no live
+  // update at all (no polling, no WS), so it went stale the instant
+  // you stopped reloading the whole page. Only the two numeric cells
+  // are touched per tick, by instrument_token — everything else about
+  // the table (rows, sort order, other tabs) is untouched, so this
+  // can't disrupt anything the way a full re-render would.
+  _liveTickHandler: null,
+
+  _stopLivePositionUpdates() {
+    if (this._liveTickHandler) {
+      window.LiveTicks.off(this._liveTickHandler);
+      this._liveTickHandler = null;
+    }
+  },
+
   async renderPositions() {
+    this._stopLivePositionUpdates();   // never stack listeners across re-renders/tab switches
     const rows = await Api.getPositions(this._id, 'open');
     const body = document.getElementById('detailBody');
     if (!rows.length) {
       body.innerHTML = emptyHtml('No open positions');
       return;
     }
+    // side/qty/avg_entry_price never change tick-to-tick, so keeping
+    // them here (rather than re-reading the DOM) is exactly the data a
+    // live tick needs to recompute price + unrealized P&L on its own.
+    const byToken = new Map(rows.map(p => [p.instrument_token, {
+      side: p.side, qty: p.qty, avg: p.avg_entry_price,
+    }]));
     body.innerHTML = `
       <div class="table-wrap">
       <table><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Avg</th><th>Price</th><th>Unrealized</th></tr></thead>
-      <tbody>${rows.map(p => `<tr>
+      <tbody>${rows.map(p => `<tr data-token="${p.instrument_token}">
         <td>${escapeHtml(p.symbol)}</td><td>${p.side}</td><td>${fmtNum(p.qty)}</td>
-        <td>${fmtNum(p.avg_entry_price)}</td><td>${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
-        <td class="${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
+        <td>${fmtNum(p.avg_entry_price)}</td>
+        <td class="live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
+        <td class="live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
       </tr>`).join('')}</tbody></table>
       </div>
     `;
+
+    this._liveTickHandler = (ticks) => {
+      // Cheap guard against a stale listener outliving its tab/page —
+      // switchTab()/load() both call _stopLivePositionUpdates(), but a
+      // tick that was already in flight when that happened could still
+      // land here microseconds later.
+      if (this._tab !== 'positions') return;
+      for (const t of ticks) {
+        const info = byToken.get(t.instrument_token);
+        if (!info || t.last_price == null) continue;
+        const row = body.querySelector(`tr[data-token="${t.instrument_token}"]`);
+        if (!row) continue;
+        const price = t.last_price;
+        const pnl = info.side === 'long'
+          ? (price - info.avg) * info.qty
+          : (info.avg - price) * info.qty;
+        row.querySelector('.live-price').textContent = fmtNum(price);
+        const pnlCell = row.querySelector('.live-pnl');
+        pnlCell.textContent = fmtSignedMoney(pnl);
+        pnlCell.className = `live-pnl ${pnlClass(pnl)}`;
+      }
+    };
+    window.LiveTicks.on(this._liveTickHandler);
   },
 
   // ── Trades — expandable rows + trigger badges ──────────────────

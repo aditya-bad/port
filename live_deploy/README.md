@@ -4031,6 +4031,50 @@ ordinary re-entry waiting for its gate. Pre-fix (confirmed via
 `git stash`): entered immediately at 09:10, still before `entry_time`,
 because the restart made it look like a second "very first entry".
 
+## What's here (Step 61: the Detail page's own position prices never updated after page load — no polling, no live wiring at all)
+
+Reported live, re-asked directly this time: "I remember I refresh but
+still the live prices are not updated." Traced it properly instead of
+assuming an earlier fix already covered it (it didn't — those were about
+trades not firing, a different code path entirely).
+
+The Detail page's Positions tab fetches `GET /deployments/{id}/positions`
+exactly once, when the tab renders. There was no polling (`setInterval`)
+anywhere in that path, and no WebSocket wiring either — even though the
+app already runs a live tick stream (`/ws/ticks`) that the small ticker
+bar at the top of every page (NIFTY/SENSEX/BANKNIFTY) already uses
+successfully. The ticker bar's own listener only reacts to those 3
+hardcoded tokens, though, so it never touched a strategy's own positions
+table. Net effect: the ticker bar up top looked alive; the actual trade
+prices and P&L below it were a frozen snapshot from whenever the page
+happened to load, with nothing short of a full manual reload to refresh
+them — exactly what was reported.
+
+**Fixed** by extending the existing architecture rather than building a
+parallel one: `/ws/ticks` already broadcasts every tick (static AND
+dynamically-registered instruments alike), so `window.LiveTicks`
+(index.html) re-broadcasts that same stream to any other listener on the
+page. Detail's Positions tab now registers one, keyed by
+`instrument_token`, that updates just the Price and Unrealized cells in
+place — no full re-render, so it can't disrupt anything else on the tab.
+Listener lifecycle matters here (an unremoved listener would silently
+pile up across tab switches/deployments, writing to rows that no longer
+exist): it's torn down and re-registered on every `renderPositions()`
+call, and explicitly stopped when switching to a different tab or
+loading a different deployment.
+
+**Verified in a real browser**, not just the API: ran the actual FastAPI
+app as a real HTTP server with a fake Kite backend, drove real Chromium
+via Playwright through login → Detail → Positions, confirmed the initial
+load shows a real price, then injected one more tick for that exact
+option leg with **no page reload** — the price and P&L cells updated in
+place within under a second, screenshotted as proof. Also churned
+through several tab-switches with ticks fed in between to confirm the
+listener teardown actually works (no leaked/stacked listeners, no stray
+console errors from the new code).
+
+## Setup
+
 ```bash
 cd live_deploy
 pip install -r requirements.txt

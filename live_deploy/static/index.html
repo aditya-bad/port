@@ -1751,6 +1751,7 @@ function connectTickerSocket() {
       clearTimeout(tickerFallbackTimer);   // a real tick arrived — no fallback needed
     }
     if (changed) renderTickerPrices();
+    window.LiveTicks._dispatch(ticks);
   };
   // The session cookie rides along automatically on a same-origin
   // WebSocket handshake (no query-param api_key needed here — that
@@ -1760,6 +1761,28 @@ function connectTickerSocket() {
   tickerSocket.onclose = () => { setTimeout(connectTickerSocket, 3000); };
   tickerSocket.onerror = () => { tickerSocket.close(); };
 }
+
+// ── Live ticks, for anything beyond the ticker bar ──────────────────
+// The ticker bar above only reacts to its own 3 hardcoded tokens, but
+// /ws/ticks carries EVERY tick flowing through the app (static AND
+// dynamically-registered instruments alike — see LiveDataDispatcher's
+// own docstring). window.LiveTicks re-broadcasts that same stream to
+// any other part of the page that wants it (currently: Detail's
+// Positions tab, updating price/P&L cells surgically as ticks arrive
+// instead of the page needing a full manual reload — see detail.js).
+// One shared WebSocket connection either way; this adds no new
+// upstream load, just a second set of listeners on data already
+// flowing.
+window.LiveTicks = {
+  _listeners: new Set(),
+  on(fn) { this._listeners.add(fn); },
+  off(fn) { this._listeners.delete(fn); },
+  _dispatch(ticks) {
+    for (const fn of this._listeners) {
+      try { fn(ticks); } catch (e) { console.error('LiveTicks listener threw:', e); }
+    }
+  },
+};
 
 // ── Real-time alerts ────────────────────────────────────────────────
 // A second, separate websocket (/ws/events, NOT /ws/ticks) — every
