@@ -259,6 +259,21 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                 return False
             self.st = SuperTrendState.from_snapshot(state["supertrend"])
             self.prev_trend = state.get("prev_trend")
+            # pending_entry here is a FLIP trigger, a one-time event —
+            # unlike plain pivot_supertrend's pending_entry (a pivot
+            # break, re-evaluated fresh every candle from current price,
+            # so harmlessly self-heals if lost), self.prev_trend already
+            # advances to the post-flip value the moment this gets
+            # queued, so the SAME flip would never be re-detected if a
+            # restart drops it — same severity class as pending_exit in
+            # the other two pivot_supertrend variants. pending_exit here
+            # (hold-candles expiry) is comparatively low-risk — step 0's
+            # reconciliation above already re-derives candles_held from
+            # the position's own DB-stored entry_candle_date and
+            # re-queues it fresh if already overdue — but restoring it
+            # too is cheap and adds a second line of defense.
+            self.pending_exit = state.get("pending_exit")
+            self.pending_entry = state.get("pending_entry")
         except (KeyError, TypeError, ValueError):
             logger.exception(
                 "%s: persisted state was malformed — ignoring it and "
@@ -279,7 +294,10 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         safety" reattach block above)."""
         if self.st.trend is None:
             return None
-        return {"version": 1, "supertrend": self.st.snapshot(), "prev_trend": self.prev_trend}
+        return {
+            "version": 1, "supertrend": self.st.snapshot(), "prev_trend": self.prev_trend,
+            "pending_exit": self.pending_exit, "pending_entry": self.pending_entry,
+        }
 
     # ── Tick consumption — no day-rollover needed: no pivots, and
     # SuperTrend itself runs continuously across day boundaries (never

@@ -3894,7 +3894,78 @@ already documented for the original Dockerfile) — applied as the
 standard, well-established Debian pattern, but flagged here honestly
 rather than claimed as click-tested.
 
-## Setup
+## What's here (Step 59: a SuperTrend flip DETECTED but not yet EXECUTED could get dropped by a restart, leaving a position open forever)
+
+Proactive audit (not user-reported this time — asked to scan the whole
+`live_deploy` app for the same *class* of bug Step 53 already fixed
+once): `pivot_supertrend` and its two options siblings all decide an
+entry/exit on one candle's CLOSE, then only ever EXECUTE it on the
+NEXT candle's close (can't trade on a price that hasn't printed yet —
+see each file's own docstring). That queued action
+(`self.pending_entry` / `self.pending_exit`) lives in memory only
+between those two candles. Step 53 built a general
+`get_persistable_state()` / `_restore_from_state()` hook for exactly
+this kind of in-memory gap, and Step 54 wired the pivot/SuperTrend
+family into it — but neither of those actually included
+`pending_entry`/`pending_exit` in the saved/restored dict. A graceful
+restart landing in that one-candle window silently dropped the queued
+action.
+
+**Why this one is worse than it sounds for `pending_exit`
+specifically**: it's not self-healing. The moment a flip is detected,
+`self.prev_trend` is already advanced to the post-flip value in that
+same step — so if the queued exit is lost, the identical flip
+condition (`new_trend != prev_trend_before_update`) can never fire
+again for that flip. The position would then sit open past the point
+the strategy's own signal said to close it, for as long as the trend
+doesn't flip a *second* time. `pending_entry` (a pivot-level break) is
+lower-risk by comparison — it's re-evaluated fresh every candle
+against a static level, so a dropped one just re-fires next candle if
+the level's still broken. In `pivot_supertrend_options_inverse`
+specifically the severity is reversed: its `pending_entry` is the
+flip-triggered one (same non-self-healing risk as the other two
+files' `pending_exit`), while its `pending_exit` (hold-candles
+expiry) is comparatively safe — the existing step-0 reconciliation
+already re-derives `candles_held` from the position's DB-stored
+`entry_candle_date` and re-queues a fresh pending_exit on restart if
+one's overdue.
+
+**Fixed** in all three files: `get_persistable_state()` now includes
+`pending_entry`/`pending_exit` (with their captured `trigger_values`),
+and `_restore_from_state()` restores them — same precedence pattern as
+every other field in this hook, DB-derived reconstruction (where one
+applies) takes priority, persisted state fills the rest.
+
+Audited the other five strategies against this same class of bug:
+`intraday_dtt_simple`/`intraday_dtt_adjusted`/`intraday_dtt_advanced`/
+`calendar_btst` all act immediately per-tick with no queued/deferred
+execution step (confirmed by reading `_maybe_exit`/entry logic
+directly) — nothing to lose here. `strangle_monthly_v2.py` not yet
+audited past a surface check; still open, see below.
+
+**Verified**: reproduced live — opened a short position, fed a hard
+upward price push across two candle closes (first queues
+`pending_exit` via a trend flip, does NOT execute it), paused
+immediately in that exact gap, confirmed via a direct query that
+`pending_exit` was persisted with its `trigger_values`, restarted the
+process cold (fresh module import, same Postgres), resumed, fed one
+more candle close — position correctly closed at that candle's open,
+exactly as if no restart had happened. Confirmed this reproduces the
+bug pre-fix too (`git stash` the three files, same scenario: restart
+completes, one more candle closes, position stays open forever).
+
+**Flagged, not fixed — genuinely uncertain, wanted eyes on this
+before touching it**: `strangle_monthly_v2.py` (1476 lines, by far the
+largest strategy file, handling multi-leg strangles with rolling/
+adjustment logic) has not been given the same close read the other
+five got this session. It may have its own version of this bug, or
+something else entirely — flagging rather than guessing. Also
+flagged: force-closing a position via the dashboard's "Close" action
+bypasses each strategy's own `dispatcher.release_instruments()` call
+for dynamically-registered instruments (mentioned earlier this
+session when you asked about clicking Delete on a dynamic
+registration) — confirmed real, not yet built, since it wasn't
+explicitly requested as a fix.
 
 ```bash
 cd live_deploy

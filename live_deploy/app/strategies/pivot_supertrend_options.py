@@ -258,6 +258,16 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             self.today_high = state.get("today_high")
             self.today_low = state.get("today_low")
             self.today_last_close = state.get("today_last_close")
+            # See pivot_supertrend.py's identical restore block for the
+            # full rationale — without this, a restart landing between a
+            # flip/break's DETECTION and its EXECUTION silently dropped
+            # it; for pending_exit specifically that can leave a
+            # position open indefinitely (self.prev_trend already
+            # reflects the post-flip trend, so the same flip never gets
+            # re-detected either), not just delayed the way a lost
+            # pending_entry harmlessly would be.
+            self.pending_exit = state.get("pending_exit")
+            self.pending_entry = state.get("pending_entry")
         except (KeyError, TypeError, ValueError):
             logger.exception(
                 "%s: persisted state was malformed — ignoring it and "
@@ -290,6 +300,8 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             "today_high": self.today_high,
             "today_low": self.today_low,
             "today_last_close": self.today_last_close,
+            "pending_exit": self.pending_exit,
+            "pending_entry": self.pending_entry,
         }
 
     # ── Tick consumption — identical control flow to pivot_supertrend ──

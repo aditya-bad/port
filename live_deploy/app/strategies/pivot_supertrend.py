@@ -607,6 +607,24 @@ class PivotSupertrendStrategy(StrategyBase):
             self.today_high = state.get("today_high")
             self.today_low = state.get("today_low")
             self.today_last_close = state.get("today_last_close")
+            # A flip/break DETECTED on the last candle before a graceful
+            # stop, not yet EXECUTED (the "decide on close, act on next
+            # open" timing means there's always up to one candle-width
+            # of a gap between the two) — restoring these lets the very
+            # next candle that closes post-restart execute it normally,
+            # using THAT candle's own (current, not stale) open price.
+            # Without this, a restart landing in that gap silently
+            # dropped it — for pending_exit specifically, self.prev_trend
+            # already reflects the post-flip trend by the time it's
+            # queued (see step 4's on_tick), so the SAME flip would never
+            # be re-detected either: a lost pending_exit could leave a
+            # position open indefinitely past when SuperTrend said to
+            # close it, not just delayed by one candle the way a lost
+            # pending_entry harmlessly would be (re-evaluated fresh
+            # every candle from current price, so re-fires next candle
+            # on its own if the condition still holds).
+            self.pending_exit = state.get("pending_exit")
+            self.pending_entry = state.get("pending_entry")
         except (KeyError, TypeError, ValueError):
             logger.exception(
                 "%s: persisted state was malformed — ignoring it and "
@@ -638,6 +656,8 @@ class PivotSupertrendStrategy(StrategyBase):
             "today_high": self.today_high,
             "today_low": self.today_low,
             "today_last_close": self.today_last_close,
+            "pending_exit": self.pending_exit,
+            "pending_entry": self.pending_entry,
         }
 
     def _apply_seed(self, runner, cfg: dict) -> None:
