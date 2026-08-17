@@ -57,6 +57,7 @@ const Detail = {
           ${dep.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="Detail.pause()">Pause</button>` : ''}
           ${dep.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="Detail.resume()">Resume</button>` : ''}
           ${dep.status !== 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Detail.stop()">Stop</button>` : ''}
+          ${dep.status === 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Detail.deleteDeployment()">Delete</button>` : ''}
         </div>
       </div>
     `;
@@ -547,6 +548,26 @@ const Detail = {
       alert(data.detail || 'Could not stop — it may have open positions. Try again and confirm force-close.');
     }
     this.load(this._id);
+  },
+  async deleteDeployment() {
+    // Only ever offered while stopped (see the header's own status
+    // check) — the backend enforces the same restriction independently
+    // either way. Permanent: every position/trade/event/snapshot under
+    // this deployment goes with it, via ON DELETE CASCADE.
+    const name = this._dep ? this._dep.deployment_name : 'this deployment';
+    const ok = confirm(
+      `Permanently delete "${name}"?\n\nThis removes ALL of its positions, trades, and history — ` +
+      `not just the deployment itself. This cannot be undone.`
+    );
+    if (!ok) return;
+    const r = await Api.deleteDeployment(this._id);
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert(data.detail || 'Could not delete this deployment.');
+      return;
+    }
+    // Nothing left here to show -- back to the list.
+    location.hash = '#/deployments';
   },
 };
 

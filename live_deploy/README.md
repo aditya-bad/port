@@ -3591,6 +3591,84 @@ now-changed `on_start()` path) plus the real-process restart-survival
 check (kill the actual server, restart it, confirm the deployment and
 its open position survive) — all still pass.
 
+## What's here (Step 54: a real bug — deploying after hours could place a trade off a stale tick — plus per-deployment Delete)
+
+**The bug**, reported directly ("if catch up late entry is true and the
+strategy is created after market hours... trades are placed for some
+reason," especially noticed on `intraday_dtt_adjusted`/`_advanced`).
+Chased it with a live reproduction test rather than guessing: fed a
+tick timestamped BEFORE the deployment's own creation, mimicking Kite's
+own well-known behavior of delivering an immediate snapshot the moment
+you subscribe to an instrument — carrying the LAST TRADE's own time,
+not "now." Confirmed the pre-fix code really did place a trade off it.
+The mechanism: every strategy here trusts `exchange_timestamp` as "now"
+for entry/exit/day-boundary decisions, with nothing checking whether
+that's actually current. A snapshot near a prior close (say 15:25) can
+easily land inside `entry_time..force_exit_time`, and with
+`catch_up_late_entry=True` (the default), that's enough to fire a real
+entry using an hours-old price the instant you deploy —
+`intraday_dtt_adjusted`/`_advanced` noticed it because their
+`force_exit_time` is naturally close to the real close, so a stale
+near-close snapshot often still sails under that bar.
+`calendar_btst` has it worse: no `force_exit_time`-style upper bound at
+all, so ANY stale tick past `entry_time` enters, no matter how late —
+confirmed live too.
+
+**The fix** deliberately avoids comparing against real wall-clock "now"
+— this codebase has never needed a timezone conversion anywhere
+(`exchange_timestamp` is naive IST throughout, matched directly against
+naive `entry_time`/`force_exit_time` config values), and bolting one on
+just for this would be one more place to get subtly wrong. It only
+needs one fact, and it's airtight: a tick genuinely reflecting live
+trading can never claim to be from before the deployment existed. So
+`DeploymentRunner` now rejects any tick whose `exchange_timestamp` is
+earlier than the deployment's own `created_at` — once, at the runner
+level, before it ever reaches any strategy's `on_tick`. This protects
+every strategy uniformly (not just the ones with `catch_up_late_entry`)
+with one change in one place, and it's structurally incapable of a
+false positive: `created_at` never changes after a deployment's
+original creation, so a deployment that's been running for weeks is
+completely unaffected — this only ever matters for the first few ticks
+after a brand-new deployment.
+
+**Verified** live: the exact reproduction (stale tick dated before
+creation, inside `entry_time..force_exit_time`) placed a real trade
+pre-fix, confirmed blocked post-fix, for both `intraday_dtt_adjusted`
+and `calendar_btst`. A genuinely fresh, properly-dated tick after
+creation still catches up normally — the legitimate "deployed mid-day,
+missed entry_time, catch up now" case this flag exists for is
+untouched. Also independently confirmed against the Step 46/52/53 tests
+using dynamically-computed dates (immune to this guard by construction)
+and against a deliberately-backdated `created_at` (forcing a fresh
+runner via pause/resume) — all pass, and pivots/day-rollover compute
+correctly once tick ordering is legitimate. A batch of older scratchpad
+tests with dates hardcoded at authoring time now correctly get flagged
+as "stale" by this same guard, since real time has since passed them —
+expected, not a regression (confirmed by backdating one and re-running
+it clean).
+
+**Delete deployment**, requested directly ("I also need the delete
+strategy option as well along with pause and stop"). Reuses
+`queries.delete_deployment` — previously only called internally to roll
+back a deployment whose runner failed to start right after creation,
+now also a genuine `POST /deployments/{id}/delete` endpoint. Restricted
+to `stopped` deployments only: `stop()` already tears its runner down
+and either closes its open position (`force_close=true`) or refuses to
+run with one still open, so a stopped deployment never has a runner to
+tear down or a position this endpoint would otherwise have to silently
+decide what to do with. Deletes the deployment and everything recorded
+under it — positions, lots, events, snapshots — via the same
+`ON DELETE CASCADE` `clear_all_deployments` already relies on in bulk,
+just for one row. Surfaced as a "Delete" button next to Pause/Stop on
+both Detail and the Deployments list, appearing only once stopped, with
+a `confirm()` naming the deployment and spelling out that its entire
+history goes with it. **Verified** against the real API (blocked while
+active, blocked while paused, succeeds once stopped, the row and its
+GET both genuinely 404 afterward, a repeat delete cleanly 404s rather
+than 500ing) and through the real browser UI (button visibility, the
+confirm dialog's exact wording, navigating back to the list, the
+deployment gone from both Detail and the table).
+
 ## Setup
 
 ```bash

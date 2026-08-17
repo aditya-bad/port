@@ -71,6 +71,7 @@ const Deployments = {
             ${d.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.pause('${d.id}')">Pause</button>` : ''}
             ${d.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.resume('${d.id}')">Resume</button>` : ''}
             ${d.status !== 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Deployments.stop('${d.id}')">Stop</button>` : ''}
+            ${d.status === 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Deployments.deleteDeployment('${d.id}')">Delete</button>` : ''}
           </td>
         </tr>
       `).join('')}</tbody></table>
@@ -102,6 +103,28 @@ const Deployments = {
     if (!r.ok) {
       const data = await r.json();
       alert(data.detail || 'Could not stop — it may have open positions. Try again and confirm force-close.');
+    }
+    this.load();
+  },
+  async deleteDeployment(id) {
+    // Only ever offered while stopped (see the row's own status check)
+    // -- the backend enforces the same restriction independently
+    // either way. Permanent: every position/trade/event/snapshot under
+    // this deployment goes with it, via ON DELETE CASCADE. Looks the
+    // name up from the already-loaded list rather than threading it
+    // through the onclick attribute (no string-escaping to get wrong).
+    const dep = this._all.find(d => d.id === id);
+    const name = dep ? dep.deployment_name : 'this deployment';
+    const ok = confirm(
+      `Permanently delete "${name}"?\n\nThis removes ALL of its positions, trades, and history — ` +
+      `not just the deployment itself. This cannot be undone.`
+    );
+    if (!ok) return;
+    const r = await Api.deleteDeployment(id);
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      alert(data.detail || 'Could not delete this deployment.');
+      return;
     }
     this.load();
   },

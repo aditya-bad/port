@@ -53,13 +53,20 @@ async def create_deployment(
 
 
 async def delete_deployment(pool: asyncpg.Pool, deployment_id: UUID) -> None:
-    """Rolls back a single just-created deployment row (and, via the
-    same ON DELETE CASCADE foreign keys clear_all_deployments relies
-    on, anything already written under it) — used when a deployment is
-    created in the DB but its runner then fails to start (e.g. the
+    """Deletes a single deployment row (and, via the same ON DELETE
+    CASCADE foreign keys clear_all_deployments relies on in bulk,
+    anything already written under it — positions, position_lots,
+    deployment_events, deployment_snapshots, deployment_state). Two
+    call sites: (1) create_deployment's own rollback, when a deployment
+    is created in the DB but its runner then fails to start (e.g. the
     strategy's own on_start() rejects the config), so a failed POST
     /deployments never leaves an orphaned row behind for a caller who
-    was told it failed."""
+    was told it failed; (2) POST /deployments/{id}/delete, the
+    genuine user-facing "permanently remove this stopped deployment"
+    action — that router endpoint is what actually restricts this to
+    stopped deployments; this function itself has no such restriction,
+    on purpose, since the rollback call site (1) needs to delete a
+    deployment that was never even started."""
     async with pool.acquire() as conn:
         await conn.execute("DELETE FROM deployments WHERE id = $1", deployment_id)
 

@@ -18,7 +18,7 @@ Postgres when a runner starts up IS the current state, no replay needed.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 import asyncpg
@@ -27,6 +27,12 @@ from ..db import queries
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger("live_deploy.runner")
+
+# Kite's own convention (and every strategy's config: entry_time,
+# force_exit_time, ...) is naive datetimes in IST, never UTC — see
+# _stale_tick_guard's docstring for why this matters here specifically.
+# Fixed offset is safe: India has no DST.
+_IST_OFFSET = timedelta(hours=5, minutes=30)
 
 
 class DeploymentRunner:
@@ -67,6 +73,15 @@ class DeploymentRunner:
         # while GET /deployments/{id} (not cached) would already show
         # it — a real, if brief, disagreement between the two views.
         self._on_fill = on_fill
+
+        # Fixed for the deployment's lifetime, same as initial_capital —
+        # used ONLY by _stale_tick_guard below, converted once here
+        # (naive IST, to match Kite's exchange_timestamp convention) so
+        # every tick doesn't redo the conversion.
+        self.created_at: datetime = deployment["created_at"]
+        self._created_at_ist: datetime = (
+            self.created_at.astimezone(timezone.utc) + _IST_OFFSET
+        ).replace(tzinfo=None)
 
         self.open_positions: dict[int, dict] = {}   # instrument_token -> position row (as dict)
         self.cash: float = float(deployment["current_cash"])
@@ -195,6 +210,44 @@ class DeploymentRunner:
 
     # ── Tick consumption ─────────────────────────────────────────────
 
+    def _is_stale_pre_creation_tick(self, tick: dict) -> bool:
+        """
+        Kite (and this app's own dispatcher) can deliver a tick whose
+        `exchange_timestamp` is the LAST TRADE time, not the moment it
+        was actually received — most commonly an immediate snapshot
+        Kite sends right when you subscribe to an instrument, carrying
+        whatever the last traded price/time was even if that was hours
+        ago (e.g. the prior session's closing print, if you subscribe
+        after market hours). Every strategy here treats
+        `exchange_timestamp` as "now" for entry/exit/day-boundary
+        decisions — with NO other check for whether that's actually
+        current, a strategy created after hours could see this one
+        stale tick, find its own `entry_time <= tick time < force_exit
+        _time` (a snapshot near a real close often lands well inside
+        that window), and — with `catch_up_late_entry=True` (the
+        default) — place a real "catch up" entry using an hours-old
+        price, the moment it's deployed. calendar_btst has it worse:
+        no force_exit_time-style upper bound at all, so ANY stale tick
+        past entry_time enters, regardless of how late.
+
+        The fix doesn't need real wall-clock "now" (and deliberately
+        avoids it — comparing a naive-IST tick timestamp against a
+        real UTC "now" would need a timezone conversion this codebase
+        has never needed anywhere else, one more place to get subtly
+        wrong). It only needs ONE fact, and it's airtight: a tick
+        genuinely reflecting live trading can NEVER claim to be from
+        before this deployment existed. So: if `exchange_timestamp` is
+        earlier than this deployment's own `created_at`, it is
+        DEFINITELY stale — reject it outright, for every strategy,
+        before it ever reaches on_tick. A deployment resumed/restarted
+        long after its original creation is completely unaffected
+        (created_at never changes after the initial deploy, so this
+        only ever matters for the first few ticks after a brand-new
+        deployment, exactly where the bug lives).
+        """
+        ts = tick.get("exchange_timestamp")
+        return ts is not None and ts < self._created_at_ist
+
     async def _run(self) -> None:
         my_tokens = self.tokens
         try:
@@ -204,6 +257,15 @@ class DeploymentRunner:
                 if not relevant or self.strategy is None:
                     continue
                 for t in relevant:
+                    if self._is_stale_pre_creation_tick(t):
+                        logger.info(
+                            "%s: ignoring a tick timestamped before this "
+                            "deployment's own creation (%s < %s) — a stale "
+                            "snapshot, not a live trading signal",
+                            self.deployment_name, t.get("exchange_timestamp"),
+                            self._created_at_ist,
+                        )
+                        continue
                     try:
                         await self.strategy.on_tick(self, t)
                     except Exception:

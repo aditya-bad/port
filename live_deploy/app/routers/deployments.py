@@ -347,6 +347,48 @@ async def stop_deployment(deployment_id: UUID, request: Request, force_close: bo
     return {"status": "stopped"}
 
 
+@router.post("/{deployment_id}/delete")
+async def delete_deployment(deployment_id: UUID, request: Request):
+    """
+    Permanently removes a STOPPED deployment and everything recorded
+    under it — positions, position_lots, deployment_events,
+    deployment_snapshots — via the same ON DELETE CASCADE
+    clear_all_deployments relies on in bulk (see
+    migrations/0001_init.sql), just for one row instead of every row.
+    Reuses queries.delete_deployment, previously only called internally
+    to roll back a deployment whose runner failed to start right after
+    creation — same DB operation, now also reachable as a genuine
+    user-facing action.
+
+    Restricted to `stopped` deployments only: Stop already tore its
+    runner down and either closed its open position (force_close=true)
+    or refused to run at all while one was still open — so a stopped
+    deployment never has a runner to tear down or an open position
+    whose remaining value this endpoint would otherwise have to
+    silently decide what to do with. `active`/`paused` deployments
+    aren't just discouraged here, they're refused: stop it first (with
+    force_close if it still holds a position), then delete.
+    """
+    pool = request.app.state.db_pool
+    existing = await queries.get_deployment(pool, deployment_id)
+    if existing is None:
+        raise HTTPException(404, "No such deployment")
+    if existing["status"] != "stopped":
+        raise HTTPException(
+            409,
+            f"Can only delete a stopped deployment (this one is "
+            f"{existing['status']!r}). Stop it first, then delete.",
+        )
+    await queries.delete_deployment(pool, deployment_id)
+    cache = request.app.state.cache
+    await asyncio.gather(
+        cache.refresh_now("deployments"),
+        cache.refresh_now("positions_open"),
+        cache.refresh_now("trades_recent"),
+    )
+    return {"deleted": True}
+
+
 @router.post("/flatten-all")
 async def flatten_all_deployments(request: Request):
     """
