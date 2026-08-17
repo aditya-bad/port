@@ -18,7 +18,7 @@ Postgres when a runner starts up IS the current state, no replay needed.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Callable, Optional
 
 import asyncpg
@@ -27,12 +27,6 @@ from ..db import queries
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger("live_deploy.runner")
-
-# Kite's own convention (and every strategy's config: entry_time,
-# force_exit_time, ...) is naive datetimes in IST, never UTC — see
-# _stale_tick_guard's docstring for why this matters here specifically.
-# Fixed offset is safe: India has no DST.
-_IST_OFFSET = timedelta(hours=5, minutes=30)
 
 
 class DeploymentRunner:
@@ -75,13 +69,29 @@ class DeploymentRunner:
         self._on_fill = on_fill
 
         # Fixed for the deployment's lifetime, same as initial_capital —
-        # used ONLY by _stale_tick_guard below, converted once here
-        # (naive IST, to match Kite's exchange_timestamp convention) so
+        # used ONLY by _stale_tick_guard below, converted once here so
         # every tick doesn't redo the conversion.
+        #
+        # datetime.fromtimestamp() with NO tz argument, deliberately —
+        # NOT a hardcoded IST offset (an earlier version of this guard
+        # used +5:30, assuming Kite's exchange_timestamp is always naive
+        # IST; it isn't guaranteed to be). The real kiteconnect library
+        # builds exchange_timestamp via this exact same call —
+        # `datetime.fromtimestamp(unix_ts)`, no tz arg — which means it's
+        # naive LOCAL SYSTEM TIME of whatever machine runs the Kite
+        # WebSocket client, not portably "IST": correct only if/when
+        # that machine's own system timezone happens to be IST (the
+        # implicit assumption this whole app already makes everywhere
+        # else too — entry_time/force_exit_time config values like
+        # "10:00" only mean 10am NSE time if the server's clock agrees).
+        # Deriving created_at the SAME way keeps this guard consistent
+        # with real ticks on ANY server, whatever its system tz is,
+        # rather than silently assuming IST and comparing two different
+        # clocks — which produced a permanent, every-tick mismatch (see
+        # this file's own git history) whenever the server's system tz
+        # wasn't actually IST.
         self.created_at: datetime = deployment["created_at"]
-        self._created_at_ist: datetime = (
-            self.created_at.astimezone(timezone.utc) + _IST_OFFSET
-        ).replace(tzinfo=None)
+        self._created_at_local: datetime = datetime.fromtimestamp(self.created_at.timestamp())
 
         self.open_positions: dict[int, dict] = {}   # instrument_token -> position row (as dict)
         self.cash: float = float(deployment["current_cash"])
@@ -230,11 +240,16 @@ class DeploymentRunner:
         no force_exit_time-style upper bound at all, so ANY stale tick
         past entry_time enters, regardless of how late.
 
-        The fix doesn't need real wall-clock "now" (and deliberately
-        avoids it — comparing a naive-IST tick timestamp against a
-        real UTC "now" would need a timezone conversion this codebase
-        has never needed anywhere else, one more place to get subtly
-        wrong). It only needs ONE fact, and it's airtight: a tick
+        The fix doesn't need real wall-clock "now" as a separately
+        chosen reference — it needs the SAME clock domain the tick
+        itself is already in. `exchange_timestamp` is naive LOCAL
+        SYSTEM TIME (see this class's `_created_at_local` comment for
+        exactly why — it's whatever `datetime.fromtimestamp()` produces
+        on the machine running the Kite client, not portably "IST"), so
+        `created_at` is deliberately derived the identical way rather
+        than via a hardcoded offset, keeping both sides of this
+        comparison in the same domain on any server regardless of its
+        system timezone. The actual test is airtight either way: a tick
         genuinely reflecting live trading can NEVER claim to be from
         before this deployment existed. So: if `exchange_timestamp` is
         earlier than this deployment's own `created_at`, it is
@@ -246,7 +261,7 @@ class DeploymentRunner:
         deployment, exactly where the bug lives).
         """
         ts = tick.get("exchange_timestamp")
-        return ts is not None and ts < self._created_at_ist
+        return ts is not None and ts < self._created_at_local
 
     async def _run(self) -> None:
         my_tokens = self.tokens
@@ -263,7 +278,7 @@ class DeploymentRunner:
                             "deployment's own creation (%s < %s) — a stale "
                             "snapshot, not a live trading signal",
                             self.deployment_name, t.get("exchange_timestamp"),
-                            self._created_at_ist,
+                            self._created_at_local,
                         )
                         continue
                     try:

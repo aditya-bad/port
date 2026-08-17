@@ -3669,6 +3669,57 @@ than 500ing) and through the real browser UI (button visibility, the
 confirm dialog's exact wording, navigating back to the list, the
 deployment gone from both Detail and the table).
 
+## What's here (Step 55: Step 54's own fix had a timezone bug — it was blocking every real tick, permanently)
+
+Reported directly, minutes after Step 54 shipped: two real deployments
+logging `"ignoring a tick timestamped before this deployment's own
+creation"` for EVERY tick, forever — not just the first one. That's
+worse than the original bug: it meant those deployments could never
+trade again.
+
+**Root cause**: Step 54's guard converted `created_at` to what it
+assumed was "naive IST" via a hardcoded `+5:30` offset, reasoning that
+Kite's `exchange_timestamp` is naive IST throughout this codebase — true
+for every entry_time/force_exit_time comparison elsewhere, but not
+because Kite guarantees it. Read the actual installed `kiteconnect`
+library's source (`ticker.py`): it builds `exchange_timestamp` via
+`datetime.fromtimestamp(unix_ts)` — **no timezone argument** — which
+returns naive time in whatever the SERVER'S OWN SYSTEM TIMEZONE is, not
+a portable "always IST" guarantee. This whole app has always implicitly
+assumed the deployment server's system clock is set to IST (same as
+every `entry_time="10:00"` config value already assumes) — a reasonable
+assumption for a single-purpose NSE app, but Step 54's hardcoded
+`+5:30` broke it: on a server whose system tz is actually UTC (the
+sandbox this was built in, and very plausibly the reporting user's
+deployment host too — common default for a cloud VPS), `created_at`
+got pushed 5.5 hours further "into the future" than any real tick could
+ever be, permanently, since `created_at` never changes.
+
+**The fix**: derive `created_at`'s comparison value the exact same
+way real ticks are built — `datetime.fromtimestamp(created_at.
+timestamp())`, no hardcoded offset at all. This keeps both sides of
+the comparison in whatever clock domain the server's system tz actually
+is, matching real `exchange_timestamp` ticks on ANY server, rather than
+assuming IST and silently comparing two different clocks. The
+underlying guard's logic (reject a tick claiming to be from before the
+deployment existed) is unchanged and still correct — only the
+"what does 'before' mean in which clock" part was wrong.
+
+**Verified live**, and specifically in a way Step 54's own tests never
+exercised, which is exactly why this shipped undetected: every earlier
+test constructed tick timestamps as hand-picked `datetime()` literals
+(self-consistent with the hardcoded offset, but never actually routed
+through Kite's real conversion). This time, ticks were built the
+identical way the real `kiteconnect` library does —
+`datetime.fromtimestamp(unix_epoch)` — and confirmed: with Step 54's
+original code, on this UTC-system-tz sandbox, a live tick fed
+immediately after deployment creation WAS wrongly rejected (exact same
+symptom the user reported, exact same ~5.5h gap); with this fix, it's
+correctly accepted, while a genuinely stale tick from a real hour
+earlier is still correctly rejected. Re-ran Step 54's own test suite
+plus the Step 53 state-persistence and Step 52 calendar_btst suites
+afterward — all still pass.
+
 ## Setup
 
 ```bash
