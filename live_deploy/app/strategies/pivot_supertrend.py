@@ -17,6 +17,23 @@ RULES (identical to the backtested version):
   15:00) if still set — whichever comes first. Only 1 open position at
   a time; a fresh entry can fire immediately after an exit.
 
+  NO entry before `market_open_time` (config, default 09:15) — unlike
+  intraday_dtt_simple/calendar_btst/strangle_monthly_v2, this strategy
+  has no `entry_time` schedule at all: it watches continuously and
+  reacts the instant a signal breaks, any time of day, which used to
+  implicitly mean "any time the market is actually open" back when
+  pre-market data simply never reached this pipeline. NSE now
+  disseminates LIVE pre-open indicative-price ticks through the same
+  feed (equity index dissemination during the 09:00-09:15 call auction,
+  plus a genuine F&O futures pre-open session since Dec 2025) — without
+  this floor, a pivot/trend combination already "ready" from a prior
+  day (the normal state of any established deployment) could queue a
+  real entry off a pre-market signal, executing the moment regular
+  trading begins, priced off auction-based price discovery rather than
+  real continuous trading. Only gates fresh signal DETECTION (step 5
+  below) — an exit, or a pending entry already queued from a REGULAR-
+  session candle, is never blocked by this.
+
 WHAT'S GENUINELY NEW vs. the backtest (live streaming, not a batch file):
   - Ticks arrive one at a time, not as a pre-loaded candle array — see
     CandleAggregator, which buckets ticks into 5-min OHLC candles as
@@ -90,6 +107,12 @@ OTHER CONFIG:
   "force_exit_time": "15:00" (default) | null (disable — let SuperTrend
       flips be the ONLY exit trigger, i.e. positions can ride overnight
       — this is what a "positional" deployment would typically set)
+  "market_open_time": "09:15" (default) | null (disable — allow entries
+      off pre-market ticks too; NOT recommended, see the RULES section's
+      "NO entry before market_open_time" paragraph above for why) — the
+      earliest time a fresh entry signal is allowed to be DETECTED.
+      Doesn't affect exits, or an entry already queued from a candle
+      that closed during regular hours.
   "capital_per_trade": null (default — use ALL of the deployment's
       current cash on each entry, sized as floor(cash / price)) | a
       fixed rupee amount to cap each entry's size instead
@@ -492,6 +515,7 @@ def apply_seed_to_state(
         "pivot_type": "classic",
         "atr_smoothing": "wilder",
         "force_exit_time": "15:00",
+        "market_open_time": "09:15",
         "capital_per_trade": None,
         "prev_day_ohlc": None,
         "seed_candles": None,
@@ -514,6 +538,7 @@ class PivotSupertrendStrategy(StrategyBase):
         self.pivot_type = cfg.get("pivot_type", "classic")
         self.atr_method = cfg.get("atr_smoothing", "wilder")
         self.force_exit_time = _parse_hhmm(cfg.get("force_exit_time", "15:00"))
+        self.market_open_time = _parse_hhmm(cfg.get("market_open_time", "09:15"))
         self.capital_per_trade = cfg.get("capital_per_trade")
 
         self.aggregator = CandleAggregator(interval_minutes=5)
@@ -671,6 +696,11 @@ class PivotSupertrendStrategy(StrategyBase):
     async def _on_candle_closed(self, runner, candle: dict) -> None:
         t = candle["date"].time()
         before_cutoff = self.force_exit_time is None or t < self.force_exit_time
+        # Lower bound — see market_open_time in CONFIG/the module
+        # docstring's RULES section. Only ever combined into step 5
+        # (fresh entry DETECTION) below; exits and an already-queued
+        # pending entry are never gated by this.
+        after_open = self.market_open_time is None or t >= self.market_open_time
 
         # 1 — execute a pending ST-flip exit at THIS candle's open
         if self.pending_exit is not None:
@@ -710,10 +740,11 @@ class PivotSupertrendStrategy(StrategyBase):
             self.prev_trend = new_trend
 
         # 5 — detect a fresh entry signal (flat, pivots known, ST ready,
-        # before cutoff). Same detection-time capture as step 4: records
-        # WHICH specific pivot level broke, not just that "some" R/S did.
+        # within the entry window). Same detection-time capture as step
+        # 4: records WHICH specific pivot level broke, not just that
+        # "some" R/S did.
         if self.instrument_token not in runner.open_positions and self.pivots is not None \
-                and self.prev_trend is not None and before_cutoff:
+                and self.prev_trend is not None and before_cutoff and after_open:
             close = candle["close"]
             if self.prev_trend == "up":
                 for k in R_KEYS:

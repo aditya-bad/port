@@ -3720,6 +3720,52 @@ earlier is still correctly rejected. Re-ran Step 54's own test suite
 plus the Step 53 state-persistence and Step 52 calendar_btst suites
 afterward — all still pass.
 
+## What's here (Step 56: pivot_supertrend's family had no floor against pre-market entries)
+
+A direct follow-up question ("For the supertrend there is no any entry
+time right?") turned into a genuine, confirmed third gap in this same
+family of strategies. Correct: `pivot_supertrend`/
+`pivot_supertrend_options`/`pivot_supertrend_options_inverse` have no
+`entry_time` schedule at all — they watch continuously and react the
+instant a technical signal fires, any time of day. That design predates
+NSE actually disseminating LIVE pre-market ticks through the same feed
+Kite uses for regular trading (the equity index's indicative price
+during the 09:00-09:15 call auction, and a genuine F&O futures pre-open
+session since December 2025) — when it was built, "any time of day"
+implicitly meant "any time the market's actually open," because
+pre-market data simply never reached this pipeline.
+
+**Confirmed live, not just in theory**: for an established deployment
+(pivots computed from yesterday's close, SuperTrend trend carried over
+continuously — the normal state of any multi-day-running deployment),
+fed a synthetic pre-open indicative-price dip (09:00 → 09:05 → 09:10,
+all real minutes before the actual 09:15 open). The break was detected
+in that pre-market window and the resulting entry EXECUTED right at the
+09:15 boundary — `sell 41 NIFTY 50 @ 23900.0 (entry)` — priced off
+auction-based price discovery, not real continuous trading. The other 5
+strategies (`intraday_dtt_simple`/`_adjusted`/`_advanced`,
+`calendar_btst`, `strangle_monthly_v2`) were unaffected: all require an
+`entry_time` and default it to market-open-or-later.
+
+**The fix**: a new `market_open_time` config (default `"09:15"`,
+nullable to disable) across all three affected strategies, added as a
+second bound alongside the existing `force_exit_time` — an
+`after_open` check combined into fresh-entry DETECTION only (never
+exits, never a pending entry already queued from a regular-session
+candle). Deliberately configurable rather than hardcoded, consistent
+with `force_exit_time`'s own pattern, rather than baking NSE's exact
+open time into the code as a silent constant.
+
+**Verified**: re-ran the exact pre-market reproduction — now correctly
+produces zero entries, even feeding the boundary tick at exactly 09:15
+(the gate reads the CANDLE's own timestamp, i.e. the actual market
+activity being evaluated, not whichever later tick happened to close
+it — so a pre-market-dated candle stays blocked even when the
+CLOSING tick lands right at the open). Also confirmed regular-hours
+entries (>= 09:15) still fire completely normally for all three
+strategies — this only narrows the window, nothing else about the
+signal logic changed.
+
 ## Setup
 
 ```bash

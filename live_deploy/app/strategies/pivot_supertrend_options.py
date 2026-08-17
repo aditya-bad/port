@@ -22,6 +22,14 @@ RULES — same signal timing as pivot_supertrend, different execution:
   lot in, one lot out" — a fresh entry can fire immediately after an
   exit closes the previous leg.
 
+  NO entry before `market_open_time` (config, default 09:15) — see
+  pivot_supertrend.py's own module docstring for the full reasoning
+  (no `entry_time` schedule here at all, so without this floor, a
+  pivot/trend combination already "ready" from a prior day could queue
+  a real entry off a pre-market indicative-price tick). Only gates
+  fresh signal DETECTION; exits and an already-queued pending entry are
+  unaffected.
+
 WHY SELL, NOT BUY: this always SELLS a leg to open and BUYS to close it,
 regardless of signal direction — we're always writing premium, just
 choosing which side (PE on a bullish signal, CE on a bearish one) based
@@ -64,8 +72,9 @@ module's docstring):
   "lots_per_trade": 1 (default) — options only trade in whole lots;
       each entry sells exactly this many lots of whatever the current
       lot size is for options_underlying.
-  "pivot_type" / "atr_smoothing" / "force_exit_time": identical meaning
-      and defaults to pivot_supertrend.
+  "pivot_type" / "atr_smoothing" / "force_exit_time" / "market_open_time":
+      identical meaning and defaults to pivot_supertrend — see that
+      module's CONFIG section for market_open_time specifically.
 
 A dynamic instrument subscription is added to the dispatcher for
 whichever option leg is currently open (so its live LTP feeds
@@ -117,6 +126,7 @@ logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options")
         "pivot_type": "classic",
         "atr_smoothing": "wilder",
         "force_exit_time": "15:00",
+        "market_open_time": "09:15",
         "prev_day_ohlc": None,
         "seed_candles": None,
         "supertrend_seed": None,
@@ -151,6 +161,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         self.pivot_type = cfg.get("pivot_type", "classic")
         self.atr_method = cfg.get("atr_smoothing", "wilder")
         self.force_exit_time = _parse_hhmm(cfg.get("force_exit_time", "15:00"))
+        self.market_open_time = _parse_hhmm(cfg.get("market_open_time", "09:15"))
 
         self.aggregator = CandleAggregator(interval_minutes=5)
         self.st = SuperTrendState(period=ST_PERIOD, multiplier=ST_MULTIPLIER,
@@ -328,6 +339,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
     async def _on_candle_closed(self, runner, candle: dict) -> None:
         t = candle["date"].time()
         before_cutoff = self.force_exit_time is None or t < self.force_exit_time
+        # Lower bound — see market_open_time in pivot_supertrend.py's
+        # own CONFIG/RULES for the full reasoning. Only combined into
+        # step 5 (fresh entry DETECTION) below.
+        after_open = self.market_open_time is None or t >= self.market_open_time
 
         # 1 — execute a pending ST-flip exit at THIS candle's open
         if self.pending_exit is not None:
@@ -363,9 +378,9 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                     }
             self.prev_trend = new_trend
 
-        # 5 — detect a fresh entry signal (flat, pivots known, ST ready, before cutoff)
+        # 5 — detect a fresh entry signal (flat, pivots known, ST ready, within the entry window)
         if self.active_leg_token is None and self.pivots is not None \
-                and self.prev_trend is not None and before_cutoff:
+                and self.prev_trend is not None and before_cutoff and after_open:
             close = candle["close"]
             if self.prev_trend == "up":
                 for k in R_KEYS:

@@ -26,6 +26,14 @@ RULES — deliberately the mirror image of pivot_supertrend_options:
   applies in case a late-day flip's hold period would otherwise run past
   market close.
 
+  NO entry before `market_open_time` (config, default 09:15) — see
+  pivot_supertrend.py's own module docstring for the full reasoning (no
+  `entry_time` schedule here either, so a SuperTrend flip detected off
+  pre-market indicative-price ticks could otherwise queue a real entry
+  the moment regular trading begins). Only gates fresh entry DETECTION
+  (a flip while flat); an exit, or a pending entry already queued from
+  a regular-session candle, is unaffected.
+
 BUYING, NOT SELLING: this always BUYS a leg to open and SELLS it to
 close — standard long-option mechanics, the exact opposite fill
 direction from pivot_supertrend_options (which always sells to open).
@@ -87,6 +95,8 @@ CONFIG:
       pivot_supertrend (NOT required-non-null the way it is for
       intraday_dtt_simple, since hold_candles is this strategy's own
       primary exit mechanism, not force_exit_time).
+  "market_open_time": "09:15" (default) — nullable to disable (NOT
+      recommended), identical meaning to pivot_supertrend.
   "lots_per_trade": 1 (default) — lots bought per entry.
   "seed_candles" / "supertrend_seed": SuperTrend warmup, identical
       meaning to pivot_supertrend (see that module's docstring) — NOTE
@@ -134,6 +144,7 @@ logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options_inve
         "atr_smoothing": "wilder",
         "hold_candles": 1,
         "force_exit_time": "15:00",
+        "market_open_time": "09:15",
         "lots_per_trade": 1,
         "seed_candles": None,
         "supertrend_seed": None,
@@ -169,6 +180,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
 
         raw_force_exit = cfg.get("force_exit_time", "15:00")
         self.force_exit_time = _parse_hhmm(raw_force_exit)   # None disables it, same as pivot_supertrend
+        self.market_open_time = _parse_hhmm(cfg.get("market_open_time", "09:15"))
 
         self.lots_per_trade = int(cfg.get("lots_per_trade") or 1)
         if self.lots_per_trade < 1:
@@ -286,6 +298,10 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
     async def _on_candle_closed(self, runner, candle: dict) -> None:
         t = candle["date"].time()
         before_cutoff = self.force_exit_time is None or t < self.force_exit_time
+        # Lower bound — see market_open_time in pivot_supertrend.py's
+        # own CONFIG/RULES for the full reasoning. Only combined into
+        # step 5 (fresh entry DETECTION, a flip while flat) below.
+        after_open = self.market_open_time is None or t >= self.market_open_time
 
         # 0 — one-time reconciliation of the hold counter after a resume
         # with an already-open position. Uses THIS candle's own
@@ -359,7 +375,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         new_trend = self.st.update(candle)
         if new_trend is not None:
             if (prev_trend_before_update is not None and new_trend != prev_trend_before_update
-                    and self.active_leg_token is None and before_cutoff):
+                    and self.active_leg_token is None and before_cutoff and after_open):
                 option_type = "PE" if new_trend == "down" else "CE"
                 self.pending_entry = {
                     "option_type": option_type,
