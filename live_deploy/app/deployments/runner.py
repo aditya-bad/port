@@ -319,6 +319,26 @@ class DeploymentRunner:
         metadata: Optional[dict],
     ) -> dict:
         executed_at = executed_at or datetime.now(timezone.utc)
+        if executed_at.tzinfo is None:
+            # Every strategy passes the TICK's own exchange_timestamp
+            # here — naive, per Kite's own convention (see
+            # _is_stale_pre_creation_tick's docstring: naive LOCAL
+            # SYSTEM TIME, i.e. correct only insofar as the server's own
+            # system tz is set to IST, the same implicit assumption
+            # entry_time/force_exit_time config values already make
+            # everywhere else). Postgres has no way to know that on its
+            # own — a naive datetime.timestamptz insert is silently
+            # treated as UTC, not IST, meaning every fill's stored/
+            # displayed time came out ~5.5h AHEAD of when it actually
+            # happened (confirmed against a real Postgres instance: a
+            # naive 10:00:09 IST fill was coming back out, and
+            # redisplaying, as 15:30:09). datetime.astimezone() on a
+            # naive value is documented to presume system-local time and
+            # convert correctly from there — the exact fix, no manual
+            # offset, correct on any server regardless of its configured
+            # tz (verified: on an IST-tz machine, naive 10:00:09 ->
+            # 04:30:09 UTC -> redisplays as the true 10:00:09 IST).
+            executed_at = executed_at.astimezone(timezone.utc)
         result = await queries.record_fill(
             self.pool, self.deployment_id, symbol, instrument_token, action,
             qty, price, executed_at, reason=reason, metadata=metadata,

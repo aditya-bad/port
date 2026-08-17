@@ -3825,6 +3825,75 @@ post-fix. Re-ran the Step 24/46/52 switch-to-next-week suites (dynamic
 dates, unaffected by the unrelated stale-hardcoded-test-date issue from
 Step 54/55) afterward — still pass.
 
+## What's here (Step 58: the container's own timezone, not just a display quirk — every configured time was firing 5.5h late)
+
+Reported live: an `intraday_dtt_adjusted` deployment's Activity log
+showed its entry at `15:30:09` — 5.5 hours after both `entry_time`
+(`10:00`) AND `force_exit_time` (`15:00`). Traced this all the way
+through, and it's much bigger than one deployment's display glitch.
+
+**First finding, and initially the whole story**: naive fill
+timestamps (every strategy passes the tick's own `exchange_timestamp`
+as `executed_at`) landing in a `TIMESTAMPTZ` column with no tz tag.
+Confirmed directly against Postgres — inserting a naive `10:00:09`
+comes back labeled `10:00:09+00:00` (silently assumed UTC), and the
+frontend's own correct UTC→IST conversion for display then adds
+another 5:30 on top, landing on `15:30:09`. Fixed centrally, once, in
+`DeploymentRunner._fill()` — a naive `executed_at` now goes through
+`.astimezone(timezone.utc)` before ever reaching the database, which
+Python defines as "presume system-local time, convert correctly from
+there." Every strategy funnels through this one function, so this is
+the only place the fix needed to live.
+
+**Second, much bigger finding, from asking why that display bug even
+manifested at all**: tested the SAME insert with the client process's
+system timezone set to `Asia/Kolkata` instead of this sandbox's default
+UTC — turns out asyncpg's own naive-datetime handling already keys off
+the **client process's system timezone**, not a fixed assumption.
+Meaning: if the actual live_deploy SERVER's own OS timezone is
+correctly `Asia/Kolkata`, naive Kite ticks already store and display
+correctly with **no code change needed at all** — the `_fill()` fix
+above is real, correct, and worth keeping (explicit and no longer
+dependent on this undocumented asyncpg behavior), but it isn't the
+*root* cause.
+
+The root cause: Kite's own tick timestamps are built via
+`datetime.fromtimestamp()` with no tz argument (confirmed against the
+real `kiteconnect` library back in Step 55) — naive LOCAL SYSTEM TIME
+of whatever machine runs the process. Every time-of-day config value
+in this entire app (`entry_time`, `force_exit_time`,
+`market_open_time`) is compared directly against that naive value,
+meaning **every single one of them only means "NSE time" if the
+server's own OS clock is set to IST**. `python:3.11-slim` (this
+project's Docker base image) ships with no `tzdata` and defaults to
+UTC — confirmed via the Dockerfile, which set no `TZ` at all. On a
+server left at that default, `entry_time: "10:00"` doesn't mean 10am
+IST — it means 10am UTC, which is **3:30pm IST**. Every configured
+time, for every strategy, all fixed at once by one missing container
+setting — not a display bug, a real 5.5-hour mistiming of every trade
+this whole app has ever placed on a UTC-tz host.
+
+**Fixed** by setting the timezone explicitly in the Docker image
+(`ENV TZ=Asia/Kolkata` + installing `tzdata`, since the slim base image
+doesn't carry it) rather than leaving it to the base image's silent
+default — plus a new "Common failure modes" entry in RUN_GUIDE.md
+covering the non-Docker deployment paths (Option 1/2), where this needs
+setting on the host itself (`timedatectl set-timezone Asia/Kolkata` or
+an exported `TZ` in the process's own environment) since nothing in the
+app can detect or warn about a misconfigured host clock.
+
+**Verified**: the `_fill()` fix directly, against a real Postgres
+instance, with the test process's own system tz forced to
+`Asia/Kolkata` (this sandbox's own default is UTC, which is exactly
+why this went undetected until a real IST-configured — or
+UTC-misconfigured — deployment surfaced it) — a naive `10:00:09` fill
+now correctly round-trips to display as `10:00:09 IST`, not
+`15:30:09`. The Docker/timezone fix itself could not be build-tested
+in this sandbox (no `dockerd` available, same limitation RUN_GUIDE.md
+already documented for the original Dockerfile) — applied as the
+standard, well-established Debian pattern, but flagged here honestly
+rather than claimed as click-tested.
+
 ## Setup
 
 ```bash

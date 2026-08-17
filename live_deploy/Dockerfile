@@ -24,6 +24,22 @@
 
 FROM python:3.11-slim
 
+# Every time-of-day config value in this app (entry_time, force_exit_time,
+# market_open_time, ...) means "NSE time", i.e. IST — and Kite's own tick
+# timestamps are naive datetimes built via Python's datetime.fromtimestamp()
+# with no tz argument, which means naive LOCAL SYSTEM TIME of whatever
+# machine runs this (see app/deployments/runner.py's own comments on this).
+# python:3.11-slim (Debian) has NO tzdata installed and defaults to UTC —
+# without this, entry_time="10:00" doesn't mean 10am IST at all, it means
+# 10am UTC = 3:30pm IST: every trade fires 5.5 hours later, in real
+# clock-on-the-wall terms, than the config says. This was found and fixed
+# only after it silently mistimed real trades — set explicitly, not left
+# to the base image's default.
+ENV TZ=Asia/Kolkata
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Dependencies first, separately from app code, so `docker build` only

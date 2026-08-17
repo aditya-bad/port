@@ -523,3 +523,27 @@ check `kite_connected`/`ticks_received`/`last_tick_at` before assuming
 the strategy logic itself is broken — "the service is up" and "this
 strategy is genuinely seeing live prices" are two different questions,
 and only the second one actually matters for a paper-trading deployment.
+
+**Every entry/exit fires ~5.5 hours later than the configured time**
+(e.g. `entry_time: "10:00"` actually trades at real-world 3:30pm IST)
+— **found live, in an actual deployment.** Root cause: EVERY time-of-day
+config value here (`entry_time`, `force_exit_time`, `market_open_time`,
+...) means "NSE time" i.e. IST, and Kite's own tick timestamps are
+naive datetimes built via `datetime.fromtimestamp()` with no tz
+argument — which means naive LOCAL SYSTEM TIME of whatever machine
+actually runs this process, not portably IST. If that machine's own
+system timezone isn't set to `Asia/Kolkata` (Option 3's Dockerfile now
+sets this explicitly; a bare VM or Option 2's supervisord setup does
+NOT unless you've configured the OS itself), `entry_time="10:00"`
+silently means 10am in whatever the SERVER's local clock is — commonly
+UTC on a cloud VPS, which is 10am UTC = 3:30pm IST. Nothing in the app
+itself can detect or warn about this — it's a precondition the whole
+config model depends on, not a value the code can validate. Fix, for a
+non-Docker run (Option 1/2): set the SYSTEM's timezone before starting
+the process — `sudo timedatectl set-timezone Asia/Kolkata` (most
+Debian/Ubuntu VMs) or export `TZ=Asia/Kolkata` in the environment
+`live_deploy` itself runs in (systemd unit's `Environment=`,
+supervisord's `environment=`, or your shell's own `.profile` for
+Option 1) — then confirm with `date` (should show IST) before starting
+`live_deploy`. For Option 3 (Docker), this is now set in the image
+itself — no action needed beyond rebuilding.
