@@ -3967,6 +3967,59 @@ session when you asked about clicking Delete on a dynamic
 registration) — confirmed real, not yet built, since it wasn't
 explicitly requested as a fix.
 
+## What's here (Step 60: strangle_monthly_v2's own flat-between-cycles window had the same "restart looks like a fresh start" gap)
+
+Continuing the audit into `strangle_monthly_v2.py` (the one file flagged,
+not yet checked, in Step 59): unlike the pivot/SuperTrend family, this
+strategy has no candle-close-deferred execution at all — everything acts
+same-tick — so Step 59's specific bug class doesn't apply here. It also
+has no `get_persistable_state()` hook, relying entirely on its own
+`_resume_from_db()`, which turned out to be very thorough for the
+"position currently open" case (contract, cycle_id, cycle_realized_pnl,
+adjustments_used, converged state — all correctly reconstructed) — but
+did nothing at all when `open_positions` was empty, just an early
+`return`.
+
+That's not the same as "never entered": it's also exactly the shape of
+the window between a flatten (checkpoint target hit, contract-expiry
+backstop, or convergence stop) and the next entry actually landing —
+which can sit open for many ticks if it's still before `entry_time`, or
+a resolver call is transiently failing. A restart caught there reset
+`self.entered_ever` to `False` and `self.cycle_id`/`self._leg_seq` to 0
+with nothing to catch it — wrongly making the very next entry look like
+the deployment's first-ever entry again. Concretely: `enter_immediately_on_deploy`
+is documented (module docstring, Section 2) to skip the `entry_time` gate
+for exactly ONE entry, ever — a restart in this window let it fire a
+SECOND time, on what was really just an ordinary checkpoint re-entry,
+placing a trade before `entry_time` when it should have waited like
+every other non-first entry. Separately, a reset `cycle_id` risked
+colliding with a genuinely old, unrelated cycle's ID on some later
+restart, which would make `_resume_from_db`'s own
+`cycle_realized_pnl` reconstruction sum in that unrelated cycle's P&L —
+corrupting the checkpoint-target comparison.
+
+**Fixed**: when `open_positions` is empty, `_resume_from_db()` now
+checks `list_closed_positions()` (every CE/PE leg this deployment has
+ever closed) before assuming "never entered" — reconstructing
+`entered_ever` and the `cycle_id`/`seq` high-water marks from there.
+`_last_flatten_trigger` (used only for a re-entry's own logged trigger
+label, e.g. `"reentry_after_checkpoint_target"`) needed one more piece:
+`positions.metadata` is written once at OPEN and never updated by a
+later close, so the close's own trigger only ever lands in
+`position_lots`. Added `DeploymentRunner.list_recent_lots()` (same
+sanctioned-access-point shape as the existing `list_closed_positions()`)
+so the strategy can read that without touching the DB directly.
+
+**Verified**: reproduced live with `enter_immediately_on_deploy=True` —
+very first tick (09:00, before `entry_time=10:00`) enters immediately as
+designed; crashed both premiums to force the checkpoint target, which
+flattens and (correctly) waits for `entry_time` rather than re-entering
+at 09:05; paused right in that flat/waiting gap; restarted; fed one more
+pre-`entry_time` tick. Post-fix: stays flat, exactly like any other
+ordinary re-entry waiting for its gate. Pre-fix (confirmed via
+`git stash`): entered immediately at 09:10, still before `entry_time`,
+because the restart made it look like a second "very first entry".
+
 ```bash
 cd live_deploy
 pip install -r requirements.txt

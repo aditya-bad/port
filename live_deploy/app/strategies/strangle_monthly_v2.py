@@ -1351,6 +1351,65 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             if pos["symbol"].endswith("CE") or pos["symbol"].endswith("PE")
         ]
         if not open_legs:
+            # No open legs doesn't mean "never entered" -- it's also the
+            # exact shape of the window between a flatten (checkpoint
+            # target / contract-expiry backstop / convergence stop) and
+            # the next _enter() actually landing (e.g. still waiting for
+            # entry_time, or a transient resolver failure retrying every
+            # tick — see _enter()'s except blocks). A restart caught in
+            # that window used to silently reset entered_ever to False
+            # and cycle_id/_leg_seq to 0 with nothing on the "no open
+            # legs, so just return" path to catch it — wrongly making
+            # the next entry look like the deployment's very-first-ever
+            # entry again: re-triggering enter_immediately_on_deploy's
+            # skip-the-entry_time-gate exception (which is meant to fire
+            # ONCE, ever, per module docstring's Section 2) on a restart
+            # that has nothing to do with a fresh deployment, and risking
+            # a stale, long-closed cycle_id being reused by the next
+            # _enter() — which would make _resume_from_db's own
+            # cycle_realized_pnl reconstruction (below) sum in P&L from
+            # that unrelated old cycle on a LATER restart, corrupting the
+            # checkpoint-target comparison. Recover what we can from
+            # closed-position history instead of assuming "flat now" ==
+            # "never entered".
+            closed = await runner.list_closed_positions()
+            ever_closed_legs = [
+                p for p in closed if p["symbol"].endswith("CE") or p["symbol"].endswith("PE")
+            ]
+            if not ever_closed_legs:
+                return   # genuinely never entered — all the on_start defaults are correct as-is
+            self.entered_ever = True
+            for pos in ever_closed_legs:
+                # `positions.metadata` is written once at OPEN and never
+                # overwritten by the later close (see queries.record_fill)
+                # — but cycle_id/seq are stamped identically at open time
+                # and don't change, so reading them off this OPEN metadata
+                # is exactly as reliable as reading them off the close.
+                meta = pos["metadata"] or {}
+                if meta.get("cycle_id") is not None:
+                    self.cycle_id = max(self.cycle_id, int(meta["cycle_id"]))
+                if meta.get("seq") is not None:
+                    self._leg_seq = max(self._leg_seq, int(meta["seq"]))
+
+            # _last_flatten_trigger, unlike cycle_id/seq above, genuinely
+            # needs the CLOSE fill's OWN metadata (what trigger caused
+            # THAT flatten) — which only ever lands in position_lots, not
+            # positions. list_recent_lots() reads that table directly.
+            recent_lots = await runner.list_recent_lots(limit=50)
+            most_recent_close = next(
+                (l for l in recent_lots
+                 if l["action"] == "buy" and (l["metadata"] or {}).get("action") == "close"
+                 and (l["metadata"] or {}).get("leg") in ("CE", "PE")),
+                None,
+            )
+            if most_recent_close is not None:
+                self._last_flatten_trigger = (most_recent_close["metadata"] or {}).get("trigger")
+            logger.info(
+                "%s: resumed flat (no open legs), but history shows a prior "
+                "entry — entered_ever=True, cycle_id=%d, last_flatten_trigger=%s "
+                "(preventing this restart from looking like a fresh first entry)",
+                runner.deployment_name, self.cycle_id, self._last_flatten_trigger,
+            )
             return
 
         for token, pos in open_legs:

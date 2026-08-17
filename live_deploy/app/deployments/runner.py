@@ -218,6 +218,23 @@ class DeploymentRunner:
         rows = await queries.list_positions(self.pool, self.deployment_id, status="closed")
         return [dict(r) for r in rows]
 
+    async def list_recent_lots(self, limit: int = 50) -> list[dict]:
+        """
+        Most-recent individual FILLS for this deployment (open AND close
+        alike), most-recent first — for resume-safety that needs the
+        CLOSE fill's own metadata specifically (e.g. what trigger caused
+        the most recent flatten), which `list_closed_positions()` can't
+        answer: a `positions` row's `metadata` column is written once, at
+        that position's OPEN, and is never overwritten by its later close
+        (see `queries.record_fill`) — only the `position_lots` row for
+        that close fill itself carries the close's own trigger/metadata.
+        Same sanctioned-access-point principle as buy()/sell()/
+        list_closed_positions(): a strategy calls this rather than
+        touching `self.pool`/`queries` directly.
+        """
+        rows, _total = await queries.list_lots(self.pool, self.deployment_id, offset=0, limit=limit)
+        return [dict(r) for r in rows]
+
     # ── Tick consumption ─────────────────────────────────────────────
 
     def _is_stale_pre_creation_tick(self, tick: dict) -> bool:
