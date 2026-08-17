@@ -3959,13 +3959,24 @@ before touching it**: `strangle_monthly_v2.py` (1476 lines, by far the
 largest strategy file, handling multi-leg strangles with rolling/
 adjustment logic) has not been given the same close read the other
 five got this session. It may have its own version of this bug, or
-something else entirely — flagging rather than guessing. Also
-flagged: force-closing a position via the dashboard's "Close" action
-bypasses each strategy's own `dispatcher.release_instruments()` call
-for dynamically-registered instruments (mentioned earlier this
-session when you asked about clicking Delete on a dynamic
-registration) — confirmed real, not yet built, since it wasn't
-explicitly requested as a fix.
+something else entirely — flagging rather than guessing. (Now covered
+by Step 60, and cleared.)
+
+**Correcting an earlier claim in this same audit**: also flagged here,
+originally, was "force-closing a position bypasses each strategy's own
+`dispatcher.release_instruments()` call for dynamically-registered
+instruments" (from when you asked about clicking Delete on a dynamic
+registration, earlier this session) — logged then as "confirmed real,
+not yet built." Re-traced it properly this time instead of leaving it
+on trust: `DeploymentManager.stop(force_close=True)` closes open
+positions directly at the DB level, bypassing the strategy, but then
+still calls `runner.stop()` → the strategy's own `on_stop()` — which
+releases its dynamically-registered tokens off its own in-memory `legs`/
+equivalent state, not off position status, so the bypass doesn't matter
+to it. Verified directly: entered a strangle (2 dynamic legs
+subscribed), force-closed, checked the dispatcher's actual reference
+counts — both legs correctly unsubscribed, both before AND after the
+follow-up Delete call. No leak. Retracting that finding — it was wrong.
 
 ## What's here (Step 60: strangle_monthly_v2's own flat-between-cycles window had the same "restart looks like a fresh start" gap)
 
