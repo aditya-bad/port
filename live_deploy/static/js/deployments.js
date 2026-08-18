@@ -7,16 +7,42 @@
 
 const Deployments = {
   _all: [],
+  _livePnlHandler: null,
 
   // quiet=true: event-driven background refresh -- see Dashboard.load()'s
   // own comment for why the spinner reset is skipped in that case.
   async load(quiet = false) {
+    window.LivePnl.untrack(this._livePnlHandler);   // never stack trackers across reloads
+    this._livePnlHandler = null;
+
     const el = document.getElementById('deploymentsTable');
     if (!quiet) el.innerHTML = spinnerHtml();
-    this._all = await Api.listDeployments();
+    const [all, positions] = await Promise.all([
+      Api.listDeployments(),
+      // The list response only ever carries each deployment's own
+      // ALREADY-COMPUTED unrealized_pnl total, not the underlying
+      // positions -- fetching the same cross-deployment aggregate
+      // Dashboard uses is what lets the Unrealized column update live
+      // per-tick here too, instead of sitting frozen until the next
+      // full reload (previously nothing refreshed it at all between
+      // loads/the event-driven quiet refresh).
+      Api.getAllPositions('open'),
+    ]);
+    this._all = all;
     this._populateStrategyFilter();
     this.render();
     markUpdated('deploymentsUpdatedLabel');
+
+    this._livePnlHandler = window.LivePnl.track(positions, ({ totalPnl }) => {
+      for (const d of this._all) {
+        const combined = totalPnl(d.id);
+        if (combined == null) continue;
+        const cell = el.querySelector(`tr[data-deployment-id="${d.id}"] .live-pnl`);
+        if (!cell) continue;
+        cell.textContent = fmtSignedMoney(combined);
+        cell.className = `live-pnl ${pnlClass(combined)}`;
+      }
+    });
   },
 
   _populateStrategyFilter() {
@@ -54,7 +80,7 @@ const Deployments = {
         <th>Capital</th><th>Cash</th><th>Realized</th><th>Unrealized</th><th>Actions</th>
       </tr></thead>
       <tbody>${rows.map(d => `
-        <tr class="clickable-row" onclick="location.hash='#/deployments/${d.id}'">
+        <tr class="clickable-row" data-deployment-id="${d.id}" onclick="location.hash='#/deployments/${d.id}'">
           <td>
             ${escapeHtml(d.deployment_name)}
             ${!d.strategy_registered ? '<span class="tag tag-warn">unregistered</span>' : ''}
@@ -66,7 +92,7 @@ const Deployments = {
           <td>${fmtMoney(d.initial_capital)}</td>
           <td>${fmtMoney(d.current_cash)}</td>
           <td class="${pnlClass(d.realized_pnl)}">${fmtSignedMoney(d.realized_pnl)}</td>
-          <td class="${pnlClass(d.unrealized_pnl)}">${fmtSignedMoney(d.unrealized_pnl)}</td>
+          <td class="live-pnl ${pnlClass(d.unrealized_pnl)}">${fmtSignedMoney(d.unrealized_pnl)}</td>
           <td onclick="event.stopPropagation()">
             ${d.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.pause('${d.id}')">Pause</button>` : ''}
             ${d.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.resume('${d.id}')">Resume</button>` : ''}

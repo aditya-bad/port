@@ -49,8 +49,15 @@ const Detail = {
             <span>Capital: <b>${fmtMoney(dep.initial_capital)}</b></span>
             <span>Cash: <b>${fmtMoney(dep.current_cash)}</b></span>
             <span>Realized: <b class="${pnlClass(dep.realized_pnl)}">${fmtSignedMoney(dep.realized_pnl)}</b></span>
-            <span>Unrealized: <b class="${pnlClass(dep.unrealized_pnl)}">${fmtSignedMoney(dep.unrealized_pnl)}</b></span>
           </div>
+          <!-- Unrealized deliberately NOT shown here any more -- it lived
+               here as a frozen snapshot from page load with nothing to
+               keep it current between reloads (same class of gap the
+               Positions table itself had before Step 61's live wiring).
+               Moved to that table's own live-updating Total row instead
+               (see renderPositions() below) -- one live number, not two
+               places that could show two different values depending on
+               how stale each one happened to be, Zerodha-style. -->
           ${dep.notes ? `<div class="card-sub" style="margin-top:8px; white-space:pre-wrap;">📝 ${escapeHtml(dep.notes)}</div>` : ''}
         </div>
         <div class="card-actions">
@@ -128,71 +135,77 @@ const Detail = {
   },
 
   // ── Positions ───────────────────────────────────────────────────
-  // Price/P&L cells update LIVE off the same /sse/ticks stream the
-  // ticker bar uses (see window.LiveTicks in index.html) — previously
-  // this table was a one-time snapshot from page load with no live
-  // update at all (no polling, no live wiring), so it went stale the
-  // instant you stopped reloading the whole page. Only the two numeric cells
-  // are touched per tick, by instrument_token — everything else about
-  // the table (rows, sort order, other tabs) is untouched, so this
-  // can't disrupt anything the way a full re-render would.
-  _liveTickHandler: null,
+  // Price/P&L cells (plus the Total row's own combined figure) update
+  // LIVE off the same /sse/ticks stream the ticker bar uses, via
+  // window.LivePnl (index.html) — previously this table was a one-time
+  // snapshot from page load with no live update at all (no polling, no
+  // live wiring), so it went stale the instant you stopped reloading
+  // the whole page. Only these specific cells are touched per tick —
+  // everything else about the table (rows, sort order, other tabs) is
+  // untouched, so this can't disrupt anything the way a full re-render
+  // would. The header's own former "Unrealized" stat (see
+  // renderHeader() above) now lives ONLY here, as the Total row below —
+  // one live number instead of two places that could each show a
+  // different, differently-stale value.
+  _livePnlHandler: null,
 
   _stopLivePositionUpdates() {
-    if (this._liveTickHandler) {
-      window.LiveTicks.off(this._liveTickHandler);
-      this._liveTickHandler = null;
-    }
+    window.LivePnl.untrack(this._livePnlHandler);
+    this._livePnlHandler = null;
   },
 
   async renderPositions() {
-    this._stopLivePositionUpdates();   // never stack listeners across re-renders/tab switches
+    this._stopLivePositionUpdates();   // never stack trackers across re-renders/tab switches
     const rows = await Api.getPositions(this._id, 'open');
     const body = document.getElementById('detailBody');
     if (!rows.length) {
       body.innerHTML = emptyHtml('No open positions');
       return;
     }
-    // side/qty/avg_entry_price never change tick-to-tick, so keeping
-    // them here (rather than re-reading the DOM) is exactly the data a
-    // live tick needs to recompute price + unrealized P&L on its own.
-    const byToken = new Map(rows.map(p => [p.instrument_token, {
-      side: p.side, qty: p.qty, avg: p.avg_entry_price,
-    }]));
+    const startingTotal = rows.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
     body.innerHTML = `
       <div class="table-wrap">
       <table><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Avg</th><th>Price</th><th>Unrealized</th></tr></thead>
-      <tbody>${rows.map(p => `<tr data-token="${p.instrument_token}">
+      <tbody>${rows.map(p => `<tr data-position-id="${p.id}">
         <td>${escapeHtml(p.symbol)}</td><td>${p.side}</td><td>${fmtNum(p.qty)}</td>
         <td>${fmtNum(p.avg_entry_price)}</td>
         <td class="live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
         <td class="live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
-      </tr>`).join('')}</tbody></table>
+      </tr>`).join('')}</tbody>
+      <tfoot><tr class="positions-total-row">
+        <td colspan="4"></td>
+        <td><b>Total</b></td>
+        <td class="live-pnl-total ${pnlClass(startingTotal)}">${fmtSignedMoney(startingTotal)}</td>
+      </tr></tfoot>
+      </table>
       </div>
     `;
 
-    this._liveTickHandler = (ticks) => {
-      // Cheap guard against a stale listener outliving its tab/page —
-      // switchTab()/load() both call _stopLivePositionUpdates(), but a
-      // tick that was already in flight when that happened could still
-      // land here microseconds later.
+    this._livePnlHandler = window.LivePnl.track(rows, ({ pnlFor, priceFor, totalPnl }) => {
+      // Cheap guard against a stale tracker outliving its tab/page —
+      // switchTab()/load() both untrack, but a tick already in flight
+      // when that happened could still land here microseconds later.
       if (this._tab !== 'positions') return;
-      for (const t of ticks) {
-        const info = byToken.get(t.instrument_token);
-        if (!info || t.last_price == null) continue;
-        const row = body.querySelector(`tr[data-token="${t.instrument_token}"]`);
+      for (const p of rows) {
+        const price = priceFor(p.instrument_token);
+        if (price == null) continue;
+        const row = body.querySelector(`tr[data-position-id="${p.id}"]`);
         if (!row) continue;
-        const price = t.last_price;
-        const pnl = info.side === 'long'
-          ? (price - info.avg) * info.qty
-          : (info.avg - price) * info.qty;
+        const pnl = pnlFor(p.id);
         row.querySelector('.live-price').textContent = fmtNum(price);
         const pnlCell = row.querySelector('.live-pnl');
-        pnlCell.textContent = fmtSignedMoney(pnl);
-        pnlCell.className = `live-pnl ${pnlClass(pnl)}`;
+        if (pnl != null) {
+          pnlCell.textContent = fmtSignedMoney(pnl);
+          pnlCell.className = `live-pnl ${pnlClass(pnl)}`;
+        }
       }
-    };
-    window.LiveTicks.on(this._liveTickHandler);
+      const combined = totalPnl();
+      const totalCell = body.querySelector('.live-pnl-total');
+      if (totalCell && combined != null) {
+        totalCell.textContent = fmtSignedMoney(combined);
+        totalCell.className = `live-pnl-total ${pnlClass(combined)}`;
+      }
+    });
   },
 
   // ── Trades — expandable rows + trigger badges ──────────────────

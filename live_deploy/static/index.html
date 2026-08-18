@@ -504,6 +504,16 @@ td { padding: 9px 10px; border-bottom: 2px solid var(--row-line); font-family: v
 .table-note { color: var(--parchment); font-size: 11px; margin-top: 8px; }
 .deploy-table th:nth-child(n+5), .deploy-table td:nth-child(n+5) { text-align: right; }
 
+/* Positions table's own Total row (Detail page) — a Zerodha-style
+   summary row baked into the table itself instead of a separate stat
+   card up top, so there's exactly one live-updating P&L figure to look
+   at, not two that could each be differently stale. Thicker top rule +
+   a faint fill sets it apart from ordinary position rows without
+   needing a whole second table. */
+.positions-total-row td { border-top: 3px solid var(--line); border-bottom: none;
+  background: var(--sand); padding-top: 11px; padding-bottom: 11px; }
+.positions-total-row .live-pnl-total { font-weight: 800; font-size: 13px; }
+
 /* ── Stat cards (Dashboard) — a flatter KPI-box treatment (2px, no
    shadow) so .card/.table-wrap/.modal's full "frame" treatment (3px +
    shadow) stays meaningfully heavier, not identical everywhere. ──── */
@@ -1786,6 +1796,80 @@ window.LiveTicks = {
     for (const fn of this._listeners) {
       try { fn(ticks); } catch (e) { console.error('LiveTicks listener threw:', e); }
     }
+  },
+};
+
+// ── Live P&L tracking, built on window.LiveTicks ─────────────────────
+// A reusable accumulator: hand it the open positions you care about
+// (needs id/instrument_token/avg_entry_price/qty/side on each — exactly
+// the shape GET /positions and GET /deployments/{id}/positions already
+// return) and a callback; it recomputes unrealized P&L per-position AND
+// a combined total as real ticks arrive, and calls you back with a
+// small reader object so YOU decide what to touch in the DOM (a table
+// cell, a stat card, both) — this only owns the math, never the
+// rendering, since every view that needs this shows it differently.
+//
+// Keyed by each position's own `id`, NOT instrument_token — the
+// cross-deployment Dashboard view can legitimately have two different
+// deployments both holding the exact same instrument (e.g. two
+// straddles that both resolved to the same strike), and keying by
+// token alone would let the second one silently overwrite the first
+// in the basis map, undercounting the combined total. A token -> ids
+// index lets one tick still fan out to every position that happens to
+// share it.
+//
+// track() returns a handle to pass to untrack() — always untrack when
+// leaving a view/tab/deployment, same discipline as LiveTicks.off()
+// itself, or a stale listener keeps recomputing (and the callback keeps
+// touching DOM nodes) for a view nobody's looking at any more.
+window.LivePnl = {
+  track(positions, onUpdate) {
+    const basis = new Map();       // position id -> { token, avg, qty, side, deployment_id }
+    const idsByToken = new Map();  // instrument_token -> Set<position id>
+    for (const p of positions) {
+      basis.set(p.id, {
+        token: p.instrument_token, avg: p.avg_entry_price, qty: p.qty,
+        side: p.side, deployment_id: p.deployment_id,
+      });
+      if (!idsByToken.has(p.instrument_token)) idsByToken.set(p.instrument_token, new Set());
+      idsByToken.get(p.instrument_token).add(p.id);
+    }
+    const prices = new Map();   // instrument_token -> latest live price
+
+    function pnlFor(positionId) {
+      const b = basis.get(positionId);
+      const price = b && prices.get(b.token);
+      if (!b || price == null) return null;
+      return b.side === 'long' ? (price - b.avg) * b.qty : (b.avg - price) * b.qty;
+    }
+    // Optional deploymentId filters the total to just that deployment's
+    // own positions -- omit it for a portfolio-wide total across all of
+    // them (Dashboard's own use case).
+    function totalPnl(deploymentId) {
+      let sum = 0, anyPriced = false;
+      for (const [id, b] of basis) {
+        if (deploymentId != null && b.deployment_id !== deploymentId) continue;
+        const pnl = pnlFor(id);
+        if (pnl != null) { sum += pnl; anyPriced = true; }
+      }
+      return anyPriced ? sum : null;
+    }
+
+    const handler = (ticks) => {
+      let changed = false;
+      for (const t of ticks) {
+        if (idsByToken.has(t.instrument_token) && t.last_price != null) {
+          prices.set(t.instrument_token, t.last_price);
+          changed = true;
+        }
+      }
+      if (changed) onUpdate({ pnlFor, totalPnl, priceFor: (token) => prices.get(token) });
+    };
+    window.LiveTicks.on(handler);
+    return handler;
+  },
+  untrack(handler) {
+    if (handler) window.LiveTicks.off(handler);
   },
 };
 

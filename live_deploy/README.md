@@ -4253,6 +4253,64 @@ matching the live production traceback exactly. Reran the full SSE
 backend suite and the real-Chromium Playwright test afterward — both
 still pass.
 
+## What's here (Step 65: live prices confirmed working — but Unrealized P&L was still a frozen snapshot everywhere except the one table Step 61 fixed)
+
+Reported live, right after confirming the SSE fix worked: three more
+places showing the same "frozen since page load" symptom Step 61 had
+already fixed for Detail's own Positions table specifically — the
+Dashboard's Total P&L KPI card, the Deployed Strategies list's
+Unrealized column, and (still) Detail's own header stat. Root cause was
+the exact same shape each time: `unrealized_pnl` is computed server-side
+from `dispatcher.last_prices` at the moment of the REST fetch that
+loaded each view, then never touched again — Step 61 only ever wired up
+ONE specific table (Detail's Positions tab) to the live tick stream, not
+every OTHER place a P&L figure gets shown.
+
+Also asked for directly: move Detail's P&L out of the header and into
+the positions table itself, Zerodha-style — a bottom "Total" row instead
+of (or in addition to) a separate stat card, since duplicating the same
+number in two places just means two independently-stale copies instead
+of one.
+
+**Fixed** by extracting the position-basis-plus-live-price math Step 61
+had hand-rolled into a shared, reusable `window.LivePnl` (index.html,
+next to `window.LiveTicks`) — hand it the open positions you care about
+and a callback, it recomputes per-position AND combined P&L as real
+ticks arrive and calls you back with a small reader (`pnlFor`,
+`priceFor`, `totalPnl`), leaving each view free to decide what to touch
+in the DOM. Found and fixed a real bug in this refactor before it ever
+shipped: keying the basis map by `instrument_token` alone breaks the
+instant two DIFFERENT deployments happen to hold the exact same
+instrument (a real possibility for the Dashboard's cross-deployment
+view specifically — e.g. two straddles landing on the same strike) —
+the second one would silently overwrite the first, undercounting the
+combined total. Re-keyed by each position's own unique `id` instead,
+with a `token -> {ids}` index so one tick still correctly fans out to
+every position sharing that token.
+
+Wired into all three places: Dashboard's KPI card (`dashTotalPnl`/
+`dashUnrealizedPnl`) AND its own positions table, scoped to
+"active + paused" deployments only, matching what the static figures
+next to them were already scoped to; the Deployed Strategies list's
+per-row Unrealized column (needed one extra `GET /positions` call
+alongside the existing deployment list, since that list response only
+ever carried each deployment's already-computed total, not the
+positions behind it); and Detail's own Positions tab, whose hand-rolled
+Step 61 version got replaced by the shared helper too, plus its header's
+old "Unrealized" stat removed entirely in favor of a new bottom Total
+row (`.positions-total-row`) — one live number instead of two places
+that could each show a different, differently-stale value.
+
+**Verified in a real browser**, all three surfaces in one pass: deployed
+a real strangle, drove Chromium through Dashboard → Deployed Strategies
+→ Detail, injecting real ticks between each check — confirmed the
+Dashboard KPI card's Total/Unrealized change live, its positions table
+rows update alongside them, the Deployed Strategies list's Unrealized
+column changes live, Detail's header no longer shows an Unrealized stat
+at all, and Detail's own new Total row updates live and matches the sum
+of its two leg rows. Screenshotted the Detail page's new table-embedded
+Total row as visual confirmation.
+
 ## Setup
 
 ```bash

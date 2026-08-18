@@ -11,6 +11,13 @@ const Dashboard = {
   // 6th section get appended rather than jumping to the top).
   _sectionIds: ['dashSectionStats', 'dashSectionCalendar', 'dashSectionPositions', 'dashSectionActivity', 'dashSectionInstruments'],
 
+  // See window.LivePnl (index.html) -- one tracker covers both the KPI
+  // card's Total/Unrealized figures AND the positions table's own
+  // Price/Unrealized cells, off the SAME live tick stream, since
+  // they're computed from the exact same open-positions data.
+  _livePnlHandler: null,
+  _liveTotals: { realized: 0, liveDeploymentIds: new Set() },   // stashed by renderStats() for the live-update callback
+
   // quiet=true is used for event-driven background refresh (see
   // connectEventSocket() near the bottom of index.html) -- skips the
   // spinner reset so already-rendered content just gets swapped for
@@ -20,6 +27,9 @@ const Dashboard = {
   // nothing on screen yet to hold onto), so this only ever passes
   // quiet=true from the auto-refresh path, never from router().
   async load(quiet = false) {
+    window.LivePnl.untrack(this._livePnlHandler);   // never stack trackers across reloads
+    this._livePnlHandler = null;
+
     const order = SectionOrder.getOrder('dashboard', this._sectionIds);
     SectionOrder.apply(document.getElementById('dashboardSections'), order);
     SectionOrder.syncButtons(order);
@@ -46,6 +56,56 @@ const Dashboard = {
     this.renderActivity(trades);
     this.renderInstruments(instruments);
     markUpdated('dashUpdatedLabel');
+
+    // Live-updates the KPI card's Total/Unrealized figures AND the
+    // positions table's own Price/Unrealized cells, off the same real
+    // tick stream the ticker bar uses -- see window.LivePnl (index.html).
+    // Fixes both having been a frozen snapshot from whenever this load()
+    // last ran (previously nothing touched them between reloads/the
+    // event-driven quiet refresh, same class of gap Detail's own
+    // Positions tab had before Step 61).
+    const positionsTable = document.getElementById('dashPositions');
+    this._livePnlHandler = window.LivePnl.track(positions, ({ pnlFor, priceFor }) => {
+      // Same "active + paused only" scope as renderStats()'s own
+      // totalRealized/totalUnrealized above -- a stopped deployment's
+      // positions (an edge case; force_close normally clears them)
+      // still light up in the table below, just excluded from this KPI
+      // total, matching what the static figures already excluded them from.
+      let combined = 0, anyPriced = false;
+      for (const p of positions) {
+        if (!this._liveTotals.liveDeploymentIds.has(p.deployment_id)) continue;
+        const pnl = pnlFor(p.id);
+        if (pnl != null) { combined += pnl; anyPriced = true; }
+      }
+      combined = anyPriced ? combined : null;
+      if (combined != null) {
+        const total = this._liveTotals.realized + combined;
+        const totalEl = document.getElementById('dashTotalPnl');
+        const unrealizedEl = document.getElementById('dashUnrealizedPnl');
+        if (totalEl) {
+          totalEl.textContent = fmtSignedMoney(total);
+          totalEl.className = `stat-value ${pnlClass(total)}`;
+        }
+        if (unrealizedEl) {
+          unrealizedEl.textContent = fmtSignedMoney(combined);
+          unrealizedEl.className = pnlClass(combined);
+        }
+      }
+      for (const p of positions) {
+        const price = priceFor(p.instrument_token);
+        if (price == null) continue;
+        const row = positionsTable.querySelector(`tr[data-position-id="${p.id}"]`);
+        if (!row) continue;
+        const pnl = pnlFor(p.id);
+        const priceCell = row.querySelector('.live-price');
+        if (priceCell) priceCell.textContent = fmtNum(price);
+        const pnlCell = row.querySelector('.live-pnl');
+        if (pnlCell && pnl != null) {
+          pnlCell.textContent = fmtSignedMoney(pnl);
+          pnlCell.className = `live-pnl ${pnlClass(pnl)}`;
+        }
+      }
+    });
   },
 
   moveSection(id, delta) {
@@ -80,13 +140,21 @@ const Dashboard = {
       .map(d => `<div class="row"><span>${escapeHtml(d.name)}</span><b class="${pnlClass(d.pnl)}">${fmtSignedMoney(d.pnl)}</b></div>`)
       .join('');
 
+    // Stashed for the live-tick callback in load() above -- Realized
+    // never moves between reloads (only a fill changes it), so it's a
+    // fixed input to the live Total figure, not something recomputed
+    // per-tick itself. liveDeploymentIds keeps the live total scoped to
+    // "active + paused" exactly like totalRealized/totalUnrealized above.
+    this._liveTotals.realized = totalRealized;
+    this._liveTotals.liveDeploymentIds = new Set(live.map(d => d.id));
+
     el.innerHTML = `
       <div class="stat-card">
         <div class="stat-label">Total P&amp;L (active + paused)</div>
-        <div class="stat-value ${pnlClass(total)}">${fmtSignedMoney(total)}</div>
+        <div class="stat-value ${pnlClass(total)}" id="dashTotalPnl">${fmtSignedMoney(total)}</div>
         <div class="stat-sub">
           <div class="row"><span>Realized</span><b class="${pnlClass(totalRealized)}">${fmtSignedMoney(totalRealized)}</b></div>
-          <div class="row"><span>Unrealized</span><b class="${pnlClass(totalUnrealized)}">${fmtSignedMoney(totalUnrealized)}</b></div>
+          <div class="row"><span>Unrealized</span><b class="${pnlClass(totalUnrealized)}" id="dashUnrealizedPnl">${fmtSignedMoney(totalUnrealized)}</b></div>
         </div>
       </div>
       <div class="stat-card">
@@ -118,15 +186,15 @@ const Dashboard = {
         <th>Symbol</th><th>Deployment</th><th>Strategy</th><th>Side</th>
         <th>Qty</th><th>Avg</th><th>Price</th><th>Unrealized</th>
       </tr></thead>
-      <tbody>${positions.map(p => `<tr>
+      <tbody>${positions.map(p => `<tr data-position-id="${p.id}">
         <td>${escapeHtml(p.symbol)}</td>
         <td><a href="#/deployments/${p.deployment_id}">${escapeHtml(p.deployment_name)}</a></td>
         <td>${escapeHtml(p.strategy_name)}</td>
         <td>${p.side}</td>
         <td>${fmtNum(p.qty)}</td>
         <td>${fmtNum(p.avg_entry_price)}</td>
-        <td>${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
-        <td class="${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
+        <td class="live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
+        <td class="live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
       </tr>`).join('')}</tbody></table>
       </div>
     `;
