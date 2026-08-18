@@ -4311,6 +4311,49 @@ at all, and Detail's own new Total row updates live and matches the sum
 of its two leg rows. Screenshotted the Detail page's new table-embedded
 Total row as visual confirmation.
 
+## What's here (Step 66: two more spots Step 65 missed — the Dashboard's per-deployment breakdown, and a Total row for the Deployed Strategies list too)
+
+Pointed out directly, right after Step 65: the Dashboard's third stat
+card (per-deployment breakdown, top 6 by absolute P&L) was STILL a
+frozen snapshot — Step 65 wired the Dashboard's Total/Unrealized figures
+and its positions table, but never this third card, same underlying
+data, just not connected. Also asked for directly: give the Deployed
+Strategies list the same Zerodha-style Total row Detail's own Positions
+table got in Step 65, instead of leaving it as the one list view with a
+P&L column but no summary line.
+
+**Dashboard breakdown, fixed**: each of the up-to-6 rows keeps its
+`deployment_id`/`realized_pnl` around (previously discarded the moment
+the list was built), tagged with `data-deployment-id` in the DOM. The
+existing `LivePnl` tracker (already running for the KPI card + positions
+table) now also recomputes `realized + live_unrealized` for each visible
+row on every tick and updates it in place. Deliberately NOT re-sorted
+per tick — a row's OWN number updates live, but the ranking (which 6 are
+shown, in what order) only changes on the next real reload, so rows
+don't visibly swap position while you're reading them.
+
+**Deployed Strategies list Total row, added**: a `<tfoot>` row summing
+Capital/Cash/Realized/Unrealized — but only over whatever the current
+status/strategy FILTERS actually show, not always every deployment, so
+it stays an honest sum of what's on screen rather than a fixed
+portfolio-wide number that stops matching the visible rows the moment a
+filter is applied. Extracted the filter predicate (previously inlined
+once, in `render()`) into its own `_filteredRows()` so the live-tick
+handler and the render path can never silently disagree about what's
+"currently visible." The live handler falls back to each deployment's
+static `unrealized_pnl` for anything with no live-priced position yet
+(e.g. genuinely flat, or just no tick received since load), so the
+total stays correct even for a mix of live-updated and not-yet-updated
+rows.
+
+**Verified in a real browser**: extended the same Dashboard → Deployed
+Strategies → Detail Playwright run from Step 65 with two more checks —
+confirmed the breakdown card's single visible row (only one deployment
+existed in the test) matches the KPI card's own Unrealized figure after
+a live tick, and confirmed the Deployed Strategies list's new Total row
+matches its one row's own Unrealized value after a different live tick.
+Screenshotted the new Total row.
+
 ## Setup
 
 ```bash

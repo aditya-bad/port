@@ -42,6 +42,22 @@ const Deployments = {
         cell.textContent = fmtSignedMoney(combined);
         cell.className = `live-pnl ${pnlClass(combined)}`;
       }
+
+      // Total row -- summed over whatever's CURRENTLY filtered, not
+      // always every deployment (see _filteredRows()'s own comment).
+      let visibleUnrealized = 0, anyPriced = false;
+      for (const d of this._filteredRows()) {
+        const combined = totalPnl(d.id);
+        visibleUnrealized += combined != null ? combined : (d.unrealized_pnl || 0);
+        if (combined != null) anyPriced = true;
+      }
+      if (anyPriced) {
+        const totalCell = el.querySelector('.live-pnl-total');
+        if (totalCell) {
+          totalCell.textContent = fmtSignedMoney(visibleUnrealized);
+          totalCell.className = `live-pnl-total ${pnlClass(visibleUnrealized)}`;
+        }
+      }
     });
   },
 
@@ -54,15 +70,23 @@ const Deployments = {
     if (names.includes(current)) select.value = current;
   },
 
-  render() {
-    const el = document.getElementById('deploymentsTable');
+  // Shared between render() and the live-tick handler below so both
+  // always agree on "what's currently visible" -- the total row's live
+  // updates need this SAME filtered set on every tick, not just at
+  // render time, or changing a filter without a fresh tick arriving
+  // yet would leave the total row summing the wrong rows.
+  _filteredRows() {
     const statusFilter = document.getElementById('filterStatus').value;
     const strategyFilter = document.getElementById('filterStrategy').value;
-
-    const rows = this._all.filter(d =>
+    return this._all.filter(d =>
       (!statusFilter || d.status === statusFilter) &&
       (!strategyFilter || d.strategy_name === strategyFilter)
     );
+  },
+
+  render() {
+    const el = document.getElementById('deploymentsTable');
+    const rows = this._filteredRows();
 
     if (!this._all.length) {
       el.innerHTML = emptyHtml('No deployments yet. Deploy a strategy from the Catalog to create one.');
@@ -72,6 +96,18 @@ const Deployments = {
       el.innerHTML = emptyHtml('No deployments match the current filters.');
       return;
     }
+
+    // Totals row (tfoot) -- scoped to whatever the current filters
+    // actually show, not always every deployment, so it stays an
+    // honest sum of what's on screen rather than a fixed portfolio-wide
+    // figure that stops matching the visible rows the moment a filter
+    // is applied. Capital/Cash/Realized are exact from this same fetch;
+    // Unrealized starts here and then updates live below, same
+    // Zerodha-style pattern as Detail's own Positions table Total row.
+    const totalCapital = rows.reduce((s, d) => s + (d.initial_capital || 0), 0);
+    const totalCash = rows.reduce((s, d) => s + (d.current_cash || 0), 0);
+    const totalRealized = rows.reduce((s, d) => s + (d.realized_pnl || 0), 0);
+    const totalUnrealized = rows.reduce((s, d) => s + (d.unrealized_pnl || 0), 0);
 
     el.innerHTML = `
       <div class="table-wrap">
@@ -100,7 +136,16 @@ const Deployments = {
             ${d.status === 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Deployments.deleteDeployment('${d.id}')">Delete</button>` : ''}
           </td>
         </tr>
-      `).join('')}</tbody></table>
+      `).join('')}</tbody>
+      <tfoot><tr class="positions-total-row">
+        <td colspan="4"><b>Total (${rows.length} shown)</b></td>
+        <td>${fmtMoney(totalCapital)}</td>
+        <td>${fmtMoney(totalCash)}</td>
+        <td class="${pnlClass(totalRealized)}">${fmtSignedMoney(totalRealized)}</td>
+        <td class="live-pnl-total ${pnlClass(totalUnrealized)}">${fmtSignedMoney(totalUnrealized)}</td>
+        <td></td>
+      </tr></tfoot>
+      </table>
       </div>
     `;
   },

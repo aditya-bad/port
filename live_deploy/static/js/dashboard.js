@@ -16,7 +16,7 @@ const Dashboard = {
   // Price/Unrealized cells, off the SAME live tick stream, since
   // they're computed from the exact same open-positions data.
   _livePnlHandler: null,
-  _liveTotals: { realized: 0, liveDeploymentIds: new Set() },   // stashed by renderStats() for the live-update callback
+  _liveTotals: { realized: 0, liveDeploymentIds: new Set(), breakdownList: [] },   // stashed by renderStats() for the live-update callback
 
   // quiet=true is used for event-driven background refresh (see
   // connectEventSocket() near the bottom of index.html) -- skips the
@@ -65,7 +65,8 @@ const Dashboard = {
     // event-driven quiet refresh, same class of gap Detail's own
     // Positions tab had before Step 61).
     const positionsTable = document.getElementById('dashPositions');
-    this._livePnlHandler = window.LivePnl.track(positions, ({ pnlFor, priceFor }) => {
+    const statsEl = document.getElementById('dashStats');
+    this._livePnlHandler = window.LivePnl.track(positions, ({ pnlFor, priceFor, totalPnl }) => {
       // Same "active + paused only" scope as renderStats()'s own
       // totalRealized/totalUnrealized above -- a stopped deployment's
       // positions (an edge case; force_close normally clears them)
@@ -105,6 +106,21 @@ const Dashboard = {
           pnlCell.className = `live-pnl ${pnlClass(pnl)}`;
         }
       }
+
+      // Per-deployment breakdown (the 3rd stat card) -- same "realized
+      // fixed, unrealized recomputed live" shape as the Total card
+      // above, per row instead of aggregated. Values update in place;
+      // the ranking/which-6-are-shown does NOT re-sort per tick (see
+      // renderStats()'s own comment on why).
+      for (const d of this._liveTotals.breakdownList) {
+        const combined = totalPnl(d.id);
+        if (combined == null) continue;
+        const pnl = d.realized + combined;
+        const rowEl = statsEl.querySelector(`.row[data-deployment-id="${d.id}"] b`);
+        if (!rowEl) continue;
+        rowEl.textContent = fmtSignedMoney(pnl);
+        rowEl.className = pnlClass(pnl);
+      }
     });
   },
 
@@ -133,11 +149,18 @@ const Dashboard = {
     const counts = { active: 0, paused: 0, stopped: 0 };
     deployments.forEach(d => { counts[d.status] = (counts[d.status] || 0) + 1; });
 
-    const breakdown = live
-      .map(d => ({ name: d.deployment_name, pnl: (d.realized_pnl || 0) + (d.unrealized_pnl || 0) }))
+    // Ranked by starting pnl and left in that order from here on — NOT
+    // re-sorted as live ticks move each one, which would mean rows
+    // silently swapping position while you're reading them. Values
+    // update in place (see load()'s live callback below); the ranking
+    // itself only changes on the next real reload.
+    const breakdownList = live
+      .map(d => ({ id: d.id, name: d.deployment_name, realized: d.realized_pnl || 0,
+                   pnl: (d.realized_pnl || 0) + (d.unrealized_pnl || 0) }))
       .sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl))
-      .slice(0, 6)
-      .map(d => `<div class="row"><span>${escapeHtml(d.name)}</span><b class="${pnlClass(d.pnl)}">${fmtSignedMoney(d.pnl)}</b></div>`)
+      .slice(0, 6);
+    const breakdown = breakdownList
+      .map(d => `<div class="row" data-deployment-id="${d.id}"><span>${escapeHtml(d.name)}</span><b class="${pnlClass(d.pnl)}">${fmtSignedMoney(d.pnl)}</b></div>`)
       .join('');
 
     // Stashed for the live-tick callback in load() above -- Realized
@@ -147,6 +170,7 @@ const Dashboard = {
     // "active + paused" exactly like totalRealized/totalUnrealized above.
     this._liveTotals.realized = totalRealized;
     this._liveTotals.liveDeploymentIds = new Set(live.map(d => d.id));
+    this._liveTotals.breakdownList = breakdownList;
 
     el.innerHTML = `
       <div class="stat-card">
