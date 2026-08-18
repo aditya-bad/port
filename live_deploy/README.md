@@ -4884,6 +4884,83 @@ and skipped cleanly, not crashing the run. Also unit-verified
 ONLY the stripped word, and confirming `"DTTX"` — not a whole-word
 match — is correctly left untouched).
 
+## What's here (Step 76: `custom_scripts/register_supertrend_options_strategies.py` — real-data-seeded registration for 4 pivot+SuperTrend options deployments)
+
+Requested directly: register `pivot_supertrend_options` AND
+`pivot_supertrend_options_inverse`, each for NIFTY and SENSEX (4
+deployments — `ST_PV_NIFTY`/`ST_PV_SENSEX`/`ST_PV_INV_NIFTY`/
+`ST_PV_INV_SENSEX`), fully seeded from real Kite data rather than
+cold-starting, with the seed cross-checked against a chart reading
+before anything gets created.
+
+**The "today vs yesterday" question, answered from the code, not
+assumed**: `prev_day_ohlc` means "the most recently completed trading
+day's H/L/C" — `pivot_supertrend.py`'s own `_roll_over_day()` sets it
+from whatever day just finished, the moment a NEW day's first tick
+arrives. With the market closed right now and these deployments
+starting tomorrow, TODAY is that most-recently-completed session —
+confirmed directly from that mechanism, not guessed. Both
+`prev_day_ohlc` and `seed_candles` correctly come from today's data.
+
+**The two confirmations asked for, answered directly from the strategy's own code**:
+1. **Yes, correctly.** `CandleAggregator.add_tick()` buckets ticks by
+   floor-to-5-minutes and returns the just-COMPLETED candle the moment
+   a tick lands in the NEXT bucket — so the first tick after 9:20
+   closes the 9:15-9:20 candle, `_on_candle_closed()` fires, and
+   `SuperTrendState.update()` advances the trend right then, live,
+   every 5 minutes all day, exactly the same math seeding uses.
+2. **Yes, with one honest caveat.** `get_persistable_state()` is
+   called by `DeploymentRunner.stop()` — pause, stop, AND a graceful
+   full-server shutdown all route through it, writing the complete
+   SuperTrend/pivot/pending-signal state to the `deployment_state`
+   table (`queries.save_deployment_state`), read back automatically at
+   the top of the next `on_start()`. So: if the process just keeps
+   running across the day boundary, OR is paused/resumed/restarted
+   gracefully, no re-seeding is ever needed again. The one gap is an
+   UNGRACEFUL crash (kill -9, OOM, power loss) with no clean stop in
+   between — that specific case falls back to whatever was persisted
+   at the last GRACEFUL stop before it, not literally always current
+   to the last tick processed.
+
+**The script itself** (see `custom_scripts/README.md` for the full
+usage/flags): two phases, deliberately separate. Phase 1 (default, no
+flags) is standalone like every other script here — reuses
+`app/config.py` for `DATABASE_URL`/`api_key`, reads the real Kite
+session from the `kite_sessions` table, builds a real `KiteConnect`
+REST client (same pattern as `app/options/client.py`'s own
+`get_kite_connect`), fetches today's daily OHLC + 5-min candles for
+both indices, and computes SuperTrend(7,3) by importing
+`SuperTrendState` DIRECTLY from `pivot_supertrend.py` — never
+reimplemented, so there's zero risk of the validation drifting from
+what the strategy itself would actually compute. Compares against
+`--nifty-st`/`--sensex-st` (defaulting to the exact chart values from
+this conversation, 24200.27 / 77429.01) within `--tolerance` (default
+±5 points), and saves everything fetched to a gitignored JSON file
+either way. Phase 2 (`--register`) is the one script in this folder
+that genuinely needs the app server running — a real deployment only
+starts trading once `DeploymentManager` picks it up, which a
+standalone DB write can't make happen — so it POSTs to the real
+`/deployments` API instead. Refuses to register on a flagged mismatch
+unless `--force` is also given.
+
+**Verified against a real running server + real Postgres**, with
+synthetic-but-realistic candle data standing in for real Kite market
+data (unreachable from this environment — no real Kite session or
+production database here): confirmed a matching chart value reports
+MATCH and a deliberately wrong one is FLAGGED; confirmed `--register`
+with a flagged mismatch is REFUSED and genuinely creates nothing
+(checked via a real API call); confirmed `--register --force` and a
+clean match both actually create all 4 deployments with the exactly
+correct per-strategy config shape — `prev_day_ohlc` present only for
+the two `pivot_supertrend_options` deployments, entirely absent (not
+even `null`) for the two `_inverse` ones which never read it,
+`hold_candles` present only on the inverse pair, correct instrument
+tokens/`options_underlying`/initial capital for all 4. The JSON output
+file was verified for real too, then deleted before committing (it
+was this test run's synthetic data, not anything real) —
+`custom_scripts/data/` is now gitignored so a real future run's output
+never ends up staged by accident either.
+
 ## Setup
 
 ```bash

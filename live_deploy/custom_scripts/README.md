@@ -48,3 +48,20 @@ zero writes.
   → `"Straddle Nifty Simple"`. A rename that would collide with an
   existing `deployment_name` is reported and skipped, not applied —
   the rest of the batch still runs.
+
+- **`register_supertrend_options_strategies.py`** — the one exception
+  to "never needs the app server": fetching real Kite historical data
+  and validating it is standalone same as everything else here, but
+  actually REGISTERING a deployment (`--register`) needs a real
+  running app server to pick it up and start a live runner — a bare
+  database insert would just leave an orphaned row with nothing
+  trading it. Fetches today's real 5-min candles + daily OHLC for
+  NIFTY and SENSEX from Kite, computes SuperTrend(7,3) through the
+  actual strategy code (imported, not reimplemented), checks it
+  against a chart reading you provide, saves everything fetched to
+  `custom_scripts/data/*.json` (gitignored), and — only once that
+  validation passes, or with `--force` — registers 4 deployments
+  (`pivot_supertrend_options` + its inverse, each for NIFTY and
+  SENSEX) fully seeded so pivots/SuperTrend are correct from minute
+  one instead of needing a cold-start warmup day. See the script's own
+  `--help` / module docstring for the full flag list.
