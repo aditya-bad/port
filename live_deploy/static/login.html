@@ -4,6 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>live_deploy — Login</title>
+<!-- Same PWA install tags as index.html (Step 70) -- kept consistent
+     here too since an expired session can land a user back on this
+     page even from inside the installed app. -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#1B1130">
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="live_deploy">
 <script>
 // Same flash-avoidance trick as static/index.html — if the user
 // already chose a theme post-login, honor it here too, before the

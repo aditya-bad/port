@@ -4567,6 +4567,48 @@ chip-rendering refactor didn't regress the reports-toggle behavior
 underneath it, and re-ran the Step 67 open-in-new-tab test since this
 touched the same list row markup again — all green.
 
+## What's here (Step 70: installable as a real app — a manifest + icons, no service worker)
+
+Asked directly: how hard would a mobile app connecting to this same
+API be. Answer given: since the frontend was already a pure JSON/SSE
+API consumer with zero server rendering, the honest cheapest option is
+a PWA manifest — turns "Create shortcut" into a real "Install" with an
+actual icon and its own entry in the OS app list, at the cost of one
+static file and some `<head>` tags, no backend changes at all.
+
+**`static/manifest.json`**: name/icons/`display: standalone`/theme
+colors matching the app's own indigo/marigold palette (`--ink`/
+`--accent`). Deliberately **no service worker** — this app is
+inherently live-data-dependent (ticks, P&L, positions), so offline
+caching wouldn't actually help with anything and would just be a
+staleness bug waiting to happen for zero benefit.
+
+**Icons** (`static/icons/`): generated programmatically (Pillow, not
+hand-drawn) — a simple three-ascending-bars glyph in the app's own
+marigold on its own deep-indigo rounded square, legible down to 16px.
+192/512px versions cover Android's "any" and "maskable" purposes (the
+existing padding already keeps the glyph inside the safe zone a
+maskable circular/squircle crop won't clip); a separate opaque
+180×180 `apple-touch-icon.png` for iOS (which ignores the manifest
+entirely and wants no alpha transparency, its own rounding rules).
+
+**`<head>` wiring**: `<link rel="manifest">`, `theme-color` meta, and
+the `apple-mobile-web-app-*` meta tags iOS Safari actually reads —
+added to both `index.html` and `login.html` (an expired session can
+land you back on the login page even from inside the installed app,
+so the identity/icon stays consistent there too).
+
+**Verified**: a real running server + real Postgres confirmed
+`/manifest.json` and every icon file serve with the right
+content-type when authenticated, and correctly 401 when not (this is
+a private app gated by login — the manifest/icons sit behind the same
+auth as everything else, same as `/js/*.js` already does; a real
+browser's session cookie covers this automatically, confirmed with an
+actual Playwright login flowed through to a real in-page `fetch()` of
+both `/manifest.json` and an icon, both 200). Also confirmed the
+`<link rel="manifest">`/`apple-touch-icon` tags render correctly in
+the live DOM.
+
 ## Setup
 
 ```bash

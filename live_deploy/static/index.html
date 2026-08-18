@@ -4,6 +4,22 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>live_deploy</title>
+<!-- PWA install support (Step 70) -- lets Chrome/Android offer a real
+     "Install" prompt (home-screen icon, standalone window, own entry in
+     the OS app list) instead of falling back to a plain browser
+     shortcut. No service worker on purpose: this app is inherently
+     live-data-dependent, so offline caching wouldn't help and would
+     just be a staleness risk to reason about for no benefit. -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#1B1130">
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png">
+<!-- iOS ignores the manifest above entirely -- Safari's own "Add to
+     Home Screen" reads these instead. -->
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="live_deploy">
 <script>
 // Applied synchronously, before the stylesheet below is parsed and
 // before <body> paints anything — the only way to avoid a flash of
