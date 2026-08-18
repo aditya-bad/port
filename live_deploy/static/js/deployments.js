@@ -118,7 +118,7 @@ const Deployments = {
       <tbody>${rows.map(d => `
         <tr class="clickable-row" data-deployment-id="${d.id}" onclick="location.hash='#/deployments/${d.id}'">
           <td>
-            ${escapeHtml(d.deployment_name)}
+            <a href="#/deployments/${d.id}" onclick="event.stopPropagation()">${escapeHtml(d.deployment_name)}</a>
             ${!d.strategy_registered ? '<span class="tag tag-warn">unregistered</span>' : ''}
             ${d.notes ? `<div class="card-sub" style="margin-top:2px; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(d.notes)}">📝 ${escapeHtml(d.notes)}</div>` : ''}
           </td>

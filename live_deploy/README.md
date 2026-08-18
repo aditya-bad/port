@@ -4354,6 +4354,32 @@ a live tick, and confirmed the Deployed Strategies list's new Total row
 matches its one row's own Unrealized value after a different live tick.
 Screenshotted the new Total row.
 
+## What's here (Step 67: Deployed Strategies rows had no real link — right-click/ctrl-click/middle-click "open in new tab" silently didn't work)
+
+Reported directly: no "open in new tab" option on a deployment row.
+Root cause was simple once traced — each row navigated via a plain
+`<tr onclick="location.hash=...">`, not a real `<a href>`. A browser can
+only offer "open in new tab" (right-click menu, ctrl/cmd-click, middle-
+click) for an actual link with an actual `href` — a `<tr>`'s `onclick`
+handler is invisible to all of that machinery, so none of it had
+anything to attach to. Dashboard's own positions table already used a
+real `<a href="#/deployments/...">` for this exact same kind of link
+(and already supported all of this) — the Deployed Strategies list was
+the one place still using the older pattern.
+
+**Fixed**: the deployment name cell is now a real
+`<a href="#/deployments/{id}">`, with `event.stopPropagation()` so a
+plain left click doesn't also (harmlessly, but redundantly) fire the
+row's own `onclick`. The row's own click-anywhere-to-navigate
+convenience is untouched — clicking anywhere else in the row still
+navigates normally in the same tab, exactly as before.
+
+**Verified in a real browser**: confirmed the name cell is a genuine
+`<a>` with the correct `href`; ctrl-clicked it and confirmed a real NEW
+tab opens (not just a same-tab navigation) landing on that exact
+deployment's Detail page; confirmed a plain left-click elsewhere in the
+row still navigates normally in the same tab, unchanged.
+
 ## Setup
 
 ```bash
