@@ -4843,6 +4843,47 @@ underlying function but have their own independent wiring that could
 each have its own bug. Re-ran Step 73's own heatmap scroll/color test
 unmodified to confirm no regression.
 
+## What's here (Step 75: `custom_scripts/` — standalone maintenance scripts, first one strips words out of deployment names)
+
+New top-level folder for one-off admin scripts that don't belong as an
+app feature (no UI, no endpoint, run rarely by hand) but still need to
+touch the same database — see `custom_scripts/README.md` for the full
+pattern (reuses `app/config.py` + `app/db/queries.py` only, deliberately
+never imports `app.main`, so nothing starts a dispatcher/Kite session/
+background loop just to run a script). Explicitly designed to run
+OUTSIDE Docker as plain `python3 custom_scripts/<script>.py` — no
+server needs to be up, just a reachable database.
+
+**`clean_deployment_names.py`**: strips `WORDS_TO_STRIP` (today:
+`["DTT", "Intraday"]`, edit the constant for a future run) out of
+every deployment's `deployment_name` — whole-word, case-insensitive,
+collapsing the whitespace removal leaves behind. `"DTT Straddle
+Intraday Nifty Simple"` → `"Straddle Nifty Simple"`, exactly the
+example given. Writes through `queries.update_deployment_fields` (the
+same COALESCE-based path a real `PATCH /deployments/{id}` goes
+through), so a renamed deployment is indistinguishable from one
+renamed via the UI, `updated_at` bump included. Prints every planned
+rename before touching anything — a complete audit trail even for a
+non-interactive/logged run, no confirmation prompt to block on;
+`--dry-run` previews with zero writes. A rename that would collide
+with an existing `deployment_name` (deployments' own UNIQUE
+constraint) is reported and skipped individually, not left to crash
+the whole batch.
+
+**Verified against a real running server + real Postgres**: seeded
+four real deployments through the actual `POST /deployments` endpoint
+(three matching the strip pattern, one not); `--dry-run` correctly
+previewed all three planned renames with zero writes; running for real
+applied them and a direct `SELECT` confirmed the database rows
+actually changed (`updated_at` bumped too); re-running afterward
+correctly found nothing left to do (idempotent); separately seeded a
+genuine collision case (two names that both strip down to the same
+result) and confirmed the first applies while the second is reported
+and skipped cleanly, not crashing the run. Also unit-verified
+`clean_name()` directly against edge cases (mixed case, a name that's
+ONLY the stripped word, and confirming `"DTTX"` — not a whole-word
+match — is correctly left untouched).
+
 ## Setup
 
 ```bash
