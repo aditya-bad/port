@@ -116,9 +116,28 @@ class DeploymentRunner:
         await self._reload_positions()
         self._queue = await self.broadcaster.subscribe()
         self._running = True
-        self._task = asyncio.create_task(self._run(), name=f"runner:{self.deployment_name}")
+        # strategy.on_start() must FULLY complete before _run() (the
+        # tick-consuming loop) is even created, let alone start pulling
+        # from _queue -- on_start() typically does its own `await`
+        # partway through (e.g. `await runner.load_state()`), and every
+        # `await` is a point where the event loop can run something
+        # else. If _task already existed at that point, a real tick
+        # arriving in that exact window would reach strategy.on_tick()
+        # on a HALF-INITIALIZED strategy object -- e.g.
+        # intraday_dtt_simple's self.ce_token/self.pe_token are only
+        # set AFTER its own `await runner.load_state()` call, so a tick
+        # landing in that gap raised a bare AttributeError (caught by
+        # _run()'s own try/except, so it didn't crash the runner, but a
+        # real tick -- possibly the one that should have triggered an
+        # entry -- was silently dropped). Subscribing to the broadcaster
+        # above still happens first, so no tick is ever missed entirely
+        # once _task does start — ticks that arrive during on_start()
+        # just sit in the queue and get processed normally the moment
+        # _run() begins pulling from it, against a now-fully-initialized
+        # strategy.
         if self.strategy is not None:
             await self.strategy.on_start(self)
+        self._task = asyncio.create_task(self._run(), name=f"runner:{self.deployment_name}")
         logger.info(
             "Runner started: %s (%s, %s) — %d open position(s), tokens=%s",
             self.deployment_name, self.strategy_name, self.mode,

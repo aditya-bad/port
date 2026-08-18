@@ -4073,6 +4073,53 @@ through several tab-switches with ticks fed in between to confirm the
 listener teardown actually works (no leaked/stacked listeners, no stray
 console errors from the new code).
 
+## What's here (Step 62: a tick could reach a strategy before its own on_start() had finished setting itself up)
+
+Reported live — a real production traceback:
+```
+AttributeError: 'IntradayDTTSimpleStrategy' object has no attribute 'ce_token'
+```
+raised from inside `on_tick()`, and the log made the cause visible on
+its own: the `strategy_error` line for a deployment appeared BEFORE that
+same deployment's own `Runner started: ...` line — meaning a tick got
+processed before startup had even finished logging that it was done starting.
+
+`DeploymentRunner.start()` created the tick-consuming background task
+(`_run()`, which calls `strategy.on_tick()` for every tick) BEFORE
+awaiting `strategy.on_start()` to completion — the two were effectively
+racing. `on_start()` almost always does its own `await` partway through
+(e.g. `await runner.load_state()`, loading any previously-persisted
+state — see Step 53), and every `await` is a point where the event loop
+is free to run something else. Since `_task` already existed by then, a
+real tick landing in that exact window reached `on_tick()` on a
+HALF-initialized strategy — e.g. `intraday_dtt_simple` sets
+`self.ce_token`/`self.pe_token` only AFTER its own `load_state()` call,
+so a tick arriving in that gap found no such attribute at all. Caught by
+`_run()`'s own try/except, so it didn't crash the runner or the
+deployment — but that one tick was lost, silently, right at the moment a
+deployment starts up: the narrowest possible window, but also exactly
+the moment a "was this a late start?" entry decision might be riding on
+it. Not specific to `intraday_dtt_simple` — every strategy's `on_start()`
+does at least one `await`, so this could hit any of them.
+
+**Fixed**: `start()` now awaits `strategy.on_start()` to full completion
+BEFORE creating `_task` at all — no tick can reach `on_tick()` until the
+strategy is completely set up. Ticks that arrive during `on_start()`
+aren't lost either: the broadcaster subscription happens first, so they
+just sit in the queue and get processed normally, in order, the instant
+`_task` starts pulling from it.
+
+**Verified**: reproduced the exact crash by monkeypatching the DB call
+inside `load_state()` to sleep briefly (widening what's normally a
+microseconds-wide race into something a test can hit deterministically),
+firing a real tick concurrently with a fresh deployment's creation.
+Pre-fix (`git stash`): the identical `AttributeError` traceback from the
+report, recorded as a `strategy_error` event. Post-fix: no error, the
+tick is processed cleanly once `on_start()` finishes. Re-ran every other
+restart/resume regression test written this session afterward
+(`pending_exit` persistence, late-start survival, strangle flat-restart)
+— all still pass, confirming this reordering didn't disturb any of them.
+
 ## Setup
 
 ```bash
