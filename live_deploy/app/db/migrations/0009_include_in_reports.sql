@@ -1,0 +1,15 @@
+-- Per-deployment opt-out from cross-deployment reports/totals: Dashboard's
+-- KPI card + positions/activity tables + per-deployment breakdown, Portfolio's
+-- equity curve/capital utilization/exposure/leaderboard, and the Reports
+-- page's period digest/breakdowns -- all of these skip a deployment while
+-- this is false. A deployment's OWN individual views (its Detail page, its
+-- own row's numbers on the Deployed Strategies list, its own P&L calendar)
+-- are never affected -- see queries.py's per-function classification.
+--
+-- DEFAULT true so every existing deployment (and every future one created
+-- before the frontend ever touches this) keeps counting exactly as it
+-- always has -- this is an opt-OUT, not an opt-in. Toggleable via PATCH
+-- /deployments/{id} regardless of status, same as deployment_name/notes
+-- (see DeploymentUpdate's own docstring) -- it's bookkeeping, not something
+-- a running strategy instance has any state derived from.
+ALTER TABLE deployments ADD COLUMN IF NOT EXISTS include_in_reports BOOLEAN NOT NULL DEFAULT true;

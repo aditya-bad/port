@@ -17,12 +17,20 @@ const Portfolio = {
       document.getElementById('portfolioLeaderboard').innerHTML = spinnerHtml();
     }
 
-    const [curve, deployments, positions, leaderboard] = await Promise.all([
+    const [curve, deployments, allPositions, leaderboard] = await Promise.all([
       Api.getPortfolioEquityCurve(),
       Api.listDeployments(),
       Api.getAllPositions('open'),
       Api.getStrategyLeaderboard(),
     ]);
+
+    // Whole-account rollups (see this file's own header comment) --
+    // same include_in_reports exclusion as Dashboard.load(), applied
+    // here to the raw positions list before renderExposure groups it by
+    // symbol. curve/leaderboard are already filtered server-side (see
+    // queries.list_portfolio_equity_curve / list_strategy_leaderboard).
+    const excludedIds = new Set(deployments.filter(d => !d.include_in_reports).map(d => d.id));
+    const positions = allPositions.filter(p => !excludedIds.has(p.deployment_id));
 
     this.renderEquity(curve);
     this.renderCapital(deployments);
@@ -52,8 +60,9 @@ const Portfolio = {
     }
     // Same scoping as the Dashboard's headline P&L card: a stopped
     // deployment's capital isn't "at work" anymore, so it's excluded
-    // from utilization the same way it's excluded from live P&L.
-    const live = deployments.filter(d => d.status !== 'stopped');
+    // from utilization the same way it's excluded from live P&L. Also
+    // excludes anything toggled out of reports, same as Dashboard.
+    const live = deployments.filter(d => d.status !== 'stopped' && d.include_in_reports);
     const totalCapital = live.reduce((s, d) => s + (d.initial_capital || 0), 0);
     const totalCash = live.reduce((s, d) => s + (d.current_cash || 0), 0);
     const deployedValue = totalCapital - totalCash;   // capital currently tied up in open positions' cost basis

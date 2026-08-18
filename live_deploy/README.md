@@ -4380,6 +4380,102 @@ tab opens (not just a same-tab navigation) landing on that exact
 deployment's Detail page; confirmed a plain left-click elsewhere in the
 row still navigates normally in the same tab, unchanged.
 
+## What's here (Step 68: a per-deployment opt-out from cross-deployment reports/totals — "I don't need to pause or stop it, I just don't want it counted")
+
+Requested directly: a way to keep a deployment running exactly as-is
+while excluding it from every cross-deployment view — Dashboard's KPI
+card and breakdown, Portfolio's equity curve/capital/exposure/
+leaderboard, and the Reports page's period digest/breakdowns. Explicit
+requirements going in: default **true** for every existing and future
+deployment (pure opt-out, zero backward-compat risk); toggleable at
+**any** status, unlike `config` (no pause/resume dance needed — this is
+bookkeeping, not something a live strategy instance holds state from).
+
+**Backend**: new migration (`0009_include_in_reports.sql`) adds
+`include_in_reports BOOLEAN NOT NULL DEFAULT true` to `deployments`,
+exact same `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` shape as Step 4's
+`notes` column. `DeploymentUpdate` gained `include_in_reports:
+Optional[bool] = None`, edited via the existing `PATCH
+/deployments/{id}` — deliberately grouped with `deployment_name`/`notes`
+in the router (no status check), not with `config`'s paused-only gate.
+`update_deployment_fields`'s COALESCE pattern extended with one more
+column; a bare Python `None` still means "field omitted," an explicit
+`False` is a real, distinct value it correctly doesn't mistake for that.
+
+The harder part was deciding **which** queries actually needed
+filtering, since "cross-deployment aggregate" turned out not to be a
+single category:
+
+- **SQL-filtered** (`JOIN deployments d ... AND d.include_in_reports =
+  true`, a new join added where one didn't already exist):
+  `pnl_summary_for_range`, `pnl_by_strategy_for_range`,
+  `pnl_by_deployment_for_range`, `list_strategy_leaderboard`,
+  `list_pnl_digest`, `list_portfolio_equity_curve` — genuine
+  server-computed aggregates (Reports page, Portfolio's leaderboard/
+  equity curve, Dashboard's own calendar digest) with no client-side
+  equivalent raw data to filter instead.
+- **Deliberately NOT SQL-filtered** (raw per-position/per-fill data):
+  `list_all_positions` (`GET /positions`) and `list_recent_trades`
+  (`GET /trades/recent`). Both are shared by callers with genuinely
+  different needs — the Deployed Strategies list's own live per-row
+  Unrealized column (Step 65/66) needs EVERY position regardless of the
+  toggle, since a deployment's own row is never supposed to go stale
+  just because it opted out of reports, while Dashboard/Portfolio want
+  the toggled-on subset only. Baking the filter into the query would
+  have broken the first caller to save the second one a few lines of
+  JS, so the exclusion is applied client-side instead, by whoever
+  actually wants it.
+- **Never filtered at all** (a specific deployment's own view):
+  `realized_pnl_by_deployment`, `list_pnl_digest_for_deployment`,
+  `build_report`, `GET /deployments/{id}/positions` — a deployment's
+  own Detail page, its own P&L calendar, its own row's own numbers on
+  the Deployed Strategies list all show accurate data regardless of the
+  toggle. The toggle governs what counts toward OTHER views' totals,
+  never what a deployment sees about itself.
+
+**Frontend**: `dashboard.js` and `portfolio.js` — both genuinely
+whole-account views end to end (see their own header comments) — now
+build a `Set` of toggled-off deployment ids from `Api.listDeployments()`
+and filter the raw `positions`/`trades` arrays before rendering
+ANYTHING (KPI card, breakdown card, positions table, activity feed,
+capital utilization, exposure table) — a toggled-off deployment
+disappears from Dashboard/Portfolio as completely as if it were never
+deployed. `deployments.js`'s Total row (Step 66) sums only
+`include_in_reports`-true rows now, while every row — toggled off or
+not — still gets listed with its own accurate numbers; the row count
+in the Total row's own label reads "X of Y shown — Z excluded" once
+anything's actually excluded, so the sum is never silently
+unexplained.
+
+**UI**: the existing rename/notes "Edit" modal (Detail page, editable
+regardless of status, Step ~13) gained one more field — a "Count
+toward reports & total P&L" checkbox, defaulting to whatever the
+deployment's current value is. Toggling it off adds a small "excluded
+from reports" tag next to the deployment name, both on its own Detail
+header and on its row in the Deployed Strategies list — a persistent,
+glanceable reminder of which deployments are currently opted out,
+without having to open Edit to check.
+
+**Verified against a real running server + real Postgres**: deployed
+two real deployments, gave both a real closed position (realized P&L)
+and a real snapshot; toggled one off *while `active`* (proving no
+status gate, unlike `config`) and confirmed via real HTTP calls that
+`GET /deployments` and its own Detail page kept showing its own
+accurate numbers, while `/portfolio/pnl-report`, `/portfolio/pnl-digest`,
+`/portfolio/equity-curve`, and `queries.list_strategy_leaderboard`
+(called directly — that one endpoint has no live-query cache-bypass to
+test against without waiting out a 90s interval) all excluded it
+entirely from their totals and breakdowns; toggled it back on and
+confirmed all four included it again. Then a real-browser Playwright
+pass covering the actual UI: Edit modal's checkbox defaults checked;
+unchecking + Save works instantly at `active` status; the "excluded
+from reports" badge appears on both Detail's header and the Deployed
+Strategies row; that row still shows its own real ₹500 while the
+list's Total row sums only the still-included deployment (with the "1
+of 2 shown — 1 excluded" label); Dashboard's KPI total and breakdown
+card both drop the toggled-off deployment entirely; and re-checking +
+Save brings it back everywhere, badges and totals alike.
+
 ## Setup
 
 ```bash

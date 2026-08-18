@@ -97,7 +97,7 @@ async def list_deployments(pool: asyncpg.Pool, status: Optional[str] = None) -> 
 async def update_deployment_fields(
     pool: asyncpg.Pool, deployment_id: UUID,
     deployment_name: Optional[str] = None, notes: Optional[str] = None,
-    config: Optional[dict] = None,
+    config: Optional[dict] = None, include_in_reports: Optional[bool] = None,
 ) -> Optional[asyncpg.Record]:
     """
     Partial update for PATCH /deployments/{id} — only the field(s)
@@ -125,6 +125,10 @@ async def update_deployment_fields(
     overwrite — "clear every config key" is a real, distinct intent
     from "don't touch config," same distinction notes already draws
     between omitted (None) and explicitly-blanked ("").
+
+    include_in_reports has the identical None-means-omitted distinction,
+    just over a plain boolean column instead of jsonb — an explicit
+    False is a real value COALESCE must not mistake for "don't touch."
     """
     async with pool.acquire() as conn:
         return await conn.fetchrow(
@@ -133,11 +137,12 @@ async def update_deployment_fields(
             SET deployment_name = COALESCE($2, deployment_name),
                 notes = COALESCE($3, notes),
                 config = COALESCE($4, config),
+                include_in_reports = COALESCE($5, include_in_reports),
                 updated_at = now()
             WHERE id = $1
             RETURNING *
             """,
-            deployment_id, deployment_name, notes, config,
+            deployment_id, deployment_name, notes, config, include_in_reports,
         )
 
 
@@ -237,6 +242,16 @@ async def list_open_positions(pool: asyncpg.Pool, deployment_id: UUID) -> list[a
 async def list_all_positions(
     pool: asyncpg.Pool, status: Optional[str] = "open",
 ) -> list[asyncpg.Record]:
+    """Deliberately NOT filtered by include_in_reports (unlike
+    list_pnl_digest/pnl_summary_for_range/etc above) — this is raw
+    per-position data shared by callers that need EVERY position
+    regardless of the toggle (Deployments list's own live per-row
+    Unrealized column, keyed off exactly this endpoint) as well as
+    callers that only want the toggled-on subset (Dashboard, Portfolio's
+    exposure table). Since the two needs genuinely differ per caller,
+    the exclusion is applied client-side by whoever wants it (see
+    dashboard.js/portfolio.js), not baked into this shared query — see
+    the 0009 migration's own comment for the toggle itself."""
     async with pool.acquire() as conn:
         if status:
             return await conn.fetch(
@@ -260,6 +275,12 @@ async def list_all_positions(
 
 
 async def list_recent_trades(pool: asyncpg.Pool, limit: int = 20) -> list[asyncpg.Record]:
+    """Deliberately NOT filtered by include_in_reports, same reasoning
+    as list_all_positions just above — raw fills across every
+    deployment; Dashboard's own activity feed (currently the only
+    caller) excludes toggled-off deployments client-side instead, so
+    this stays reusable raw data rather than baking in one caller's
+    opinion of what counts as a "report." """
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
@@ -277,7 +298,12 @@ async def list_recent_trades(pool: asyncpg.Pool, limit: int = 20) -> list[asyncp
 async def realized_pnl_by_deployment(pool: asyncpg.Pool) -> dict[str, float]:
     """{deployment_id (str) -> cumulative realized P&L}, every deployment
     that has at least one closed position — used to enrich the
-    deployment LIST endpoint in one query instead of one-per-row."""
+    deployment LIST endpoint in one query instead of one-per-row.
+    Deliberately NOT filtered by include_in_reports — every deployment's
+    OWN row (on the Deployments list, on its own Detail page) always
+    shows its own accurate numbers regardless of the toggle; only
+    cross-deployment aggregates (Dashboard, Portfolio, Reports) skip a
+    toggled-off deployment, and none of those read this function."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -599,16 +625,24 @@ async def list_portfolio_equity_curve(
     buckets (paper-trading history doesn't retroactively change), it
     just stops contributing to NEW buckets the moment it's no longer
     active, same as it stops accumulating its own per-deployment curve.
+
+    IS scoped by include_in_reports though, unlike status — see the
+    0009 migration's own comment: this is Portfolio's own combined
+    equity curve, a cross-deployment aggregate the toggle exists
+    specifically to let a deployment opt out of, same as every other
+    view in this file that joins deployments for exactly this reason.
     """
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
             SELECT
-                to_timestamp(floor(extract(epoch FROM snapshot_at) / $1) * $1) AS bucket_at,
-                SUM(total_value) AS total_value,
-                SUM(realized_pnl_cumulative) AS realized_pnl_cumulative,
-                COUNT(DISTINCT deployment_id) AS deployments_count
-            FROM deployment_snapshots
+                to_timestamp(floor(extract(epoch FROM ds.snapshot_at) / $1) * $1) AS bucket_at,
+                SUM(ds.total_value) AS total_value,
+                SUM(ds.realized_pnl_cumulative) AS realized_pnl_cumulative,
+                COUNT(DISTINCT ds.deployment_id) AS deployments_count
+            FROM deployment_snapshots ds
+            JOIN deployments d ON d.id = ds.deployment_id
+            WHERE d.include_in_reports = true
             GROUP BY bucket_at
             ORDER BY bucket_at
             LIMIT $2
@@ -651,6 +685,14 @@ async def list_pnl_digest(
     with fills but no closes yet (a position opened today, still
     open) is real and must still appear with realized_pnl=0, not be
     silently dropped.
+
+    Both CTEs JOIN deployments and filter on include_in_reports=true —
+    a deployment toggled out of reports contributes nothing to this
+    portfolio-wide digest, same as if it never existed for this view's
+    purposes (see the 0009 migration's own comment). This is the ONE
+    place that distinction actually matters for this query; the
+    per-deployment sibling below (list_pnl_digest_for_deployment) is
+    deliberately never filtered this way.
     """
     if period not in _DIGEST_PERIODS:
         raise ValueError(f"period must be one of {_DIGEST_PERIODS}, got {period!r}")
@@ -659,20 +701,23 @@ async def list_pnl_digest(
             """
             WITH closes AS (
                 SELECT
-                    (date_trunc($1, closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
-                    SUM(realized_pnl) AS realized_pnl,
+                    (date_trunc($1, p.closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    SUM(p.realized_pnl) AS realized_pnl,
                     COUNT(*) AS positions_closed,
-                    COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
-                    COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses
-                FROM positions
-                WHERE status = 'closed' AND closed_at IS NOT NULL
+                    COUNT(*) FILTER (WHERE p.realized_pnl > 0) AS wins,
+                    COUNT(*) FILTER (WHERE p.realized_pnl < 0) AS losses
+                FROM positions p
+                JOIN deployments d ON d.id = p.deployment_id
+                WHERE p.status = 'closed' AND p.closed_at IS NOT NULL AND d.include_in_reports = true
                 GROUP BY 1
             ),
             fills AS (
                 SELECT
-                    (date_trunc($1, executed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    (date_trunc($1, pl.executed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
                     COUNT(*) AS fills
-                FROM position_lots
+                FROM position_lots pl
+                JOIN deployments d ON d.id = pl.deployment_id
+                WHERE d.include_in_reports = true
                 GROUP BY 1
             )
             SELECT
@@ -705,6 +750,11 @@ async def list_pnl_digest_for_deployment(
     portfolio digest's 30 (400 comfortably covers a full year of daily
     buckets, ~371 for a GitHub-style 53-week grid) since a calendar
     heatmap wants a full year in view, not a handful of recent periods.
+    Deliberately NOT filtered by include_in_reports, unlike its
+    portfolio-wide sibling above — a deployment's own P&L calendar on
+    its own Detail page shows its own history regardless of whether
+    it's opted out of cross-deployment reports (see the 0009
+    migration's own comment).
     """
     if period not in _DIGEST_PERIODS:
         raise ValueError(f"period must be one of {_DIGEST_PERIODS}, got {period!r}")
@@ -757,22 +807,33 @@ async def pnl_summary_for_range(
     numbers and the PREVIOUS period's (for the delta shown next to
     each stat), two calls with different [start, end) rather than one
     query trying to do both at once.
+
+    Both queries JOIN deployments and filter on include_in_reports=true
+    — same portfolio-wide exclusion as list_pnl_digest above, for the
+    same reason (this is a cross-deployment aggregate through and
+    through).
     """
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             SELECT
-                COALESCE(SUM(realized_pnl), 0)::float8 AS realized_pnl,
+                COALESCE(SUM(p.realized_pnl), 0)::float8 AS realized_pnl,
                 COUNT(*) AS positions_closed,
-                COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
-                COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses
-            FROM positions
-            WHERE status = 'closed' AND closed_at >= $1 AND closed_at < $2
+                COUNT(*) FILTER (WHERE p.realized_pnl > 0) AS wins,
+                COUNT(*) FILTER (WHERE p.realized_pnl < 0) AS losses
+            FROM positions p
+            JOIN deployments d ON d.id = p.deployment_id
+            WHERE p.status = 'closed' AND p.closed_at >= $1 AND p.closed_at < $2
+                AND d.include_in_reports = true
             """,
             start, end,
         )
         fills = await conn.fetchval(
-            "SELECT COUNT(*) FROM position_lots WHERE executed_at >= $1 AND executed_at < $2",
+            """
+            SELECT COUNT(*) FROM position_lots pl
+            JOIN deployments d ON d.id = pl.deployment_id
+            WHERE pl.executed_at >= $1 AND pl.executed_at < $2 AND d.include_in_reports = true
+            """,
             start, end,
         )
         return {**dict(row), "fills": fills}
@@ -787,7 +848,10 @@ async def pnl_by_strategy_for_range(
     strategies actually made or lost money in the SELECTED period,
     not all-time — a strategy that's up all-time but had a bad week
     should show that clearly here, not get hidden behind its own
-    lifetime total."""
+    lifetime total. Excludes deployments with include_in_reports=false
+    (see the 0009 migration's own comment) — a strategy run only by a
+    toggled-off deployment simply won't appear here, same as if it were
+    never deployed."""
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
@@ -798,6 +862,7 @@ async def pnl_by_strategy_for_range(
             FROM positions p
             JOIN deployments d ON d.id = p.deployment_id
             WHERE p.status = 'closed' AND p.closed_at >= $1 AND p.closed_at < $2
+                AND d.include_in_reports = true
             GROUP BY d.strategy_name
             ORDER BY realized_pnl DESC
             """,
@@ -810,7 +875,11 @@ async def pnl_by_deployment_for_range(
 ) -> list[asyncpg.Record]:
     """Realized P&L within [start, end), grouped by deployment -- the
     Reports page's "By Deployment" leaderboard, sorted best to worst
-    for the selected period specifically."""
+    for the selected period specifically. Excludes deployments with
+    include_in_reports=false outright (see the 0009 migration's own
+    comment) — the whole point of this row-per-deployment breakdown is
+    "which deployments moved the needle," and a toggled-off one has
+    opted out of moving it here."""
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
@@ -823,6 +892,7 @@ async def pnl_by_deployment_for_range(
             FROM positions p
             JOIN deployments d ON d.id = p.deployment_id
             WHERE p.status = 'closed' AND p.closed_at >= $1 AND p.closed_at < $2
+                AND d.include_in_reports = true
             GROUP BY d.id, d.deployment_name, d.strategy_name
             ORDER BY realized_pnl DESC
             """,
@@ -847,6 +917,16 @@ async def list_strategy_leaderboard(pool: asyncpg.Pool) -> list[asyncpg.Record]:
     own Stats tab already computes client-side from raw pnls (see
     detail.js), so the frontend does the exact same math here instead
     of a second, potentially-drifting server-side formula.
+
+    Excludes closed positions booked under an include_in_reports=false
+    deployment (see the 0009 migration's own comment) — unlike the
+    active/paused/stopped inclusivity above, this one IS a real
+    exclusion: a toggled-off deployment's history doesn't count toward
+    "which strategy has made the most money" here, by the same logic
+    that keeps it out of every other cross-deployment view. Note this
+    can shrink deployments_count for a strategy that also has
+    toggled-on deployments, same as it shrinks the P&L sum -- it's not
+    just zeroing out one deployment's contribution in isolation.
     """
     async with pool.acquire() as conn:
         return await conn.fetch(
@@ -862,7 +942,7 @@ async def list_strategy_leaderboard(pool: asyncpg.Pool) -> list[asyncpg.Record]:
                 COUNT(DISTINCT d.id) AS deployments_count
             FROM positions p
             JOIN deployments d ON d.id = p.deployment_id
-            WHERE p.status = 'closed'
+            WHERE p.status = 'closed' AND d.include_in_reports = true
             GROUP BY d.strategy_name
             ORDER BY realized_pnl DESC
             """,
@@ -874,6 +954,11 @@ async def list_strategy_leaderboard(pool: asyncpg.Pool) -> list[asyncpg.Record]:
 # ═════════════════════════════════════════════════════════════════════
 
 async def build_report(pool: asyncpg.Pool, deployment_id: UUID) -> dict[str, Any]:
+    """One deployment's own report -- deliberately NOT filtered by
+    include_in_reports, same reasoning as list_pnl_digest_for_deployment
+    above: a specific deployment_id was asked for, so its own numbers
+    are shown regardless of whether it's opted out of the CROSS-
+    deployment reports the toggle actually governs."""
     async with pool.acquire() as conn:
         deployment = await conn.fetchrow(
             "SELECT * FROM deployments WHERE id = $1", deployment_id

@@ -43,6 +43,7 @@ const Detail = {
         <div>
           <h1>${escapeHtml(dep.deployment_name)} <span class="tag tag-${dep.status}">${dep.status}</span>
             ${!dep.strategy_registered ? '<span class="tag tag-warn">unregistered</span>' : ''}
+            ${!dep.include_in_reports ? '<span class="tag tag-warn" title="Excluded from Dashboard, Portfolio, and Reports — toggle it back on from Edit">excluded from reports</span>' : ''}
           </h1>
           <div class="card-sub">${escapeHtml(dep.strategy_name)} · ${dep.mode}</div>
           <div class="card-meta" style="margin-top:10px;">
@@ -535,6 +536,7 @@ const Detail = {
   openEditModal() {
     document.getElementById('editDeploymentName').value = this._dep.deployment_name;
     document.getElementById('editDeploymentNotes').value = this._dep.notes || '';
+    document.getElementById('editDeploymentIncludeInReports').checked = this._dep.include_in_reports;
     document.getElementById('editDeploymentMsg').textContent = '';
     document.getElementById('editDeploymentModal').classList.add('open');
   },
@@ -669,9 +671,12 @@ async function submitEditDeployment() {
   const msg = document.getElementById('editDeploymentMsg');
   const name = document.getElementById('editDeploymentName').value.trim();
   const notes = document.getElementById('editDeploymentNotes').value;
+  const includeInReports = document.getElementById('editDeploymentIncludeInReports').checked;
   if (!name) { msg.innerHTML = '<span style="color:var(--loss)">Deployment name cannot be blank</span>'; return; }
   msg.innerHTML = '<span class="spinner"></span> Saving…';
-  const { ok, data } = await Api.updateDeployment(Detail._id, { deployment_name: name, notes });
+  const { ok, data } = await Api.updateDeployment(Detail._id, {
+    deployment_name: name, notes, include_in_reports: includeInReports,
+  });
   if (!ok) { msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(data.detail || 'Failed')}</span>`; return; }
   msg.innerHTML = '<span style="color:var(--gain)">✓ Saved</span>';
   setTimeout(() => { closeEditDeploymentModal(); Detail.load(Detail._id); }, 500);

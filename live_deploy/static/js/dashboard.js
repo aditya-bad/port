@@ -42,13 +42,26 @@ const Dashboard = {
       document.getElementById('dashInstruments').innerHTML = spinnerHtml();
     }
 
-    const [deployments, calendarRows, positions, trades, instruments] = await Promise.all([
+    const [deployments, calendarRows, allPositions, allTrades, instruments] = await Promise.all([
       Api.listDeployments(),
       Api.getPnlDigest('day', 371),
       Api.getAllPositions('open'),
       Api.getRecentTrades(20),
       Api.listInstruments(),
     ]);
+
+    // Dashboard is a cross-deployment aggregate top to bottom (see this
+    // file's own header comment) -- a deployment toggled out of reports
+    // (include_in_reports=false, see the Detail page's own toggle)
+    // is excluded here entirely, not just from the totals: its
+    // positions don't show in the table, its fills don't show in the
+    // activity feed, same as if it weren't deployed at all from this
+    // view's point of view. Its OWN pages (Detail, its own row on the
+    // Deployments list) are completely unaffected -- see queries.py's
+    // per-function classification for the full reasoning.
+    const excludedIds = new Set(deployments.filter(d => !d.include_in_reports).map(d => d.id));
+    const positions = allPositions.filter(p => !excludedIds.has(p.deployment_id));
+    const trades = allTrades.filter(t => !excludedIds.has(t.deployment_id));
 
     this.renderStats(deployments);
     document.getElementById('dashCalendar').innerHTML = renderPnlHeatmap(calendarRows);
@@ -140,8 +153,11 @@ const Dashboard = {
     // Aggregate P&L is scoped to active/paused deployments only — a
     // stopped deployment's history is done contributing to "how am I
     // doing right now," even though its rows still exist for the
-    // record (visible via its own Detail page).
-    const live = deployments.filter(d => d.status !== 'stopped');
+    // record (visible via its own Detail page). Also excludes anything
+    // toggled out of reports (include_in_reports=false) -- same
+    // exclusion load() already applied to positions/trades above, kept
+    // consistent here for the KPI card and breakdown list.
+    const live = deployments.filter(d => d.status !== 'stopped' && d.include_in_reports);
     const totalRealized = live.reduce((s, d) => s + (d.realized_pnl || 0), 0);
     const totalUnrealized = live.reduce((s, d) => s + (d.unrealized_pnl || 0), 0);
     const total = totalRealized + totalUnrealized;

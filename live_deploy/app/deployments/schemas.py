@@ -59,10 +59,21 @@ class DeploymentUpdate(BaseModel):
     config gets from a pause/resume cycle; mode determines the whole
     runner setup, not something on_start() can pick back up mid-life.
     Stop and redeploy fresh for a genuine strategy/mode/capital change.
+
+    include_in_reports is editable regardless of status too, same as
+    deployment_name/notes — it's pure bookkeeping (whether this
+    deployment's numbers count toward cross-deployment reports/totals),
+    not something a live strategy instance holds any state derived
+    from, so there's no equivalent of config's "only safe while paused"
+    reasoning here. Bool, not Optional-with-different-default: None
+    still means "field omitted, don't touch" (see
+    queries.update_deployment_fields's own COALESCE docstring), an
+    explicit False is a real, distinct "turn it off."
     """
     deployment_name: Optional[str] = None
     notes: Optional[str] = None
     config: Optional[dict] = None
+    include_in_reports: Optional[bool] = None
 
 
 class DeploymentOut(BaseModel):
@@ -75,6 +86,13 @@ class DeploymentOut(BaseModel):
     current_cash: float
     config: dict
     notes: Optional[str] = None
+    # Opt-out of cross-deployment reports/totals -- see the 0009
+    # migration's own comment and DeploymentUpdate's docstring above.
+    # Defaults True so a row read before the column existed on some
+    # ancient in-memory object (there isn't one — the DB always has it
+    # once migrated — but this mirrors strategy_registered's own
+    # defensive default just below) never surprises an old caller.
+    include_in_reports: bool = True
     created_at: datetime
     updated_at: datetime
     strategy_registered: bool = True   # False = created, but no code will ever run for it (yet)

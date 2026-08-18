@@ -1379,6 +1379,19 @@ body.mobile-nav-open { overflow: hidden; }
       <textarea id="editDeploymentNotes" style="font-family:var(--font-body); min-height:90px;"
         placeholder="Why this was deployed, what to watch for, anything worth remembering later…"></textarea>
     </div>
+    <!-- include_in_reports -- pure bookkeeping, not strategy state, so
+         this is editable regardless of status same as name/notes above
+         (no pause/resume dance needed, unlike config below). Off means
+         this deployment's numbers are skipped by every CROSS-deployment
+         view (Dashboard, Portfolio, Reports) -- its own Detail page and
+         its own row on the Deployed Strategies list are never affected. -->
+    <div class="field">
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" id="editDeploymentIncludeInReports" style="width:auto;">
+        Count toward reports &amp; total P&amp;L
+      </label>
+      <div class="card-sub" style="margin-top:4px;">Off = Dashboard, Portfolio, and Reports all skip this deployment. Its own page here is never affected.</div>
+    </div>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="closeEditDeploymentModal()">Cancel</button>
       <button class="btn btn-primary" onclick="submitEditDeployment()">Save</button>

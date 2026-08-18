@@ -44,9 +44,12 @@ const Deployments = {
       }
 
       // Total row -- summed over whatever's CURRENTLY filtered, not
-      // always every deployment (see _filteredRows()'s own comment).
+      // always every deployment (see _filteredRows()'s own comment),
+      // AND excluding include_in_reports=false same as render()'s own
+      // static totals above.
       let visibleUnrealized = 0, anyPriced = false;
       for (const d of this._filteredRows()) {
+        if (!d.include_in_reports) continue;
         const combined = totalPnl(d.id);
         visibleUnrealized += combined != null ? combined : (d.unrealized_pnl || 0);
         if (combined != null) anyPriced = true;
@@ -104,10 +107,21 @@ const Deployments = {
     // is applied. Capital/Cash/Realized are exact from this same fetch;
     // Unrealized starts here and then updates live below, same
     // Zerodha-style pattern as Detail's own Positions table Total row.
-    const totalCapital = rows.reduce((s, d) => s + (d.initial_capital || 0), 0);
-    const totalCash = rows.reduce((s, d) => s + (d.current_cash || 0), 0);
-    const totalRealized = rows.reduce((s, d) => s + (d.realized_pnl || 0), 0);
-    const totalUnrealized = rows.reduce((s, d) => s + (d.unrealized_pnl || 0), 0);
+    //
+    // Separately, ALSO excludes anything with include_in_reports=false
+    // -- unlike the status/strategy filters above, this is not about
+    // what's "shown" (a toggled-off deployment still gets its own row,
+    // same as always) but about what counts toward the total, same
+    // "total P&L ignores this strategy" contract as Dashboard/Portfolio.
+    const reportRows = rows.filter(d => d.include_in_reports);
+    const totalCapital = reportRows.reduce((s, d) => s + (d.initial_capital || 0), 0);
+    const totalCash = reportRows.reduce((s, d) => s + (d.current_cash || 0), 0);
+    const totalRealized = reportRows.reduce((s, d) => s + (d.realized_pnl || 0), 0);
+    const totalUnrealized = reportRows.reduce((s, d) => s + (d.unrealized_pnl || 0), 0);
+    const excludedCount = rows.length - reportRows.length;
+    const totalLabel = excludedCount > 0
+      ? `Total (${reportRows.length} of ${rows.length} shown — ${excludedCount} excluded)`
+      : `Total (${rows.length} shown)`;
 
     el.innerHTML = `
       <div class="table-wrap">
@@ -120,6 +134,7 @@ const Deployments = {
           <td>
             <a href="#/deployments/${d.id}" onclick="event.stopPropagation()">${escapeHtml(d.deployment_name)}</a>
             ${!d.strategy_registered ? '<span class="tag tag-warn">unregistered</span>' : ''}
+            ${!d.include_in_reports ? '<span class="tag tag-warn" title="Excluded from Dashboard, Portfolio, and Reports — its own row here still shows its real numbers">excluded from reports</span>' : ''}
             ${d.notes ? `<div class="card-sub" style="margin-top:2px; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(d.notes)}">📝 ${escapeHtml(d.notes)}</div>` : ''}
           </td>
           <td>${escapeHtml(d.strategy_name)}</td>
@@ -138,7 +153,7 @@ const Deployments = {
         </tr>
       `).join('')}</tbody>
       <tfoot><tr class="positions-total-row">
-        <td colspan="4"><b>Total (${rows.length} shown)</b></td>
+        <td colspan="4"><b>${totalLabel}</b></td>
         <td>${fmtMoney(totalCapital)}</td>
         <td>${fmtMoney(totalCash)}</td>
         <td class="${pnlClass(totalRealized)}">${fmtSignedMoney(totalRealized)}</td>
