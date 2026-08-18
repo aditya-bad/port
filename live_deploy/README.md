@@ -4609,6 +4609,48 @@ both `/manifest.json` and an icon, both 200). Also confirmed the
 `<link rel="manifest">`/`apple-touch-icon` tags render correctly in
 the live DOM.
 
+## What's here (Step 71: Step 70 wasn't enough on Android — a real install needs a service worker too)
+
+Reported directly: Step 70's manifest+icons got a "Install and create
+shortcut" option, but the result had a Chrome badge overlay on the
+icon and opened the site inside Chrome's own browser UI, not
+standalone — exactly the fallback Chrome uses when a site is missing
+one specific ingredient it (Android specifically) treats as a hard
+requirement for generating a real standalone install (a "WebAPK"): a
+**registered service worker**. Manifest + icons alone (Step 70) get a
+browser-badged shortcut; Android additionally requires a service
+worker with a fetch handler before it'll produce the real thing.
+
+**`static/sw.js`**: the emptiest service worker that still counts —
+`install`/`activate` handlers plus a `fetch` handler that does nothing
+but `fetch(event.request)` straight through, unmodified. Deliberately
+still no caching (see Step 70's own reasoning: this app is inherently
+live-data-dependent, so caching would only be a staleness bug for zero
+offline benefit) — this file exists purely to satisfy Chrome's
+installability check, not to change any actual request behavior.
+
+Registered from `index.html`'s own `DOMContentLoaded` handler
+(`navigator.serviceWorker.register('/sw.js')`, silently skipped if
+unsupported) — NOT from `login.html`, since `/sw.js` sits behind the
+same auth as every other static asset and would just 401 pre-login;
+registering once from the authenticated app shell is sufficient for
+Chrome to see it by the time an "Install" is actually attempted.
+
+**The other hard requirement this can't fix from here**: Chrome
+refuses service-worker registration (and therefore any real install)
+on a plain HTTP origin — HTTPS (or localhost) is non-negotiable. If
+the app is reached over Tailscale via a bare IP/HTTP URL rather than
+through Tailscale Serve's HTTPS, no amount of manifest/service-worker
+work changes that; this is a live open question, not something
+verified from this environment.
+
+**Verified against a real running server + real Postgres + a real
+Playwright login**: confirmed `GET /sw.js` serves with a JS
+content-type, and — the concrete signal Chrome's own installability
+algorithm actually checks — that `navigator.serviceWorker.ready`
+resolves with the worker in `activated` state, scoped to the whole
+app (`/`), after a real cookie-based login.
+
 ## Setup
 
 ```bash

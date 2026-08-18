@@ -2053,6 +2053,17 @@ function _scheduleLiveRefresh() {
   _liveRefreshDebounce = setTimeout(reload, 500);
 }
 
+// Registers the pass-through service worker (sw.js, Step 71) --
+// required for Android Chrome to offer a real standalone Install
+// instead of a browser-badged shortcut (see that file's own header
+// comment). Silently skipped if unsupported (older/other browsers) --
+// this is purely an install-experience upgrade, the app works
+// identically either way.
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+
 window.addEventListener('hashchange', router);
 window.addEventListener('DOMContentLoaded', () => {
   _applyThemeButtonLabel();
@@ -2064,6 +2075,7 @@ window.addEventListener('DOMContentLoaded', () => {
   connectTickerSocket();
   tickerFallbackTimer = setTimeout(fetchTickerFallback, 8000);
   connectEventSocket();
+  registerServiceWorker();
 });
 </script>
 </body>
