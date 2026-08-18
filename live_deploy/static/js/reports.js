@@ -12,6 +12,12 @@ const Reports = {
   _offset: 0,
   _trendRows: [],   // kept around for exportCsv()
 
+  // Calendar heatmap's own range state (Step 74) -- see dashboard.js's
+  // identical field for the full reasoning; this view's calendar is
+  // its own independent control, same as it's already independent of
+  // the Daily/Weekly/Monthly period nav above it.
+  _calendarRange: 'recent',
+
   // Default order / full valid-id set for the reorderable sections
   // below the period nav -- see SectionOrder (api.js).
   _sectionIds: ['reportsSectionStrategy', 'reportsSectionDeployment', 'reportsSectionTrend', 'reportsSectionCalendar'],
@@ -39,7 +45,7 @@ const Reports = {
     const [report, trend, calendarRows] = await Promise.all([
       Api.getPnlReport(this._period, this._offset),
       Api.getPnlDigest(this._period, 14),
-      Api.getPnlDigest('day', 371),
+      this._fetchCalendarRows(),
     ]);
 
     document.getElementById('reportsPeriodLabel').textContent = report.label;
@@ -48,7 +54,30 @@ const Reports = {
     this.renderByDeployment(report);
     this._trendRows = trend;
     this.renderTrend(trend);
-    document.getElementById('reportsCalendar').innerHTML = renderPnlHeatmap(calendarRows);
+    this.renderCalendar(calendarRows);
+  },
+
+  // ── Calendar heatmap range (Step 74) -- see dashboard.js's identical
+  // trio of methods for the full reasoning, unchanged here. ──────────
+  _fetchCalendarRows() {
+    return this._calendarRange === 'recent'
+      ? Api.getPnlDigest('day', 371)
+      : Api.getPnlDigest('day', 371, this._calendarRange);
+  },
+
+  renderCalendar(rows) {
+    const year = this._calendarRange === 'recent' ? null : this._calendarRange;
+    document.getElementById('reportsCalendar').innerHTML = renderPnlHeatmap(rows, {
+      year,
+      selector: { value: this._calendarRange, onChange: 'Reports.changeCalendarRange(this.value)' },
+    });
+    scrollPnlHeatmapToEnd('reportsCalendar');
+  },
+
+  async changeCalendarRange(value) {
+    this._calendarRange = value === 'recent' ? 'recent' : Number(value);
+    const rows = await this._fetchCalendarRows();
+    this.renderCalendar(rows);
   },
 
   moveSection(id, delta) {

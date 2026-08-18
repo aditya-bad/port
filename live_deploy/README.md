@@ -4768,6 +4768,81 @@ resolved colors each, not one flat shade. Re-ran two other existing
 full-flow Playwright tests unmodified (Steps 68/69's own UI tests) to
 confirm this stylesheet-wide change didn't disturb anything else.
 
+## What's here (Step 74: the calendar heatmap opens scrolled to the OLDEST data by default, and there's no way to browse a past/future calendar year)
+
+Two asks together: (1) reloading the calendar always shows the oldest
+column first (scrollLeft=0, the left edge) — it should always open on
+the newest data instead; (2) there's only ever a rolling last-365-days
+view — add a year picker (2026, 2025, ... and automatically 2027 once
+that's real) so a specific calendar year can be browsed on demand,
+GitHub-style.
+
+**Backend**: two new range-bounded digest queries
+(`list_pnl_digest_for_range`, `list_pnl_digest_for_deployment_range`)
+— same closes/fills FULL OUTER JOIN shape as the existing
+`list_pnl_digest`/`list_pnl_digest_for_deployment`, just bounded by an
+explicit `[start, end)` window instead of "the most recent N
+buckets" — `ORDER BY ... LIMIT N` fundamentally can't express "give me
+2025" once there's more than N periods of history since (it would
+just return recent 2026 buckets instead of reaching back at all). A
+new `year_bounds(year)` helper (aggregate.py) computes `[Jan 1 00:00
+IST, Jan 1 00:00 IST next year)` — same IST calendar-day convention
+the digest's own bucketing already uses, so a late-evening IST trade
+on Dec 31 lands in the right year's grid. Both `GET
+/portfolio/pnl-digest` and `GET /deployments/{id}/pnl-digest` gained
+an optional `year` param — when set, `limit` is ignored entirely and
+the whole real year comes back.
+
+**Frontend**: `renderPnlHeatmap` gained `opts.year` (a real Jan-Dec
+grid instead of the rolling window — the existing "blank cells beyond
+today" logic needed zero changes, since it already only ever blanks
+days later than the real current date, which naturally does nothing
+for a fully-past year and correctly still blanks not-yet-happened days
+within the current year) and `opts.selector` (renders a `<select>`
+above the grid — deliberately OUTSIDE the scrollable `.pnl-heatmap-wrap`
+itself, so it stays reachable no matter how far the grid is scrolled).
+The year list is generated fresh from the real clock every render
+(current year down to 3 years back) — not hardcoded, so "2027" becomes
+a real option the moment it's actually 2027, with no further code
+change ever needed for that.
+
+**The scroll-to-newest fix**: a new shared `scrollPnlHeatmapToEnd
+(containerId)` helper, called by all three views right after setting
+`innerHTML` from `renderPnlHeatmap`'s output — sets `scrollLeft` to
+the wrap's full `scrollWidth`, inside a `requestAnimationFrame` (not a
+bare synchronous read right after `innerHTML`, which risked reading
+stale pre-layout dimensions). Scoped to the specific container id
+passed in, not a bare `document.querySelector` — this SPA keeps every
+view's DOM alive at once (Step 65's own established gotcha), so an
+unscoped query could find a hidden calendar on another view before the
+one that actually just rendered.
+
+**Wired into all three existing call sites** (Dashboard, Detail's own
+Calendar tab, Reports) — each gained its own `_calendarRange` state
+('recent' or a real year number), a small `_fetchCalendarRows()` +
+`renderCalendar()` + `changeCalendarRange()` trio, and passes its own
+`onChange` expression into the shared selector so each view's picker
+talks back to the right object. Dashboard's and Reports' range persists
+across their own quiet background reloads (a fill elsewhere shouldn't
+silently reset a range someone deliberately picked); Detail's resets
+to 'recent' on navigating to a different deployment but persists across
+switching away from and back to its own Calendar tab for the same one.
+
+**Verified against a real running server + a real 390px mobile
+viewport**: seeded a real 2025 day and a real today's-day, each with
+distinct P&L; confirmed Dashboard's calendar opens already scrolled to
+its rightmost (newest) column, not the left edge; confirmed the year
+selector lists "Last 365 days" plus the current year and offers past
+years; switched to 2025 and confirmed the seeded 2025 P&L actually
+renders (not today's); confirmed switching years ALSO re-lands
+scrolled to that year's own rightmost column; switched back to "Last
+365 days" and confirmed today's data reappears. Spot-checked Detail's
+Calendar tab (year switch shows its own 2025 data) and the Reports
+page (default scroll + selector present) since they share the same
+underlying function but have their own independent wiring that could
+each have its own bug. Re-ran Step 73's own heatmap scroll/color test
+unmodified to confirm no regression.
+
 ## Setup
 
 ```bash

@@ -11,12 +11,14 @@ const Detail = {
   _tab: 'positions',   // most immediately useful thing to see on arrival
   _trades: [],
   _openTradeRows: new Set(),
+  _calendarRange: 'recent',   // Calendar tab's own range state (Step 74) -- reset per deployment below, persists across switching away from/back to the tab for the SAME one
 
   async load(id) {
     this._stopLivePositionUpdates();   // leaving whatever deployment/tab was showing before
     this._id = id;
     this._trades = [];
     this._openTradeRows = new Set();
+    this._calendarRange = 'recent';
     document.getElementById('detailHeader').innerHTML = spinnerHtml();
     document.getElementById('detailTabs').innerHTML = '';
     document.getElementById('detailBody').innerHTML = spinnerHtml();
@@ -522,14 +524,26 @@ const Detail = {
   // tab rather than folded into Stats -- a full-year grid is a big
   // enough visual element to earn one, and Stats was already dense.
   async renderCalendar() {
-    const rows = await Api.getPnlDigestForDeployment(this._id, 'day', 400);
+    const year = this._calendarRange === 'recent' ? null : this._calendarRange;
+    const rows = year
+      ? await Api.getPnlDigestForDeployment(this._id, 'day', 400, year)
+      : await Api.getPnlDigestForDeployment(this._id, 'day', 400);
     const body = document.getElementById('detailBody');
     body.innerHTML = `
       <section>
         <h2>P&amp;L Calendar</h2>
-        ${renderPnlHeatmap(rows)}
+        ${renderPnlHeatmap(rows, {
+          year,
+          selector: { value: this._calendarRange, onChange: 'Detail.changeCalendarRange(this.value)' },
+        })}
       </section>
     `;
+    scrollPnlHeatmapToEnd('detailBody');
+  },
+
+  async changeCalendarRange(value) {
+    this._calendarRange = value === 'recent' ? 'recent' : Number(value);
+    await this.renderCalendar();
   },
 
   // ── Header actions ──────────────────────────────────────────────

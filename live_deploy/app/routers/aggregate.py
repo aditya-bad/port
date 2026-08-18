@@ -75,6 +75,19 @@ def period_bounds(period: str, offset: int, now: datetime | None = None) -> tupl
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc), label
 
 
+def year_bounds(year: int) -> tuple[datetime, datetime]:
+    """[Jan 1 00:00 IST, Jan 1 00:00 IST next year) for the given
+    calendar year, as UTC-aware datetimes ready to bind into a
+    `closed_at >= $1 AND closed_at < $2` query — the Calendar heatmap's
+    year-picker (Step 74): "show me all of 2025" needs the SAME IST
+    calendar-day convention queries.list_pnl_digest's own bucketing
+    already uses, not the server's UTC day boundary, or Dec 31 IST's
+    late-evening trades would land in the wrong year's grid."""
+    start = datetime(year, 1, 1, tzinfo=_IST)
+    end = datetime(year + 1, 1, 1, tzinfo=_IST)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
 async def fetch_positions_open(pool, dispatcher) -> list[dict]:
     """status="open" is the only value the frontend ever actually
     requests (Dashboard.load() calls Api.getAllPositions('open')) --
@@ -172,7 +185,7 @@ async def portfolio_equity_curve(request: Request, bucket_seconds: int = 300, li
 
 
 @router.get("/portfolio/pnl-digest", response_model=list[PnlDigestRow])
-async def pnl_digest(request: Request, period: str = "day", limit: int = 30):
+async def pnl_digest(request: Request, period: str = "day", limit: int = 30, year: int | None = None):
     """Portfolio-wide realized-P&L digest, one row per calendar
     day/week — see queries.list_pnl_digest for why this is REALIZED
     P&L only, and why it's built from positions.realized_pnl rather
@@ -180,11 +193,21 @@ async def pnl_digest(request: Request, period: str = "day", limit: int = 30):
     endpoints above): this view isn't auto-refreshed/polled the way
     Dashboard's positions/trades are, and GROUP BY over positions/
     position_lots is cheap at this app's scale — a live query per
-    request is simpler and there's no hot path to protect here."""
+    request is simpler and there's no hot path to protect here.
+
+    year (Step 74): the Calendar heatmap's year-picker -- when given,
+    `limit` is ignored entirely and every real bucket within that whole
+    IST calendar year is returned (see year_bounds/
+    queries.list_pnl_digest_for_range), not just "the most recent N".
+    """
     if period not in ("day", "week", "month"):
         raise HTTPException(422, detail="period must be 'day', 'week', or 'month'")
     pool = request.app.state.db_pool
-    rows = await queries.list_pnl_digest(pool, period=period, limit=limit)
+    if year is not None:
+        start, end = year_bounds(year)
+        rows = await queries.list_pnl_digest_for_range(pool, start, end, period=period)
+    else:
+        rows = await queries.list_pnl_digest(pool, period=period, limit=limit)
     return [dict(r) for r in rows]
 
 

@@ -806,6 +806,107 @@ async def list_pnl_digest_for_deployment(
         )
 
 
+async def list_pnl_digest_for_range(
+    pool: asyncpg.Pool, start: datetime, end: datetime, period: str = "day",
+) -> list[asyncpg.Record]:
+    """Same shape, philosophy, and include_in_reports filtering as
+    list_pnl_digest (see its own docstring) — a full [start, end) window
+    bucketed into calendar days/weeks, rather than "the most recent N
+    buckets". The Calendar heatmap's year-picker (Step 74) is the actual
+    caller: "show me all of 2025" needs every real bucket in that exact
+    window, which ORDER BY period_start DESC LIMIT N can't express
+    (LIMIT N always means "the N most recent", so a past year would
+    just silently return recent 2026 buckets instead of reaching back
+    into 2025 at all, once there's more than N periods of history)."""
+    if period not in _DIGEST_PERIODS:
+        raise ValueError(f"period must be one of {_DIGEST_PERIODS}, got {period!r}")
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            WITH closes AS (
+                SELECT
+                    (date_trunc($1, p.closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    SUM(p.realized_pnl) AS realized_pnl,
+                    COUNT(*) AS positions_closed,
+                    COUNT(*) FILTER (WHERE p.realized_pnl > 0) AS wins,
+                    COUNT(*) FILTER (WHERE p.realized_pnl < 0) AS losses
+                FROM positions p
+                JOIN deployments d ON d.id = p.deployment_id
+                WHERE p.status = 'closed' AND p.closed_at >= $2 AND p.closed_at < $3
+                    AND d.include_in_reports = true
+                GROUP BY 1
+            ),
+            fills AS (
+                SELECT
+                    (date_trunc($1, pl.executed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    COUNT(*) AS fills
+                FROM position_lots pl
+                JOIN deployments d ON d.id = pl.deployment_id
+                WHERE pl.executed_at >= $2 AND pl.executed_at < $3 AND d.include_in_reports = true
+                GROUP BY 1
+            )
+            SELECT
+                COALESCE(closes.period_start, fills.period_start) AS period_start,
+                COALESCE(closes.realized_pnl, 0)::float8 AS realized_pnl,
+                COALESCE(closes.positions_closed, 0) AS positions_closed,
+                COALESCE(closes.wins, 0) AS wins,
+                COALESCE(closes.losses, 0) AS losses,
+                COALESCE(fills.fills, 0) AS fills
+            FROM closes
+            FULL OUTER JOIN fills USING (period_start)
+            ORDER BY period_start DESC
+            """,
+            period, start, end,
+        )
+
+
+async def list_pnl_digest_for_deployment_range(
+    pool: asyncpg.Pool, deployment_id: UUID, start: datetime, end: datetime, period: str = "day",
+) -> list[asyncpg.Record]:
+    """Same shape as list_pnl_digest_for_range, scoped to one deployment
+    — the year-picker's per-deployment source on Detail's own Calendar
+    tab, same relationship list_pnl_digest_for_deployment already has to
+    list_pnl_digest. Deliberately NOT filtered by include_in_reports,
+    same reasoning as that function's own docstring."""
+    if period not in _DIGEST_PERIODS:
+        raise ValueError(f"period must be one of {_DIGEST_PERIODS}, got {period!r}")
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            WITH closes AS (
+                SELECT
+                    (date_trunc($1, closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    SUM(realized_pnl) AS realized_pnl,
+                    COUNT(*) AS positions_closed,
+                    COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
+                    COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses
+                FROM positions
+                WHERE status = 'closed' AND deployment_id = $2 AND closed_at >= $3 AND closed_at < $4
+                GROUP BY 1
+            ),
+            fills AS (
+                SELECT
+                    (date_trunc($1, executed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    COUNT(*) AS fills
+                FROM position_lots
+                WHERE deployment_id = $2 AND executed_at >= $3 AND executed_at < $4
+                GROUP BY 1
+            )
+            SELECT
+                COALESCE(closes.period_start, fills.period_start) AS period_start,
+                COALESCE(closes.realized_pnl, 0)::float8 AS realized_pnl,
+                COALESCE(closes.positions_closed, 0) AS positions_closed,
+                COALESCE(closes.wins, 0) AS wins,
+                COALESCE(closes.losses, 0) AS losses,
+                COALESCE(fills.fills, 0) AS fills
+            FROM closes
+            FULL OUTER JOIN fills USING (period_start)
+            ORDER BY period_start DESC
+            """,
+            period, deployment_id, start, end,
+        )
+
+
 async def pnl_summary_for_range(
     pool: asyncpg.Pool, start: datetime, end: datetime,
 ) -> dict[str, Any]:

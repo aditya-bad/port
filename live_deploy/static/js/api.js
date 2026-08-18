@@ -137,8 +137,12 @@ const Api = {
     if (!r.ok) throw new Error(`Could not load snapshots (${r.status})`);
     return r.json();
   },
-  async getPnlDigestForDeployment(id, period = 'day', limit = 400) {
-    const r = await fetch(`/deployments/${id}/pnl-digest?period=${period}&limit=${limit}`);
+  async getPnlDigestForDeployment(id, period = 'day', limit = 400, year = null) {
+    // year (Step 74, the Calendar heatmap's year-picker): the backend
+    // ignores `limit` entirely once this is set, returning that whole
+    // IST calendar year instead of "the most recent `limit` buckets".
+    const yearParam = year ? `&year=${year}` : '';
+    const r = await fetch(`/deployments/${id}/pnl-digest?period=${period}&limit=${limit}${yearParam}`);
     if (!r.ok) throw new Error(`Could not load the P&L calendar data (${r.status})`);
     return r.json();
   },
@@ -157,8 +161,10 @@ const Api = {
     if (!r.ok) throw new Error(`Could not load the portfolio equity curve (${r.status})`);
     return r.json();
   },
-  async getPnlDigest(period = 'day', limit = 30) {
-    const r = await fetch(`/portfolio/pnl-digest?period=${period}&limit=${limit}`);
+  async getPnlDigest(period = 'day', limit = 30, year = null) {
+    // year: see getPnlDigestForDeployment's own comment -- same deal.
+    const yearParam = year ? `&year=${year}` : '';
+    const r = await fetch(`/portfolio/pnl-digest?period=${period}&limit=${limit}${yearParam}`);
     if (!r.ok) throw new Error(`Could not load the P&L digest (${r.status})`);
     return r.json();
   },
@@ -592,15 +598,37 @@ function _quantileBucket(sortedAbsValues, value) {
   return 4;
 }
 
+// The year-picker's own option list (Step 74) -- current calendar year
+// down to 3 years back, computed fresh from the real clock every call
+// rather than hardcoded, so "2027" becomes a real, selectable option
+// the moment it's actually 2027, with zero further code changes needed
+// (same for every year after that). IST, matching this whole feature's
+// own day-bucketing convention -- irrelevant in practice except right
+// at New Year's in a UTC-behind timezone, but consistent is cheap.
+function pnlHeatmapYearOptions() {
+  const currentYear = Number(_isoDateIST(new Date()).slice(0, 4));
+  const years = [];
+  for (let y = currentYear; y >= currentYear - 3; y--) years.push(y);
+  return years;
+}
+
 function renderPnlHeatmap(rows, opts = {}) {
   const weeks = opts.weeks || 53;
+  const year = opts.year || null;   // null = rolling "last N weeks ending today" (the default); a real year = that whole Jan-Dec grid instead
   const byDate = new Map();
   rows.forEach(r => byDate.set(_isoDateIST(new Date(r.period_start)), r));
 
   const today = _isoDateIST(new Date());
-  let rangeStart = _addDaysToIsoDate(today, -(weeks * 7 - 1));
-  rangeStart = _addDaysToIsoDate(rangeStart, -_dayOfWeekIsoDate(rangeStart));   // snap back to that week's Sunday
-  const rangeEndPadded = _addDaysToIsoDate(today, 6 - _dayOfWeekIsoDate(today)); // snap forward to this week's Saturday
+  let rangeStart, rangeEndPadded;
+  if (year) {
+    rangeStart = _addDaysToIsoDate(`${year}-01-01`, -_dayOfWeekIsoDate(`${year}-01-01`));       // snap back to that week's Sunday
+    const dec31 = `${year}-12-31`;
+    rangeEndPadded = _addDaysToIsoDate(dec31, 6 - _dayOfWeekIsoDate(dec31));                     // snap forward to that week's Saturday
+  } else {
+    rangeStart = _addDaysToIsoDate(today, -(weeks * 7 - 1));
+    rangeStart = _addDaysToIsoDate(rangeStart, -_dayOfWeekIsoDate(rangeStart));   // snap back to that week's Sunday
+    rangeEndPadded = _addDaysToIsoDate(today, 6 - _dayOfWeekIsoDate(today));      // snap forward to this week's Saturday
+  }
 
   // Quantile buckets computed ONLY from real, in-range days (never the
   // padding cells either side, which carry no data by construction).
@@ -649,27 +677,69 @@ function renderPnlHeatmap(rows, opts = {}) {
     }
   }
 
+  const rangeLabel = year ? `in ${year}` : `over the last ${weeks} weeks`;
   const summary = (winDays + lossDays) > 0
-    ? `${fmtSignedMoney(totalPnl)} total over the last ${weeks} weeks — ${winDays} winning day${winDays === 1 ? '' : 's'}, ` +
+    ? `${fmtSignedMoney(totalPnl)} total ${rangeLabel} — ${winDays} winning day${winDays === 1 ? '' : 's'}, ` +
       `${lossDays} losing day${lossDays === 1 ? '' : 's'}` +
       (bestDay ? ` · best ${fmtDate(bestDay.date)} (${fmtSignedMoney(bestDay.pnl)})` : '') +
       (worstDay && worstDay.pnl < 0 ? ` · worst ${fmtDate(worstDay.date)} (${fmtSignedMoney(worstDay.pnl)})` : '')
-    : `No realized P&L recorded in the last ${weeks} weeks yet.`;
+    : `No realized P&L recorded ${rangeLabel} yet.`;
+
+  // Year picker (Step 74) -- deliberately OUTSIDE .pnl-heatmap-wrap
+  // (the scrollable box itself), so it stays visible/reachable
+  // regardless of how far the grid below is scrolled. opts.selector is
+  // required to render it -- a caller that doesn't pass one just gets
+  // the grid alone, e.g. for a hypothetical future embed that doesn't
+  // want the control at all.
+  const selectorHtml = opts.selector ? `
+    <div class="pnl-heatmap-range-row">
+      <select class="pnl-heatmap-range-select" onchange="${opts.selector.onChange}">
+        <option value="recent" ${!year ? 'selected' : ''}>Last 365 days</option>
+        ${pnlHeatmapYearOptions().map(y =>
+          `<option value="${y}" ${year === y ? 'selected' : ''}>${y}</option>`
+        ).join('')}
+      </select>
+    </div>
+  ` : '';
 
   return `
-    <div class="pnl-heatmap-wrap">
-      <div class="pnl-heatmap-months">${monthHtml}</div>
-      <div class="pnl-heatmap-grid">${cellHtml}</div>
-      <div class="pnl-heatmap-legend">
-        <span>Loss</span>
-        ${[4, 3, 2, 1].map(n => `<div class="pnl-heatmap-cell" style="background:var(--heat-loss-${n})"></div>`).join('')}
-        <div class="pnl-heatmap-cell" style="background:var(--panel)"></div>
-        ${[1, 2, 3, 4].map(n => `<div class="pnl-heatmap-cell" style="background:var(--heat-gain-${n})"></div>`).join('')}
-        <span>Gain</span>
+    <div class="pnl-heatmap-block">
+      ${selectorHtml}
+      <div class="pnl-heatmap-wrap">
+        <div class="pnl-heatmap-months">${monthHtml}</div>
+        <div class="pnl-heatmap-grid">${cellHtml}</div>
+        <div class="pnl-heatmap-legend">
+          <span>Loss</span>
+          ${[4, 3, 2, 1].map(n => `<div class="pnl-heatmap-cell" style="background:var(--heat-loss-${n})"></div>`).join('')}
+          <div class="pnl-heatmap-cell" style="background:var(--panel)"></div>
+          ${[1, 2, 3, 4].map(n => `<div class="pnl-heatmap-cell" style="background:var(--heat-gain-${n})"></div>`).join('')}
+          <span>Gain</span>
+        </div>
+        <div class="table-note" style="margin-top:8px;">${summary}</div>
       </div>
-      <div class="table-note" style="margin-top:8px;">${summary}</div>
     </div>
   `;
+}
+
+// Scrolls a just-rendered heatmap's own .pnl-heatmap-wrap to its right
+// edge -- called by every view right after setting innerHTML from
+// renderPnlHeatmap's output (Step 74: reported that reloading always
+// left the OLDEST data showing, the left edge, rather than the most
+// recent). Scoped to `containerId` specifically (not a bare
+// document.querySelector) for the same reason detail.js's own live-
+// position wiring already scopes its selectors: this SPA keeps every
+// view's DOM alive at once (just toggled via .active, not removed), so
+// an unscoped query can find a HIDDEN heatmap on another view before
+// the one actually just rendered. requestAnimationFrame, not a bare
+// synchronous read right after innerHTML -- gives the browser one
+// paint to actually commit layout so scrollWidth reflects the grid
+// that was just inserted, not a stale pre-render value.
+function scrollPnlHeatmapToEnd(containerId) {
+  requestAnimationFrame(() => {
+    const container = document.getElementById(containerId);
+    const wrap = container && container.querySelector('.pnl-heatmap-wrap');
+    if (wrap) wrap.scrollLeft = wrap.scrollWidth;
+  });
 }
 
 // ── Strategy config field widgets ────────────────────────────────────

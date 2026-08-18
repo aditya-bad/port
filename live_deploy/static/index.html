@@ -669,6 +669,11 @@ tr.trade-detail-row td {
    computation. (This explanation is deliberately written without
    ever typing that two-character sequence itself, for the obvious
    reason.) */
+.pnl-heatmap-range-row { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.pnl-heatmap-range-select {
+  background: var(--paper); border: 3px solid var(--line); color: var(--ink);
+  padding: 6px 9px; font-size: 11px; font-weight: 600; font-family: var(--font-body);
+}
 .pnl-heatmap-wrap { background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm); padding: 16px 18px; overflow-x: auto; }
 .pnl-heatmap-months { display: grid; grid-auto-flow: column; grid-auto-columns: 13px; gap: 3px; margin-bottom: 4px; margin-left: 3px; height: 14px; }
 .pnl-heatmap-month-label { font-size: 10px; color: var(--parchment); font-weight: 700; white-space: nowrap; }

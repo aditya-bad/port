@@ -18,6 +18,15 @@ const Dashboard = {
   _livePnlHandler: null,
   _liveTotals: { realized: 0, liveDeploymentIds: new Set(), breakdownList: [] },   // stashed by renderStats() for the live-update callback
 
+  // Calendar heatmap's own range state (Step 74) -- 'recent' (the
+  // default, last-365-days rolling view) or a real year number.
+  // Persists across quiet background reloads (a fill/pause elsewhere
+  // shouldn't reset the range someone deliberately picked), reset only
+  // by a genuine fresh navigation to this view (router() calls load()
+  // with no saved state to restore, same as every other Dashboard
+  // control).
+  _calendarRange: 'recent',
+
   // quiet=true is used for event-driven background refresh (see
   // connectEventSocket() near the bottom of index.html) -- skips the
   // spinner reset so already-rendered content just gets swapped for
@@ -44,7 +53,7 @@ const Dashboard = {
 
     const [deployments, calendarRows, allPositions, allTrades, instruments] = await Promise.all([
       Api.listDeployments(),
-      Api.getPnlDigest('day', 371),
+      this._fetchCalendarRows(),
       Api.getAllPositions('open'),
       Api.getRecentTrades(20),
       Api.listInstruments(),
@@ -64,7 +73,7 @@ const Dashboard = {
     const trades = allTrades.filter(t => !excludedIds.has(t.deployment_id));
 
     this.renderStats(deployments);
-    document.getElementById('dashCalendar').innerHTML = renderPnlHeatmap(calendarRows);
+    this.renderCalendar(calendarRows);
     this.renderPositions(positions);
     this.renderActivity(trades);
     this.renderInstruments(instruments);
@@ -135,6 +144,34 @@ const Dashboard = {
         rowEl.className = pnlClass(pnl);
       }
     });
+  },
+
+  // ── Calendar heatmap range (Step 74) ──────────────────────────────
+  // 'recent' fetches the same rolling last-371-day window this always
+  // used; a real year fetches that whole Jan-Dec grid instead (see
+  // GET /portfolio/pnl-digest's own `year` param).
+  _fetchCalendarRows() {
+    return this._calendarRange === 'recent'
+      ? Api.getPnlDigest('day', 371)
+      : Api.getPnlDigest('day', 371, this._calendarRange);
+  },
+
+  renderCalendar(rows) {
+    const year = this._calendarRange === 'recent' ? null : this._calendarRange;
+    document.getElementById('dashCalendar').innerHTML = renderPnlHeatmap(rows, {
+      year,
+      selector: { value: this._calendarRange, onChange: 'Dashboard.changeCalendarRange(this.value)' },
+    });
+    // Always land on the newest column, not wherever scrollLeft=0
+    // (the oldest data) happens to put you -- see scrollPnlHeatmapToEnd's
+    // own comment for why this is a rAF, not a synchronous read.
+    scrollPnlHeatmapToEnd('dashCalendar');
+  },
+
+  async changeCalendarRange(value) {
+    this._calendarRange = value === 'recent' ? 'recent' : Number(value);
+    const rows = await this._fetchCalendarRows();
+    this.renderCalendar(rows);
   },
 
   moveSection(id, delta) {

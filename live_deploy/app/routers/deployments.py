@@ -16,6 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
 
+from .aggregate import year_bounds
 from ..db import queries
 from ..deployments.schemas import (
     DeploymentCreate, DeploymentOut, DeploymentUpdate, EventOut, LotsPage,
@@ -300,7 +301,9 @@ async def get_snapshots(deployment_id: UUID, request: Request, limit: int = 1000
 
 
 @router.get("/{deployment_id}/pnl-digest", response_model=list[PnlDigestRow])
-async def get_pnl_digest(deployment_id: UUID, request: Request, period: str = "day", limit: int = 400):
+async def get_pnl_digest(
+    deployment_id: UUID, request: Request, period: str = "day", limit: int = 400, year: int | None = None,
+):
     """This deployment's own daily/weekly realized-P&L digest — same
     shape and realized-only philosophy as GET /portfolio/pnl-digest
     (see queries.list_pnl_digest's docstring), just scoped to one
@@ -309,13 +312,21 @@ async def get_pnl_digest(deployment_id: UUID, request: Request, period: str = "d
     is why the default `limit` is high enough for a full year of daily
     buckets rather than the portfolio digest's handful-of-recent-
     periods default.
+
+    year (Step 74): the Calendar heatmap's year-picker -- see the
+    sibling portfolio endpoint's own comment; `limit` is ignored when
+    this is set.
     """
     pool = request.app.state.db_pool
     dep = await queries.get_deployment(pool, deployment_id)
     if dep is None:
         raise HTTPException(404, "No such deployment")
     try:
-        rows = await queries.list_pnl_digest_for_deployment(pool, deployment_id, period=period, limit=limit)
+        if year is not None:
+            start, end = year_bounds(year)
+            rows = await queries.list_pnl_digest_for_deployment_range(pool, deployment_id, start, end, period=period)
+        else:
+            rows = await queries.list_pnl_digest_for_deployment(pool, deployment_id, period=period, limit=limit)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return [dict(r) for r in rows]
