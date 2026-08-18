@@ -4189,6 +4189,70 @@ the user's live Tailscale Serve issue is still to be confirmed against
 their actual deployment — flagged honestly above as a real possibility,
 not a guarantee.
 
+## What's here (Step 64: Step 63's own SSE crashed on the first real tick — and probably explains the whole WebSocket saga)
+
+Deployed Step 63, and within moments got a real production traceback:
+```
+TypeError: Object of type datetime is not JSON serializable
+```
+raised from `_sse_stream`'s own `json.dumps(payload)` line, the instant
+a real tick reached it.
+
+**Root cause**: a real Kite tick's `exchange_timestamp` is a raw Python
+`datetime` (confirmed against the actual `kiteconnect` library's source
+back in Step 55) — never a string, never converted anywhere upstream of
+this. Plain `json.dumps()` has no idea what to do with that and raises.
+Every test written for the SSE work in Step 63 fed fake ticks WITHOUT
+an `exchange_timestamp` field at all, so none of them ever exercised
+this — a real gap in test realism (checked "does the mechanism work at
+all," never "does it survive a tick shaped exactly like a real one"),
+not a subtle miss.
+
+**The much bigger realization, from asking why this was never seen
+before**: the OLD `/ws/ticks` WebSocket handler had the *identical* bug
+— `websocket.send_json(ticks)` with no try/except around it — but its
+own cleanup path did `await asyncio.gather(forward_task, ...,
+return_exceptions=True)`, which swallows any exception from that task
+completely silently. No log line. No traceback. Ever. A real tick
+carrying `exchange_timestamp` (present in "full"/"quote" mode — this
+app's default) would have hit this exact `TypeError` on the very FIRST
+real tick after every single connection, silently closing it every
+time — which looks *exactly* like "the connection just dies for no
+visible reason, forever, every few hundred milliseconds," the precise
+symptom that drove the entire Tailscale Serve investigation across
+Steps 61-63. That investigation wasn't wasted — SSE genuinely is the
+architecturally correct tool here regardless (see Step 63's own
+reasoning), and the Tailscale WebSocket bug it surfaced
+(github.com/tailscale/tailscale/issues/18827) is real and separately
+confirmed — but it's now looking like the WebSocket connections were
+never actually surviving long enough to reliably hit that proxy-level
+issue at all; this silent datetime crash was very plausibly the real,
+whole-session root cause the entire time, just never visible because
+nothing ever logged it.
+
+**Fixed**: `json.dumps(payload, default=_json_default)`, where
+`_json_default` converts a `datetime` to its ISO string (the one type
+these payloads are actually known to carry — deployment-event payloads
+already call `.isoformat()` themselves before reaching this, so in
+practice this only ever fires for ticks). Also added a per-payload
+try/except around the serialize-and-yield step: a single payload that
+still somehow fails to serialize is now logged and skipped, not left to
+kill the whole connection — deliberately more resilient than the old
+WebSocket failure mode, and a safety net against whatever shape nobody's
+thought of yet, not just today's specific datetime case.
+
+**Verified**: extended the existing SSE test with a tick built exactly
+the way the real `kiteconnect` library builds one
+(`datetime.fromtimestamp(unix_ts)`, no tz arg) instead of the
+string-only fakes every earlier test used — confirmed it serializes
+correctly (the datetime arrives client-side as a proper ISO string) and
+the connection survives. Reproduced the crash pre-fix via `git stash`:
+identical `TypeError`, and the client sees the connection die mid-read
+(`peer closed connection without sending complete message body`) —
+matching the live production traceback exactly. Reran the full SSE
+backend suite and the real-Chromium Playwright test afterward — both
+still pass.
+
 ## Setup
 
 ```bash

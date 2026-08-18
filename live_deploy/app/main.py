@@ -39,6 +39,7 @@ registers under that name.
 import asyncio
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -310,39 +311,80 @@ async def shutdown() -> None:
     logger.info("live_deploy stopped")
 
 
+def _json_default(obj):
+    """
+    json.dumps' `default=` hook — handles the ONE type this app's own
+    payloads are actually known to carry that isn't natively JSON-safe:
+    a raw `datetime` (a tick's own `exchange_timestamp`, straight from
+    kiteconnect, never converted to a string anywhere upstream of this
+    — see runner.py's own extensive comments on why that's naive local
+    time, not portably IST). Deployment-event payloads (_record_event)
+    already call `.isoformat()` themselves before this ever sees them,
+    so in practice this only ever fires for ticks — kept generic rather
+    than tick-specific in case something else datetime-shaped shows up
+    here later.
+
+    THIS WAS LIKELY THE REAL ROOT CAUSE of the "WebSocket dies within
+    100-300ms, every time" issue chased at length earlier this session
+    (blamed on Tailscale Serve's own WebSocket handling — a real,
+    separately-confirmed upstream bug, but probably not what was
+    actually happening here): the old `/ws/ticks` handler's
+    `_forward_ticks()` called `websocket.send_json(ticks)` with NO
+    try/except around it, and its own cleanup path did
+    `await asyncio.gather(forward_task, ..., return_exceptions=True)`
+    — which swallows ANY exception from that task completely silently,
+    no log line, no traceback, nothing. A raw `datetime` in a REAL
+    Kite tick (present in "full"/"quote" mode, which is what this app
+    defaults to) would have hit this exact TypeError on the very FIRST
+    real tick after connecting, silently closing the connection every
+    time — which looks identical to "the connection just dies for no
+    reason," the exact symptom driving that whole investigation. The
+    fake ticks used in every test written during that investigation
+    never included `exchange_timestamp` at all, so none of them ever
+    exercised this path — a real gap in test realism, not a subtle bug.
+    This new SSE version doesn't swallow exceptions the same way,
+    which is WHY this became visible as a real traceback instead of a
+    silent, mysterious reconnect loop the moment it hit production.
+    """
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    raise TypeError(f"Object of type {obj.__class__.__name__} is not JSON serializable")
+
+
 async def _sse_stream(request: Request, broadcaster: Broadcaster, shutdown_event: asyncio.Event):
     """
     Shared generator behind /sse/ticks and /sse/events — see each
     endpoint's own docstring for what's actually flowing through it.
 
     WAS a WebSocket (/ws/ticks, /ws/events) — replaced after discovering
-    those connections were dying within ~100-300ms specifically when
-    reached through Tailscale Serve's HTTPS reverse proxy (a real,
-    reported, unresolved upstream issue as of this writing —
-    github.com/tailscale/tailscale/issues/18827 — though our own
-    timing was faster than that report's, so the exact mechanism was
-    never fully pinned down; see this session's own investigation
-    trail). Neither direction of this stream ever needed to be
-    bidirectional — every consumer (the ticker bar, Detail's live
-    prices, toast notifications) only ever RECEIVES, never sends
-    anything back — so a WebSocket's own defining feature (full-duplex)
-    was dead weight the whole time. SSE (a single long-lived plain HTTP
-    response the server keeps writing to) is what "the server pushes
-    events, the client only ever listens" is actually FOR — no protocol
-    upgrade handshake, no custom reconnect logic needed (EventSource
-    retries on its own, natively, browser-side) — strictly simpler code
-    for something that was always one-way. Whether it also survives the
-    proxy path better remains to be seen (still just plain HTTP
-    underneath, so it isn't guaranteed to dodge whatever the deeper
-    cause turns out to be) — but it's the honestly-shaped tool for this
-    job either way, independent of that.
+    those connections were dying within ~100-300ms. Neither direction of
+    this stream ever needed to be bidirectional — every consumer (the
+    ticker bar, Detail's live prices, toast notifications) only ever
+    RECEIVES, never sends anything back — so a WebSocket's own defining
+    feature (full-duplex) was dead weight the whole time. SSE (a single
+    long-lived plain HTTP response the server keeps writing to) is what
+    "the server pushes events, the client only ever listens" is
+    actually FOR — no protocol upgrade handshake, no custom reconnect
+    logic needed (EventSource retries on its own, natively, browser-
+    side) — strictly simpler code for something that was always one-way.
+    See _json_default's own docstring above for what turned out to be
+    the actual, likely root cause of the dying-connection symptom that
+    prompted this switch in the first place — found only because THIS
+    version's error handling doesn't hide exceptions the way the old
+    WebSocket cleanup path did.
 
     A heartbeat comment line (`: heartbeat`) is sent whenever nothing
     real has gone out for 15s — SSE comment lines are ignored by
     EventSource's own parsing (never reach onmessage), but keep bytes
     flowing over the connection, which is what stops some proxies from
-    treating a quiet-but-healthy connection as idle and killing it —
-    exactly the class of problem this replaces.
+    treating a quiet-but-healthy connection as idle and killing it.
+
+    A single payload that fails to serialize is logged and SKIPPED,
+    not left to kill the whole connection — deliberately more resilient
+    than the old WebSocket version's failure mode (which silently
+    dropped the entire CONNECTION on exactly this), and a genuine safety
+    net against whatever future payload shape nobody's thought of yet,
+    not just today's known datetime case.
     """
     queue = await broadcaster.subscribe()
     try:
@@ -352,7 +394,15 @@ async def _sse_stream(request: Request, broadcaster: Broadcaster, shutdown_event
             except asyncio.TimeoutError:
                 yield ": heartbeat\n\n"
                 continue
-            yield f"data: {json.dumps(payload)}\n\n"
+            try:
+                data = json.dumps(payload, default=_json_default)
+            except Exception:
+                logger.exception(
+                    "_sse_stream: failed to JSON-serialize a payload — "
+                    "skipping it, connection stays open"
+                )
+                continue
+            yield f"data: {data}\n\n"
     finally:
         # Reached either via the loop's own exit (shutdown_event) or via
         # this generator being cancelled out from under it — Starlette's
