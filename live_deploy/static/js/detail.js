@@ -128,11 +128,11 @@ const Detail = {
   },
 
   // ── Positions ───────────────────────────────────────────────────
-  // Price/P&L cells update LIVE off the same /ws/ticks stream the
+  // Price/P&L cells update LIVE off the same /sse/ticks stream the
   // ticker bar uses (see window.LiveTicks in index.html) — previously
   // this table was a one-time snapshot from page load with no live
-  // update at all (no polling, no WS), so it went stale the instant
-  // you stopped reloading the whole page. Only the two numeric cells
+  // update at all (no polling, no live wiring), so it went stale the
+  // instant you stopped reloading the whole page. Only the two numeric cells
   // are touched per tick, by instrument_token — everything else about
   // the table (rows, sort order, other tabs) is untouched, so this
   // can't disrupt anything the way a full re-render would.

@@ -200,7 +200,7 @@ class DeploymentRunner:
     ) -> None:
         """Records to deployment_events (unchanged persistence) AND, if
         an event_broadcaster was given, fans the same event out live to
-        every connected /ws/events subscriber — the in-app real-time
+        every connected /sse/events subscriber — the in-app real-time
         alert feature. The two call sites below (strategy_error,
         fill_buy/fill_sell) used to call queries.record_event directly;
         routed through here instead so a trade a strategy makes shows up

@@ -70,6 +70,19 @@ logger = logging.getLogger("live_deploy.audit")
 
 ALLOWLIST = frozenset({"/kite/callback", "/auth/login"})
 
+# Paths a plain browser client genuinely can't attach a custom header to
+# — used to widen _query_api_key_ok's exception below beyond WebSocket
+# connections (its original and, until now, only reason to exist).
+# /sse/ticks and /sse/events (replacing what used to be /ws/ticks and
+# /ws/events) are consumed via the browser's native EventSource, which
+# has the identical limitation a plain WebSocket had: no way to set
+# X-API-Key at all, so the session cookie (the normal path, and what
+# every browser tab actually uses) or this query-param fallback are the
+# only two options. Deliberately a short, explicit allowlist rather than
+# "any GET request" — see _query_api_key_ok's own docstring for why a
+# query param is never accepted for ordinary HTTP requests.
+_STREAMING_PATHS = frozenset({"/sse/ticks", "/sse/events"})
+
 # Hosts that count as "local dev", for the Secure cookie flag decision
 # below — deliberately just hostnames, not a network/CIDR check: this
 # is a convenience for running the service directly on your own machine
@@ -230,20 +243,23 @@ class AuthMiddleware:
         return bool(supplied) and secrets.compare_digest(supplied, self.secret)
 
     def _query_api_key_ok(self, conn: HTTPConnection) -> bool:
-        # WebSocket-only, and only as a fallback — see module docstring
-        # and README: a plain browser WebSocket can't set custom headers
-        # at all, and some minimal script WS clients can't either, so a
-        # query param is the one deliberate exception to "never put the
-        # key in a URL." Never accepted for plain HTTP requests, where
-        # the header is always available and a query param would risk
-        # ending up in a reverse proxy's access log.
+        # A fallback ONLY for _STREAMING_PATHS (plus, historically, any
+        # WebSocket — none exist in this app any more, see main.py's
+        # module docstring, but the check is left broad in case one ever
+        # comes back): a plain browser EventSource/WebSocket can't set
+        # custom headers at all, and some minimal script clients can't
+        # either, so a query param is the one deliberate exception to
+        # "never put the key in a URL." Never accepted for ordinary HTTP
+        # requests, where the header is always available and a query
+        # param would risk ending up in a reverse proxy's access log.
         supplied = conn.query_params.get("api_key")
         return bool(supplied) and secrets.compare_digest(supplied, self.secret)
 
     async def _is_authorized(self, conn: HTTPConnection) -> bool:
         if await self._session_ok(conn) or self._header_api_key_ok(conn):
             return True
-        if conn.scope["type"] == "websocket" and self._query_api_key_ok(conn):
+        if (conn.scope["type"] == "websocket" or conn.scope["path"] in _STREAMING_PATHS) \
+                and self._query_api_key_ok(conn):
             return True
         return False
 

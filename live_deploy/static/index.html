@@ -406,7 +406,7 @@ tr.trade-row:focus-visible {
 .updated-label { font-size: 11px; color: var(--parchment); font-weight: 500; font-variant-numeric: tabular-nums; }
 
 /* ── Live ticker bar — NIFTY/SENSEX/BANK NIFTY prices fed by
-   /ws/ticks, plus an IST clock. Sticky so it stays visible while
+   /sse/ticks, plus an IST clock. Sticky so it stays visible while
    scrolling a long view; sits above every view's own header. ────── */
 .ticker-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
@@ -701,7 +701,7 @@ tr.trade-detail-row td {
 
 .report-delta { font-size: 11px; font-weight: 700; margin-top: 6px; }
 
-/* ── Real-time alert toasts — fed by /ws/events (see
+/* ── Real-time alert toasts — fed by /sse/events (see
    connectEventSocket() near the bottom of this file). Top-right stack,
    above everything including modals (z-index 200 vs modals' 100) since
    an alert should surface even over an open dialog. Color is STATUS
@@ -946,7 +946,7 @@ body.mobile-nav-open { overflow: hidden; }
 
     <!-- ═══ Live ticker: NIFTY/SENSEX/BANK NIFTY + IST clock — persistent
          across every view (sits outside the .view containers below), fed
-         by the already-existing /ws/ticks broadcast, not polling. ═══ -->
+         by the already-existing /sse/ticks stream, not polling. ═══ -->
     <div class="ticker-bar" id="tickerBar">
       <div class="ticker-prices" id="tickerPrices">
         <span class="ticker-item"><span class="ticker-label">Live prices</span><span class="ticker-price">connecting…</span></span>
@@ -1264,7 +1264,7 @@ body.mobile-nav-open { overflow: hidden; }
   </main>
 </div>
 
-<!-- Real-time alerts — fed by /ws/events, see connectEventSocket() near
+<!-- Real-time alerts — fed by /sse/events, see connectEventSocket() near
      the bottom of this file's own <script>. Top-level sibling of
      .app-shell (not inside .main) so a toast stays visible no matter
      which view is currently active. -->
@@ -1640,7 +1640,7 @@ async function submitManualLogin() {
 
 // ── Live ticker: NIFTY/SENSEX/BANK NIFTY prices + an IST clock ───────
 // Prices are genuinely PUSHED, not polled — this connects straight to
-// the already-existing /ws/ticks broadcast (the same one-upstream-
+// the already-existing /sse/ticks stream (the same one-upstream-
 // Kite-connection-fans-out-to-many-clients stream every other tick
 // consumer would use), so a new price band shows up the instant Kite
 // sends it, with zero extra load on the backend beyond one more
@@ -1654,7 +1654,7 @@ const TICKER_INSTRUMENTS = [
   { token: 260105, label: 'NIFTY BANK' },
 ];
 const tickerState = {};   // token -> { price, prevClose, live }
-let tickerSocket = null;
+let tickerStream = null;   // an EventSource -- see connectTickerSocket() below
 let tickerFallbackTimer = null;
 let tickerHasLiveTick = false;
 
@@ -1733,10 +1733,16 @@ function updateClock() {
   el.textContent = `${datePart} · ${timePart} IST`;
 }
 
+// WAS a WebSocket (/ws/ticks) -- see app/main.py's _sse_stream
+// docstring for the full story on why this moved to SSE (in short:
+// this connection never sent anything back to the server, so
+// WebSocket's whole reason to exist over plain SSE was unused, and the
+// WS-specific version was also the one dying every ~100-300ms through
+// Tailscale Serve). EventSource reconnects on its own, natively, on a
+// close/error -- no manual onclose/setTimeout loop needed any more.
 function connectTickerSocket() {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  tickerSocket = new WebSocket(`${proto}//${window.location.host}/ws/ticks`);
-  tickerSocket.onmessage = (event) => {
+  tickerStream = new EventSource('/sse/ticks');
+  tickerStream.onmessage = (event) => {
     let ticks;
     try { ticks = JSON.parse(event.data); } catch (e) { return; }
     if (!Array.isArray(ticks)) return;
@@ -1754,17 +1760,16 @@ function connectTickerSocket() {
     window.LiveTicks._dispatch(ticks);
   };
   // The session cookie rides along automatically on a same-origin
-  // WebSocket handshake (no query-param api_key needed here — that
-  // fallback in AuthMiddleware is for non-browser WS clients) — by the
-  // time this code runs at all, index.html has already been served,
-  // which only happens once authenticated.
-  tickerSocket.onclose = () => { setTimeout(connectTickerSocket, 3000); };
-  tickerSocket.onerror = () => { tickerSocket.close(); };
+  // EventSource request, same as any other same-origin fetch (no
+  // query-param api_key needed here — that fallback in AuthMiddleware
+  // is for non-browser clients) — by the time this code runs at all,
+  // index.html has already been served, which only happens once
+  // authenticated.
 }
 
 // ── Live ticks, for anything beyond the ticker bar ──────────────────
 // The ticker bar above only reacts to its own 3 hardcoded tokens, but
-// /ws/ticks carries EVERY tick flowing through the app (static AND
+// /sse/ticks carries EVERY tick flowing through the app (static AND
 // dynamically-registered instruments alike — see LiveDataDispatcher's
 // own docstring). window.LiveTicks re-broadcasts that same stream to
 // any other part of the page that wants it (currently: Detail's
@@ -1785,12 +1790,15 @@ window.LiveTicks = {
 };
 
 // ── Real-time alerts ────────────────────────────────────────────────
-// A second, separate websocket (/ws/events, NOT /ws/ticks) — every
+// A second, separate stream (/sse/events, NOT /sse/ticks) — every
 // deployment event (a fill, a pause/resume/stop, a strategy error) as
-// soon as the backend records it. Same reconnect-on-close shape as
-// connectTickerSocket() above, deliberately separate connection: ticks
-// and events are unrelated streams with unrelated consumers.
-let eventSocket = null;
+// soon as the backend records it. Deliberately separate connection from
+// the ticks stream: ticks and events are unrelated payloads with
+// unrelated consumers. WAS a WebSocket (/ws/events) — see
+// connectTickerSocket() above / app/main.py's _sse_stream docstring for
+// why this moved to SSE; same reasoning applies here verbatim (never
+// sent anything back to the server, EventSource reconnects on its own).
+let eventStream = null;   // an EventSource
 const TOAST_LABELS = {
   fill_buy: 'Buy', fill_sell: 'Sell', strategy_error: 'Strategy error',
   paused: 'Paused', resumed: 'Resumed', stopped: 'Stopped', flattened: 'Flattened',
@@ -1802,17 +1810,14 @@ function _toastCategory(eventType) {
   return 'neutral';   // paused/resumed/stopped/flattened -- administrative, not a P&L outcome
 }
 function connectEventSocket() {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  eventSocket = new WebSocket(`${proto}//${window.location.host}/ws/events`);
-  eventSocket.onmessage = (msg) => {
+  eventStream = new EventSource('/sse/events');
+  eventStream.onmessage = (msg) => {
     let ev;
     try { ev = JSON.parse(msg.data); } catch (e) { return; }
     if (!ev || !ev.event_type) return;
     showToast(ev);
     _scheduleLiveRefresh();
   };
-  eventSocket.onclose = () => { setTimeout(connectEventSocket, 3000); };
-  eventSocket.onerror = () => { eventSocket.close(); };
 }
 
 const TOAST_AUTO_DISMISS_MS = 8000;
@@ -1896,7 +1901,7 @@ function router() {
 // navigated here," which resets every section to a spinner first —
 // so the whole view visibly blanked and repopulated every few seconds
 // even when the numbers hadn't moved at all. Both are gone now: the
-// real trigger is /ws/events (see connectEventSocket() below), which
+// real trigger is /sse/events (see connectEventSocket() below), which
 // only fires when something ACTUALLY changed, and it calls each
 // view's load(quiet=true), which skips that spinner reset entirely —
 // content is replaced directly, no flash. _AUTO_REFRESH_VIEWS is now

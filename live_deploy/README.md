@@ -4120,6 +4120,75 @@ restart/resume regression test written this session afterward
 (`pending_exit` persistence, late-start survival, strangle flat-restart)
 — all still pass, confirming this reordering didn't disturb any of them.
 
+## What's here (Step 63: replaced /ws/ticks and /ws/events with SSE — they never needed to be WebSockets)
+
+Live-debugged a real production issue with the user in real time:
+the ticker bar showed "CLOSED" on every price even during open market
+hours, and `downstream_subscribers` in the sidebar was permanently one
+short of what it should be. Traced it to `/ws/ticks` connections dying
+within 100-300ms of opening, every time, forever (confirmed from the
+server's own logs and the browser's DevTools Network tab — accept,
+open, dead, reconnect, repeat). Found a matching, unresolved upstream
+report — `tailscale serve` (the reverse proxy this deployment sits
+behind) mishandling WebSocket connections
+(github.com/tailscale/tailscale/issues/18827) — though that report's
+timing (10-40s) didn't quite match ours (100-300ms), and a second,
+different symptom (`/ws/events` occasionally failing outright with
+`net::ERR_NAME_NOT_RESOLVED`) pointed at something even more basic —
+DNS/connectivity instability on the path to the tailnet hostname, not
+a WebSocket-upgrade-specific bug at all. Never fully pinned to one
+single root cause on the network side.
+
+**What broke the stalemate**: the user asked the right question —
+"what is the frontend even communicating TO the server? I don't think
+it sends anything." Correct, and worth stating plainly: `/ws/ticks` and
+`/ws/events` were both **100% one-directional**, server → browser only,
+from the day they were built (see each handler's own old docstring —
+"this is a send-only stream from the server's point of view"). Neither
+one ever used WebSocket's actual defining feature — full-duplex,
+either side can send anytime. It was the reach-for-it-by-default choice
+for "live updating data," not a considered one.
+
+**Fixed** by replacing both with Server-Sent Events — `/sse/ticks` and
+`/sse/events`, a plain HTTP response the server keeps writing
+`data: <json>\n\n` lines to, using `EventSource` browser-side (built-in
+auto-reconnect, no more manual `onclose → setTimeout → reconnect`
+code — one whole failure mode gone by construction). No protocol
+upgrade handshake either, which is the one part of this that had a
+real, if unproven, chance of dodging the Tailscale bug specifically —
+it's still just plain HTTP underneath, so it isn't guaranteed to
+sidestep whatever the deeper cause turns out to be, but it's the
+honestly-shaped tool for a one-way job regardless of whether it also
+fixes the network issue. A 15s idle heartbeat (`: heartbeat\n\n`, an SSE
+comment line — never reaches `onmessage`) keeps bytes flowing through
+any proxy that might otherwise treat a quiet-but-healthy connection as
+dead. `AuthMiddleware`'s query-param API-key fallback (previously
+WebSocket-only, since a plain browser WS can't set custom headers)
+extended to these two specific paths for the same reason — `EventSource`
+has the identical limitation — via an explicit `_STREAMING_PATHS`
+allowlist rather than widening it to any HTTP request.
+
+**Verified**: backend — against a real running server (not the usual
+in-process `ASGITransport` shortcut, which turned out not to stream an
+open-ended response incrementally and hung the first version of this
+test forever): unauthenticated rejected, wrong `?api_key=` rejected,
+correct one accepted with a genuine `text/event-stream` response, a
+real injected tick arrives as a proper `data: ...` frame, the
+broadcaster's subscriber count rises on connect and correctly drops
+back down after the client disconnects (no leaked subscription, even
+without the old WebSocket disconnect-watcher task), and confirmed
+`?api_key=` is still rejected on an ordinary HTTP route (the exception
+didn't accidentally widen beyond the two streaming paths). Browser —
+reran the exact real-Chromium/Playwright tests already written for the
+WebSocket version of both the ticker/Detail-page live prices and the
+toast-alert system, unmodified, against the new SSE endpoints: both
+passed exactly as before, no code changes needed on the test side,
+confirming the frontend's own consumers (`window.LiveTicks`, the toast
+system) are genuinely transport-agnostic. Whether this also resolves
+the user's live Tailscale Serve issue is still to be confirmed against
+their actual deployment — flagged honestly above as a real possibility,
+not a guarantee.
+
 ## Setup
 
 ```bash
@@ -4283,31 +4352,39 @@ docstring, and `app/strategies/__init__.py`'s import list; `pivot_supertrend`
 is the first one). The UI's deploy form pre-fills `config` from
 `default_config` when one is given.
 
-### `WS /ws/ticks`
+### `GET /sse/ticks`
 
-Connect and receive every tick batch Kite pushes for the subscribed
-tokens, as JSON, in real time. Connecting here never opens a new Kite
-session — you're subscribing to the broadcaster, not to Kite.
+Server-Sent Events, not a WebSocket (see "Step 63" below for why this
+changed) — connect and receive every tick batch Kite pushes for the
+subscribed tokens, as JSON, in real time, for as long as you keep
+reading. Connecting here never opens a new Kite session — you're
+subscribing to the broadcaster, not to Kite. `/sse/events` is the same
+shape, subscribed to deployment events (fills, pause/resume/stop,
+strategy errors) instead of ticks.
 
 **Protected like everything else** (see "Step 7" below) — the browser
 UI's own tick view needs no extra work (its session cookie is sent
-automatically, same-origin), but a script connecting directly, like the
-example below, can't always set a custom header on a WebSocket handshake
-— pass the API key as a query param instead, the one deliberate
-exception to "never put the key in a URL":
+automatically, same-origin, exactly like any other same-origin request),
+but a script connecting directly, like the example below, can't always
+set a custom header on this kind of streaming request either — pass the
+API key as a query param instead, the one deliberate exception to
+"never put the key in a URL." No extra library needed at all — SSE is
+just a plain HTTP response the server keeps writing `data: ...\n\n`
+lines to, so stdlib's `urllib` reads it line by line just fine:
 
 ```python
-import asyncio, websockets, json
+import json
+import urllib.request
 
 APP_AUTH_SECRET = "..."   # same value as config.json's app_auth_secret
 
-async def main():
-    url = f"ws://localhost:8000/ws/ticks?api_key={APP_AUTH_SECRET}"
-    async with websockets.connect(url) as ws:
-        async for message in ws:
-            print(json.loads(message))
-
-asyncio.run(main())
+url = f"http://localhost:8000/sse/ticks?api_key={APP_AUTH_SECRET}"
+with urllib.request.urlopen(url) as resp:
+    for line in resp:
+        line = line.decode().strip()
+        if not line.startswith("data:"):
+            continue   # blank lines between events, or a ": heartbeat" comment line
+        print(json.loads(line[len("data:"):].strip()))
 ```
 
 ### Deployments API
@@ -4416,7 +4493,7 @@ already-live Kite connection, no restart required**, two ways:
    meant to be a lightweight, reversible halt, not a teardown.
 
 2. **Manually, via the API** — for subscribing ahead of a deployment, or
-   just watching a token's ticks over `/ws/ticks` with nothing deployed
+   just watching a token's ticks over `/sse/ticks` with nothing deployed
    against it at all:
 
    | Method & path | What it does |

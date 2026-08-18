@@ -4,7 +4,7 @@ live_deploy — manual instrument subscription control.
 Deployments already trigger this automatically (see
 DeploymentManager._start_runner / .stop), but this exists for direct
 control too: e.g. subscribing to a token BEFORE deploying a strategy
-that needs it, or just watching a token's ticks via /ws/ticks without
+that needs it, or just watching a token's ticks via /sse/ticks without
 any deployment involved at all.
 """
 
@@ -63,7 +63,7 @@ async def get_quotes(tokens: str, request: Request):
     One-shot REST snapshot (last_price + previous day's close) for the
     given instrument_tokens, straight from Kite's quote() endpoint —
     NOT a live feed. Exists for the ticker bar's fallback: outside
-    market hours Kite simply sends no ticks at all over /ws/ticks (a
+    market hours Kite simply sends no ticks at all over /sse/ticks (a
     live, correctly-connected Kite session with nothing to say, not a
     broken one) — a stale-but-honest last-known price beats an
     indefinite "connecting…" placeholder that would otherwise never

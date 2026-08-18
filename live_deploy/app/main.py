@@ -22,7 +22,7 @@ name (app/strategies/registry.py), and a single-page UI
 a strategy, watch running deployments, positions, trades, reports.
 
 Step 7 (this revision): application-level authentication — this whole
-service (every router, /ws/ticks, and the UI) now sits behind a single
+service (every router, /sse/ticks, and the UI) now sits behind a single
 shared secret (config.json's app_auth_secret), enforced by ASGI
 middleware (see app/auth.py) rather than per-route dependencies, so
 anything added later is protected by default instead of needing to
@@ -37,10 +37,12 @@ registers under that name.
 """
 
 import asyncio
+import json
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import strategies  # noqa: F401 — importing runs every @register_strategy in it
@@ -308,118 +310,109 @@ async def shutdown() -> None:
     logger.info("live_deploy stopped")
 
 
-@app.websocket("/ws/ticks")
-async def ws_ticks(websocket: WebSocket):
+async def _sse_stream(request: Request, broadcaster: Broadcaster, shutdown_event: asyncio.Event):
+    """
+    Shared generator behind /sse/ticks and /sse/events — see each
+    endpoint's own docstring for what's actually flowing through it.
+
+    WAS a WebSocket (/ws/ticks, /ws/events) — replaced after discovering
+    those connections were dying within ~100-300ms specifically when
+    reached through Tailscale Serve's HTTPS reverse proxy (a real,
+    reported, unresolved upstream issue as of this writing —
+    github.com/tailscale/tailscale/issues/18827 — though our own
+    timing was faster than that report's, so the exact mechanism was
+    never fully pinned down; see this session's own investigation
+    trail). Neither direction of this stream ever needed to be
+    bidirectional — every consumer (the ticker bar, Detail's live
+    prices, toast notifications) only ever RECEIVES, never sends
+    anything back — so a WebSocket's own defining feature (full-duplex)
+    was dead weight the whole time. SSE (a single long-lived plain HTTP
+    response the server keeps writing to) is what "the server pushes
+    events, the client only ever listens" is actually FOR — no protocol
+    upgrade handshake, no custom reconnect logic needed (EventSource
+    retries on its own, natively, browser-side) — strictly simpler code
+    for something that was always one-way. Whether it also survives the
+    proxy path better remains to be seen (still just plain HTTP
+    underneath, so it isn't guaranteed to dodge whatever the deeper
+    cause turns out to be) — but it's the honestly-shaped tool for this
+    job either way, independent of that.
+
+    A heartbeat comment line (`: heartbeat`) is sent whenever nothing
+    real has gone out for 15s — SSE comment lines are ignored by
+    EventSource's own parsing (never reach onmessage), but keep bytes
+    flowing over the connection, which is what stops some proxies from
+    treating a quiet-but-healthy connection as idle and killing it —
+    exactly the class of problem this replaces.
+    """
+    queue = await broadcaster.subscribe()
+    try:
+        while not shutdown_event.is_set():
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=15)
+            except asyncio.TimeoutError:
+                yield ": heartbeat\n\n"
+                continue
+            yield f"data: {json.dumps(payload)}\n\n"
+    finally:
+        # Reached either via the loop's own exit (shutdown_event) or via
+        # this generator being cancelled out from under it — Starlette's
+        # StreamingResponse does exactly that the moment it notices the
+        # client disconnected, same signal a WebSocket's own disconnect
+        # event used to give us, so this one finally: block is the
+        # entire cleanup story now (no separate disconnect-watcher task
+        # needed, unlike the old WebSocket version above).
+        await broadcaster.unsubscribe(queue)
+
+
+_SSE_HEADERS = {
+    # No caching, obviously — and X-Accel-Buffering:no is the standard
+    # nginx-family signal to stream this straight through rather than
+    # buffering the whole response before sending anything (irrelevant
+    # for uvicorn itself, but harmless and correct if any nginx-like
+    # proxy ever ends up in front of this instead of/alongside Tailscale
+    # Serve).
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
+
+
+@app.get("/sse/ticks")
+async def sse_ticks(request: Request):
     """
     Downstream requesters connect HERE — not to Kite. No matter how many
     clients are connected at once, they're all fed from the ONE upstream
     Kite connection owned by LiveDataDispatcher; connecting here never
-    opens a new Kite session.
-
-    This is a send-only stream from the server's point of view (ticks
-    flow out, nothing meaningful flows in), which historically meant TWO
-    real bugs, both fixed by the same race below:
-      1. `while True: ticks = await queue.get()` alone has no way to
-         notice the CLIENT disconnected — a plain send-only loop only
-         finds out on its next send() attempt, which never happens if
-         no ticks are flowing (e.g. market closed — see the ticker bar's
-         own REST fallback for why that's a normal, expected state, not
-         an error). A closed browser tab during closed-market hours left
-         a zombie broadcaster subscription forever.
-      2. The same blocked queue.get() has no way to notice the SERVER
-         wants to shut down either — Uvicorn's graceful shutdown would
-         then hang on "Waiting for background tasks to complete"
-         indefinitely, and a forced second Ctrl+C surfaced as an
-         unhandled asyncio.CancelledError traceback instead of a clean
-         exit.
-    Racing queue.get() against both an explicit receive-loop (the actual
-    way to detect a client-initiated close) and app.state.shutdown_event
-    (set first-thing in the shutdown() handler above) fixes both at once.
+    opens a new Kite session. See _sse_stream's own docstring for why
+    this is SSE and not a WebSocket.
     """
-    await websocket.accept()
-    broadcaster: Broadcaster = websocket.app.state.broadcaster
-    shutdown_event: asyncio.Event = websocket.app.state.shutdown_event
-    queue = await broadcaster.subscribe()
-
-    async def _forward_ticks():
-        while True:
-            ticks = await queue.get()
-            await websocket.send_json(ticks)
-
-    async def _watch_for_client_disconnect():
-        while True:
-            message = await websocket.receive()
-            if message.get("type") == "websocket.disconnect":
-                return
-
-    forward_task = asyncio.create_task(_forward_ticks())
-    disconnect_task = asyncio.create_task(_watch_for_client_disconnect())
-    shutdown_task = asyncio.create_task(shutdown_event.wait())
-    try:
-        await asyncio.wait(
-            [forward_task, disconnect_task, shutdown_task], return_when=asyncio.FIRST_COMPLETED,
-        )
-    except WebSocketDisconnect:
-        pass
-    finally:
-        for t in (forward_task, disconnect_task, shutdown_task):
-            t.cancel()
-        await asyncio.gather(forward_task, disconnect_task, shutdown_task, return_exceptions=True)
-        await broadcaster.unsubscribe(queue)
-        try:
-            await websocket.close()
-        except Exception:
-            pass   # already closed, e.g. the client-disconnect path above
+    broadcaster: Broadcaster = request.app.state.broadcaster
+    shutdown_event: asyncio.Event = request.app.state.shutdown_event
+    return StreamingResponse(
+        _sse_stream(request, broadcaster, shutdown_event),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
+    )
 
 
-@app.websocket("/ws/events")
-async def ws_events(websocket: WebSocket):
+@app.get("/sse/events")
+async def sse_events(request: Request):
     """
     Real-time in-app alerts — every deployment event (a fill, a
     pause/resume/stop, a strategy error) as soon as it's recorded,
-    pushed to every connected browser tab. Same shape and same
-    shutdown/disconnect race as ws_ticks above (see its own docstring
-    for why the race is needed at all), just subscribed to
+    pushed to every connected browser tab. Subscribed to
     app.state.event_broadcaster instead of app.state.broadcaster —
-    deliberately NOT reusing the tick socket for this: mixing event
+    deliberately NOT reusing the tick stream for this: mixing event
     payloads into the tick stream would mean every existing tick
     consumer (including every DeploymentRunner feeding its own
-    strategy) would need to start filtering out non-tick messages.
+    strategy) would need to start filtering out non-tick messages. See
+    _sse_stream's own docstring for why this is SSE and not a WebSocket.
     """
-    await websocket.accept()
-    broadcaster: Broadcaster = websocket.app.state.event_broadcaster
-    shutdown_event: asyncio.Event = websocket.app.state.shutdown_event
-    queue = await broadcaster.subscribe()
-
-    async def _forward_events():
-        while True:
-            event = await queue.get()
-            await websocket.send_json(event)
-
-    async def _watch_for_client_disconnect():
-        while True:
-            message = await websocket.receive()
-            if message.get("type") == "websocket.disconnect":
-                return
-
-    forward_task = asyncio.create_task(_forward_events())
-    disconnect_task = asyncio.create_task(_watch_for_client_disconnect())
-    shutdown_task = asyncio.create_task(shutdown_event.wait())
-    try:
-        await asyncio.wait(
-            [forward_task, disconnect_task, shutdown_task], return_when=asyncio.FIRST_COMPLETED,
-        )
-    except WebSocketDisconnect:
-        pass
-    finally:
-        for t in (forward_task, disconnect_task, shutdown_task):
-            t.cancel()
-        await asyncio.gather(forward_task, disconnect_task, shutdown_task, return_exceptions=True)
-        await broadcaster.unsubscribe(queue)
-        try:
-            await websocket.close()
-        except Exception:
-            pass   # already closed, e.g. the client-disconnect path above
+    broadcaster: Broadcaster = request.app.state.event_broadcaster
+    shutdown_event: asyncio.Event = request.app.state.shutdown_event
+    return StreamingResponse(
+        _sse_stream(request, broadcaster, shutdown_event),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
+    )
 
 
 # UI — served last so it doesn't shadow the API routes above (StaticFiles

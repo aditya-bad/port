@@ -97,7 +97,7 @@ const Account = {
   },
 
   // ── Notifications: opt-in browser push for the real-time alert
-  // toasts (see /ws/events + showToast() in index.html). Toasts
+  // toasts (see /sse/events + showToast() in index.html). Toasts
   // already show up whenever a tab is open; this is ONLY for getting
   // pinged while the tab is in the background — never fires while the
   // tab is focused (the toast itself already covers that). Off by
