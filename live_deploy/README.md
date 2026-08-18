@@ -4651,6 +4651,51 @@ algorithm actually checks — that `navigator.serviceWorker.ready`
 resolves with the worker in `activated` state, scoped to the whole
 app (`/`), after a real cookie-based login.
 
+## What's here (Step 72: the ACTUAL cause of Steps 70/71 not working — manifest.json was 401ing even when logged in)
+
+Step 71 still didn't fix it. Chased it down with the user directly
+inspecting `chrome://inspect`'s Application → Manifest panel on their
+real phone (via adb/USB debugging, live_deploy tab remote-debugged
+from a desktop) — which showed `/manifest.json` returning 401 despite
+a real, active login. That's the actual root cause: this app is
+private, behind login, and gates every path by default (see auth.py's
+own docstring) — including `/manifest.json` and `/icons/*`, unlike
+almost every PWA tutorial's public-site assumption.
+
+**Why it 401s even though the SAME browser tab is clearly logged
+in**: per the HTML spec, a bare `<link rel="manifest">` is fetched
+WITHOUT cookies, even for a same-origin request — unlike a script
+`fetch()` call, which defaults to sending them. That's exactly why
+Step 70's own verification (a `page.evaluate(() => fetch('/manifest.
+json'))` call) came back 200 and looked fine: a script fetch behaves
+differently from the browser's own real link-fetching algorithm, and
+only the latter is what Chrome's installability check actually uses.
+Confirmed directly against a real running server, not assumed: `fetch
+(url, {credentials:'omit'})` (what a bare `<link>` sends) → 401;
+`fetch(url, {credentials:'same-origin'})` (what `crossorigin="use-
+credentials"` sends) → 200.
+
+**Two-part fix, not one**: added `crossorigin="use-credentials"` to
+the `<link rel="manifest">` tag in both `index.html` and `login.html`
+— but that alone doesn't cover the icon files the manifest itself
+references, which have no equivalent attribute to opt into
+credentials at all. Rather than chase each sub-resource's own
+credentials behavior one at a time, made the whole PWA install surface
+(`/manifest.json`, `/sw.js`, everything under `/icons/`) genuinely
+public in `app/auth.py` — a new check alongside the existing
+`ALLOWLIST`, for a different reason than that one (those two paths
+genuinely can't carry auth at all; these just don't need to: a plain
+app name and a generic bar-chart icon reveal nothing about a
+deployment, a trade, or a user).
+
+**Verified against a real running server**: every PWA asset now
+returns 200 with zero auth at all, while a regression check confirmed
+`/deployments` and `/` still correctly 401 without one — the allowlist
+widening is scoped to exactly the 3 new public paths, nothing else.
+Re-ran an existing full-flow Playwright test (Step 68's UI test)
+unmodified to confirm normal authenticated app behavior wasn't
+disturbed.
+
 ## Setup
 
 ```bash

@@ -70,6 +70,25 @@ logger = logging.getLogger("live_deploy.audit")
 
 ALLOWLIST = frozenset({"/kite/callback", "/auth/login"})
 
+# PWA install assets (Step 72) -- a different reason to be public than
+# ALLOWLIST above (those two paths genuinely can't carry auth; these
+# just don't need to). manifest.json is a plain app name + a generic
+# icon, sw.js is the identical pass-through script for every visitor --
+# neither reveals anything about a deployment, a trade, or a user, so
+# there's no actual sensitivity being traded away by not gating them.
+# This ALSO sidesteps a real, confirmed bug: Chrome's own <link
+# rel="manifest"> fetch omits cookies even for a same-origin request
+# unless crossorigin="use-credentials" is set (which index.html/
+# login.html now do) -- but manifest-referenced icon fetches have no
+# equivalent attribute to opt into credentials at all, so gating icons
+# behind login would 401 them regardless of any HTML-side fix,
+# silently breaking installability with no way to fix it from the
+# manifest side. Making the whole install surface public removes the
+# question entirely instead of chasing each sub-resource's own
+# credentials behavior one at a time.
+_PWA_PUBLIC_PATHS = frozenset({"/manifest.json", "/sw.js"})
+_PWA_PUBLIC_PREFIX = "/icons/"
+
 # Paths a plain browser client genuinely can't attach a custom header to
 # — used to widen _query_api_key_ok's exception below beyond WebSocket
 # connections (its original and, until now, only reason to exist).
@@ -269,6 +288,10 @@ class AuthMiddleware:
             return
 
         if scope["path"] in ALLOWLIST:
+            await self.app(scope, receive, send)
+            return
+
+        if scope["path"] in _PWA_PUBLIC_PATHS or scope["path"].startswith(_PWA_PUBLIC_PREFIX):
             await self.app(scope, receive, send)
             return
 

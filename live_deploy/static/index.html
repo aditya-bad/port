@@ -4,13 +4,23 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>live_deploy</title>
-<!-- PWA install support (Step 70) -- lets Chrome/Android offer a real
-     "Install" prompt (home-screen icon, standalone window, own entry in
-     the OS app list) instead of falling back to a plain browser
-     shortcut. No service worker on purpose: this app is inherently
-     live-data-dependent, so offline caching wouldn't help and would
-     just be a staleness risk to reason about for no benefit. -->
-<link rel="manifest" href="/manifest.json">
+<!-- PWA install support (Steps 70-72) -- lets Chrome/Android offer a
+     real "Install" prompt (home-screen icon, standalone window, own
+     entry in the OS app list) instead of falling back to a plain
+     browser shortcut. crossorigin="use-credentials" is required here
+     specifically because this app is behind login: per the HTML spec,
+     a bare <link rel="manifest"> is fetched WITHOUT cookies even for a
+     same-origin request (unlike a script fetch(), which defaults to
+     sending them) -- without this attribute the manifest fetch 401s
+     for every real logged-in user, and Chrome silently falls back to
+     the browser-badged shortcut behavior with no visible error (Step
+     72's own real-world symptom, confirmed by directly comparing
+     fetch(..., {credentials:'omit'}) vs {credentials:'same-origin'}
+     against a real running server). sw.js (Step 71) has no such
+     requirement -- service worker registration happens via
+     navigator.serviceWorker.register() in a script, which already
+     sends cookies by default. -->
+<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
 <meta name="theme-color" content="#1B1130">
 <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png">
