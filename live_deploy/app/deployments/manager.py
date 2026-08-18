@@ -35,7 +35,7 @@ overlap.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -57,11 +57,27 @@ logger = logging.getLogger("live_deploy.manager")
 # much shorter interval rather than waiting 5 real minutes).
 DEFAULT_SNAPSHOT_INTERVAL_SECONDS = 300.0
 
+# Wall-clock time (naive "HH:MM", i.e. IST — see the Dockerfile's own
+# comment on why every naive datetime in this app already means IST) at
+# which post_market_dump_loop fires once a day. 15:45: strategies'
+# force_exit_time defaults to "15:00" and NSE cash/options both close at
+# 15:30, so 15:45 gives a 15-minute buffer for the day's last square-off
+# fills to land and get committed before this checkpoint reads
+# get_persistable_state() — a run any earlier risks catching a strategy
+# mid-exit and persisting a stale/half-updated indicator state.
+DEFAULT_POST_MARKET_DUMP_TIME = "15:45"
+
+
+def _parse_hhmm(value: str) -> tuple[int, int]:
+    hour_str, minute_str = value.split(":")
+    return int(hour_str), int(minute_str)
+
 
 class DeploymentManager:
     def __init__(
         self, pool: asyncpg.Pool, broadcaster, dispatcher,
         snapshot_interval_seconds: float = DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
+        post_market_dump_time: str = DEFAULT_POST_MARKET_DUMP_TIME,
         cache=None, event_broadcaster=None,
     ):
         self.pool = pool
@@ -69,6 +85,7 @@ class DeploymentManager:
         self.dispatcher = dispatcher
         self.runners: dict[str, DeploymentRunner] = {}   # str(deployment_id) -> runner
         self.snapshot_interval_seconds = snapshot_interval_seconds
+        self.post_market_dump_hour, self.post_market_dump_minute = _parse_hhmm(post_market_dump_time)
         # Optional (app.state.event_broadcaster — see app/broadcaster.py).
         # Used directly here for events this manager records itself
         # (pause/resume/stop/flatten — see _record_event below) AND
@@ -378,6 +395,74 @@ class DeploymentManager:
         # same reason as _on_fill_committed above.
         if self.cache is not None:
             await self.cache.refresh_now("portfolio_equity_curve")
+
+    # ── Post-market state checkpoint (once a day, not on shutdown) ──────
+
+    async def post_market_dump_loop(self) -> None:
+        """
+        Runs for the lifetime of the process (started as a background
+        task from main.py's startup(), cancelled on shutdown) — fires
+        once per calendar day at post_market_dump_hour:
+        post_market_dump_minute (default 15:45, i.e. IST — see
+        DEFAULT_POST_MARKET_DUMP_TIME's own comment), dumps
+        get_persistable_state() for every currently-active deployment,
+        then sleeps until the same time tomorrow.
+
+        This exists as a SECOND, independent checkpoint alongside the
+        one DeploymentRunner.stop() already takes on pause/stop/graceful
+        shutdown — that one only fires if something asks the runner to
+        stop; a redeploy that gets SIGKILLed before finishing its
+        graceful-shutdown window, or any other ungraceful exit, skips it
+        entirely (see StrategyBase.get_persistable_state's own docstring
+        on why that case is accepted, not fixed — no hook runs on
+        SIGKILL/OOM, full stop). Firing this once a day, unconditionally,
+        after the trading day is actually done, means the worst case for
+        "how stale can persisted state be if today's graceful shutdown
+        never happens" is "up to one day," not "since whenever this
+        deployment was last paused" — a meaningfully safer floor for
+        very-low-traffic strategies that might otherwise go weeks
+        between an actual pause/stop event.
+
+        Deliberately clock-time-based, not interval-based like
+        snapshot_loop above — "once, shortly after market close" is a
+        calendar concept, not a "how fresh" one, so a fixed interval
+        would either fire uselessly overnight/on weekends or need its
+        own separate market-hours gating to avoid it.
+        """
+        while True:
+            await asyncio.sleep(self._seconds_until_next_post_market_dump())
+            await self.dump_state_all_active()
+
+    def _seconds_until_next_post_market_dump(self) -> float:
+        now = datetime.now()
+        target = now.replace(
+            hour=self.post_market_dump_hour, minute=self.post_market_dump_minute,
+            second=0, microsecond=0,
+        )
+        if target <= now:
+            target += timedelta(days=1)
+        return (target - now).total_seconds()
+
+    async def dump_state_all_active(self) -> None:
+        """Persist get_persistable_state() for every currently-running
+        deployment (self.runners — same scope as snapshot_all_active
+        above), WITHOUT stopping or otherwise touching any of them —
+        each runner keeps trading through this exactly as it does
+        through a snapshot round. A single deployment's dump failing
+        (e.g. a transient DB hiccup) must not stop the rest from being
+        checkpointed, so each is isolated and logged rather than
+        propagated — same pattern as snapshot_all_active."""
+        dumped = 0
+        for runner in list(self.runners.values()):
+            try:
+                await runner.dump_state()
+                dumped += 1
+            except Exception:
+                logger.exception(
+                    "Post-market state dump failed for %s — continuing",
+                    runner.deployment_name,
+                )
+        logger.info("Post-market state dump: checked %d active deployment(s)", dumped)
 
     async def _snapshot_one(self, runner: DeploymentRunner) -> None:
         # Mark-to-market off the runner's OWN already-loaded

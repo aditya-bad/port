@@ -64,11 +64,17 @@ class StrategyBase(ABC):
         pause, on stop, AND on a graceful full-server shutdown (which
         stops every runner the same way, see DeploymentManager.
         shutdown_all) — never on a tight per-tick loop, so this only
-        needs to be correct when called, not cheap on every tick. NOT
-        called on an ungraceful kill (SIGKILL, OOM, crash) — those skip
-        the shutdown path entirely, so a strategy using this should
-        still tolerate its state being one step stale in that case,
-        exactly as if it had just cold-started.
+        needs to be correct when called, not cheap on every tick. ALSO
+        called once a day, without stopping anything, by
+        DeploymentManager.post_market_dump_loop() — a standing checkpoint
+        shortly after market close so a same-day state loss (a redeploy
+        that skips the graceful-shutdown window, an ungraceful kill)
+        never costs more than "one step stale from this afternoon"
+        instead of a full cold-start reseed. NOT called on an ungraceful
+        kill (SIGKILL, OOM, crash) itself — those skip the shutdown path
+        entirely, so a strategy using this should still tolerate its
+        state being one step stale in that case, exactly as if it had
+        just cold-started.
 
         Read back via `await runner.load_state()` — conventionally at
         the top of on_start(), before applying any config-provided seed,

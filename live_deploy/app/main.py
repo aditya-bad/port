@@ -257,6 +257,15 @@ async def startup() -> None:
         manager.snapshot_loop(), name="deployment-snapshot-loop",
     )
 
+    # ── Post-market state checkpoint: once a day, not per-tick, not tied
+    # to any pause/stop event — a second, independent safety net for
+    # strategy state (SuperTrend internals, pivots, ...) on top of the
+    # one runner.stop() already takes — see DeploymentManager.
+    # post_market_dump_loop's own docstring for the full reasoning.
+    app.state.post_market_dump_task = asyncio.create_task(
+        manager.post_market_dump_loop(), name="post-market-dump-loop",
+    )
+
     logger.info(
         "live_deploy started — %d static token(s), mode=%s, %d deployment(s) resumed, "
         "kite_session=%s",
@@ -284,6 +293,19 @@ async def shutdown() -> None:
     snapshot_task.cancel()
     try:
         await snapshot_task
+    except asyncio.CancelledError:
+        pass
+
+    # Same for the post-market dump loop — also a plain infinite-sleep
+    # loop with no cleanup of its own. Note this does NOT replace the
+    # dump every runner.stop() below already takes for itself as part of
+    # manager.shutdown_all() — this just stops the SEPARATE daily-clock
+    # background task, it isn't the thing doing today's shutdown-time
+    # dump.
+    post_market_dump_task = app.state.post_market_dump_task
+    post_market_dump_task.cancel()
+    try:
+        await post_market_dump_task
     except asyncio.CancelledError:
         pass
 

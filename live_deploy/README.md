@@ -4961,6 +4961,68 @@ was this test run's synthetic data, not anything real) —
 `custom_scripts/data/` is now gitignored so a real future run's output
 never ends up staged by accident either.
 
+## What's here (Step 77: a daily post-market state checkpoint, independent of pause/stop)
+
+Two follow-up questions after Step 76's registration script actually ran
+for real: **(1)** does state survive a `redeploy.sh` run, and **(2)**
+can there be a second, safer checkpoint beyond "only on pause/stop"?
+(A third point, "ignore crashed" — an ungraceful SIGKILL/OOM losing
+whatever's since the last checkpoint — was explicitly accepted as an
+out-of-scope risk, not something to fix here.)
+
+**1. Does `redeploy.sh` persist state? Yes.** Traced the actual path:
+`redeploy.sh` runs `docker stop live-deploy` before rebuilding — Docker
+sends SIGTERM to the container's PID 1, which IS the Python/uvicorn
+process directly (the Dockerfile's `CMD` is exec-form, `["python",
+"run.py"]`, no shell wrapper swallowing the signal). Uvicorn's own
+SIGTERM handling triggers FastAPI's `@app.on_event("shutdown")` in
+`app/main.py`, which calls `DeploymentManager.shutdown_all()`, which
+calls `runner.stop()` for every running deployment — and `stop()` is
+exactly the code path that calls `get_persistable_state()` and writes it
+to Postgres (see Step 76's writeup below, and `runner.py`'s own
+`dump_state()`/`stop()`). So yes: a normal `redeploy.sh` run is a
+GRACEFUL stop, same as clicking Pause in the UI — state is persisted
+before the container actually goes away, as long as shutdown finishes
+inside Docker's default 10s grace window (it does; there's nothing slow
+in that path). The only way to skip this is a forced/ungraceful kill —
+explicitly out of scope per point 3 above.
+
+**2. A second, independent checkpoint — `post_market_dump_loop()`.**
+Added anyway, as real insurance rather than relying solely on "a
+graceful stop always happens": a new background loop in
+`DeploymentManager` (`app/deployments/manager.py`), started at app
+startup right alongside the existing equity-snapshot loop and cancelled
+the same way on shutdown. It fires once a day at a fixed wall-clock time
+— **15:45 IST** (`DEFAULT_POST_MARKET_DUMP_TIME`) — 15 minutes after NSE
+close (15:30) and the strategies' own default `force_exit_time` (15:00),
+so the day's last square-off fills have already landed before it reads
+`get_persistable_state()`. It dumps every currently-active deployment's
+state to Postgres via the SAME `runner.dump_state()` call `stop()`
+already used (renamed from a private `_dump_state()` to a public
+`dump_state()` so both callers share one code path) — but WITHOUT
+stopping, pausing, or otherwise touching the runner; it keeps trading
+straight through the dump, exactly like the existing snapshot loop does.
+One deployment's dump failing (a transient DB hiccup) is isolated and
+logged, never blocking the rest — same pattern as
+`snapshot_all_active()`.
+
+Net effect: state can now be at most stale by
+
+- **one graceful stop/pause/redeploy** (already true before this step), OR
+- **the rest of today, worst case, until 15:45** (new) —
+
+whichever comes first — instead of "however long since this deployment
+was last paused," which for a strategy nobody's touched in weeks used to
+mean a much larger reseed if something ever did go ungracefully wrong.
+
+Verified with a standalone script (mocking `datetime.now()`): the
+sleep-until-next-fire math correctly targets later today when the clock
+hasn't reached 15:45 yet, rolls over to tomorrow once it has (including
+the exact-boundary case, so it can never busy-loop at 0 seconds), and
+`dump_state_all_active()` calls every active runner's `dump_state()`
+while isolating one deployment's failure from the rest. Also confirmed
+`runner.stop()` still calls `dump_state()` after the rename.
+
 ## Setup
 
 ```bash

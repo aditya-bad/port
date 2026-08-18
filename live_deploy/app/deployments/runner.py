@@ -148,7 +148,7 @@ class DeploymentRunner:
         self._running = False
         if self.strategy is not None:
             await self.strategy.on_stop(self)
-            await self._dump_state()
+            await self.dump_state()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -161,11 +161,16 @@ class DeploymentRunner:
             self._queue = None
         logger.info("Runner stopped: %s", self.deployment_name)
 
-    async def _dump_state(self) -> None:
-        """Called from stop() (pause, stop, AND a graceful full-server
-        shutdown all route through here — see StrategyBase.
-        get_persistable_state's own docstring for exactly when/why).
-        A strategy that doesn't override get_persistable_state gets None
+    async def dump_state(self) -> None:
+        """Persist get_persistable_state()'s current return value, if
+        any, without touching anything else about this runner (no stop,
+        no unsubscribe, no task cancellation) — safe to call while the
+        runner keeps trading. Called from stop() (pause, stop, AND a
+        graceful full-server shutdown all route through here) AND, once
+        a day, from DeploymentManager.post_market_dump_loop() as a
+        standing checkpoint — see StrategyBase.get_persistable_state's
+        own docstring for exactly when/why each of those fires. A
+        strategy that doesn't override get_persistable_state gets None
         back and this is a no-op, same as always — existing strategies
         are entirely unaffected."""
         try:
