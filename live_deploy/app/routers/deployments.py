@@ -161,14 +161,14 @@ async def get_deployment(deployment_id: UUID, request: Request):
 @router.patch("/{deployment_id}", response_model=DeploymentOut)
 async def update_deployment(deployment_id: UUID, payload: DeploymentUpdate, request: Request):
     """
-    Rename a deployment, edit its free-text notes, edit its config, and/or
-    toggle include_in_reports — see DeploymentUpdate's own docstring for
-    the full reasoning, including why strategy_name/mode/initial_capital
-    still aren't here. Rename/notes/include_in_reports all work
-    regardless of status, same as before. config is the one field gated
-    here: only while `paused` — the deployment itself already knows this
-    the moment it's asked, so the check lives here rather than in the
-    Pydantic model.
+    Rename a deployment, edit its free-text notes, edit its config,
+    toggle include_in_reports, and/or set its tags — see
+    DeploymentUpdate's own docstring for the full reasoning, including
+    why strategy_name/mode/initial_capital still aren't here.
+    Rename/notes/include_in_reports/tags all work regardless of status,
+    same as before. config is the one field gated here: only while
+    `paused` — the deployment itself already knows this the moment it's
+    asked, so the check lives here rather than in the Pydantic model.
     """
     pool = request.app.state.db_pool
     existing = await queries.get_deployment(pool, deployment_id)
@@ -193,10 +193,26 @@ async def update_deployment(deployment_id: UUID, payload: DeploymentUpdate, requ
             f"to apply the change.",
         )
 
+    if payload.tags is not None:
+        # Every name must already exist in the predefined catalog
+        # (Settings -> Tags) -- the whole reason that catalog exists is
+        # to keep this list of NAMES from becoming freeform text a
+        # typo could silently fork (see the 0010 migration's own
+        # comment). Checked here, not in the Pydantic model, since it
+        # needs a DB round trip.
+        catalog_names = {t["name"] for t in await queries.list_tags(pool)}
+        unknown = [t for t in payload.tags if t not in catalog_names]
+        if unknown:
+            raise HTTPException(
+                400,
+                f"Unknown tag(s) {unknown!r} — create them first from Settings -> Tags.",
+            )
+
     row = await queries.update_deployment_fields(
         pool, deployment_id,
         deployment_name=payload.deployment_name, notes=payload.notes,
         config=payload.config, include_in_reports=payload.include_in_reports,
+        tags=payload.tags,
     )
     out = _annotate(row)
     await _enrich_pnl_one(pool, request.app.state.dispatcher, deployment_id, out)

@@ -98,6 +98,7 @@ async def update_deployment_fields(
     pool: asyncpg.Pool, deployment_id: UUID,
     deployment_name: Optional[str] = None, notes: Optional[str] = None,
     config: Optional[dict] = None, include_in_reports: Optional[bool] = None,
+    tags: Optional[list[str]] = None,
 ) -> Optional[asyncpg.Record]:
     """
     Partial update for PATCH /deployments/{id} — only the field(s)
@@ -129,6 +130,14 @@ async def update_deployment_fields(
     include_in_reports has the identical None-means-omitted distinction,
     just over a plain boolean column instead of jsonb — an explicit
     False is a real value COALESCE must not mistake for "don't touch."
+
+    tags is the same story again over a TEXT[] column: a bare Python
+    None still maps straight to SQL NULL (same reasoning as config's
+    own comment on asyncpg's jsonb codec never firing for None,
+    equally true for the array codec), so COALESCE(NULL, tags) keeps
+    the existing list untouched. An explicit [] is NOT None, so it DOES
+    get encoded and DOES overwrite -- "clear every tag" is a real,
+    distinct intent from "don't touch tags."
     """
     async with pool.acquire() as conn:
         return await conn.fetchrow(
@@ -138,11 +147,12 @@ async def update_deployment_fields(
                 notes = COALESCE($3, notes),
                 config = COALESCE($4, config),
                 include_in_reports = COALESCE($5, include_in_reports),
+                tags = COALESCE($6, tags),
                 updated_at = now()
             WHERE id = $1
             RETURNING *
             """,
-            deployment_id, deployment_name, notes, config, include_in_reports,
+            deployment_id, deployment_name, notes, config, include_in_reports, tags,
         )
 
 
@@ -1248,4 +1258,57 @@ async def get_preset(pool: asyncpg.Pool, preset_id: UUID) -> Optional[asyncpg.Re
 async def delete_preset(pool: asyncpg.Pool, preset_id: UUID) -> bool:
     async with pool.acquire() as conn:
         result = await conn.execute("DELETE FROM strategy_presets WHERE id = $1", preset_id)
+        return result != "DELETE 0"
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TAG CATALOG  (predefined, admin-managed deployment labels — Settings
+# -> Tags; see migration 0010's own comment for why this is a curated
+# catalog rather than freeform per-deployment text, and why the
+# synthetic "Excluded from reports" tag deliberately never lives here)
+# ═════════════════════════════════════════════════════════════════════
+
+async def list_tags(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM tag_catalog ORDER BY name")
+
+
+async def get_tag_by_name(pool: asyncpg.Pool, name: str) -> Optional[asyncpg.Record]:
+    """Router-side duplicate check before create_tag, same "check first,
+    DB constraint as backstop" pattern get_deployment_by_name already
+    establishes for deployment_name uniqueness."""
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM tag_catalog WHERE name = $1", name)
+
+
+async def create_tag(pool: asyncpg.Pool, name: str) -> asyncpg.Record:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(
+            "INSERT INTO tag_catalog (name) VALUES ($1) RETURNING *", name,
+        )
+
+
+async def delete_tag(pool: asyncpg.Pool, tag_id: UUID) -> bool:
+    """Deletes the catalog row AND strips this tag's name out of every
+    deployment currently carrying it -- deployments.tags has no FK back
+    to tag_catalog (an array column can't express that), so a deleted
+    tag would otherwise leave a dangling name sitting in some
+    deployment's list forever, invisible to the picker that created it
+    but still rendered as a chip. Both statements run against the same
+    connection so a crash between them can't leave the two halves
+    inconsistent -- not wrapped in an explicit transaction since
+    asyncpg's default autocommit-per-statement is fine here (a crash
+    between them just means the harmless direction: the tag_catalog row
+    is gone but a now-orphaned name lingers in one array a bit longer,
+    the same state a delete-then-crash would leave without this second
+    statement at all)."""
+    async with pool.acquire() as conn:
+        tag = await conn.fetchrow("SELECT name FROM tag_catalog WHERE id = $1", tag_id)
+        if tag is None:
+            return False
+        result = await conn.execute("DELETE FROM tag_catalog WHERE id = $1", tag_id)
+        await conn.execute(
+            "UPDATE deployments SET tags = array_remove(tags, $1) WHERE $1 = ANY(tags)",
+            tag["name"],
+        )
         return result != "DELETE 0"

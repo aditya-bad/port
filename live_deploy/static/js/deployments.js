@@ -134,7 +134,7 @@ const Deployments = {
           <td>
             <a href="#/deployments/${d.id}" onclick="event.stopPropagation()">${escapeHtml(d.deployment_name)}</a>
             ${!d.strategy_registered ? '<span class="tag tag-warn">unregistered</span>' : ''}
-            ${!d.include_in_reports ? '<span class="tag tag-warn" title="Excluded from Dashboard, Portfolio, and Reports — its own row here still shows its real numbers">excluded from reports</span>' : ''}
+            ${deploymentTagsHtml(d)}
             ${d.notes ? `<div class="card-sub" style="margin-top:2px; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(d.notes)}">📝 ${escapeHtml(d.notes)}</div>` : ''}
           </td>
           <td>${escapeHtml(d.strategy_name)}</td>

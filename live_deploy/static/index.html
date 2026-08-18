@@ -1051,10 +1051,10 @@ body.mobile-nav-open { overflow: hidden; }
           <button class="btn btn-secondary btn-sm" onclick="Catalog.load()">↻ Refresh</button>
         </div>
       </div>
-      <div class="tabs" id="catalogTabs">
-        <button class="active" data-tab="browse" onclick="Catalog.switchTab('browse')">Browse</button>
-        <button data-tab="admin" onclick="Catalog.switchTab('admin')">Admin Options</button>
-      </div>
+      <!-- Admin Options (enable/disable a strategy, Clear All) moved to
+           Account -> Admin (Step 69) -- Catalog is Browse-only now, so
+           the tab bar that used to switch between them is gone too. -->
+
       <div id="catalogList"><div class="empty"><span class="spinner"></span> Loading…</div></div>
     </div>
 
@@ -1260,13 +1260,15 @@ body.mobile-nav-open { overflow: hidden; }
       <div class="view-header">
         <div>
           <h1>Account</h1>
-          <div class="view-sub">This app's own login — users, password, audit trail</div>
+          <div class="view-sub">This app's own login and configuration — users, password, audit trail, strategy admin, tags</div>
         </div>
       </div>
       <div class="tabs" id="accountTabs">
         <button class="active" data-tab="profile" onclick="Account.switchTab('profile')">Profile</button>
         <button data-tab="users" onclick="Account.switchTab('users')">Users</button>
         <button data-tab="audit" onclick="Account.switchTab('audit')">Audit Log</button>
+        <button data-tab="admin" onclick="Account.switchTab('admin')">Admin</button>
+        <button data-tab="tags" onclick="Account.switchTab('tags')">Tags</button>
       </div>
       <div id="accountBody"><div class="empty"><span class="spinner"></span> Loading…</div></div>
     </div>
@@ -1391,6 +1393,14 @@ body.mobile-nav-open { overflow: hidden; }
         Count toward reports &amp; total P&amp;L
       </label>
       <div class="card-sub" style="margin-top:4px;">Off = Dashboard, Portfolio, and Reports all skip this deployment. Its own page here is never affected.</div>
+    </div>
+    <!-- Custom tags -- checkbox per catalog entry, built fresh each time
+         the modal opens (Detail.openEditModal) since the catalog itself
+         can grow from Settings -> Tags at any time. Purely organizational,
+         no behavior attached, unlike the reserved checkbox above. -->
+    <div class="field" id="editDeploymentTagsField">
+      <label>Tags</label>
+      <div id="editDeploymentTagsList" class="card-sub">Loading…</div>
     </div>
     <div class="btn-row">
       <button class="btn btn-secondary" onclick="closeEditDeploymentModal()">Cancel</button>

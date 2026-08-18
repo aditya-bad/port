@@ -36,6 +36,27 @@ const Api = {
     return { ok: r.ok, data };
   },
 
+  // ── Tags (predefined catalog — Settings -> Tags) ──────────────────
+  async listTags() {
+    const r = await fetch('/tags');
+    if (!r.ok) throw new Error(`Could not load tags (${r.status})`);
+    return r.json();
+  },
+  async createTag(name) {
+    const r = await fetch('/tags', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+    });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
+  async deleteTag(id) {
+    // 204 No Content on success -- unlike deletePreset above, there's no
+    // body to parse, so this returns the raw Response (same pattern as
+    // pauseDeployment/resumeDeployment) and leaves .ok/error-json to the
+    // caller.
+    return fetch(`/tags/${id}`, { method: 'DELETE' });
+  },
+
   // ── Deployments (CRUD/lifecycle) ───────────────────────────────
   async listDeployments() {
     const r = await fetch('/deployments');
@@ -362,6 +383,25 @@ setInterval(() => { Object.keys(_updatedAt).forEach(_tickUpdatedLabel); }, 1000)
 
 function emptyHtml(label) {
   return `<div class="empty">${label}</div>`;
+}
+
+// ── Deployment tag chips (Step 69) — shared by Detail's header and the
+// Deployed Strategies list row, so the two never render this
+// differently. The reserved "excluded from reports" chip is SYNTHESIZED
+// straight from include_in_reports here, never read off dep.tags -- see
+// migration 0010's own comment for why that one deliberately never
+// enters the real tag catalog. Returns '' (not a wrapper element) when
+// a deployment has nothing to show, so a call site can drop this
+// straight inline without an empty gap.
+function deploymentTagsHtml(dep) {
+  const chips = [];
+  if (!dep.include_in_reports) {
+    chips.push(`<span class="tag tag-warn" title="Excluded from Dashboard, Portfolio, and Reports — toggle it back on from Edit">excluded from reports</span>`);
+  }
+  (dep.tags || []).forEach(name => {
+    chips.push(`<span class="tag tag-info">${escapeHtml(name)}</span>`);
+  });
+  return chips.join(' ');
 }
 
 // ── Equity curve chart ───────────────────────────────────────────────

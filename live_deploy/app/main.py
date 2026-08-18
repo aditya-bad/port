@@ -64,6 +64,7 @@ from .routers import health as health_router
 from .routers import instruments as instruments_router
 from .routers import kite_auth as kite_auth_router
 from .routers import strategies as strategies_router
+from .routers import tags as tags_router
 from .routers.aggregate import (
     fetch_portfolio_equity_curve, fetch_positions_open, fetch_strategy_leaderboard, fetch_trades_recent,
 )
@@ -94,6 +95,7 @@ app.include_router(kite_auth_router.router)
 app.include_router(strategies_router.router)
 app.include_router(auth_router.router)
 app.include_router(aggregate_router.router)
+app.include_router(tags_router.router)
 
 # Middleware order matters: add_middleware() makes the MOST RECENTLY
 # added one OUTERMOST (it runs first on the way in, last on the way

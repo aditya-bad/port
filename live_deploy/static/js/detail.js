@@ -43,7 +43,7 @@ const Detail = {
         <div>
           <h1>${escapeHtml(dep.deployment_name)} <span class="tag tag-${dep.status}">${dep.status}</span>
             ${!dep.strategy_registered ? '<span class="tag tag-warn">unregistered</span>' : ''}
-            ${!dep.include_in_reports ? '<span class="tag tag-warn" title="Excluded from Dashboard, Portfolio, and Reports — toggle it back on from Edit">excluded from reports</span>' : ''}
+            ${deploymentTagsHtml(dep)}
           </h1>
           <div class="card-sub">${escapeHtml(dep.strategy_name)} · ${dep.mode}</div>
           <div class="card-meta" style="margin-top:10px;">
@@ -533,12 +533,36 @@ const Detail = {
   },
 
   // ── Header actions ──────────────────────────────────────────────
-  openEditModal() {
+  async openEditModal() {
     document.getElementById('editDeploymentName').value = this._dep.deployment_name;
     document.getElementById('editDeploymentNotes').value = this._dep.notes || '';
     document.getElementById('editDeploymentIncludeInReports').checked = this._dep.include_in_reports;
     document.getElementById('editDeploymentMsg').textContent = '';
     document.getElementById('editDeploymentModal').classList.add('open');
+
+    // Built fresh on every open (not cached across modal sessions) --
+    // the catalog itself can grow from Settings -> Tags between two
+    // edits of the same deployment, and this modal is cheap enough to
+    // rebuild that a stale list is never worth risking.
+    const listEl = document.getElementById('editDeploymentTagsList');
+    listEl.textContent = 'Loading…';
+    let tags;
+    try {
+      tags = await Api.listTags();
+    } catch (e) {
+      listEl.textContent = 'Could not load tags — try again.';
+      return;
+    }
+    const current = new Set(this._dep.tags || []);
+    listEl.innerHTML = !tags.length
+      ? 'No tags yet — add some from Settings → Tags.'
+      : tags.map(t => `
+          <label style="display:inline-flex; align-items:center; gap:5px; margin:0 14px 8px 0; cursor:pointer;">
+            <input type="checkbox" class="editDeploymentTagCheckbox" value="${escapeHtml(t.name)}"
+              style="width:auto;" ${current.has(t.name) ? 'checked' : ''}>
+            ${escapeHtml(t.name)}
+          </label>
+        `).join('');
   },
 
   // ── Edit config (Step 51) — only ever opened from renderConfig's own
@@ -672,10 +696,11 @@ async function submitEditDeployment() {
   const name = document.getElementById('editDeploymentName').value.trim();
   const notes = document.getElementById('editDeploymentNotes').value;
   const includeInReports = document.getElementById('editDeploymentIncludeInReports').checked;
+  const tags = Array.from(document.querySelectorAll('.editDeploymentTagCheckbox:checked')).map(el => el.value);
   if (!name) { msg.innerHTML = '<span style="color:var(--loss)">Deployment name cannot be blank</span>'; return; }
   msg.innerHTML = '<span class="spinner"></span> Saving…';
   const { ok, data } = await Api.updateDeployment(Detail._id, {
-    deployment_name: name, notes, include_in_reports: includeInReports,
+    deployment_name: name, notes, include_in_reports: includeInReports, tags,
   });
   if (!ok) { msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(data.detail || 'Failed')}</span>`; return; }
   msg.innerHTML = '<span style="color:var(--gain)">✓ Saved</span>';

@@ -69,11 +69,23 @@ class DeploymentUpdate(BaseModel):
     still means "field omitted, don't touch" (see
     queries.update_deployment_fields's own COALESCE docstring), an
     explicit False is a real, distinct "turn it off."
+
+    tags is the same "editable regardless of status" story, but list-
+    valued: a caller sends the FULL desired list (replace semantics,
+    not add/remove-one), omitted (None) means "don't touch," an
+    explicit [] means "clear every tag." Every name must already exist
+    in tag_catalog (Settings -> Tags manages that list) -- the router
+    validates this before ever calling update_deployment_fields, since
+    a predefined catalog is the whole point (see the 0010 migration's
+    own comment on why this isn't freeform text). Does NOT carry
+    "Excluded from reports" -- that's include_in_reports above, not a
+    member of this list.
     """
     deployment_name: Optional[str] = None
     notes: Optional[str] = None
     config: Optional[dict] = None
     include_in_reports: Optional[bool] = None
+    tags: Optional[list[str]] = None
 
 
 class DeploymentOut(BaseModel):
@@ -93,6 +105,11 @@ class DeploymentOut(BaseModel):
     # once migrated — but this mirrors strategy_registered's own
     # defensive default just below) never surprises an old caller.
     include_in_reports: bool = True
+    # Custom labels applied from the predefined catalog (Settings ->
+    # Tags) -- see the 0010 migration's own comment. Never includes the
+    # synthetic "Excluded from reports" chip; the frontend derives that
+    # one from include_in_reports above, not from this list.
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
     strategy_registered: bool = True   # False = created, but no code will ever run for it (yet)
@@ -305,3 +322,21 @@ class PnlReportOut(BaseModel):
     prev_realized_pnl: float
     by_strategy: list[PnlStrategyBreakdown]
     by_deployment: list[PnlDeploymentBreakdown]
+
+
+class TagOut(BaseModel):
+    """One row of the predefined tag catalog -- Settings -> Tags manages
+    this list; a deployment's own `tags` (DeploymentOut) is a list of
+    NAMES drawn from here, not a list of these objects. See the 0010
+    migration's own comment for why this catalog exists at all instead
+    of freeform per-deployment text."""
+    id: UUID
+    name: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class TagCreate(BaseModel):
+    name: str

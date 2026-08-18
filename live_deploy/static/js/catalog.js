@@ -11,9 +11,8 @@
 const Catalog = {
   _currentDeploy: {},
   _configBase: {},   // the full config object (including null-valued advanced keys), kept in sync as the source of truth across form <-> JSON toggles
-  _strategies: [],   // every REGISTERED strategy (enabled or not) — the Admin tab's own source of truth
+  _strategies: [],   // every REGISTERED strategy (enabled or not) -- Browse filters to enabled-only itself, see _renderBrowse
   _activeCounts: {},
-  _tab: 'browse',    // 'browse' | 'admin'
   _minimizedDrafts: [],   // see minimizeDeploy/restoreDraft/discardDraft below
 
   // quiet=true: event-driven background refresh -- see Dashboard.load()'s
@@ -37,21 +36,8 @@ const Catalog = {
       if (d.status === 'active') this._activeCounts[d.strategy_name] = (this._activeCounts[d.strategy_name] || 0) + 1;
     });
 
-    this._render();
+    this._renderBrowse();
     markUpdated('catalogUpdatedLabel');
-  },
-
-  switchTab(tab) {
-    this._tab = tab;
-    document.querySelectorAll('#catalogTabs button').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.tab === tab);
-    });
-    this._render();
-  },
-
-  _render() {
-    if (this._tab === 'admin') this._renderAdmin();
-    else this._renderBrowse();
   },
 
   // ── Browse: cards for DEPLOYABLE strategies only. A strategy an
@@ -99,75 +85,9 @@ const Catalog = {
   // Browse tab, and the backend's own create_deployment check) —
   // deployments already running under a strategy stay completely
   // unaffected, same as pausing/stopping is a separate, per-deployment
-  // action from this. ─────────────────────────────────────────────────
-  _renderAdmin() {
-    const el = document.getElementById('catalogList');
-    if (!this._strategies.length) {
-      el.innerHTML = emptyHtml('No strategies registered yet.');
-      return;
-    }
-    // Cards, not a table — a strategy's description is long free text
-    // (strangle_monthly_v2's runs 400+ characters), which a dense
-    // multi-column table fights: a description column narrow enough to
-    // leave room for Status/Action ends up wrapping one word per line.
-    // Browse already solves exactly this with .card, so Admin reuses
-    // the identical treatment instead of a second, worse solution.
-    el.innerHTML = this._strategies.map(s => {
-      const enabled = s.enabled !== false;
-      const count = this._activeCounts[s.name] || 0;
-      return `
-        <div class="card">
-          <div class="card-row">
-            <div>
-              <div class="card-title">
-                ${escapeHtml(s.name)}
-                <span class="tag ${enabled ? 'tag-active' : 'tag-stopped'}">${enabled ? 'enabled' : 'disabled'}</span>
-                ${count > 0 ? `<span class="tag tag-active">${count} active</span>` : ''}
-              </div>
-              <div class="card-sub">${escapeHtml(s.description || 'no description')}</div>
-            </div>
-            <div class="card-actions">
-              <button class="btn btn-sm ${enabled ? 'btn-danger' : 'btn-primary'}"
-                onclick="Catalog.toggleStrategyEnabled('${escapeHtml(s.name)}', ${!enabled})">
-                ${enabled ? 'Disable' : 'Enable'}
-              </button>
-            </div>
-          </div>
-        </div>
-      `;
-    }).join('') +
-      `<div class="table-note">Disabling a strategy only hides it from Browse and blocks NEW deployments — anything already deployed keeps running untouched.</div>` +
-      `<div class="card" style="border-top-color:var(--loss); margin-top:22px; max-width:520px;">
-        <div class="card-row">
-          <div>
-            <div class="card-title" style="color:var(--loss);">Danger zone</div>
-            <div class="card-sub">Permanently delete every deployment and everything under it. Cannot be undone.</div>
-          </div>
-          <div class="card-actions">
-            <button class="btn btn-danger btn-sm" onclick="Catalog.openClearAllModal()">Clear all deployments</button>
-          </div>
-        </div>
-      </div>`;
-  },
-
-  async openClearAllModal() {
-    const deployments = await Api.listDeployments();
-    const count = deployments.length;
-    document.getElementById('clearAllCount').textContent =
-      count === 0 ? 'zero deployments (nothing to clear)' : `all ${count} deployment${count === 1 ? '' : 's'}`;
-    document.getElementById('clearAllPassword').value = '';
-    document.getElementById('clearAllConfirm').value = '';
-    document.getElementById('clearAllMsg').textContent = '';
-    document.getElementById('clearAllModal').classList.add('open');
-  },
-
-  async toggleStrategyEnabled(name, newEnabled) {
-    const { ok, data } = await Api.setStrategyEnabled(name, newEnabled);
-    if (!ok) { alert(data.detail || 'Could not update strategy'); return; }
-    const s = this._strategies.find(x => x.name === name);
-    if (s) s.enabled = newEnabled;
-    this._render();
-  },
+  // action from this. Admin Options itself (enable/disable, Clear All)
+  // moved to Account -> Admin, Step 69 -- see account.js's own
+  // _renderAdmin/toggleStrategyEnabled/openClearAllModal. ─────────────
 
   openDeployModal(strategyName, defaultConfig) {
     this._currentDeploy = { strategyName, defaultConfig };
@@ -482,5 +402,9 @@ async function submitClearAll() {
     return;
   }
   msg.innerHTML = `<span style="color:var(--gain)">✓ Cleared ${data.deleted} deployment(s)</span>`;
-  setTimeout(() => { closeClearAllModal(); Catalog.load(); Deployments.load(); }, 900);
+  // Now triggered from Account -> Admin (Step 69), not Catalog -- also
+  // refresh Account itself so its active-deployment counts (shown next
+  // to each strategy row) drop to zero immediately, same "don't wait
+  // for the next reload" reasoning as the other two refreshes here.
+  setTimeout(() => { closeClearAllModal(); Catalog.load(); Deployments.load(); Account.load(); }, 900);
 }

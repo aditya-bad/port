@@ -4476,6 +4476,97 @@ of 2 shown — 1 excluded" label); Dashboard's KPI total and breakdown
 card both drop the toggled-off deployment entirely; and re-checking +
 Save brings it back everywhere, badges and totals alike.
 
+## What's here (Step 69: a predefined tag catalog for deployments, and Admin Options moved to Account)
+
+Follow-up to Step 68, requested directly: rather than a lone checkbox,
+reuse "a tags system" — one predefined tag that drives
+`include_in_reports`, plus room to add more (organizational) tags going
+forward — and, while restructuring the settings surface anyway, move
+Admin Options (strategy enable/disable, Clear All) off the Catalog page
+and onto a proper settings home, with full latitude on exactly how.
+
+**The engineering call, made explicit before building**: the existing
+boolean from Step 68 is already correct and tested across 6 SQL
+queries — replacing it with "does this deployment have a tag matching
+some string" would be strictly worse (a typo in a freeform tag would
+silently break a report with no error). So `include_in_reports` stays
+the one source of truth, completely unchanged. What's new is a real,
+separate tag system layered on top, where **"Excluded from reports" is
+a synthetic, reserved chip** — derived straight from
+`include_in_reports` at render time, never stored in the tag catalog
+or in a deployment's own tag list — so there's no second place that
+could ever drift out of sync with the field every report-filtering
+query actually reads.
+
+**Backend**: new migration (`0010_tags.sql`) adds `tag_catalog` (id,
+unique `name`, `created_at` — an admin-managed, curated list, not
+freeform per-deployment text) and `deployments.tags TEXT[] NOT NULL
+DEFAULT '{}'`. New `GET/POST /tags`, `DELETE /tags/{id}` router —
+creating a tag named "Excluded from reports" (case-insensitive) is
+explicitly rejected, since that name is reserved for the synthetic
+chip and was never meant to be a second, independently-toggleable
+entry. Deleting a tag also strips its name out of every deployment
+currently carrying it (`array_remove`, same connection, so a crash
+mid-way just leaves a harmless orphaned name a little longer rather
+than corrupting anything) — a deleted tag is genuinely gone, not left
+dangling as an unreachable label on some deployment's row.
+`PATCH /deployments/{id}` gained `tags: Optional[list[str]]` (full
+replace-list semantics, same COALESCE None-means-omitted pattern as
+every other field here) — every name is validated against the live
+catalog before the write, editable regardless of status, same as
+`include_in_reports`/`notes`.
+
+**Admin Options moved to Account, not a new page**: considered a
+brand-new "Profile"/"Settings" page, but Account already IS this app's
+one settings hub (Profile/Users/Audit Log) — bolting a second one on
+top would just fragment "where do I configure this app" across two
+places for no real benefit. Account gained two more tabs instead:
+**Admin** (the exact enable/disable + Clear All content, moved
+verbatim from Catalog's own Admin Options tab — Catalog is Browse-only
+now, and its now-single-tab bar was removed entirely rather than left
+showing one tab with nothing to switch to) and **Tags** (the catalog
+manager: a locked info card explaining the built-in "Excluded from
+reports" chip is controlled per-deployment from Edit, not from here, a
+create-tag form, and a delete button per custom tag).
+
+**Frontend chips**: a new shared `deploymentTagsHtml(dep)` helper
+(api.js) renders the full chip set — the synthetic reserved chip plus
+every real custom tag — used identically by Detail's header and the
+Deployed Strategies list row, replacing Step 68's hand-rolled single
+badge in both places so the two views can never render a deployment's
+tags differently. The existing Edit modal (rename/notes/
+include_in_reports) gained a tag checkbox list, rebuilt fresh from
+`GET /tags` on every open (the catalog can grow between two edits of
+the same deployment) — checking/unchecking and Save sends the full
+desired `tags` list in one PATCH, same pattern the reports toggle
+already established.
+
+**A real bug caught by the test, not by inspection**: the delete-tag
+button's own `onclick` embedded `JSON.stringify(t.name)` inside a
+DOUBLE-quoted `onclick="..."` attribute — `JSON.stringify` emits
+double quotes, which silently truncated the attribute and broke the
+button's JS the instant a tag existed to delete. Caught because the
+Playwright test's delete step timed out waiting for the confirm()
+dialog that a syntax-broken onclick handler never fires, not by
+reading the code. Fixed by switching to the codebase's own established
+convention for this exact situation (catalog.js's Deploy button
+already does it) — single-quote the `onclick` attribute instead.
+
+**Verified against a real running server + real Postgres + real
+Chromium**: confirmed Catalog now shows Browse only (no tab bar at
+all); confirmed Account shows all 5 tabs in order and that Admin's
+Disable/Enable/Clear-All still work identically from their new home;
+created a tag from Settings → Tags, confirmed a duplicate name and the
+reserved name are both rejected with clear messages; applied the tag
+to a real deployment via its Edit modal's checkbox and confirmed the
+chip renders on BOTH Detail's header and the Deployed Strategies row;
+deleted the tag from the catalog and confirmed it disappeared from the
+table AND was stripped back off the deployment's own header. Also
+re-ran every Step 68 test (backend + UI) unmodified to confirm the
+chip-rendering refactor didn't regress the reports-toggle behavior
+underneath it, and re-ran the Step 67 open-in-new-tab test since this
+touched the same list row markup again — all green.
+
 ## Setup
 
 ```bash
