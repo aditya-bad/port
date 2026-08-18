@@ -4696,6 +4696,78 @@ Re-ran an existing full-flow Playwright test (Step 68's UI test)
 unmodified to confirm normal authenticated app behavior wasn't
 disturbed.
 
+## What's here (Step 73: the P&L heatmap's own CSS rule had never actually applied — a "*" immediately followed by "/" inside a comment silently killed it)
+
+Two things reported together: (1) swiping the calendar heatmap on
+mobile moved the WHOLE PAGE, not just the calendar, unlike a table
+(which scrolls its own `.table-wrap`, page staying put); (2) the
+heatmap's color intensity looked like a fixed rupee scale, not
+relative like GitHub's contribution graph.
+
+**#2 turned out to already be correct** — `_quantileBucket()`
+(api.js) has quantiled gains and losses separately by rank among that
+deployment's own real data, GitHub-style, since before this step.
+Verified directly: seeded a ₹50 gain day and a ₹5,000 gain day and
+read back their actual rendered colors — light green vs dark green,
+genuinely different, confirmed by a real browser. So there was no
+color bug to fix; #1 is what made it hard to trust that it was
+working, addressed below.
+
+**#1 was real, and the root cause was genuinely surprising**: the
+`.pnl-heatmap-wrap` rule already had `overflow-x: auto` sitting right
+there in the source — but it had never actually reached the browser.
+The comment directly above it described the color ramp as two CSS
+custom property names joined with a bare `/`, no space between — which
+put an asterisk immediately followed by a slash in the middle of plain
+prose. That two-character sequence is CSS's own comment-close marker,
+so the comment ended right there, mid-sentence, and everything after
+it — the rest of that sentence, AND the entire `.pnl-heatmap-wrap`
+rule (selector, body, `overflow-x: auto`, all of it) — was parsed as
+garbage and silently dropped, all the way up to the next rule's own
+recovery point. The heatmap was never independently scrollable
+because its own scroll rule had been invisible to the browser this
+whole time.
+
+**How this was actually found**, not guessed at: `document.
+styleSheets[0].cssRules` (the browser's own parsed stylesheet, the
+real ground truth) was missing `.pnl-heatmap-wrap` entirely, while
+`.equity-wrap` right before it and `.pnl-heatmap-months` right after
+it both parsed fine — exactly the fingerprint an accidental early
+comment-close leaves (a small missing span, not the whole file). Wrote
+a proper state-machine comment-stripper (the same left-to-right
+`/* ... first following ... */` algorithm a real CSS parser uses) and
+cross-checked every resulting "real" CSS chunk against the live CSSOM
+— confirmed nothing else in the ~4700-line stylesheet has the same
+wound. (Caught myself repeating the exact same mistake while writing
+the explanatory comment about it — quoting the broken text verbatim
+put the same two-character sequence right back into MY new comment.
+Rewrote it to describe the bug without ever typing the sequence
+itself.)
+
+**The actual page-level fix**: `.pnl-heatmap-wrap`'s own `overflow-x:
+auto` (now genuinely reaching the browser) is the fix for the
+calendar's OWN scrolling — but on top of that, added `overflow-x:
+hidden` to `html, body` globally, so the page itself has zero
+horizontal scroll capacity at all. A wide inner element having its own
+`overflow-x: auto` doesn't by itself stop some mobile browsers from
+ALSO letting the page rubber-band sideways when a touch-drag starts
+over it (a swipe is never perfectly axis-aligned) — this forces every
+horizontal drag to be absorbed exclusively by whichever scrollable
+element it started on.
+
+**Verified against a real running server + a real 390px-wide mobile
+viewport**: seeded 12 real days of varied realized P&L (₹50 up to
+₹7,000, both gains and losses) and confirmed, via actual Playwright
+measurements (not just reading the CSS): the page's own
+`scrollWidth` never exceeds the viewport width; the heatmap's own
+wrapper genuinely overflows (912px of content in a 352px box) and
+scrolls independently when dragged (`scrollLeft` actually moves);
+scrolling the heatmap leaves the page's own `window.scrollX` at 0; and
+the tiny-vs-huge gain/loss days render as four genuinely different
+resolved colors each, not one flat shade. Re-ran two other existing
+full-flow Playwright tests unmodified (Steps 68/69's own UI tests) to
+confirm this stylesheet-wide change didn't disturb anything else.
+
 ## Setup
 
 ```bash

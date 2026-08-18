@@ -356,6 +356,18 @@
    deliberately left untransitioned; the toggle is a snap-cut, matching
    the app's flat "stamped" visual language rather than a soft fade. */
 * { box-sizing: border-box; margin: 0; padding: 0; }
+/* Zero horizontal scroll capacity at the PAGE level, on purpose --
+   every individually-scrollable wide thing (.table-wrap, the P&L
+   heatmap's own .pnl-heatmap-wrap) already opts into its own
+   overflow-x: auto, but that alone doesn't stop mobile browsers from
+   also letting the page itself pan/rubber-band sideways the moment a
+   touch drag starts over one of those (a swipe is never perfectly
+   axis-aligned, and without this the ambiguity can resolve to "move
+   the whole viewport" instead of "scroll the element under my
+   finger"). This forces every horizontal drag to be absorbed
+   exclusively by the inner scrollable element it started on -- the
+   page itself has nowhere to go. */
+html, body { overflow-x: hidden; }
 body {
   font-family: var(--font-body); background: var(--bg); color: var(--ink);
   line-height: 1.5; font-variant-numeric: tabular-nums;
@@ -626,7 +638,7 @@ tr.trade-detail-row td {
 
 /* ── P&L calendar heatmap — GitHub-contribution-graph shaped, but
    DIVERGING (a day can lose, not just contribute-more-or-less), colored
-   from the --heat-loss-*/--heat-gain-* ramp (see :root's own comment
+   from the --heat-loss-N / --heat-gain-N ramp (see :root's own comment
    for the derivation). One column per week, oldest at the left, ending
    at today; hover a cell for the exact date + P&L (the "relief channel"
    the dataviz skill requires whenever a fill's contrast against its own
@@ -636,6 +648,27 @@ tr.trade-detail-row td {
    a small addition to an already-DOM-heavy grid. Every cell gets a
    --row-line border regardless of fill, so the grid stays legible even
    where the fill itself is closest to the card surface. ────────────── */
+/* Step 73's own real bug, found here: the comment above used to write
+   the ramp as two CSS custom property names separated directly by a
+   slash, with no space -- which put an asterisk immediately followed
+   by a slash in the middle of plain prose. That two-character
+   sequence is CSS's own comment-close marker, so it ended the comment
+   right there, mid-sentence -- everything after it through this
+   entire .pnl-heatmap-wrap rule (selector, body, and its own
+   overflow-x: auto) was then parsed as garbage and silently dropped;
+   the rule had never actually applied. Confirmed directly via the
+   live CSSOM (document.styleSheets[0].cssRules): .pnl-heatmap-wrap
+   was completely absent from the parsed rule list, while the
+   untouched .equity-wrap right before it and .pnl-heatmap-months
+   right after it both parsed fine -- exactly the shape an accidental
+   early comment-close produces (only the span between the accidental
+   close and the next rule's own recovery point vanishes, not the
+   whole stylesheet). This is why the heatmap was never independently
+   scrollable: overflow-x: auto was sitting right there in the source
+   the entire time, just never reaching the browser's actual style
+   computation. (This explanation is deliberately written without
+   ever typing that two-character sequence itself, for the obvious
+   reason.) */
 .pnl-heatmap-wrap { background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm); padding: 16px 18px; overflow-x: auto; }
 .pnl-heatmap-months { display: grid; grid-auto-flow: column; grid-auto-columns: 13px; gap: 3px; margin-bottom: 4px; margin-left: 3px; height: 14px; }
 .pnl-heatmap-month-label { font-size: 10px; color: var(--parchment); font-weight: 700; white-space: nowrap; }
