@@ -38,6 +38,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -48,6 +49,13 @@ from .schemas import DeploymentCreate
 
 logger = logging.getLogger("live_deploy.manager")
 
+# See DEFAULT_POST_MARKET_DUMP_TIME's own comment below — used to
+# compute "now" explicitly in IST for the one scheduling calculation in
+# this file that targets a specific WALL-CLOCK time rather than a fixed
+# interval, instead of trusting the host machine's own OS timezone to
+# already be IST.
+_IST = ZoneInfo("Asia/Kolkata")
+
 # How often to record an equity-curve point per active deployment. This
 # is for a CHART, not a backtest engine or an audit trail (every fill is
 # already durably recorded via position_lots regardless) — 5 minutes is
@@ -57,14 +65,34 @@ logger = logging.getLogger("live_deploy.manager")
 # much shorter interval rather than waiting 5 real minutes).
 DEFAULT_SNAPSHOT_INTERVAL_SECONDS = 300.0
 
-# Wall-clock time (naive "HH:MM", i.e. IST — see the Dockerfile's own
-# comment on why every naive datetime in this app already means IST) at
-# which post_market_dump_loop fires once a day. 15:45: strategies'
-# force_exit_time defaults to "15:00" and NSE cash/options both close at
-# 15:30, so 15:45 gives a 15-minute buffer for the day's last square-off
-# fills to land and get committed before this checkpoint reads
-# get_persistable_state() — a run any earlier risks catching a strategy
-# mid-exit and persisting a stale/half-updated indicator state.
+# Wall-clock time ("HH:MM", IST) at which post_market_dump_loop fires
+# once a day. 15:45: strategies' force_exit_time defaults to "15:00" and
+# NSE cash/options both close at 15:30, so 15:45 gives a 15-minute
+# buffer for the day's last square-off fills to land and get committed
+# before this checkpoint reads get_persistable_state() — a run any
+# earlier risks catching a strategy mid-exit and persisting a stale/
+# half-updated indicator state.
+#
+# _seconds_until_next_post_market_dump computes "now" via
+# datetime.now(_IST) explicitly (Step 92) — NOT bare datetime.now(),
+# which silently means whatever timezone the HOST MACHINE's own OS
+# happens to be configured with, not IST, unless something external
+# guarantees otherwise. The Dockerfile sets ENV TZ=Asia/Kolkata for
+# exactly this reason (see its own comment — this exact "naive datetime
+# silently means UTC, not IST" class of bug already mistimed real
+# trades here once before) — but that fix only reaches you if you're
+# actually running via that Dockerfile. RUN_GUIDE.md documents two
+# OTHER ways to run this app (bare `uvicorn`, supervisord) that never
+# touch the Dockerfile at all, so relying on the container's TZ env var
+# here was a real, live gap: on a host whose own OS timezone isn't IST
+# (the common case — most cloud VMs default to UTC), "15:45" silently
+# meant 15:45 in the WRONG timezone, and pivot_supertrend*'s daily
+# pivot rollover could sit hours late — or, depending on the offset,
+# not fire again until the FOLLOWING day, leaving a deployment trading
+# an extra full day on stale pivots. Confirmed via
+# custom_scripts/validate_supertrend_pivots.py: a live deployment still
+# reported yesterday's pivots at 10:40pm IST, seven hours past the
+# intended 15:45 checkpoint.
 DEFAULT_POST_MARKET_DUMP_TIME = "15:45"
 
 
@@ -410,7 +438,7 @@ class DeploymentManager:
         Runs for the lifetime of the process (started as a background
         task from main.py's startup(), cancelled on shutdown) — fires
         once per calendar day at post_market_dump_hour:
-        post_market_dump_minute (default 15:45, i.e. IST — see
+        post_market_dump_minute (default 15:45 IST — see
         DEFAULT_POST_MARKET_DUMP_TIME's own comment), dumps
         get_persistable_state() for every currently-active deployment,
         then sleeps until the same time tomorrow.
@@ -435,13 +463,43 @@ class DeploymentManager:
         calendar concept, not a "how fresh" one, so a fixed interval
         would either fire uselessly overnight/on weekends or need its
         own separate market-hours gating to avoid it.
+
+        CATCH-UP ON START (Step 92): _seconds_until_next_post_market_dump
+        always schedules forward to the NEXT occurrence of the target
+        time — so a process that starts (or restarts: a deploy, a
+        crash, routine maintenance) at a moment AFTER today's own target
+        has already passed would otherwise schedule straight for
+        TOMORROW's occurrence and silently skip today's entirely, every
+        pivot_supertrend* deployment trading an extra full day on
+        yesterday's pivots. One immediate dump here, before ever
+        entering the wait loop below, closes that gap — harmless if
+        today's checkpoint genuinely already ran earlier this same
+        process's lifetime (idempotent: just a redundant Kite re-fetch,
+        not incorrect data), but never silently defers an un-run day to
+        tomorrow.
         """
+        now = datetime.now(_IST).replace(tzinfo=None)
+        target_today = now.replace(
+            hour=self.post_market_dump_hour, minute=self.post_market_dump_minute,
+            second=0, microsecond=0,
+        )
+        if target_today <= now:
+            logger.info(
+                "Post-market dump loop starting after today's own %02d:%02d IST target has "
+                "already passed (now=%s) — catching up with an immediate dump instead of "
+                "waiting until tomorrow's occurrence.",
+                self.post_market_dump_hour, self.post_market_dump_minute, now,
+            )
+            await self.dump_state_all_active()
         while True:
             await asyncio.sleep(self._seconds_until_next_post_market_dump())
             await self.dump_state_all_active()
 
     def _seconds_until_next_post_market_dump(self) -> float:
-        now = datetime.now()
+        # datetime.now(_IST), not bare datetime.now() -- see
+        # DEFAULT_POST_MARKET_DUMP_TIME's own comment for exactly why
+        # trusting the host machine's OS timezone here was a real bug.
+        now = datetime.now(_IST).replace(tzinfo=None)
         target = now.replace(
             hour=self.post_market_dump_hour, minute=self.post_market_dump_minute,
             second=0, microsecond=0,

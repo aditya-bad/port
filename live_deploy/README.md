@@ -5922,6 +5922,66 @@ with a clear message instead of a traceback. Also unit-tested
 `app.main` import still succeeds with the new script's imports in
 place.
 
+## What's here (Step 92: a real bug, found via Step 91's own validator — post-market checkpoint used the wrong timezone)
+
+The very first real run of `validate_supertrend_pivots.py` (Step 91)
+found a genuine bug, not a timing false alarm: at 10:40pm IST — seven
+hours after the intended 15:45 checkpoint — both `ST_PV_NIFTY` and
+`ST_PV_SENSEX` were still reporting *yesterday's* pivots, matching the
+BEFORE-checkpoint candidate exactly, math otherwise correct in every
+other respect (SuperTrend trend/value and every pivot level matched
+the independent Kite computation bit-for-bit — this was never a
+calculation bug).
+
+**Root cause**: `DeploymentManager._seconds_until_next_post_market_dump`
+computed "now" via bare `datetime.now()` — naive, meaning whatever
+timezone the HOST MACHINE's own OS happens to be configured with, not
+IST. The Dockerfile sets `ENV TZ=Asia/Kolkata` explicitly, with its own
+comment noting this exact class of bug ("naive datetime silently means
+UTC, not IST") already mistimed real trades here once before — but
+that fix only reaches you if you're actually running via that
+Dockerfile. `RUN_GUIDE.md` documents two OTHER working ways to run this
+app (bare `uvicorn`, supervisord) that never touch the Dockerfile's
+`TZ` env var at all — on a host whose own OS timezone isn't IST (the
+common default for most cloud VMs), "15:45" silently meant 15:45 in
+the wrong timezone, potentially hours off from real IST close, or —
+depending on the actual offset — not due again until the *following*
+day, exactly matching what was reported.
+
+**Fix**: `_seconds_until_next_post_market_dump` now computes via
+`datetime.now(_IST)` explicitly (a local `_IST = ZoneInfo("Asia/Kolkata")`,
+same pattern already established in `pivot_supertrend.py`/
+`aggregate.py`), independent of the host's own OS timezone entirely —
+correct whether run via Docker, bare `uvicorn`, or supervisord alike.
+
+**A second, related gap fixed alongside it**: even with the timezone
+correct, the loop always scheduled forward to the *next* occurrence of
+the target time — so a process starting (or restarting: a deploy, a
+crash, routine maintenance) at a moment already past today's target
+would schedule straight for *tomorrow's* occurrence, silently skipping
+today's rollover entirely and leaving every `pivot_supertrend*`
+deployment trading a full extra day on stale pivots. `post_market_dump_loop`
+now checks this on start: if today's own target has already passed, it
+runs one immediate catch-up dump before ever entering the normal wait
+loop — harmless if today's checkpoint genuinely already ran earlier in
+this same process's life (idempotent, just a redundant Kite re-fetch),
+but never silently defers an un-run day to tomorrow.
+
+Verified: both fixes tested directly against a controllable fake clock
+(`app.deployments.manager.datetime` monkeypatched to a fixed IST
+instant, not relying on the sandbox's own real clock/timezone at all)
+— confirmed `_seconds_until_next_post_market_dump` schedules correctly
+for TODAY's remaining target when still ahead and for TOMORROW's when
+already passed, purely from `_IST`, independent of any host timezone;
+confirmed the catch-up branch fires exactly once immediately when
+started past today's target (including the boundary case of starting
+AT the exact target second), and does NOT fire when started before it;
+full `app.main` import still succeeds; grepped the whole `app/`
+tree for any other bare `datetime.now()` — none remain, this was the
+only wall-clock-target scheduling call site (every other `datetime.now()`
+in this codebase already either passes `timezone.utc` explicitly or
+uses a fixed-interval sleep, immune to this whole class of bug).
+
 ## Setup
 
 ```bash
