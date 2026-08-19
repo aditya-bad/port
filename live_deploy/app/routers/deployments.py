@@ -56,22 +56,45 @@ def _mark_to_market(position: dict, dispatcher) -> float:
     return (price - avg) * qty if position["side"] == "long" else (avg - price) * qty
 
 
+def _open_cost_basis(position: dict) -> float:
+    """The entry-price cash effect of ONE open position — +qty*avg_entry
+    for a short (the premium collected on selling to open, still sitting
+    in current_cash uncredited to realized_pnl until it's bought back),
+    -qty*avg_entry for a long (cash already spent buying it). Needs no
+    live price at all (unlike _mark_to_market above) — this is a fact
+    about the entry fill, not the current market.
+
+    Summed across every open position, this is EXACTLY
+    current_cash - initial_capital - realized_pnl, always — see
+    db/queries.py's record_fill: cash_delta is -(qty*price) for every
+    buy, +(qty*price) for every sell, applied unconditionally at fill
+    time regardless of open/add/close, so nothing here can ever drift
+    out of sync with what actually happened to current_cash."""
+    qty, avg = float(position["qty"]), float(position["avg_entry_price"])
+    return qty * avg if position["side"] == "short" else -(qty * avg)
+
+
 async def _enrich_pnl_many(pool, dispatcher, rows: list[dict]) -> None:
     """Mutates each row in `rows` in place, adding realized_pnl/
-    unrealized_pnl -- used by the deployment LIST endpoint. Two queries
-    total (not one per deployment): every deployment's realized total,
-    and every OPEN position across every deployment, grouped by
-    deployment_id in Python for the mark-to-market sum."""
+    unrealized_pnl/open_cost_basis -- used by the deployment LIST
+    endpoint. Two queries total (not one per deployment): every
+    deployment's realized total, and every OPEN position across every
+    deployment, grouped by deployment_id in Python for the mark-to-
+    market AND cost-basis sums (both are per-position formulas over the
+    exact same open_positions rows, so one fetch covers both)."""
     realized_map = await queries.realized_pnl_by_deployment(pool)
     open_positions = await queries.list_all_positions(pool, status="open")
     unrealized_map: dict[str, float] = {}
+    cost_basis_map: dict[str, float] = {}
     for p in open_positions:
         dep_id = str(p["deployment_id"])
         unrealized_map[dep_id] = unrealized_map.get(dep_id, 0.0) + _mark_to_market(p, dispatcher)
+        cost_basis_map[dep_id] = cost_basis_map.get(dep_id, 0.0) + _open_cost_basis(p)
     for row in rows:
         dep_id = str(row["id"])
         row["realized_pnl"] = round(realized_map.get(dep_id, 0.0), 2)
         row["unrealized_pnl"] = round(unrealized_map.get(dep_id, 0.0), 2)
+        row["open_cost_basis"] = round(cost_basis_map.get(dep_id, 0.0), 2)
 
 
 async def fetch_deployments_list(pool, dispatcher) -> list[dict]:
@@ -94,6 +117,7 @@ async def _enrich_pnl_one(pool, dispatcher, deployment_id: UUID, row: dict) -> N
     row["realized_pnl"] = round(await queries.realized_pnl_total(pool, deployment_id), 2)
     open_positions = await queries.list_open_positions(pool, deployment_id)
     row["unrealized_pnl"] = round(sum(_mark_to_market(p, dispatcher) for p in open_positions), 2)
+    row["open_cost_basis"] = round(sum(_open_cost_basis(p) for p in open_positions), 2)
 
 
 @router.post("", response_model=DeploymentOut, status_code=201)
@@ -127,8 +151,8 @@ async def create_deployment(payload: DeploymentCreate, request: Request):
     # the deploy silently did nothing.
     await request.app.state.cache.refresh_now("deployments")
     # A freshly created deployment has traded nothing yet -- realized_pnl/
-    # unrealized_pnl are correctly 0.0 via DeploymentOut's own defaults,
-    # no query needed.
+    # unrealized_pnl/open_cost_basis are correctly 0.0 via DeploymentOut's
+    # own defaults, no query needed.
     return _annotate(row)
 
 

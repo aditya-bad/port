@@ -119,6 +119,15 @@ class DeploymentOut(BaseModel):
     # routers/deployments.py's _enrich_pnl / per-deployment pnl lookup.
     realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
+    # Entry-price cost basis of every currently OPEN position, netted:
+    # +qty*avg_entry_price for a short (a sold option's premium, sitting
+    # in cash as a credit until it's bought back), -qty*avg_entry_price
+    # for a long (cash already spent to buy it). This is exactly why
+    # current_cash isn't simply initial_capital + realized_pnl while
+    # anything is still open — it always is, though:
+    #   current_cash == initial_capital + realized_pnl + open_cost_basis
+    # See routers/deployments.py's _open_cost_basis for the computation.
+    open_cost_basis: float = 0.0
 
     class Config:
         from_attributes = True

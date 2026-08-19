@@ -51,6 +51,7 @@ const Detail = {
           <div class="card-meta" style="margin-top:10px;">
             <span>Capital: <b>${fmtMoney(dep.initial_capital)}</b></span>
             <span>Cash: <b>${fmtMoney(dep.current_cash)}</b></span>
+            ${dep.open_cost_basis ? `<span title="Entry-price value of currently open positions -- a credit for a sold option's premium (not yet Realized until it's bought back), a debit for a bought one. Cash always equals Capital + Realized + this.">Open Cost ⓘ: <b class="${pnlClass(dep.open_cost_basis)}">${fmtSignedMoney(dep.open_cost_basis)}</b></span>` : ''}
             <span>Realized: <b class="${pnlClass(dep.realized_pnl)}">${fmtSignedMoney(dep.realized_pnl)}</b></span>
           </div>
           <!-- Unrealized deliberately NOT shown here any more -- it lived

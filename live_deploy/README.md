@@ -5267,6 +5267,54 @@ dispatcher — `on_start` itself still fails past that point with no real
 Kite session available here, which is expected and irrelevant to what
 was being checked).
 
+## What's here (Step 82: an "Open Cost" column explains Cash vs Capital+Realized)
+
+Follow-up from the Cash-doesn't-match-Realized question: `current_cash`
+moves the instant any fill happens (`record_fill`'s `cash_delta` is
+unconditional — a sell always credits `qty*price`, a buy always debits
+it, whether that fill opens, adds to, or closes a position), while
+`realized_pnl` only gets written once a position actually CLOSES. So
+while a strategy that sells options to open (a straddle leg, any
+`pivot_supertrend_options*` short entry) is still holding that
+position, its full premium already sits in `current_cash` as real
+money, well before it's "Realized." A proposed alternative — defer the
+premium credit until the position is actually carried past end of day —
+was discussed and dropped: it would need a whole separate code path for
+a same-day open+close round trip (the closing buy can't just debit
+`qty*price` against a credit that was never added), it would make the
+existing `InsufficientCash` real-money check wrong in the meantime, and
+it doesn't remove the "confusing gap" so much as relocate it to an
+unexplained overnight cash jump with no matching trade in the log.
+
+Instead: a new field that always, provably, closes the reconciliation
+loop — `open_cost_basis`. `app/routers/deployments.py` gains
+`_open_cost_basis(position)`, alongside the existing `_mark_to_market`:
+`+qty*avg_entry_price` for a short (the credit still sitting in cash,
+uncounted as Realized until bought back), `-qty*avg_entry_price` for a
+long (cash already spent). Wired into both `_enrich_pnl_many` (the list
+endpoint) and `_enrich_pnl_one` (single-deployment), summed across every
+open position. The identity this guarantees, always:
+
+```
+current_cash == initial_capital + realized_pnl + open_cost_basis
+```
+
+`DeploymentOut` (schemas.py) gains the field (default `0.0`, so an
+old/freshly-created row is correctly zero with no extra query). Shown
+as a new "Open Cost ⓘ" column in the Deployments table
+(`static/js/deployments.js`, between Cash and Realized, with the
+identity above as its header tooltip and a per-row tooltip spelling out
+the exact numbers), summed in the totals row too, and as an inline stat
+in the Detail page header (`static/js/detail.js`, only shown when
+non-zero, same "don't clutter when irrelevant" convention that page's
+own Unrealized figure already follows).
+
+Verified against the exact real numbers from the screenshot that
+started this thread: two straddle legs sold at 145.40 and 105.15 for
+65 qty each give `open_cost_basis = 65×(145.40+105.15) = 16,285.75`;
+`600,000 (capital) + 211.25 (realized) + 16,285.75 = 616,497.00` —
+matching the real Cash figure shown, to the paisa.
+
 ## Setup
 
 ```bash

@@ -118,6 +118,7 @@ const Deployments = {
     const totalCash = reportRows.reduce((s, d) => s + (d.current_cash || 0), 0);
     const totalRealized = reportRows.reduce((s, d) => s + (d.realized_pnl || 0), 0);
     const totalUnrealized = reportRows.reduce((s, d) => s + (d.unrealized_pnl || 0), 0);
+    const totalOpenCost = reportRows.reduce((s, d) => s + (d.open_cost_basis || 0), 0);
     const excludedCount = rows.length - reportRows.length;
     const totalLabel = excludedCount > 0
       ? `Total (${reportRows.length} of ${rows.length} shown — ${excludedCount} excluded)`
@@ -127,7 +128,9 @@ const Deployments = {
       <div class="table-wrap">
       <table class="deploy-table"><thead><tr>
         <th>Name</th><th>Strategy</th><th>Status</th><th>Mode</th>
-        <th>Capital</th><th>Cash</th><th>Realized</th><th>Unrealized</th><th>Actions</th>
+        <th>Capital</th><th>Cash</th>
+        <th title="Entry-price value of currently open positions -- a credit for a sold option's premium (not yet Realized until it's bought back), a debit for a bought one. Cash always equals Capital + Realized + this.">Open Cost ⓘ</th>
+        <th>Realized</th><th>Unrealized</th><th>Actions</th>
       </tr></thead>
       <tbody>${rows.map(d => `
         <tr class="clickable-row" data-deployment-id="${d.id}" onclick="location.hash='#/deployments/${d.id}'">
@@ -142,6 +145,7 @@ const Deployments = {
           <td>${d.mode}</td>
           <td>${fmtMoney(d.initial_capital)}</td>
           <td>${fmtMoney(d.current_cash)}</td>
+          <td class="${pnlClass(d.open_cost_basis)}" title="Cash = ${fmtMoney(d.initial_capital)} + ${fmtSignedMoney(d.realized_pnl)} + ${fmtSignedMoney(d.open_cost_basis)}">${fmtSignedMoney(d.open_cost_basis)}</td>
           <td class="${pnlClass(d.realized_pnl)}">${fmtSignedMoney(d.realized_pnl)}</td>
           <td class="live-pnl ${pnlClass(d.unrealized_pnl)}">${fmtSignedMoney(d.unrealized_pnl)}</td>
           <td onclick="event.stopPropagation()">
@@ -156,6 +160,7 @@ const Deployments = {
         <td colspan="4"><b>${totalLabel}</b></td>
         <td>${fmtMoney(totalCapital)}</td>
         <td>${fmtMoney(totalCash)}</td>
+        <td class="${pnlClass(totalOpenCost)}">${fmtSignedMoney(totalOpenCost)}</td>
         <td class="${pnlClass(totalRealized)}">${fmtSignedMoney(totalRealized)}</td>
         <td class="live-pnl-total ${pnlClass(totalUnrealized)}">${fmtSignedMoney(totalUnrealized)}</td>
         <td></td>
