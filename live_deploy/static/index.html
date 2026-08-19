@@ -1458,6 +1458,20 @@ body.mobile-nav-open { overflow: hidden; }
       </label>
       <div class="card-sub" style="margin-top:4px;">Off = Dashboard, Portfolio, and Reports all skip this deployment. Its own page here is never affected.</div>
     </div>
+    <!-- notifications_enabled -- mutes THIS deployment's own entry/exit
+         notifications (in-app toast AND mobile push together), same
+         "pure bookkeeping, editable regardless of status" story as
+         include_in_reports above. Fills/pause/resume/stop still record
+         + toast as normal either way -- this only gates the execution-
+         level ones. See Account -> Notifications for the app-wide
+         "Enable notifications" opt-in this depends on. -->
+    <div class="field">
+      <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
+        <input type="checkbox" id="editDeploymentNotificationsEnabled" style="width:auto;">
+        Notify on entry/exit
+      </label>
+      <div class="card-sub" style="margin-top:4px;">Off = no toast or mobile push when this deployment enters or exits a trade. Fills still show in its own Activity tab either way.</div>
+    </div>
     <!-- Custom tags -- checkbox per catalog entry, built fresh each time
          the modal opens (Detail.openEditModal) since the catalog itself
          can grow from Settings -> Tags at any time. Purely organizational,
@@ -1973,11 +1987,18 @@ let eventStream = null;   // an EventSource
 const TOAST_LABELS = {
   fill_buy: 'Buy', fill_sell: 'Sell', strategy_error: 'Strategy error',
   paused: 'Paused', resumed: 'Resumed', stopped: 'Stopped', flattened: 'Flattened',
-  created: 'Deployed',
+  created: 'Deployed', execution_entry: 'Entry', execution_exit: 'Exit',
 };
+// fill_buy/fill_sell are still recorded (each deployment's own Activity
+// tab shows every fill) but are no longer toasted here -- as of Step 85
+// execution_entry/execution_exit supersede them for the in-app-toast +
+// mobile-push surface: one toast per logical entry/exit (e.g. a 2-leg
+// straddle fires two fill_* events but one execution_entry), not one
+// per fill. See app/deployments/runner.py's notify_execution().
+const TOAST_SUPPRESSED = new Set(['fill_buy', 'fill_sell']);
 function _toastCategory(eventType) {
   if (eventType === 'strategy_error') return 'error';
-  if (eventType === 'fill_buy' || eventType === 'fill_sell') return 'info';
+  if (eventType === 'execution_entry' || eventType === 'execution_exit') return 'info';
   return 'neutral';   // paused/resumed/stopped/flattened -- administrative, not a P&L outcome
 }
 function connectEventSocket() {
@@ -1986,7 +2007,7 @@ function connectEventSocket() {
     let ev;
     try { ev = JSON.parse(msg.data); } catch (e) { return; }
     if (!ev || !ev.event_type) return;
-    showToast(ev);
+    if (!TOAST_SUPPRESSED.has(ev.event_type)) showToast(ev);
     _scheduleLiveRefresh();
   };
 }
@@ -2009,20 +2030,10 @@ function showToast(ev) {
   `;
   stack.appendChild(el);
   setTimeout(() => el.remove(), TOAST_AUTO_DISMISS_MS);
-
-  // Browser push notification -- ONLY when the user has explicitly
-  // opted in (Account -> Profile) AND the tab isn't the one currently
-  // focused. Opted-out/no-permission is a silent no-op, never a
-  // prompt fired from here -- browsers require permission to be
-  // requested from a real user gesture (the toggle itself), not
-  // ambiently on every event.
-  if (localStorage.getItem('browserNotificationsEnabled') === '1'
-      && typeof Notification !== 'undefined' && Notification.permission === 'granted'
-      && document.visibilityState !== 'visible') {
-    try {
-      new Notification(`${ev.deployment_name || 'live_deploy'} — ${label}`, { body: ev.message || '' });
-    } catch (e) { /* some browsers throw on unsupported contexts -- never let this break the toast itself */ }
-  }
+  // Mobile/background push notifications are a separate delivery path
+  // (Web Push via a service worker, see static/js/account.js +
+  // static/sw.js + app/notifications.py) -- not fired from here. This
+  // in-app toast is purely the foreground, tab-open experience.
 }
 
 // ── Router ────────────────────────────────────────────────────────────

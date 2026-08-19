@@ -86,6 +86,13 @@ class DeploymentUpdate(BaseModel):
     config: Optional[dict] = None
     include_in_reports: Optional[bool] = None
     tags: Optional[list[str]] = None
+    # Same "editable regardless of status, None means don't touch"
+    # story as include_in_reports above -- gates DeploymentRunner.
+    # notify_execution's BOTH channels (in-app toast and mobile push)
+    # for entry/exit executions on this deployment (see migration
+    # 0011's own comment). Read fresh from the DB per execution, not
+    # cached on a live runner, so this takes effect immediately.
+    notifications_enabled: Optional[bool] = None
 
 
 class DeploymentOut(BaseModel):
@@ -105,6 +112,11 @@ class DeploymentOut(BaseModel):
     # once migrated — but this mirrors strategy_registered's own
     # defensive default just below) never surprises an old caller.
     include_in_reports: bool = True
+    # Gates DeploymentRunner.notify_execution's entry/exit notifications
+    # (both in-app toast and mobile push) for this deployment -- see
+    # migration 0011's own comment. Same defensive-default reasoning as
+    # include_in_reports just above.
+    notifications_enabled: bool = True
     # Custom labels applied from the predefined catalog (Settings ->
     # Tags) -- see the 0010 migration's own comment. Never includes the
     # synthetic "Excluded from reports" chip; the frontend derives that

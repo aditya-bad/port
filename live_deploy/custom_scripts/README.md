@@ -70,6 +70,16 @@ zero writes.
   only — it's never passed into the deployment. See the script's own
   `--help` / module docstring for the full flag list.
 
+- **`generate_vapid_keys.py`** — the other exception to "touches the
+  database": doesn't touch it at all, and needs no app server either.
+  Generates the one-time VAPID keypair mobile push notifications
+  (Step 85) need and prints exactly what to paste into `config.json`
+  (or the equivalent env vars). Run it ONCE ever per deployment —
+  regenerating later breaks push for everyone already subscribed until
+  they re-enable it, since every subscription is tied to the specific
+  keypair active when they tapped "Enable notifications." See its own
+  module docstring for the full byte-format rationale.
+
 There used to be a `resync_supertrend_state.py` here — a standalone
 script to manually correct a `pivot_supertrend*` deployment's SuperTrend
 state after a WebSocket tick gap drifted it from reality (see

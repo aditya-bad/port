@@ -579,6 +579,9 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         self.active_leg_symbol = leg.tradingsymbol
         self.active_leg_exchange = leg.exchange
         self.candles_held = 0
+        await runner.notify_execution(
+            "entry", f"Bought {qty} {leg.tradingsymbol} @ {price}", metadata=meta,
+        )
 
         logger.info(
             "%s: SuperTrend flipped -> bought %s %s@%.2f, holding for %d candle(s)",
@@ -622,12 +625,16 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             trigger_values=trigger_values,
             resulting_state={"position": "flat"},
         )
+        closed_symbol = self.active_leg_symbol
         await runner.sell(   # SELL TO CLOSE
             self.active_leg_symbol, self.active_leg_token, qty, price, candle["date"],
             reason=reason, metadata=meta,
         )
         runner.dispatcher.release_instruments([self.active_leg_token])
         self._clear_active_leg()
+        await runner.notify_execution(
+            "exit", f"{reason}: sold {qty} {closed_symbol} @ {price}", metadata=meta,
+        )
 
     def _clear_active_leg(self) -> None:
         self.active_leg_token = None

@@ -703,6 +703,14 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         self.breakeven_lower = entry_spot - band
         self.breakeven_upper = entry_spot + band
 
+        # ONE notification for the whole straddle (2 fills above), not two.
+        await runner.notify_execution(
+            "entry",
+            f"Sold straddle — CE {ce_leg.tradingsymbol}@{ce_price:.2f}, "
+            f"PE {pe_leg.tradingsymbol}@{pe_price:.2f} (combined={self.combined_entry_premium:.2f})",
+            metadata=common_meta,
+        )
+
         logger.info(
             "%s: sold straddle — CE %s@%.2f, PE %s@%.2f (combined=%.2f), "
             "entry_spot=%.2f, break-even=[%.2f, %.2f]",
@@ -889,6 +897,12 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             "side now %d leg(s)", runner.deployment_name, reason, self.adjustments_used,
             side, leg.tradingsymbol, price, target, side, len(self.legs[side]),
         )
+        # An adjustment/roll-open is its own logical execution — a new
+        # leg genuinely opened, distinct from the original entry.
+        await runner.notify_execution(
+            "entry", f"{reason}: sold {leg.tradingsymbol}@{price:.2f} ({side} side)",
+            metadata={"role": role, "side": side},
+        )
 
     # ── Reversal: close the single cheapest leg on the adjusted side ───
     # (also reused, unmodified, as the "close" half of intraday_dtt_
@@ -941,6 +955,10 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             )
             if result.get("realized_pnl") is not None:
                 self.realized_pnl_today += result["realized_pnl"]
+            await runner.notify_execution(
+                "exit", f"{reason}: closed {cheapest['symbol']}@{price:.2f} ({side} side)",
+                metadata={"side": side},
+            )
         runner.dispatcher.release_instruments([cheapest["token"]])
         logger.info(
             "%s: %s — closed %s %s@%.2f (%s side now %d leg(s), "
@@ -951,6 +969,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
     # ── Full flatten: force-exit / break-even / profit-target ──────────
 
     async def _flatten_all(self, runner, ts, reason: str, trigger_values: dict) -> None:
+        had_legs = bool(self.legs["CE"] or self.legs["PE"])
         for side in ("CE", "PE"):
             for leg in list(self.legs[side]):
                 price = runner.dispatcher.last_prices.get(leg["token"])
@@ -974,6 +993,10 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                     if result.get("realized_pnl") is not None:
                         self.realized_pnl_today += result["realized_pnl"]
                 runner.dispatcher.release_instruments([leg["token"]])
+        if had_legs:
+            await runner.notify_execution(
+                "exit", f"{reason}: flattened everything", metadata=trigger_values,
+            )
         logger.info(
             "%s: flattened everything (%s) — realized_pnl_today=%.2f",
             runner.deployment_name, reason, self.realized_pnl_today,

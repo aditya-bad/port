@@ -102,58 +102,110 @@ const Account = {
       </section>
     ` : '';
 
-    body.innerHTML = identity + changePwForm + sessionsSection + this._renderNotificationsSection();
+    body.innerHTML = identity + changePwForm + sessionsSection
+      + `<section style="margin-top:26px; max-width:360px;" id="notificationsSection">
+           <h2>Notifications</h2>
+           <div class="table-note">Checking status…</div>
+         </section>`;
+    // Async, not part of the synchronous innerHTML build above (it needs
+    // to check the service worker's own subscription state and the
+    // server's VAPID config, both of which need an await) — patches
+    // just this section's own contents in once it resolves, same
+    // "render a placeholder, then fill it in" split every other
+    // network-backed section on this page already uses (e.g. the tags
+    // list in Detail's edit modal).
+    this._refreshNotificationsSection();
   },
 
-  // ── Notifications: opt-in browser push for the real-time alert
-  // toasts (see /sse/events + showToast() in index.html). Toasts
-  // already show up whenever a tab is open; this is ONLY for getting
-  // pinged while the tab is in the background — never fires while the
-  // tab is focused (the toast itself already covers that). Off by
-  // default — browsers require the permission prompt to come from a
-  // real click on this toggle, never fired ambiently on page load. ──
-  _renderNotificationsSection() {
-    const enabled = localStorage.getItem('browserNotificationsEnabled') === '1';
-    const supported = typeof Notification !== 'undefined';
-    const permission = supported ? Notification.permission : 'unsupported';
-    let statusLine;
-    if (!supported) {
-      statusLine = 'Not supported in this browser.';
-    } else if (permission === 'denied') {
-      statusLine = 'Blocked at the browser level — re-enable it in your browser\'s site settings, then reload this page.';
-    } else if (enabled && permission === 'granted') {
-      statusLine = 'On — you\'ll get a browser notification for alerts that arrive while this tab is in the background.';
-    } else {
-      statusLine = 'Off — alerts only show as in-app toasts while this tab is open and focused.';
+  // ── Notifications: real mobile Web Push (Step 85) — entry/exit
+  // execution notifications ONLY (see DeploymentRunner.notify_execution),
+  // delivered by the browser's own push service straight to this
+  // device's service worker (static/sw.js), working even when no tab
+  // is open and Chrome isn't running in the foreground. In-app toasts
+  // for the same executions (plus fills/pause/resume/stop/errors, a
+  // broader set) show separately via /sse/events + showToast() in
+  // index.html whenever a tab IS open — unaffected by any of this. ──
+  async _refreshNotificationsSection() {
+    const el = document.getElementById('notificationsSection');
+    if (!el) return;   // navigated away before this resolved
+
+    const swSupported = 'serviceWorker' in navigator && 'PushManager' in window;
+    if (!swSupported) {
+      el.innerHTML = `<h2>Notifications</h2><div class="table-note">Push notifications aren't supported in this browser.</div>`;
+      return;
     }
-    return `
-      <section style="margin-top:26px; max-width:360px;">
-        <h2>Notifications</h2>
-        <div class="table-note" style="margin-bottom:10px;">${escapeHtml(statusLine)}</div>
-        ${supported && permission !== 'denied' ? `
-          <button class="btn btn-secondary btn-sm" onclick="Account.toggleBrowserNotifications()">
-            ${enabled ? 'Turn off browser notifications' : 'Turn on browser notifications'}
-          </button>
-        ` : ''}
-      </section>
+
+    let publicKey = null;
+    try {
+      ({ public_key: publicKey } = await Api.getVapidPublicKey());
+    } catch (e) { /* treated as "not configured" below */ }
+
+    if (!publicKey) {
+      el.innerHTML = `<h2>Notifications</h2><div class="table-note">Not configured on this server yet — see custom_scripts/generate_vapid_keys.py.</div>`;
+      return;
+    }
+
+    if (Notification.permission === 'denied') {
+      el.innerHTML = `<h2>Notifications</h2><div class="table-note">Blocked at the browser level — re-enable it in your browser's site settings, then reload this page.</div>`;
+      return;
+    }
+
+    const registration = await navigator.serviceWorker.ready;
+    const existing = await registration.pushManager.getSubscription();
+
+    el.innerHTML = `
+      <h2>Notifications</h2>
+      <div class="table-note" style="margin-bottom:10px;">
+        ${existing
+          ? 'On — you\'ll get a notification on this device for every strategy entry/exit (one per execution, not per fill), even with the app fully closed.'
+          : 'Off — enable to get a notification on THIS device for every strategy entry/exit, even with the app fully closed.'}
+      </div>
+      <button class="btn btn-secondary btn-sm" onclick="Account.toggleNotifications()">
+        ${existing ? 'Turn off notifications on this device' : 'Enable notifications on this device'}
+      </button>
+      <div class="modal-msg" id="acctNotificationsMsg" style="margin-top:10px;"></div>
+      <div class="card-sub" style="margin-top:8px;">
+        Muted per-deployment from that deployment's own Edit button.
+      </div>
     `;
   },
 
-  async toggleBrowserNotifications() {
-    const enabled = localStorage.getItem('browserNotificationsEnabled') === '1';
-    if (enabled) {
-      localStorage.setItem('browserNotificationsEnabled', '0');
-      this._renderProfile();
+  async toggleNotifications() {
+    const msg = document.getElementById('acctNotificationsMsg');
+    const registration = await navigator.serviceWorker.ready;
+    const existing = await registration.pushManager.getSubscription();
+
+    if (existing) {
+      const endpoint = existing.endpoint;
+      await existing.unsubscribe();
+      await Api.unsubscribePush(endpoint);
+      await this._refreshNotificationsSection();
       return;
     }
-    // requestPermission() must be called from a real user gesture (this
-    // click) -- calling it any other way is exactly the "ambient popup"
-    // pattern browsers are designed to refuse.
-    const result = await Notification.requestPermission();
-    if (result === 'granted') {
-      localStorage.setItem('browserNotificationsEnabled', '1');
+
+    // subscribe() must be called from a real user gesture (this click)
+    // -- calling it any other way is exactly the "ambient popup"
+    // pattern browsers are designed to refuse; this is also the exact
+    // moment Chrome shows its native "site wants to send notifications"
+    // system prompt.
+    msg.innerHTML = '<span class="spinner"></span> Requesting permission…';
+    try {
+      const { public_key: publicKey } = await Api.getVapidPublicKey();
+      const registration2 = await navigator.serviceWorker.ready;
+      const subscription = await registration2.pushManager.subscribe({
+        userVisibleOnly: true,   // required by spec: every push this app sends must show a visible notification, never a silent background one
+        applicationServerKey: _urlBase64ToUint8Array(publicKey),
+      });
+      await Api.subscribePush(subscription);
+      msg.innerHTML = '';
+      await this._refreshNotificationsSection();
+    } catch (e) {
+      msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(
+        Notification.permission === 'denied'
+          ? 'Permission denied — enable it in your browser\'s site settings, then reload this page.'
+          : (e.message || 'Could not enable notifications')
+      )}</span>`;
     }
-    this._renderProfile();
   },
 
   async submitChangePassword() {
@@ -496,3 +548,19 @@ const Account = {
     else { this._openAuditRows.add(i); row.style.display = 'table-row'; }
   },
 };
+
+// PushManager.subscribe()'s applicationServerKey wants a Uint8Array,
+// not the base64url string the backend hands out (GET
+// /notifications/vapid-public-key) -- standard conversion, used only
+// here. Pads back to a multiple of 4 chars (base64url strings have
+// their trailing '=' padding stripped, per the Web Push spec's own
+// convention -- see custom_scripts/generate_vapid_keys.py's own
+// b64url encoding) before the normal base64 decode.
+function _urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}

@@ -1216,6 +1216,9 @@ class PivotSupertrendStrategy(StrategyBase):
         )
         await action(self.symbol, self.instrument_token, qty, price, candle["date"],
                      reason="entry", metadata=meta)
+        await runner.notify_execution(
+            "entry", f"{side} {qty} {self.symbol} @ {price}", metadata=meta,
+        )
 
     async def _exit(self, runner, candle: dict, reason: str, trigger_values: dict) -> None:
         pos = runner.open_positions.get(self.instrument_token)
@@ -1232,6 +1235,9 @@ class PivotSupertrendStrategy(StrategyBase):
         )
         await action(self.symbol, self.instrument_token, qty, price, candle["date"],
                      reason=reason, metadata=meta)
+        await runner.notify_execution(
+            "exit", f"{reason}: closed {qty} {self.symbol} @ {price}", metadata=meta,
+        )
 
     async def on_stop(self, runner) -> None:
         logger.info("%s: strategy stopped (trend=%s, pivots=%s)",

@@ -57,6 +57,29 @@ const Api = {
     return fetch(`/tags/${id}`, { method: 'DELETE' });
   },
 
+  // ── Mobile push notifications (Step 85) ────────────────────────────
+  async getVapidPublicKey() {
+    const r = await fetch('/notifications/vapid-public-key');
+    if (!r.ok) throw new Error(`Could not load VAPID key (${r.status})`);
+    return r.json();   // {public_key: string|null}
+  },
+  async subscribePush(subscription) {
+    // `subscription` is a raw PushSubscription (from
+    // PushManager.subscribe()) -- .toJSON() gives exactly
+    // {endpoint, keys: {p256dh, auth}}, matching the backend's
+    // SubscribeIn schema (app/routers/notifications.py) verbatim.
+    return fetch('/notifications/subscribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(subscription.toJSON()),
+    });
+  },
+  async unsubscribePush(endpoint) {
+    return fetch('/notifications/unsubscribe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint }),
+    });
+  },
+
   // ── Deployments (CRUD/lifecycle) ───────────────────────────────
   async listDeployments() {
     const r = await fetch('/deployments');

@@ -237,7 +237,7 @@ async def update_deployment(deployment_id: UUID, payload: DeploymentUpdate, requ
         pool, deployment_id,
         deployment_name=payload.deployment_name, notes=payload.notes,
         config=payload.config, include_in_reports=payload.include_in_reports,
-        tags=payload.tags,
+        tags=payload.tags, notifications_enabled=payload.notifications_enabled,
     )
     out = _annotate(row)
     await _enrich_pnl_one(pool, request.app.state.dispatcher, deployment_id, out)

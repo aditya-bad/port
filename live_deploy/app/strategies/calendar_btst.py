@@ -450,6 +450,15 @@ class CalendarBTSTStrategy(StrategyBase):
         }
         self.entry_day = ts.date()
 
+        # ONE notification for all 4 legs above, not four.
+        await runner.notify_execution(
+            "entry",
+            f"Entered calendar spread — SHORT {short_ce.tradingsymbol}@{short_ce_price:.2f}/"
+            f"{short_pe.tradingsymbol}@{short_pe_price:.2f}, LONG {long_ce.tradingsymbol}@{long_ce_price:.2f}/"
+            f"{long_pe.tradingsymbol}@{long_pe_price:.2f}",
+            metadata=common,
+        )
+
         logger.info(
             "%s: entered calendar spread — SHORT %s@%.2f/%s@%.2f (expiry %s), "
             "LONG %s@%.2f/%s@%.2f (expiry %s), strike=%s%s",
@@ -474,6 +483,7 @@ class CalendarBTSTStrategy(StrategyBase):
         })
 
     async def _exit_all(self, runner, ts, reason: str, trigger_values: dict) -> None:
+        had_legs = bool(self.short_legs or self.long_legs)
         for token, leg in list(self.short_legs.items()):
             pos = runner.open_positions.get(token)
             price = runner.dispatcher.last_prices.get(token) or leg["entry_price"]
@@ -504,6 +514,8 @@ class CalendarBTSTStrategy(StrategyBase):
         self.short_legs = {}
         self.long_legs = {}
         self.entry_day = None
+        if had_legs:
+            await runner.notify_execution("exit", f"{reason}: exited calendar spread", metadata=trigger_values)
         logger.info("%s: exited calendar spread (%s)", runner.deployment_name, reason)
 
     async def on_stop(self, runner) -> None:

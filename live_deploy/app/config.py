@@ -97,6 +97,27 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
             f"Invalid tick_mode: {cfg['tick_mode']!r}. "
             f"Choose from {VALID_TICK_MODES}"
         )
+
+    # Web Push (mobile notifications) — entirely OPTIONAL, unlike
+    # REQUIRED_CONFIG_KEYS above: the app runs completely normally with
+    # none of these set, it just means push notifications are silently
+    # disabled (see app/notifications.py's own is_push_configured) —
+    # this is a feature toggle, not a credential the service refuses to
+    # start without. Same env-var-first, config.json-fallback pattern as
+    # ENV_VAR_FOR_KEY above, generated once via
+    # custom_scripts/generate_vapid_keys.py and then kept STABLE forever
+    # after — regenerating them invalidates every existing subscriber's
+    # push endpoint, silently turning notifications off for everyone
+    # already opted in until they re-subscribe.
+    for cfg_key, env_name in (
+        ("vapid_public_key", "VAPID_PUBLIC_KEY"),
+        ("vapid_private_key", "VAPID_PRIVATE_KEY"),
+        ("vapid_subject", "VAPID_SUBJECT"),
+    ):
+        env_val = os.environ.get(env_name)
+        if env_val:
+            cfg[cfg_key] = env_val
+
     return cfg
 
 

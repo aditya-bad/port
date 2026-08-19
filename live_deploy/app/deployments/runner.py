@@ -39,6 +39,7 @@ class DeploymentRunner:
         strategy: Optional[StrategyBase] = None,
         on_fill: Optional[Callable[[], None]] = None,
         event_broadcaster=None,
+        push_config: Optional[dict] = None,
     ):
         self.deployment_id = deployment["id"]
         self.deployment_name = deployment["deployment_name"]
@@ -55,6 +56,12 @@ class DeploymentRunner:
         # optional-hook shape as on_fill/self.cache elsewhere in this
         # codebase — trading logic never depends on or blocks on it.
         self.event_broadcaster = event_broadcaster
+        # Optional (app.state.kite_config's own vapid_* keys, or None if
+        # push isn't configured at all — see app/notifications.py's own
+        # is_push_configured). Used ONLY by notify_execution below; the
+        # broader per-fill event recording (_record_event) never sends a
+        # push notification regardless of this.
+        self.push_config = push_config
         # Optional, fire-and-forget: DeploymentManager passes a callback
         # here that schedules a background aggregate-cache refresh (see
         # app/cache.py) after every fill. The runner itself stays
@@ -248,6 +255,61 @@ class DeploymentRunner:
             "metadata": metadata or {},
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
+
+    async def notify_execution(self, side: str, message: str, metadata: Optional[dict] = None) -> None:
+        """
+        Call this EXACTLY ONCE per logical strategy execution — an
+        entry or an exit — regardless of how many individual buy()/
+        sell() fills that execution actually involved. A straddle's
+        CE+PE legs opening together are ONE entry, not two; the same
+        strategy adjusting a leg later is its own separate call, not
+        folded into the original entry. `side` is "entry" or "exit" —
+        used both for the event_type recorded (execution_entry /
+        execution_exit) and the notification's own title.
+
+        This is a DELIBERATELY different, narrower hook than
+        _record_event's own fill_buy/fill_sell (called automatically by
+        buy()/sell() for every single fill, for the Activity tab's
+        complete audit trail — unaffected by any of this). Two real
+        problems this separation solves:
+          1. A straddle showing 2 separate "Sell" toasts/pushes for
+             what is, from a trading-decision standpoint, ONE action.
+          2. Wanting mobile push notifications for real entries/exits
+             specifically, WITHOUT also pushing for every fill, pause,
+             resume, stop, or strategy_error (those still record +
+             toast via _record_event exactly as before — just never
+             trigger a mobile push).
+
+        Gated by this deployment's own notifications_enabled flag,
+        checked FRESH from the DB on every call (never cached on this
+        runner in memory) — a toggle flipped mid-session via PATCH
+        /deployments/{id} takes effect on the very next execution, no
+        restart needed. When disabled, this is a complete no-op: no
+        deployment_events row, no toast, no push — the underlying
+        buy()/sell() fills themselves are entirely unaffected either
+        way, they always record regardless.
+        """
+        if side not in ("entry", "exit"):
+            raise ValueError(f"side must be 'entry' or 'exit', got {side!r}")
+        if not await queries.get_deployment_notifications_enabled(self.pool, self.deployment_id):
+            return
+
+        await self._record_event(f"execution_{side}", message=message, metadata=metadata)
+
+        if self.push_config is None:
+            return
+        from .. import notifications   # deferred -- see notifications.send_push_for_all's own docstring on why
+        title = f"{self.deployment_name} — {'Entry' if side == 'entry' else 'Exit'}"
+        try:
+            await notifications.send_push_for_all(self.pool, self.push_config, title, message)
+        except Exception:
+            # A push failure must NEVER be allowed to look like a
+            # trading-logic failure to whatever strategy code called
+            # this — logged and swallowed, same principle as every
+            # other non-critical side effect in this class (cache
+            # refresh callbacks, etc).
+            logger.exception("%s: push notification failed for %s execution — trading unaffected",
+                             self.deployment_name, side)
 
     async def list_closed_positions(self) -> list[dict]:
         """

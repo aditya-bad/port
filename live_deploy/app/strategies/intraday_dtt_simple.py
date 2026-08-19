@@ -467,6 +467,15 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         self.pe_token, self.pe_symbol = pe_leg.instrument_token, pe_leg.tradingsymbol
         self.pe_exchange, self.pe_entry_price = pe_leg.exchange, pe_price
 
+        # ONE notification for the whole straddle (2 fills above), not
+        # two -- see runner.notify_execution's own docstring.
+        await runner.notify_execution(
+            "entry",
+            f"Sold straddle — CE {ce_leg.tradingsymbol}@{ce_price:.2f}, "
+            f"PE {pe_leg.tradingsymbol}@{pe_price:.2f} (combined={ce_price + pe_price:.2f})",
+            metadata=common_meta,
+        )
+
         logger.info(
             "%s: sold straddle — CE %s@%.2f, PE %s@%.2f (combined=%.2f)",
             runner.deployment_name, ce_leg.tradingsymbol, ce_price,
@@ -533,6 +542,7 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         trigger_values: Optional[dict] = None,
     ) -> None:
         trigger_values = trigger_values or {}
+        had_position = self.ce_token is not None or self.pe_token is not None
         if self.ce_token is not None:
             price = ce_now if ce_now is not None else \
                 (runner.dispatcher.last_prices.get(self.ce_token) or self.ce_entry_price)
@@ -560,6 +570,9 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                                  reason=reason, metadata=meta)
             runner.dispatcher.release_instruments([self.pe_token])
             self.pe_token = self.pe_symbol = self.pe_exchange = self.pe_entry_price = None
+
+        if had_position:
+            await runner.notify_execution("exit", f"{reason}: exited straddle", metadata=trigger_values)
 
         logger.info("%s: exited straddle (%s)", runner.deployment_name, reason)
 

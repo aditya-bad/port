@@ -604,6 +604,9 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         self.active_leg_token = leg.instrument_token
         self.active_leg_symbol = leg.tradingsymbol
         self.active_leg_exchange = leg.exchange
+        await runner.notify_execution(
+            "entry", f"Sold {qty} {leg.tradingsymbol} @ {price}", metadata=meta,
+        )
 
     async def _exit(self, runner, candle: dict, reason: str, trigger_values: dict) -> None:
         if self.active_leg_token is None:
@@ -642,12 +645,16 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             trigger_values=trigger_values,
             resulting_state={"position": "flat"},
         )
+        closed_symbol = self.active_leg_symbol
         await runner.buy(   # BUY TO CLOSE
             self.active_leg_symbol, self.active_leg_token, qty, price, candle["date"],
             reason=reason, metadata=meta,
         )
         runner.dispatcher.release_instruments([self.active_leg_token])
         self._clear_active_leg()
+        await runner.notify_execution(
+            "exit", f"{reason}: bought back {qty} {closed_symbol} @ {price}", metadata=meta,
+        )
 
     def _clear_active_leg(self) -> None:
         self.active_leg_token = None

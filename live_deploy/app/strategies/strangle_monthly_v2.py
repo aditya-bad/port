@@ -756,6 +756,15 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             if self.enable_hedging:
                 await self._open_hedge_for_short_leg(runner, ts, side, leg_dict, trigger)
 
+        # ONE notification for the whole strangle (both legs + any hedges
+        # opened above), not one per fill.
+        await runner.notify_execution(
+            "entry",
+            f"{trigger}: sold strangle — CE {ce_leg.tradingsymbol}@{ce_leg.last_price:.2f}, "
+            f"PE {pe_leg.tradingsymbol}@{pe_leg.last_price:.2f} (cycle {self.cycle_id})",
+            metadata={"cycle_id": self.cycle_id, "contract_expiry": expiry.isoformat()},
+        )
+
         logger.info(
             "%s: entered strangle (%s) — CE %s@%.2f, PE %s@%.2f, contract=%s, "
             "qty=%d, cycle_id=%d", runner.deployment_name, trigger,
@@ -920,6 +929,12 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # logs an accurate "why did we re-enter" trigger instead of
         # defaulting to "checkpoint_target" for every non-first entry.
         self._last_flatten_trigger = trigger
+        # ONE notification for the whole flatten (every short + hedge leg
+        # closed above), not one per leg -- `_close_leg` itself skips its
+        # own per-leg notify when called from here (`_skip_list_remove`).
+        await runner.notify_execution(
+            "exit", f"{trigger}: flattened strangle (cycle {self.cycle_id})", metadata=trigger_values,
+        )
         logger.info(
             "%s: flattened everything (%s) — cycle_realized_pnl=%.2f",
             runner.deployment_name, trigger, self.cycle_realized_pnl,
@@ -948,6 +963,17 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             )
             if result.get("realized_pnl") is not None:
                 self.cycle_realized_pnl += result["realized_pnl"]
+            if not _skip_list_remove:
+                # A standalone single-leg close (Section 5's roll,
+                # Section 6's at-cap replace) -- its own distinct
+                # execution. When called from `_flatten_all`'s loop
+                # instead (`_skip_list_remove=True`), that caller sends
+                # ONE notification for the whole flatten already -- skip
+                # here to avoid one push per leg.
+                await runner.notify_execution(
+                    "exit", f"{trigger}: closed {leg['symbol']} ({side})",
+                    metadata={"side": side, "cycle_id": self.cycle_id},
+                )
         elif not _skip_list_remove:
             self.legs[side].remove(leg)
         runner.dispatcher.release_instruments([leg["token"]])
@@ -1022,6 +1048,15 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             # closed alongside it) — short first, hedge second.
             await _sell_short()
             await self._resolve_and_open_hedge(runner, ts, side, leg, price, trigger, hedge_point_distance)
+
+        # `_open_leg` is only ever called outside of `_enter` (which has
+        # its own inline open loop + its own single notify) — a roll's
+        # open-half (Section 5) or a grow/replace (Section 6), each its
+        # own distinct execution.
+        await runner.notify_execution(
+            "entry", f"{trigger}: sold {leg.tradingsymbol} ({side})",
+            metadata={"side": side, "cycle_id": self.cycle_id},
+        )
 
         self._check_convergence(trigger, prices or {})
         return leg_dict

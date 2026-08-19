@@ -78,11 +78,18 @@ class DeploymentManager:
         self, pool: asyncpg.Pool, broadcaster, dispatcher,
         snapshot_interval_seconds: float = DEFAULT_SNAPSHOT_INTERVAL_SECONDS,
         post_market_dump_time: str = DEFAULT_POST_MARKET_DUMP_TIME,
-        cache=None, event_broadcaster=None,
+        cache=None, event_broadcaster=None, push_config: Optional[dict] = None,
     ):
         self.pool = pool
         self.broadcaster = broadcaster
         self.dispatcher = dispatcher
+        # Optional — the app config's own vapid_* keys, or None if push
+        # notifications aren't configured at all (see app/notifications
+        # .py's own is_push_configured). Handed straight through to
+        # every DeploymentRunner this manager starts, for
+        # notify_execution's own use — this manager never sends a push
+        # itself, it only passes the config along.
+        self.push_config = push_config
         self.runners: dict[str, DeploymentRunner] = {}   # str(deployment_id) -> runner
         self.snapshot_interval_seconds = snapshot_interval_seconds
         self.post_market_dump_hour, self.post_market_dump_minute = _parse_hhmm(post_market_dump_time)
@@ -521,6 +528,7 @@ class DeploymentManager:
             row, self.pool, self.broadcaster, self.dispatcher, strategy,
             on_fill=self._on_fill_committed,
             event_broadcaster=self.event_broadcaster,
+            push_config=self.push_config,
         )
         await runner.start()
         self.runners[str(row["id"])] = runner

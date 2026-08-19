@@ -5432,6 +5432,108 @@ by the new check, `_enter`/`_exit` never called. Also verified: a
 signal still within normal timing (~1 minute) still executes exactly as
 before, no regression.
 
+## What's here (Step 85: mobile push notifications — one per strategy execution, not per fill)
+
+Requested directly: in-app toasts that "stay on screen a few seconds and
+go away" (already existed — see the `/sse/events` toast stack) PLUS real
+mobile notifications, and critically **one notification per logical
+strategy execution, not one per fill** — a 2-leg straddle entry should
+say "XYZ Strategy — Entry" once, not "Sell" twice.
+
+**Discussed before building** (per the request): confirmed Android
+(PWA/Web Push works fully in the background, no tab or Chrome process
+needed — the OS wakes the service worker independently; iOS needs
+16.4+ AND a home-screen install, N/A here), confirmed scope is
+entry/exit only (not fills/pause/resume/stop/errors — those keep their
+existing toast-only behavior, unchanged), confirmed control is a
+per-deployment toggle, and confirmed the permission flow: redeploying
+changes nothing by itself — enabling notifications is a one-time
+"Enable Notifications" button in Account → Profile that triggers
+Chrome's native permission prompt from a real tap (browsers refuse to
+show it ambiently), same as any other web-push site.
+
+**Delivery mechanism — Web Push, not Firebase/a wrapper app**:
+`PushManager.subscribe()` (browser) + VAPID-signed payloads
+(`pywebpush`, server) + a service worker's own `push` handler
+(`static/sw.js`) that calls `showNotification()` — the standard
+browser-native mechanism, works with the existing PWA install from
+Step 71, no third-party push service or extra native app involved.
+`custom_scripts/generate_vapid_keys.py` (new) generates the one-time
+VAPID keypair (raw EC point / raw scalar, base64url — the exact byte
+format `PushManager`/`pywebpush` both need, not PEM); the 3 resulting
+values go in `config.json` (or `VAPID_PUBLIC_KEY`/`VAPID_PRIVATE_KEY`/
+`VAPID_SUBJECT` env vars) — same env-var-first/config.json-fallback
+pattern as every other credential here, and deliberately **not** in
+`REQUIRED_CONFIG_KEYS`: omit them entirely and the whole feature is a
+silent no-op end-to-end (migration still applies, endpoints still
+exist, nothing ever sends) — never blocks startup.
+
+**The "one per execution, not per fill" mechanism**: the existing
+`DeploymentRunner._record_event()` fires once per `buy()`/`sell()` fill
+by design (the Activity tab's complete, unedited audit trail — untouched
+by this change). A new, separate `DeploymentRunner.notify_execution(side,
+message, metadata)` is a narrower hook each strategy now calls EXACTLY
+ONCE per logical entry/exit/adjustment, decoupled from fill count — a
+straddle's 2 fills, a strangle's 2 legs + hedges, a calendar spread's 4
+legs, all collapse to one `notify_execution` call. Wired into all 7
+strategy files: `pivot_supertrend*` (3 files, single-leg — one call
+each in `_enter`/`_exit`), `intraday_dtt_simple`/`intraday_dtt_adjusted`
+(straddle — one call after both CE+PE legs in `_enter`, one after
+`_exit_both`/`_flatten_all`; `intraday_dtt_adjusted`'s own
+`_adjust`/`_unwind_one` also get their own call each, since a mid-day
+adjustment or reversal-unwind is its own distinct execution;
+`intraday_dtt_advanced` inherits all of this unmodified), `calendar_btst`
+(4-leg spread — one call for entry, one for `_exit_all`), and
+`strangle_monthly_v2` (one call in `_enter` covering both legs + any
+hedges, one in `_flatten_all` covering the whole flatten regardless of
+how many legs/hedges close, and one each in the shared `_open_leg`/
+`_close_leg` primitives for a standalone roll/replace leg swap — guarded
+so `_close_leg` skips its own notify when called FROM `_flatten_all`'s
+loop, avoiding one push per leg on a multi-leg flatten; the delegated
+`_adjust`/`_unwind_one` calls under `active_management` get their
+notifications for free, since they're the exact same bound methods
+already wired in `intraday_dtt_adjusted`).
+
+`notify_execution` itself: records an `execution_entry`/`execution_exit`
+event (toasts immediately via the existing SSE broadcaster, same as any
+other event) AND — only if VAPID is configured — sends a real push to
+every subscribed device via `app/notifications.py`'s
+`send_push_for_all`. Gated by this deployment's own
+`notifications_enabled` column (new, default `true` — opt-out not
+opt-in, consistent with `include_in_reports`'s own convention),
+re-checked FRESH from the DB on every single call — a toggle flipped
+via the Edit modal's new "Notify on entry/exit" checkbox takes effect on
+the very next execution, no restart needed. A dead/expired push
+subscription (404/410 from the push service) is deleted automatically
+so it's never retried forever. A push failure is caught and logged, never
+allowed to look like a trading-logic failure to the strategy that
+triggered it.
+
+**Frontend**: `static/js/account.js`'s Profile section replaces the old
+foreground-only, same-tab-required "browser notifications" toggle
+(Step ~71-era, `localStorage`-flagged, gone entirely) with a real
+Enable/Turn-off button wired to `PushManager.subscribe()` +
+`POST /notifications/subscribe`; `static/sw.js` gains `push` (shows the
+OS notification, tapping it focuses/opens the app) and `notificationclick`
+handlers alongside its pre-existing install/fetch handlers.
+`static/index.html`'s toast stack stops toasting raw `fill_buy`/
+`fill_sell` (now superseded by the one-per-execution toast) while every
+other event type — errors, pause/resume/stop/flatten, created — toasts
+exactly as before; fills still appear in full in each deployment's own
+Activity tab regardless, this only changes what pops up as a toast/push.
+
+Verified: `pywebpush`/`cryptography` install and a real VAPID keypair
+generation+round-trip in an isolated venv (the main sandbox's system
+`setuptools` couldn't build `http-ece`'s wheel); `is_push_configured`/
+`send_push_for_all` (all-subscribers send, dead-subscription cleanup on
+410, empty-config no-op) and `notify_execution` (records + pushes on
+enabled, complete no-op on disabled or on invalid `side`, records-but-
+no-push when `push_config` is `None`) directly against a mocked pool;
+`app.main` imports cleanly with real `pywebpush` installed; `ast.parse`
+across every touched `.py` file (all 7 strategies plus the new/changed
+backend modules) and `node --check` across every touched `.js`
+file/inline `<script>` block.
+
 ## Setup
 
 ```bash

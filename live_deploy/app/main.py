@@ -57,12 +57,14 @@ from .db.migrate import run_migrations
 from .db.pool import close_pool, create_pool
 from .deployments.manager import DeploymentManager
 from .dispatcher import LiveDataDispatcher
+from .notifications import is_push_configured
 from .routers import aggregate as aggregate_router
 from .routers import auth as auth_router
 from .routers import deployments as deployments_router
 from .routers import health as health_router
 from .routers import instruments as instruments_router
 from .routers import kite_auth as kite_auth_router
+from .routers import notifications as notifications_router
 from .routers import strategies as strategies_router
 from .routers import tags as tags_router
 from .routers.aggregate import (
@@ -96,6 +98,7 @@ app.include_router(strategies_router.router)
 app.include_router(auth_router.router)
 app.include_router(aggregate_router.router)
 app.include_router(tags_router.router)
+app.include_router(notifications_router.router)
 
 # Middleware order matters: add_middleware() makes the MOST RECENTLY
 # added one OUTERMOST (it runs first on the way in, last on the way
@@ -247,7 +250,18 @@ async def startup() -> None:
     app.state.cache = cache
 
     # ── Deployment lifecycle: resume everything still 'active' ────────
-    manager = DeploymentManager(db_pool, broadcaster, dispatcher, cache=cache, event_broadcaster=event_broadcaster)
+    # push_config: only handed to the manager (and, through it, every
+    # runner it starts) if a real VAPID keypair is actually configured —
+    # see app/notifications.py's own is_push_configured. None here means
+    # every DeploymentRunner's notify_execution silently skips the push
+    # step entirely (still records + toasts as normal), same "feature
+    # entirely optional, never a startup requirement" reasoning as the
+    # VAPID config fields themselves (see config.py's own comment).
+    push_config = config if is_push_configured(config) else None
+    manager = DeploymentManager(
+        db_pool, broadcaster, dispatcher, cache=cache, event_broadcaster=event_broadcaster,
+        push_config=push_config,
+    )
     resumed = await manager.load_active_on_startup()
     app.state.deployment_manager = manager
 

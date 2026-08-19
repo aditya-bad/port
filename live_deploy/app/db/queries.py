@@ -98,7 +98,7 @@ async def update_deployment_fields(
     pool: asyncpg.Pool, deployment_id: UUID,
     deployment_name: Optional[str] = None, notes: Optional[str] = None,
     config: Optional[dict] = None, include_in_reports: Optional[bool] = None,
-    tags: Optional[list[str]] = None,
+    tags: Optional[list[str]] = None, notifications_enabled: Optional[bool] = None,
 ) -> Optional[asyncpg.Record]:
     """
     Partial update for PATCH /deployments/{id} — only the field(s)
@@ -138,6 +138,13 @@ async def update_deployment_fields(
     the existing list untouched. An explicit [] is NOT None, so it DOES
     get encoded and DOES overwrite -- "clear every tag" is a real,
     distinct intent from "don't touch tags."
+
+    notifications_enabled has the identical None-means-omitted
+    distinction as include_in_reports above, over its own plain boolean
+    column (migration 0011) — gates DeploymentRunner.notify_execution's
+    BOTH channels (in-app toast and mobile push) for this deployment,
+    read fresh from the DB on every execution rather than cached, so
+    this takes effect on the very next entry/exit, no restart needed.
     """
     async with pool.acquire() as conn:
         return await conn.fetchrow(
@@ -148,11 +155,13 @@ async def update_deployment_fields(
                 config = COALESCE($4, config),
                 include_in_reports = COALESCE($5, include_in_reports),
                 tags = COALESCE($6, tags),
+                notifications_enabled = COALESCE($7, notifications_enabled),
                 updated_at = now()
             WHERE id = $1
             RETURNING *
             """,
             deployment_id, deployment_name, notes, config, include_in_reports, tags,
+            notifications_enabled,
         )
 
 
@@ -1413,3 +1422,54 @@ async def delete_tag(pool: asyncpg.Pool, tag_id: UUID) -> bool:
             tag["name"],
         )
         return result != "DELETE 0"
+
+
+# ── Web Push subscriptions (mobile notifications) ───────────────────────
+
+async def save_push_subscription(
+    pool: asyncpg.Pool, endpoint: str, p256dh: str, auth: str, user_agent: Optional[str] = None,
+) -> None:
+    """Upsert by endpoint (UNIQUE — see migration 0011's own comment):
+    re-subscribing the same device (e.g. after clearing/re-granting
+    permission) updates the existing row's keys rather than
+    accumulating a duplicate that would double-send that phone."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO push_subscriptions (endpoint, p256dh, auth, user_agent)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (endpoint) DO UPDATE SET p256dh = $2, auth = $3, user_agent = $4
+            """,
+            endpoint, p256dh, auth, user_agent,
+        )
+
+
+async def delete_push_subscription(pool: asyncpg.Pool, endpoint: str) -> None:
+    """Called both from the explicit "turn off notifications" action AND
+    from app/notifications.py whenever a push service reports an
+    endpoint as gone (410 Gone / 404) — a subscription a phone itself
+    revoked (uninstalled the PWA, cleared site data, ...) is dead
+    weight otherwise, silently retried forever."""
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM push_subscriptions WHERE endpoint = $1", endpoint)
+
+
+async def list_push_subscriptions(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch("SELECT * FROM push_subscriptions ORDER BY created_at")
+
+
+async def get_deployment_notifications_enabled(pool: asyncpg.Pool, deployment_id: UUID) -> bool:
+    """Read fresh from the DB on every execution notification (see
+    DeploymentRunner.notify_execution's own docstring) rather than
+    cached on the runner in memory — a toggle flipped via PATCH
+    /deployments/{id} then takes effect on the very next execution, no
+    restart needed. Defaults True (matches the column's own DEFAULT) if
+    the deployment somehow doesn't exist any more by the time this
+    runs — fail open on notifying, never silently swallow a real trade
+    because of a race with e.g. a delete."""
+    async with pool.acquire() as conn:
+        value = await conn.fetchval(
+            "SELECT notifications_enabled FROM deployments WHERE id = $1", deployment_id,
+        )
+    return True if value is None else bool(value)

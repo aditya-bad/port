@@ -552,6 +552,7 @@ const Detail = {
     document.getElementById('editDeploymentName').value = this._dep.deployment_name;
     document.getElementById('editDeploymentNotes').value = this._dep.notes || '';
     document.getElementById('editDeploymentIncludeInReports').checked = this._dep.include_in_reports;
+    document.getElementById('editDeploymentNotificationsEnabled').checked = this._dep.notifications_enabled;
     document.getElementById('editDeploymentMsg').textContent = '';
     document.getElementById('editDeploymentModal').classList.add('open');
 
@@ -711,11 +712,13 @@ async function submitEditDeployment() {
   const name = document.getElementById('editDeploymentName').value.trim();
   const notes = document.getElementById('editDeploymentNotes').value;
   const includeInReports = document.getElementById('editDeploymentIncludeInReports').checked;
+  const notificationsEnabled = document.getElementById('editDeploymentNotificationsEnabled').checked;
   const tags = Array.from(document.querySelectorAll('.editDeploymentTagCheckbox:checked')).map(el => el.value);
   if (!name) { msg.innerHTML = '<span style="color:var(--loss)">Deployment name cannot be blank</span>'; return; }
   msg.innerHTML = '<span class="spinner"></span> Saving…';
   const { ok, data } = await Api.updateDeployment(Detail._id, {
-    deployment_name: name, notes, include_in_reports: includeInReports, tags,
+    deployment_name: name, notes, include_in_reports: includeInReports,
+    notifications_enabled: notificationsEnabled, tags,
   });
   if (!ok) { msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(data.detail || 'Failed')}</span>`; return; }
   msg.innerHTML = '<span style="color:var(--gain)">✓ Saved</span>';
