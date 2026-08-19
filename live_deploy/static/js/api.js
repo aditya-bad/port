@@ -429,44 +429,164 @@ function emptyHtml(label) {
   return `<div class="empty">${label}</div>`;
 }
 
-// ── Deployment tag chips (Step 69) — shared by Detail's header and the
-// Deployed Strategies list row, so the two never render this
-// differently. The reserved "excluded from reports" chip is SYNTHESIZED
-// straight from include_in_reports here, never read off dep.tags -- see
-// migration 0010's own comment for why that one deliberately never
-// enters the real tag catalog. Returns '' (not a wrapper element) when
-// a deployment has nothing to show, so a call site can drop this
-// straight inline without an empty gap.
+// ── Deployment tag chips (Step 69, tidied in Step 88) — shared by
+// Detail's header and the Deployed Strategies list row, so the two
+// never render this differently. Also absorbs the "unregistered" chip
+// (previously duplicated inline at each call site) and the reserved
+// "excluded from reports" one, SYNTHESIZED straight from
+// include_in_reports, never read off dep.tags -- see migration 0010's
+// own comment for why that one deliberately never enters the real tag
+// catalog. Every chip renders inside one `.chip-row` (display:flex;
+// flex-wrap:wrap) so a long label (e.g. "excluded from reports") wraps
+// the WHOLE ROW onto a new line if it must, never balloons into a
+// multi-line box of its own the way a bare inline-block chip can once
+// its column gets narrow -- `.tag` itself is white-space:nowrap for
+// exactly that reason. Returns '' (not a wrapper element) when a
+// deployment has nothing to show, so a call site can drop this straight
+// inline without an empty gap.
 function deploymentTagsHtml(dep) {
   const chips = [];
+  if (!dep.strategy_registered) {
+    chips.push(`<span class="tag tag-warn">unregistered</span>`);
+  }
   if (!dep.include_in_reports) {
     chips.push(`<span class="tag tag-warn" title="Excluded from Dashboard, Portfolio, and Reports — toggle it back on from Edit">excluded from reports</span>`);
   }
   (dep.tags || []).forEach(name => {
     chips.push(`<span class="tag tag-info">${escapeHtml(name)}</span>`);
   });
-  return chips.join(' ');
+  if (!chips.length) return '';
+  return `<div class="chip-row">${chips.join('')}</div>`;
 }
 
+// ── Shared chart tooltip (Step 88) ───────────────────────────────────
+// One floating box, reused by every chart in the app (equity curve,
+// Compare's multi-series chart, the P&L heatmap's cells) instead of
+// each rolling its own. Deliberately still no charting library —
+// this is ~60 lines of plain DOM, same "no framework" spirit the
+// original single-<polyline> chart already committed to; it just also
+// now answers "what am I looking at" on hover AND on tap, which a bare
+// polyline never could.
+//
+// Two entry points:
+//   - App-wide [data-tooltip] delegation (below) — for anything that's
+//     a single hoverable/tappable TARGET with one fixed tooltip string,
+//     e.g. a heatmap cell. Put the (already HTML-escaped) tooltip HTML
+//     in a `data-tooltip` attribute and this handles the rest — no
+//     per-element listener wiring needed, one delegated listener does
+//     every current AND future such element on the page.
+//   - Direct show()/hide() calls — for something that needs to compute
+//     ITS OWN tooltip content continuously as the pointer moves across
+//     a continuous surface (the equity chart's nearest-point-under-
+//     cursor lookup) rather than a fixed per-element string.
+const ChartTooltip = {
+  _el: null,
+  _ensure() {
+    if (this._el) return this._el;
+    const el = document.createElement('div');
+    el.className = 'chart-tooltip';
+    document.body.appendChild(el);
+    this._el = el;
+    return el;
+  },
+  // (clientX, clientY): viewport coordinates, straight from the
+  // triggering mouse/touch event — this positions in `position:fixed`
+  // space, so no scroll-offset math needed either way.
+  show(clientX, clientY, html) {
+    const el = this._ensure();
+    el.innerHTML = html;
+    el.style.display = 'block';
+    // Clamped to the viewport, offset from the finger/cursor rather
+    // than centered under it -- centered would put a touch tooltip
+    // directly under the fingertip that's still touching the screen,
+    // unreadable until released.
+    const OFFSET = 14, PAD = 8;
+    const w = el.offsetWidth, h = el.offsetHeight;
+    let left = clientX + OFFSET, top = clientY + OFFSET;
+    if (left + w > window.innerWidth - PAD) left = clientX - w - OFFSET;
+    if (top + h > window.innerHeight - PAD) top = clientY - h - OFFSET;
+    el.style.left = `${Math.max(PAD, left)}px`;
+    el.style.top = `${Math.max(PAD, top)}px`;
+  },
+  hide() {
+    if (this._el) this._el.style.display = 'none';
+  },
+};
+
+// App-wide delegation for [data-tooltip] elements — registered once.
+// Handles BOTH mouse hover and touch tap, which a native `title`
+// attribute (what the P&L heatmap used to use) never could: `title`
+// simply never fires on a touchscreen at all, so every chart relying
+// on it was silently non-interactive on mobile specifically — the
+// actual bug report this step fixes.
+function _initChartTooltipDelegation() {
+  if (window._chartTooltipDelegationInit) return;
+  window._chartTooltipDelegationInit = true;
+  document.addEventListener('mousemove', (e) => {
+    const t = e.target.closest('[data-tooltip]');
+    if (t) { ChartTooltip.show(e.clientX, e.clientY, t.getAttribute('data-tooltip')); return; }
+    // Charts that manage their own tooltip lifecycle on every pointer
+    // move already (the equity chart's nearest-point lookup, see
+    // _equityChartPointerAt) are exempt -- hiding it here too would
+    // just fight that, since this listener runs AFTER an inline
+    // onmousemove handler on the same bubbling event.
+    if (e.target.closest('.equity-chart-area')) return;
+    ChartTooltip.hide();
+  });
+  document.addEventListener('mouseleave', () => ChartTooltip.hide());
+  // passive: true -- this only ever reads the touch position, never
+  // calls preventDefault, so it must never block the page's own
+  // scrolling.
+  document.addEventListener('touchstart', (e) => {
+    const t = e.target.closest('[data-tooltip]');
+    if (t) {
+      const touch = e.touches[0];
+      ChartTooltip.show(touch.clientX, touch.clientY, t.getAttribute('data-tooltip'));
+      return;
+    }
+    // Same exemption as the mousemove listener above -- the equity
+    // chart's own ontouchstart handler (see _equityChartTouch) already
+    // manages this tooltip itself for a tap landing here.
+    if (e.target.closest('.equity-chart-area')) return;
+    ChartTooltip.hide();
+  }, { passive: true });
+}
+_initChartTooltipDelegation();
+
 // ── Equity curve chart ───────────────────────────────────────────────
-// Deliberately no charting library — a single inline <polyline>, same
-// "no framework, keep it simple" spirit as the rest of this UI. Not
-// meant to be a full-featured chart, just enough to see the shape of an
-// equity curve over time. Shared by Detail (one deployment's own curve,
-// Step 5) and Portfolio (every deployment's combined curve, Step 39) —
-// both just need a list of `{snapshot_at, total_value}` points; the
-// Portfolio view maps its `bucket_at` field to `snapshot_at` before
-// calling this, rather than this function knowing about two field
-// names for the same concept.
-function renderEquityChart(snapshots, emptyMessage) {
+// Deliberately still no charting library — plain SVG + this file's own
+// ~40 lines of hover/touch handling, same "no framework, keep it
+// simple" spirit as the rest of this UI, just no longer a bare
+// unlabeled polyline (Step 88: "no interaction, no scale" was a fair
+// complaint). Shared by Detail (one deployment's own curve, Step 5),
+// Portfolio (every deployment's combined curve, Step 39), and Compare
+// indirectly (its own multi-series chart reuses this same interaction
+// MODEL, see compare.js, even though it renders its own polylines for
+// multiple series at once) — Detail/Portfolio both just need a list of
+// `{snapshot_at, total_value}` points; Portfolio maps its `bucket_at`
+// field to `snapshot_at` before calling this, rather than this
+// function knowing about two field names for the same concept.
+//
+// `chartId`: a stable id for THIS chart instance (e.g. "equity-detail",
+// "equity-portfolio") — defaults to a fresh random id if omitted, but a
+// caller that re-renders the SAME logical chart repeatedly (a tab
+// switch, a live refresh) should pass a fixed one, so the registry
+// entry below is overwritten in place each time rather than quietly
+// accumulating a new orphaned entry per render for the lifetime of the
+// page (this is a single-page app — nothing ever unloads on its own).
+const _equityChartRegistry = {};   // chartId -> { snapshots, min, max }
+
+function renderEquityChart(snapshots, emptyMessage, chartId) {
   if (snapshots.length < 2) {
     return emptyHtml(emptyMessage || (
       'Not enough snapshot data yet — equity snapshots are recorded roughly every 5 minutes per ' +
       'active deployment. Check back once this deployment has been running a while.'
     ));
   }
+  chartId = chartId || `equity-${Math.random().toString(36).slice(2)}`;
   const values = snapshots.map(s => s.total_value);
   const min = Math.min(...values), max = Math.max(...values);
+  const mid = (min + max) / 2;
   const range = (max - min) || 1;
   const W = 600, H = 150, PAD = 6;
   const points = snapshots.map((s, i) => {
@@ -475,17 +595,84 @@ function renderEquityChart(snapshots, emptyMessage) {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
   const color = values[values.length - 1] >= values[0] ? 'var(--gain)' : 'var(--loss)';
+  _equityChartRegistry[chartId] = { snapshots, min, max, range };
   return `
     <div class="equity-wrap">
-      <svg class="equity-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
-        <polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" />
-      </svg>
+      <div class="equity-chart-row">
+        <div class="equity-axis-y">
+          <span>${fmtMoney(max)}</span>
+          <span>${fmtMoney(mid)}</span>
+          <span>${fmtMoney(min)}</span>
+        </div>
+        <div class="equity-chart-area"
+             onmousemove="_equityChartPointerAt('${chartId}', event.clientX, event.clientY, this)"
+             onmouseleave="_equityChartClear('${chartId}')"
+             ontouchstart="_equityChartTouch('${chartId}', event, this)"
+             ontouchmove="_equityChartTouch('${chartId}', event, this)"
+             ontouchend="_equityChartClear('${chartId}')">
+          <svg class="equity-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+            <polyline points="${points}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" />
+          </svg>
+          <div class="equity-crosshair" id="${chartId}-crosshair"></div>
+          <div class="equity-dot" id="${chartId}-dot" style="background:${color};"></div>
+        </div>
+      </div>
+      <div class="equity-axis-x">
+        <span>${fmtDate(snapshots[0].snapshot_at)}</span>
+        <span>${fmtDate(snapshots[snapshots.length - 1].snapshot_at)}</span>
+      </div>
       <div class="table-note">
         ${snapshots.length} snapshot(s) · ${fmtDateTime(snapshots[0].snapshot_at)} → ${fmtDateTime(snapshots[snapshots.length - 1].snapshot_at)}
         · range ${fmtMoney(min)} – ${fmtMoney(max)}
       </div>
     </div>
   `;
+}
+
+// Real CSS-pixel math via the chart area's OWN current
+// getBoundingClientRect() -- deliberately not the SVG viewBox's fixed
+// W/H/PAD constants, which would misplace the overlay the moment the
+// rendered box's aspect ratio differs from the viewBox's (always true
+// here: preserveAspectRatio="none" stretches X and Y independently to
+// fill whatever real size the flex layout gives it). Recomputing this
+// on every pointer move is cheap (one layout read already cached by
+// the browser this frame) and means the overlay stays correctly
+// aligned across a window resize with zero extra wiring.
+function _equityChartPointerAt(chartId, clientX, clientY, areaEl) {
+  const chart = _equityChartRegistry[chartId];
+  if (!chart) return;
+  const rect = areaEl.getBoundingClientRect();
+  const xFrac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  const idx = Math.round(xFrac * (chart.snapshots.length - 1));
+  const s = chart.snapshots[idx];
+  const yFrac = (s.total_value - chart.min) / chart.range;
+  const leftPx = xFrac * rect.width;
+  const topPx = rect.height - yFrac * rect.height;
+
+  const crosshair = document.getElementById(`${chartId}-crosshair`);
+  const dot = document.getElementById(`${chartId}-dot`);
+  if (crosshair) { crosshair.style.left = `${leftPx}px`; crosshair.style.display = 'block'; }
+  if (dot) { dot.style.left = `${leftPx}px`; dot.style.top = `${topPx}px`; dot.style.display = 'block'; }
+  ChartTooltip.show(clientX, clientY, `<b>${fmtMoney(s.total_value)}</b><br>${fmtDateTime(s.snapshot_at)}`);
+}
+
+function _equityChartTouch(chartId, event, areaEl) {
+  // Prevents the page from scrolling while a finger drags across the
+  // chart reading values off it -- the whole point of touch support
+  // here, not an accidental side effect; every other touch elsewhere
+  // on the page is completely unaffected.
+  event.preventDefault();
+  const touch = event.touches[0];
+  if (!touch) return;
+  _equityChartPointerAt(chartId, touch.clientX, touch.clientY, areaEl);
+}
+
+function _equityChartClear(chartId) {
+  const crosshair = document.getElementById(`${chartId}-crosshair`);
+  const dot = document.getElementById(`${chartId}-dot`);
+  if (crosshair) crosshair.style.display = 'none';
+  if (dot) dot.style.display = 'none';
+  ChartTooltip.hide();
 }
 
 // ── Max drawdown ─────────────────────────────────────────────────────
@@ -686,7 +873,12 @@ function renderPnlHeatmap(rows, opts = {}) {
     if (date > today) return `<div class="pnl-heatmap-cell empty"></div>`;
     const row = byDate.get(date);
     let bg = 'var(--panel)';
-    let title = `${fmtDate(date)}: no activity`;
+    // data-tooltip (Step 88), not a native `title` attribute -- `title`
+    // never fires on a touchscreen at all, so a heatmap relying on it
+    // was completely non-interactive on mobile specifically. See the
+    // app-wide [data-tooltip] delegation (ChartTooltip, above) that
+    // now handles both mouse hover and touch tap for this same markup.
+    let tooltip = `<b>${fmtDate(date)}</b><br>no activity`;
     if (row) {
       const pnl = row.realized_pnl || 0;
       if (pnl > 0) { bg = `var(--heat-gain-${_quantileBucket(gainAbs, pnl)})`; winDays++; }
@@ -694,11 +886,11 @@ function renderPnlHeatmap(rows, opts = {}) {
       totalPnl += pnl;
       if (bestDay == null || pnl > bestDay.pnl) bestDay = { date, pnl };
       if (worstDay == null || pnl < worstDay.pnl) worstDay = { date, pnl };
-      title = `${fmtDate(date)}: ${fmtSignedMoney(pnl)}` +
-        (row.positions_closed ? ` · ${row.positions_closed} closed (${row.wins}W/${row.losses}L)` : '') +
-        (row.fills ? ` · ${row.fills} fill${row.fills === 1 ? '' : 's'}` : '');
+      tooltip = `<b>${fmtDate(date)}</b><br>${fmtSignedMoney(pnl)}` +
+        (row.positions_closed ? `<br>${row.positions_closed} closed (${row.wins}W/${row.losses}L)` : '') +
+        (row.fills ? `<br>${row.fills} fill${row.fills === 1 ? '' : 's'}` : '');
     }
-    return `<div class="pnl-heatmap-cell" style="background:${bg}" title="${escapeHtml(title)}"></div>`;
+    return `<div class="pnl-heatmap-cell" style="background:${bg}" data-tooltip="${escapeHtml(tooltip)}"></div>`;
   }).join('');
 
   // Month labels, one per column that starts a new calendar month —

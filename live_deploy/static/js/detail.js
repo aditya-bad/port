@@ -48,10 +48,8 @@ const Detail = {
     document.getElementById('detailHeader').innerHTML = `
       <div class="detail-header">
         <div>
-          <h1>${escapeHtml(dep.deployment_name)} <span class="tag tag-${dep.status}">${dep.status}</span>
-            ${!dep.strategy_registered ? '<span class="tag tag-warn">unregistered</span>' : ''}
-            ${deploymentTagsHtml(dep)}
-          </h1>
+          <h1>${escapeHtml(dep.deployment_name)} <span class="tag tag-${dep.status}">${dep.status}</span></h1>
+          ${deploymentTagsHtml(dep)}
           <div class="card-sub">${escapeHtml(dep.strategy_name)} · ${dep.mode}</div>
           <div class="card-meta" style="margin-top:10px;">
             <span>Capital: <b>${fmtMoney(dep.initial_capital)}</b></span>
@@ -534,7 +532,7 @@ const Detail = {
           <span>Max drawdown <b class="neg">${fmtMoney(drawdown.abs)} (${drawdown.pct.toFixed(2)}%)</b>
             — largest peak-to-trough decline across every recorded snapshot</span>
         </div>` : ''}
-        ${renderEquityChart(snapshots)}
+        ${renderEquityChart(snapshots, undefined, 'equity-detail')}
       </section>
 
       <section>

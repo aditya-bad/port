@@ -12,6 +12,54 @@
 const COMPARE_MAX = 6;   // matches the validated --chart-1..6 palette -- see index.html's :root comment
 const COMPARE_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)'];
 
+// Module-level, not a Compare.* field -- read by the chart's own
+// hover/touch handlers below (_compareChartPointerAt etc.), which are
+// plain functions (not Compare methods) so they can be referenced by
+// name straight from an inline onmousemove/ontouchstart attribute the
+// same way api.js's own _equityChart* handlers are. Only ever one
+// Compare chart on screen at a time, so a single module-level variable
+// (rather than api.js's per-chartId registry, built for multiple
+// simultaneous instances) is the right amount of machinery here.
+let _compareChartSeries = [];   // withData from the most recent renderChart() -- [{deployment, points}]
+
+// Same real-CSS-pixel-via-getBoundingClientRect approach as api.js's
+// _equityChartPointerAt — see that function's own comment for why. The
+// one real difference: with N overlaid series of possibly DIFFERENT
+// lengths, there's no single "nearest point" — each series is looked
+// up independently at the SAME x FRACTION (matching how each series'
+// own polyline was plotted above), and the tooltip lists all of them.
+function _compareChartPointerAt(clientX, clientY, areaEl) {
+  if (!_compareChartSeries.length) return;
+  const rect = areaEl.getBoundingClientRect();
+  const xFrac = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+  const leftPx = xFrac * rect.width;
+
+  const crosshair = document.getElementById('compareChart-crosshair');
+  if (crosshair) { crosshair.style.left = `${leftPx}px`; crosshair.style.display = 'block'; }
+
+  const rows = _compareChartSeries.map((r, i) => {
+    const n = r.points.length;
+    const idx = Math.max(0, Math.min(n - 1, Math.round(xFrac * (n - 1))));
+    const p = r.points[idx];
+    const swatch = `<span style="display:inline-block; width:8px; height:8px; border-radius:2px; background:${COMPARE_COLORS[i % COMPARE_COLORS.length]}; margin-right:5px;"></span>`;
+    return `${swatch}${escapeHtml(r.deployment.deployment_name)}: <b>${p.pct >= 0 ? '+' : ''}${p.pct.toFixed(2)}%</b>`;
+  }).join('<br>');
+  ChartTooltip.show(clientX, clientY, rows);
+}
+
+function _compareChartTouch(event, areaEl) {
+  event.preventDefault();   // same reasoning as api.js's _equityChartTouch -- don't let the page scroll while reading the chart
+  const touch = event.touches[0];
+  if (!touch) return;
+  _compareChartPointerAt(touch.clientX, touch.clientY, areaEl);
+}
+
+function _compareChartClear() {
+  const crosshair = document.getElementById('compareChart-crosshair');
+  if (crosshair) crosshair.style.display = 'none';
+  ChartTooltip.hide();
+}
+
 const Compare = {
   _deployments: [],
   _selected: new Set(),
@@ -123,6 +171,7 @@ const Compare = {
 
     const allPct = withData.flatMap(r => r.points.map(p => p.pct));
     const min = Math.min(...allPct, 0), max = Math.max(...allPct, 0);   // always include 0% (every curve's own start) so the baseline is never off-chart
+    const mid = (min + max) / 2;
     const range = (max - min) || 1;
     const W = 600, H = 220, PAD = 6;
     // Chart's own X axis is index-based (not wall-clock time): each
@@ -131,7 +180,12 @@ const Compare = {
     // short-lived deployment's curve into a sliver or need
     // interpolation this simple inline-SVG renderer isn't built for.
     // Index-based keeps every curve's full shape readable; the table
-    // below carries the real timestamps for anyone who needs them.
+    // below carries the real timestamps for anyone who needs them. The
+    // hover/touch crosshair (Step 88) follows the same convention: the
+    // cursor's X FRACTION (0-1 across the chart) maps independently
+    // into each series' own nearest point by that same fraction, since
+    // there's no shared index to look up directly across series of
+    // different lengths.
     const polylines = withData.map((r, i) => {
       const n = r.points.length;
       const points = r.points.map((p, j) => {
@@ -153,10 +207,27 @@ const Compare = {
       `;
     }).join('');
 
+    _compareChartSeries = withData;   // read by _compareChartPointerAt below
+
     const skipped = result.length - withData.length;
     el.innerHTML = `
       <div class="equity-wrap">
-        <svg class="equity-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${polylines}</svg>
+        <div class="equity-chart-row">
+          <div class="equity-axis-y">
+            <span>${max >= 0 ? '+' : ''}${max.toFixed(1)}%</span>
+            <span>${mid >= 0 ? '+' : ''}${mid.toFixed(1)}%</span>
+            <span>${min >= 0 ? '+' : ''}${min.toFixed(1)}%</span>
+          </div>
+          <div class="equity-chart-area"
+               onmousemove="_compareChartPointerAt(event.clientX, event.clientY, this)"
+               onmouseleave="_compareChartClear()"
+               ontouchstart="_compareChartTouch(event, this)"
+               ontouchmove="_compareChartTouch(event, this)"
+               ontouchend="_compareChartClear()">
+            <svg class="equity-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">${polylines}</svg>
+            <div class="equity-crosshair" id="compareChart-crosshair"></div>
+          </div>
+        </div>
         <div class="chart-legend">${legend}</div>
         <div class="table-note">
           % return indexed to each deployment's own first snapshot (0% = start).

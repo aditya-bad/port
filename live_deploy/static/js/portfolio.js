@@ -48,7 +48,8 @@ const Portfolio = {
     const points = curve.map(s => ({ ...s, snapshot_at: s.bucket_at }));
     el.innerHTML = renderEquityChart(points,
       'Not enough combined snapshot data yet — equity snapshots are recorded roughly every 5 ' +
-      'minutes per active deployment. Check back once at least one deployment has been running a while.'
+      'minutes per active deployment. Check back once at least one deployment has been running a while.',
+      'equity-portfolio'
     );
   },
 

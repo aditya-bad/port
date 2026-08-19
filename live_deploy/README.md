@@ -5677,6 +5677,94 @@ import; `ast.parse` + full `app.main` import with real dependencies
 installed across every touched `.py` file; `node --check` across
 `api.js`/`detail.js`.
 
+## What's here (Step 88: interactive charts + a tag/button layout cleanup)
+
+Two direct complaints ahead of a real review: "no interaction, no
+scale" on every chart (equity curve, Compare, the P&L calendar), and
+tags/buttons "clumsy... not aligned... overwhelming on both mobile and
+laptop" — with a screenshot of the Deployed Strategies list showing
+each tag chip stacked as its own oversized multi-line box instead of a
+tidy row.
+
+**Charts — a shared tooltip + real axes, still no charting library.**
+Every chart on every page relied on the browser's native `title`
+attribute for any detail at all — which, traced directly, is exactly
+why nothing was interactive on mobile specifically: `title` tooltips
+require a mouse hover and simply never fire on a touchscreen at all,
+so the P&L heatmap (the one chart that had ANY hover detail before
+this) was fully non-interactive on a phone, and the equity/Compare
+charts had no detail mechanism whatsoever, mouse or touch. New
+`ChartTooltip` (api.js) is one small floating box + an app-wide
+`[data-tooltip]` delegated listener pair (`mousemove` and `touchstart`,
+the latter deliberately `passive` so it never blocks page scroll) —
+put an (HTML-escaped) tooltip string in any element's `data-tooltip`
+attribute anywhere in the app, present or future, and it just works on
+both input types with zero per-element wiring. The P&L heatmap's cells
+switched from `title=` to this.
+
+The equity chart (`renderEquityChart`, shared by Detail and Portfolio)
+and Compare's own multi-series chart both gained: a real Y-axis
+(min/mid/max, right-aligned so the numbers themselves line up), an
+X-axis (first/last date), and a hover/touch crosshair that shows the
+exact value(s) under the cursor — the equity chart shows one point;
+Compare, having up to 6 overlaid series of possibly different lengths
+sharing no real index, looks each series up independently at the SAME
+cursor X *fraction* (matching how each series was already plotted) and
+lists all of them in one tooltip. The crosshair/highlight-dot overlay
+is positioned in real CSS pixels via the chart area's own
+`getBoundingClientRect()` at pointer-move time, NOT the SVG's fixed
+viewBox coordinates — those would visibly drift out of alignment,
+since `preserveAspectRatio="none"` (needed so the polyline itself fills
+whatever real box the flex layout gives it) stretches X and Y
+independently, and viewBox-space positioning has no way to account for
+that. A real bug caught before shipping: the app-wide `[data-tooltip]`
+delegation's own `mousemove`/`touchstart` listeners run on `document`
+in the BUBBLE phase, meaning they fire strictly *after* an inline
+`onmousemove`/`ontouchstart` handler on the actual chart element — so
+the delegation's default "hide the tooltip, nothing under the cursor
+matches" branch was clobbering the chart's OWN just-shown tooltip on
+every single pointer move. Fixed by exempting `.equity-chart-area`
+(and its Compare counterpart, same class) from that branch — a chart
+that manages its own tooltip lifecycle continuously is explicitly
+opted out of the generic one.
+
+**Tags and buttons — the real bug, and a smaller cleanup alongside it.**
+Traced the screenshot precisely: `.tag` chips are `display:inline-block`
+with no `white-space` rule, so once a group of them (rendered by the
+shared `deploymentTagsHtml`) sat inside a column too narrow for two
+chips side by side, the LONGEST chip's own inline-block width got
+squeezed to fit — wrapping "excluded from reports"'s own text across
+2-3 lines *inside a single badge*, the exact oversized stacked-box look
+reported. Fix: `.tag` is now `white-space: nowrap` (a chip's own text
+never wraps, full stop) and every chip GROUP renders inside a new
+`.chip-row` (flex, wrap, small consistent gap) instead of bare
+concatenated `<span>`s — the group wraps as a unit onto a new line once
+it doesn't fit, never an individual chip ballooning. `deploymentTagsHtml`
+also absorbed the "unregistered" chip, previously hand-duplicated
+inline at both call sites (Deployments list, Detail header) with its
+own separate never-wrapped markup — one chip, one place it's built,
+same as "excluded from reports" and every custom tag already were.
+
+Buttons: the Deployed Strategies list's per-row Pause/Resume/Stop/
+Delete actions sat as bare `<button>`s directly in a `<td>` with no
+flex wrapper at all — unlike Detail's header (already `.card-actions`,
+`display:flex; gap:8px; flex-wrap:wrap`) and Catalog's Deploy button,
+both already consistent. Wrapped the table's own action cell in that
+same `.card-actions` div — one consistent wrap/gap/alignment rule for
+every button group in the app now, not two different behaviors
+depending on which page you're on.
+
+Verified: `node --check` across every touched `.js` file and
+`index.html`'s inline script; traced the delegation-vs-inline-handler
+ordering bug by hand against the DOM event spec (bubble phase, target
+before ancestors) rather than guessing, and confirmed the fix's
+`.equity-chart-area` exemption covers both the equity chart's own class
+and Compare's identically-named one; grepped every `.tag` usage
+app-wide (Dashboard, Catalog, Compare's status column) to confirm only
+`deploymentTagsHtml`'s own multi-chip call sites needed the `.chip-row`
+treatment — every other `.tag` in the app is already a single,
+standalone chip with nothing to misalign against.
+
 ## Setup
 
 ```bash

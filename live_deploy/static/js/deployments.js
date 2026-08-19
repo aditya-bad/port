@@ -136,7 +136,6 @@ const Deployments = {
         <tr class="clickable-row" data-deployment-id="${d.id}" onclick="location.hash='#/deployments/${d.id}'">
           <td>
             <a href="#/deployments/${d.id}" onclick="event.stopPropagation()">${escapeHtml(d.deployment_name)}</a>
-            ${!d.strategy_registered ? '<span class="tag tag-warn">unregistered</span>' : ''}
             ${deploymentTagsHtml(d)}
             ${d.notes ? `<div class="card-sub" style="margin-top:2px; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(d.notes)}">📝 ${escapeHtml(d.notes)}</div>` : ''}
           </td>
@@ -149,10 +148,12 @@ const Deployments = {
           <td class="${pnlClass(d.realized_pnl)}">${fmtSignedMoney(d.realized_pnl)}</td>
           <td class="live-pnl ${pnlClass(d.unrealized_pnl)}">${fmtSignedMoney(d.unrealized_pnl)}</td>
           <td onclick="event.stopPropagation()">
-            ${d.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.pause('${d.id}')">Pause</button>` : ''}
-            ${d.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.resume('${d.id}')">Resume</button>` : ''}
-            ${d.status !== 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Deployments.stop('${d.id}')">Stop</button>` : ''}
-            ${d.status === 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Deployments.deleteDeployment('${d.id}')">Delete</button>` : ''}
+            <div class="card-actions">
+              ${d.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.pause('${d.id}')">Pause</button>` : ''}
+              ${d.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.resume('${d.id}')">Resume</button>` : ''}
+              ${d.status !== 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Deployments.stop('${d.id}')">Stop</button>` : ''}
+              ${d.status === 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Deployments.deleteDeployment('${d.id}')">Delete</button>` : ''}
+            </div>
           </td>
         </tr>
       `).join('')}</tbody>

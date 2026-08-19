@@ -517,7 +517,16 @@ section h2 {
 
 .tag {
   display: inline-block; padding: 3px 8px; border: 2px solid var(--line); font-size: 9.5px; font-weight: 800;
-  text-transform: uppercase; letter-spacing: 0.04em;
+  text-transform: uppercase; letter-spacing: 0.04em; white-space: nowrap;
+  /* white-space:nowrap (Step 88) is load-bearing: an inline-block's
+     width shrinks to fit a narrow parent when there's no room for it
+     on the current line, which for a long chip like "excluded from
+     reports" meant its OWN TEXT wrapping across 2-3 lines inside a
+     single small badge — the exact clumsy stacked-box look reported
+     from the Deployed Strategies list. Now the badge instead keeps its
+     single-line natural width and the WHOLE CHIP wraps as one unit
+     inside its .chip-row (below) once it doesn't fit — the badge
+     itself never gets squashed. */
 }
 .tag-active { background: var(--gain-soft); color: var(--gain); }
 .tag-paused { background: var(--brass-soft); color: var(--brass); }
@@ -525,6 +534,12 @@ section h2 {
 .tag-warn { background: var(--brass-soft); color: var(--brass); }
 .tag-error { background: var(--loss-soft); color: var(--loss); }
 .tag-info { background: var(--info-soft); color: var(--info); }
+
+/* One row of chips (deploymentTagsHtml, api.js) — flex, not the tags'
+   own default inline-block flow, so multiple chips line up with a
+   consistent small gap and wrap AS A GROUP onto a new line together,
+   rather than each chip fending for its own inline position. */
+.chip-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; margin-top: 5px; }
 
 .empty { color: var(--parchment); font-size: 13px; padding: 22px; text-align: center;
   border: 2px dashed var(--line); background: var(--paper); }
@@ -632,9 +647,50 @@ tr.trade-detail-row td {
   color: var(--parchment); margin-bottom: 6px;
 }
 
-/* ── Equity curve ─────────────────────────────────────────────────── */
+/* ── Equity curve (Step 88: interactive — hover/tap crosshair + a real
+   Y/X scale, not just a bare polyline). Two-column layout: a fixed-
+   width Y-axis label rail (min/mid/max, right-aligned so the numbers
+   themselves line up) beside the actual chart area; an X-axis row
+   (first/last date) underneath. The chart area is `position:relative`
+   so the crosshair/dot overlay can be positioned in real CSS pixels
+   via getBoundingClientRect() at hover time (see _equityChartHover in
+   api.js) — deliberately NOT positioned in the SVG's own viewBox
+   coordinate space, which would distort under preserveAspectRatio=
+   "none"'s independent X/Y stretch. ─────────────────────────────────── */
 .equity-wrap { background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm); padding: 16px 18px; }
+.equity-chart-row { display: flex; gap: 10px; align-items: stretch; }
+.equity-axis-y {
+  display: flex; flex-direction: column; justify-content: space-between;
+  font-size: 10px; font-family: var(--font-mono); color: var(--parchment);
+  text-align: right; flex-shrink: 0; min-width: 58px; padding: 1px 0;
+}
+.equity-chart-area { position: relative; flex: 1; min-width: 0; cursor: crosshair; }
 .equity-chart { width: 100%; height: 160px; display: block; }
+.equity-axis-x { display: flex; justify-content: space-between; font-size: 10px; font-family: var(--font-mono); color: var(--parchment); margin: 6px 0 0 68px; }
+.equity-crosshair {
+  position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line);
+  opacity: 0.55; pointer-events: none; display: none;
+}
+.equity-dot {
+  position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--paper); pointer-events: none; display: none;
+}
+
+/* ── Shared chart tooltip (Step 88) — one floating box, reused by the
+   equity chart's crosshair, Compare's multi-series chart, and the P&L
+   heatmap's cells (see ChartTooltip + the app-wide [data-tooltip]
+   mouse/touch delegation in api.js). Fixed-positioned and pointer-
+   events:none so it never itself becomes the hover/touch target it
+   would need to dismiss. Replaces the heatmap's former plain `title`
+   attribute specifically because `title` never fires on a touchscreen
+   at all — this fires on both. ─────────────────────────────────────── */
+.chart-tooltip {
+  position: fixed; z-index: 200; display: none; pointer-events: none;
+  background: var(--ink); color: var(--paper); border: 2px solid var(--line);
+  padding: 6px 10px; font-size: 11px; font-weight: 600; line-height: 1.45;
+  box-shadow: var(--shadow-sm); max-width: 240px;
+}
+.chart-tooltip b { font-family: var(--font-mono); }
 
 /* ── P&L calendar heatmap — GitHub-contribution-graph shaped, but
    DIVERGING (a day can lose, not just contribute-more-or-less), colored
@@ -679,6 +735,8 @@ tr.trade-detail-row td {
 .pnl-heatmap-month-label { font-size: 10px; color: var(--parchment); font-weight: 700; white-space: nowrap; }
 .pnl-heatmap-grid { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 13px); grid-auto-columns: 13px; gap: 3px; width: max-content; }
 .pnl-heatmap-cell { width: 13px; height: 13px; border: 1px solid var(--row-line); box-sizing: border-box; }
+.pnl-heatmap-cell[data-tooltip] { cursor: pointer; }
+.pnl-heatmap-cell[data-tooltip]:hover { outline: 2px solid var(--line); outline-offset: 1px; position: relative; z-index: 1; }
 .pnl-heatmap-cell.empty { background: transparent; border-color: transparent; }   /* padding day before the series starts */
 .pnl-heatmap-legend { display: flex; align-items: center; gap: 4px; margin-top: 12px; padding-top: 12px; border-top: 2px solid var(--row-line); font-size: 10.5px; color: var(--parchment); font-weight: 700; }
 .pnl-heatmap-legend .pnl-heatmap-cell { width: 11px; height: 11px; }
