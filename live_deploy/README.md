@@ -5582,6 +5582,101 @@ already validates against the same `("day", "week", "month")` set the
 portfolio endpoint uses, so Detail's new Weekly/Monthly buttons need no
 backend change at all.
 
+## What's here (Step 87: strategy-specific detail data — SuperTrend's live indicators + an adjustment-frequency histogram)
+
+Requested directly: "can it show the supertrend value and pivot s1 and
+s2" for the pivot_supertrend family, and for straddle-style strategies
+"how many days have 0 adjustments and how many has 1 2 and more."
+Both are opt-in per strategy through two new `StrategyBase` hooks —
+most strategies override neither and simply show nothing extra, rather
+than an empty/misleading section.
+
+**Live Strategy Indicators** (`GET /deployments/{id}/strategy-status`,
+new `StrategyBase.get_status_fields()`/`status_fields_from_state()`):
+all three `pivot_supertrend*` files share the identical `self.st`
+(SuperTrendState)/`self.pivots` shape, so ONE shared formatter —
+`supertrend_status_fields()` in `pivot_supertrend.py` — covers all
+three rather than three near-duplicate copies. Shows current
+trend, the SuperTrend line's own value (`final_lower` while trending
+up, `final_upper` while trending down — exactly what a chart's own
+SuperTrend indicator plots), and every pivot level (P/S1-S3/R1-R3, not
+just S1/S2 — already computed internally, no reason to show less than
+what's there). Two sources depending on whether the deployment is
+currently running: LIVE calls `get_status_fields()` straight against
+the running strategy instance (freshest possible); PAUSED/STOPPED calls
+`status_fields_from_state()` as a `@staticmethod` against the strategy
+CLASS (looked up by name from the registry, no instance needed) with
+the last persisted `deployment_state` blob — reasonably fresh in
+practice, since that's written at the moment a deployment pauses/stops
+and at least once daily regardless (Step 77's post-market checkpoint).
+`pivot_supertrend_options_inverse` has no pivot concept at all (see its
+own module docstring) — its formatter call just passes `pivots=None`
+and the shared function skips those entries.
+
+**Adjustment Frequency histogram**
+(`GET /deployments/{id}/adjustment-histogram`, new `StrategyBase.
+ADJUSTMENT_GROUP_BY` class attribute): "N trading units had 0
+adjustments, N had 1, N had 2, N had 3+" — a pure historical aggregate
+over `positions` already in the DB, unrelated to whether the deployment
+is currently running. Needed a way to tell "this leg was the day's
+original entry" from "this leg was a later rebalancing add" that's
+robust across strategies with very different entry-reason strings
+(`intraday_dtt_adjusted`'s literal `"entry"` vs `strangle_monthly_v2`'s
+dynamic `"initial_entry"`/`"reentry_after_X"`/`"checkpoint_target"` —
+the LAST of which is also reused as a CLOSE reason, so reason-string
+matching alone is ambiguous). Went with an explicit, unambiguous
+top-level `leg_role` metadata field instead — `"original"` for an
+entry leg, `"adjustment_<n>"` for every later one —
+`intraday_dtt_adjusted` already wrote this (used elsewhere for its own
+resume-safety), so its history works retroactively with zero code
+changes; `strangle_monthly_v2` never wrote it before now, so its own
+`_trade_meta()` gained a `leg_role` param (passed `"original"` from
+`_enter()`, the `role` variable from `_open_leg()`) — works for every
+NEW leg from this point on, but a leg opened before this ships has no
+`leg_role` at all, and is treated as `"original"` by a `COALESCE` (the
+safe default: "don't count this as an adjustment," never the reverse).
+
+The grouping UNIT differs by strategy, via `ADJUSTMENT_GROUP_BY`:
+`"day"` for `intraday_dtt_adjusted`/`intraday_dtt_advanced` (one full
+cycle IS one trading day — entry each morning, flat by
+`force_exit_time`), `"cycle_id"` for `strangle_monthly_v2` (a single
+cycle spans many calendar days, checkpoint-to-checkpoint, potentially
+most of a month — bucketing by day would count dozens of "0 adjustment"
+days per cycle for reasons that have nothing to do with how actively
+that cycle was managed). `queries.get_adjustment_histogram` reduces
+this in two Python passes over one query's rows (group into
+day/cycle → `{has_entry, adjustment_count}`, then bucket those counts,
+3+ collapsed into one bucket) rather than nested SQL aggregates, for a
+row count this small. A unit with adjustment legs but no `"original"`
+leg at all (shouldn't happen, but not a schema-level guarantee) is
+excluded rather than counted as a phantom "0 adjustments" unit.
+
+Detail's Stats tab renders both sections only when there's something to
+show — "Live Strategy Indicators" as a flex-wrap label/value row (same
+visual language as the "Deployed X ago" line above it, with an "as of
+last checkpoint" tag when the source is persisted rather than live);
+"Adjustment Frequency" as a small table reusing the existing single-
+direction win-rate bar CSS (`report-winrate-track`/`-fill` — a bucket's
+own count has no "negative" side, unlike this page's other, center-zero
+P&L bars).
+
+Verified: `supertrend_status_fields`/`supertrend_status_fields_from_state`
+against a real warmed-up `SuperTrendState` + `compute_pivots` output —
+live/persisted paths produce identical fields, a not-yet-warmed-up state
+returns `None`, a malformed/empty persisted blob returns `None` rather
+than raising; `queries.get_adjustment_histogram` against a mocked pool —
+correct 0/2/3+ bucketing (5 real adjustments capped to the 3+ bucket),
+a unit with no `"original"` leg excluded, a `NULL` group key (a leg
+predating `cycle_id`/`opened_at`) skipped rather than crashing, an
+invalid `group_by` raising `ValueError`; confirmed all 8 registered
+strategies resolve the right `get_status_fields` override and
+`ADJUSTMENT_GROUP_BY` value (including `intraday_dtt_advanced`
+correctly inheriting `"day"` from `intraday_dtt_adjusted` with zero
+code of its own) via the real registry against a live `app.main`
+import; `ast.parse` + full `app.main` import with real dependencies
+installed across every touched `.py` file; `node --check` across
+`api.js`/`detail.js`.
+
 ## Setup
 
 ```bash

@@ -10,6 +10,7 @@ db/migrations/0001_init.sql).
 """
 
 import asyncio
+import logging
 import secrets
 from uuid import UUID
 
@@ -19,10 +20,13 @@ from fastapi import APIRouter, HTTPException, Request
 from .aggregate import year_bounds
 from ..db import queries
 from ..deployments.schemas import (
-    DeploymentCreate, DeploymentOut, DeploymentUpdate, EventOut, LotsPage,
-    PnlDigestRow, PositionOut, ReportOut, SnapshotOut,
+    AdjustmentHistogramOut, DeploymentCreate, DeploymentOut, DeploymentUpdate,
+    EventOut, LotsPage, PnlDigestRow, PositionOut, ReportOut, SnapshotOut,
+    StrategyStatusOut,
 )
-from ..strategies.registry import is_registered
+from ..strategies.registry import get_strategy_class, is_registered
+
+logger = logging.getLogger("live_deploy.deployments_router")
 
 router = APIRouter(prefix="/deployments", tags=["deployments"])
 
@@ -354,6 +358,87 @@ async def get_pnl_digest(
     except ValueError as e:
         raise HTTPException(400, str(e))
     return [dict(r) for r in rows]
+
+
+@router.get("/{deployment_id}/strategy-status", response_model=StrategyStatusOut)
+async def get_strategy_status(deployment_id: UUID, request: Request):
+    """Step 87 — strategy-specific LIVE indicator values for the Detail
+    page's Stats tab (e.g. pivot_supertrend*'s current SuperTrend trend/
+    value and pivot levels — something no generic P&L/position stat
+    already covers). Most strategies have nothing to add here at all
+    (source="unavailable", empty fields) and the frontend simply omits
+    the section — this is opt-in per strategy, never a gap to fill in.
+
+    Two sources, in priority order:
+      1. LIVE — this deployment is currently running (manager.get_runner
+         returns a real runner): call get_status_fields() directly
+         against the live strategy instance, freshest possible.
+      2. PERSISTED — not running (paused/stopped, or the manager has no
+         runner for some other reason): call status_fields_from_state()
+         against the strategy CLASS (looked up by name, no instance
+         needed) with the last persisted deployment_state blob. See
+         StrategyBase.status_fields_from_state's own docstring for the
+         staleness guarantee that makes this still worth showing.
+    A strategy override raising is caught and logged here, not allowed
+    to fail the whole request — this is read-only display data, never
+    worth a 500 over.
+    """
+    pool = request.app.state.db_pool
+    manager = request.app.state.deployment_manager
+    dep = await queries.get_deployment(pool, deployment_id)
+    if dep is None:
+        raise HTTPException(404, "No such deployment")
+
+    runner = manager.get_runner(deployment_id)
+    if runner is not None and runner.strategy is not None:
+        try:
+            fields = runner.strategy.get_status_fields()
+        except Exception:
+            logger.exception("%s: get_status_fields() raised", dep["deployment_name"])
+            fields = None
+        return {"fields": fields or [], "source": "live" if fields else "unavailable"}
+
+    cls = get_strategy_class(dep["strategy_name"])
+    fields = None
+    if cls is not None:
+        state = await queries.load_deployment_state(pool, deployment_id)
+        if state is not None:
+            try:
+                fields = cls.status_fields_from_state(state)
+            except Exception:
+                logger.exception("%s: status_fields_from_state() raised", dep["deployment_name"])
+                fields = None
+    return {"fields": fields or [], "source": "persisted" if fields else "unavailable"}
+
+
+@router.get("/{deployment_id}/adjustment-histogram", response_model=AdjustmentHistogramOut)
+async def get_adjustment_histogram(deployment_id: UUID, request: Request):
+    """Step 87 — "how many days/cycles had 0 adjustments, how many had
+    1, 2, 3+" for a strategy that opts in via
+    StrategyBase.ADJUSTMENT_GROUP_BY (currently intraday_dtt_adjusted/
+    intraday_dtt_advanced, grouped by day, and strangle_monthly_v2,
+    grouped by cycle_id — see that class attribute's own docstring for
+    why the grouping unit differs). Pure historical aggregate over
+    `positions` already in the DB — unlike strategy-status above, this
+    doesn't care whether the deployment is currently running at all.
+
+    `supported=False` for any strategy that doesn't set
+    ADJUSTMENT_GROUP_BY (most of them) — the frontend omits the whole
+    section rather than rendering an empty chart for a strategy with no
+    adjustment concept.
+    """
+    pool = request.app.state.db_pool
+    dep = await queries.get_deployment(pool, deployment_id)
+    if dep is None:
+        raise HTTPException(404, "No such deployment")
+
+    cls = get_strategy_class(dep["strategy_name"])
+    group_by = getattr(cls, "ADJUSTMENT_GROUP_BY", None) if cls is not None else None
+    if group_by is None:
+        return {"supported": False, "group_by": None, "buckets": []}
+
+    buckets = await queries.get_adjustment_histogram(pool, deployment_id, group_by)
+    return {"supported": True, "group_by": group_by, "buckets": buckets}
 
 
 @router.post("/{deployment_id}/pause")

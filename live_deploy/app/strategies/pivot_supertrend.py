@@ -344,6 +344,73 @@ def approx_missing_band(candle: dict, atr: float, multiplier: float, need: str) 
 
 
 # ═════════════════════════════════════════════════════════════════════
+# STATUS FIELDS (Step 87) — StrategyBase.get_status_fields()/
+# status_fields_from_state() for the Detail page's Stats tab. Shared by
+# all three pivot_supertrend* strategies (pivot_supertrend,
+# pivot_supertrend_options, pivot_supertrend_options_inverse) — each
+# tracks the identical `self.st` (SuperTrendState) / `self.pivots`
+# (dict from compute_pivots) shape and persists it identically (see
+# each file's own get_persistable_state), so one formatter covers all
+# three rather than three near-duplicate copies.
+# ═════════════════════════════════════════════════════════════════════
+
+# Display order: the trend-following S1/S2/S3 levels (what a bullish
+# pivot-break strategy actually watches for support) come before R1-R3,
+# with the pivot point itself first as the reference everything else is
+# relative to -- reads top-to-bottom as "center, then the ladder either
+# side of it," not the raw insertion order compute_pivots happens to
+# use internally (which is P/R.../S... alternating).
+_PIVOT_DISPLAY_ORDER = ("P", "S1", "S2", "S3", "R1", "R2", "R3")
+
+
+def supertrend_status_fields(st: SuperTrendState, pivots: Optional[dict]) -> Optional[list]:
+    """Turns a live (or reconstructed-from-snapshot) SuperTrendState +
+    pivots dict into the [{"label", "value"}, ...] shape
+    get_status_fields()/status_fields_from_state() return. None if
+    SuperTrend hasn't warmed up yet (st.trend is None) -- nothing
+    meaningful to show, same "not ready" case on_tick's own callers
+    already check via st.ready."""
+    if st.trend is None:
+        return None
+    # The SuperTrend "line" itself is whichever band is currently
+    # ACTIVE for the live trend -- final_lower while trending up (price
+    # support, a break below it flips to down), final_upper while
+    # trending down (resistance, a break above flips to up). Exactly
+    # the value a chart's own SuperTrend indicator plots.
+    st_value = st.final_lower if st.trend == "up" else st.final_upper
+    fields = [
+        {"label": "SuperTrend Trend", "value": st.trend},
+        {"label": "SuperTrend Value", "value": round(st_value, 2) if st_value is not None else None},
+    ]
+    if pivots:
+        fields.extend(
+            {"label": f"Pivot {k}", "value": round(pivots[k], 2)}
+            for k in _PIVOT_DISPLAY_ORDER if k in pivots
+        )
+    return fields
+
+
+def supertrend_status_fields_from_state(state: Optional[dict]) -> Optional[list]:
+    """The status_fields_from_state (paused/stopped) counterpart to
+    supertrend_status_fields above -- reconstructs just enough of a
+    SuperTrendState from a persisted deployment_state blob (the exact
+    shape get_persistable_state() returns in all three
+    pivot_supertrend* files: {"supertrend": st.snapshot(), "pivots":
+    ..., ...}) to compute the same fields, without needing a live
+    strategy instance at all. Tolerates a missing/malformed/
+    incompatible blob by returning None rather than raising -- the
+    caller (GET /deployments/{id}/strategy-status) has no other
+    fallback if this throws."""
+    if not state:
+        return None
+    try:
+        st = SuperTrendState.from_snapshot(state["supertrend"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return supertrend_status_fields(st, state.get("pivots"))
+
+
+# ═════════════════════════════════════════════════════════════════════
 # CANDLE AGGREGATION — buckets live ticks into 5-min OHLC candles
 # ═════════════════════════════════════════════════════════════════════
 
@@ -951,6 +1018,13 @@ class PivotSupertrendStrategy(StrategyBase):
             "pending_exit": self.pending_exit,
             "pending_entry": self.pending_entry,
         }
+
+    def get_status_fields(self) -> Optional[list]:
+        return supertrend_status_fields(self.st, self.pivots)
+
+    @staticmethod
+    def status_fields_from_state(state: dict) -> Optional[list]:
+        return supertrend_status_fields_from_state(state)
 
     async def on_post_market_checkpoint(self, runner) -> None:
         """Once a day, after market close (see StrategyBase's own

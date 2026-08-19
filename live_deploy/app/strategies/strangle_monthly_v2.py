@@ -515,6 +515,12 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
     },
 )
 class StrangleMonthlyV2Strategy(StrategyBase):
+    # A single cycle spans many calendar days (checkpoint-to-checkpoint,
+    # potentially the better part of a month) -- "day" would be
+    # meaningless here (see StrategyBase.ADJUSTMENT_GROUP_BY's own
+    # docstring), so this groups by positions.metadata->>'cycle_id'
+    # instead (see _trade_meta's own `leg_role` param below).
+    ADJUSTMENT_GROUP_BY = "cycle_id"
 
     # ── Setup ────────────────────────────────────────────────────────────
 
@@ -750,7 +756,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                     fill_price=price, cycle_id=self.cycle_id,
                     contract_expiry=expiry.isoformat(), trigger_values=trigger_values,
                     target_basis={"target_premium": target_premium, "selected_strike": leg.strike, "fill_premium": price},
-                    seq=leg_dict["seq"],
+                    seq=leg_dict["seq"], leg_role="original",
                 ),
             )
             if self.enable_hedging:
@@ -1033,7 +1039,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                     trigger=trigger, action="open", side=side, strike=leg.strike,
                     fill_price=price, cycle_id=self.cycle_id, trigger_values=trigger_values,
                     target_basis={"target_premium": target_premium, "selected_strike": leg.strike, "fill_premium": price},
-                    seq=leg_dict["seq"],
+                    seq=leg_dict["seq"], leg_role=role,
                 ),
             )
 
@@ -1530,7 +1536,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self, trigger: str, action: str, side: Optional[str], strike: float, fill_price: float,
         cycle_id: Optional[int] = None, contract_expiry: Optional[str] = None,
         trigger_values: Optional[dict] = None, target_basis: Optional[dict] = None,
-        seq: Optional[int] = None,
+        seq: Optional[int] = None, leg_role: Optional[str] = None,
     ) -> dict:
         meta = {
             "trigger": trigger, "action": action, "leg": side, "strike": strike,
@@ -1540,6 +1546,18 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         }
         if seq is not None:
             meta["seq"] = seq
+        # Top-level (unlike `resulting_state`'s own per-leg "role", which
+        # is a full-book snapshot, not specifically THIS fill's leg) --
+        # "original" for a leg opened by _enter(), "adjustment_<n>" for
+        # one opened later by _open_leg() (roll/grow/replace). Powers
+        # GET /deployments/{id}/adjustment-histogram (Step 87), same
+        # leg_role convention intraday_dtt_adjusted already established.
+        # Only ever set going forward from Step 87 -- a leg opened before
+        # this defaults to no leg_role at all when queried (COALESCE'd
+        # to "original" there, same fallback intraday_dtt_adjusted uses
+        # for its own pre-existing data).
+        if leg_role is not None:
+            meta["leg_role"] = leg_role
         if contract_expiry:
             meta["contract_expiry"] = contract_expiry
         elif self.contract_expiry:

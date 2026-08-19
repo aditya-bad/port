@@ -1,7 +1,7 @@
 """live_deploy — Pydantic request/response models for the deployments API."""
 
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -295,6 +295,42 @@ class PnlStrategyBreakdown(BaseModel):
     strategy_name: str
     realized_pnl: float
     positions_closed: int
+
+
+class StatusField(BaseModel):
+    """One live indicator value on GET /deployments/{id}/strategy-status
+    — see StrategyBase.get_status_fields's own docstring (Step 87)."""
+    label: str
+    value: Any
+
+
+class StrategyStatusOut(BaseModel):
+    """GET /deployments/{id}/strategy-status — `source` tells the UI
+    which of get_status_fields() (this deployment is currently running,
+    freshest possible) or status_fields_from_state() (paused/stopped,
+    from the last persisted checkpoint) produced `fields`, or
+    "unavailable" if this strategy doesn't override either (most
+    strategies) or hasn't warmed up far enough yet to have anything."""
+    fields: list[StatusField]
+    source: Literal["live", "persisted", "unavailable"]
+
+
+class AdjustmentHistogramBucket(BaseModel):
+    """One bucket of GET /deployments/{id}/adjustment-histogram — see
+    queries.get_adjustment_histogram's own docstring (Step 87)."""
+    adjustments: int
+    label: str
+    units: int
+
+
+class AdjustmentHistogramOut(BaseModel):
+    """`supported=False` (with an empty `buckets`) means this
+    deployment's strategy doesn't set StrategyBase.ADJUSTMENT_GROUP_BY
+    at all — the UI omits the whole section rather than showing an
+    empty chart for a strategy with no adjustment concept."""
+    supported: bool
+    group_by: Optional[Literal["day", "cycle_id"]] = None
+    buckets: list[AdjustmentHistogramBucket] = []
 
 
 class PnlDeploymentBreakdown(BaseModel):

@@ -126,6 +126,8 @@ from .pivot_supertrend import (
     is_stale_candle_close,
     is_stale_pending_signal,
     supertrend_from_seed_candles,
+    supertrend_status_fields,
+    supertrend_status_fields_from_state,
 )
 from .registry import register_strategy
 from .trade_meta import build_trade_meta
@@ -336,6 +338,15 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             "version": 1, "supertrend": self.st.snapshot(), "prev_trend": self.prev_trend,
             "pending_exit": self.pending_exit, "pending_entry": self.pending_entry,
         }
+
+    def get_status_fields(self) -> Optional[list]:
+        # No pivots on this variant at all (see module docstring) --
+        # supertrend_status_fields(pivots=None) just skips those entries.
+        return supertrend_status_fields(self.st, None)
+
+    @staticmethod
+    def status_fields_from_state(state: dict) -> Optional[list]:
+        return supertrend_status_fields_from_state(state)
 
     async def on_post_market_checkpoint(self, runner) -> None:
         """See pivot_supertrend.py's identical method for the full

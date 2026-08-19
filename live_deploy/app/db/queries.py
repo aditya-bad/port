@@ -249,6 +249,79 @@ async def list_open_positions(pool: asyncpg.Pool, deployment_id: UUID) -> list[a
     return await list_positions(pool, deployment_id, status="open")
 
 
+async def get_adjustment_histogram(
+    pool: asyncpg.Pool, deployment_id: UUID, group_by: str,
+) -> list[dict]:
+    """Step 87 — backs GET /deployments/{id}/adjustment-histogram: "how
+    many trading units (days or cycles, see `group_by`) had 0
+    adjustments, how many had 1, 2, 3+." Only called for a strategy
+    whose class sets StrategyBase.ADJUSTMENT_GROUP_BY (see the router),
+    which is also what `group_by` comes from.
+
+    Every position this deployment has EVER opened carries a
+    `metadata->>'leg_role'` of "original" (the day/cycle's own entry
+    leg) or "adjustment_<n>" (every later rebalancing leg opened
+    without a fresh entry) — see intraday_dtt_adjusted.py's `_enter`/
+    `_adjust` and strangle_monthly_v2.py's `_trade_meta` for where this
+    gets written. A leg with no `leg_role` at all (persisted before
+    Step 87, or a strangle hedge leg, which never carries one) is
+    treated as "original" by the COALESCE below — the safe default,
+    since it means "don't count this as an adjustment," never the
+    reverse.
+
+    One SQL round-trip; the actual day/cycle -> (has_entry, adjustment
+    count) -> histogram-bucket reduction happens in Python below rather
+    than in SQL, since it's a two-level GROUP BY (first by unit, THEN by
+    that unit's own adjustment count) that reads far more clearly this
+    way than as nested SQL aggregates for what's a small, deployment-
+    scoped row count."""
+    if group_by == "day":
+        group_expr = "date_trunc('day', opened_at AT TIME ZONE 'Asia/Kolkata')"
+    elif group_by == "cycle_id":
+        group_expr = "(metadata->>'cycle_id')"
+    else:
+        raise ValueError(f"group_by must be 'day' or 'cycle_id', got {group_by!r}")
+
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"""
+            SELECT {group_expr} AS grp, COALESCE(metadata->>'leg_role', 'original') AS leg_role
+            FROM positions
+            WHERE deployment_id = $1
+            """,
+            deployment_id,
+        )
+
+    units: dict = {}   # group key -> {"has_entry": bool, "adjustments": int}
+    for r in rows:
+        grp = r["grp"]
+        if grp is None:
+            continue   # a leg predating cycle_id/opened_at ever being set -- can't place it in any unit
+        u = units.setdefault(grp, {"has_entry": False, "adjustments": 0})
+        if r["leg_role"] == "original":
+            u["has_entry"] = True
+        elif r["leg_role"] and r["leg_role"].startswith("adjustment_"):
+            u["adjustments"] += 1
+
+    # 3+ collapsed into one bucket -- a real distinction between 5 vs 7
+    # adjustments in one unit matters far less than "was this unit
+    # calm (0-2) or actively rebalanced (3+)", and keeps the bucket
+    # list a fixed, small size regardless of how high a single unit's
+    # count ever climbs.
+    ADJUSTMENT_HISTOGRAM_CAP = 3
+    counts: dict = {}
+    for u in units.values():
+        if not u["has_entry"]:
+            continue   # not a real trading unit (an adjustment leg somehow outliving its own entry's own group -- shouldn't happen, but never surface a phantom unit if it does)
+        bucket = min(u["adjustments"], ADJUSTMENT_HISTOGRAM_CAP)
+        counts[bucket] = counts.get(bucket, 0) + 1
+
+    return [
+        {"adjustments": k, "label": f"{k}+" if k == ADJUSTMENT_HISTOGRAM_CAP else str(k), "units": v}
+        for k, v in sorted(counts.items())
+    ]
+
+
 # ═════════════════════════════════════════════════════════════════════
 # CROSS-DEPLOYMENT AGGREGATES — the Dashboard's consolidated views.
 # Every query above this point is scoped to one deployment_id; these

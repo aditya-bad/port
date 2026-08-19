@@ -39,6 +39,30 @@ class StrategyBase(ABC):
     actually persists everything.
     """
 
+    # Optional (Step 87) class attribute: "day" or "cycle_id" — set this
+    # to opt into GET /deployments/{id}/adjustment-histogram, a bucket-
+    # by-adjustment-count breakdown across every trading unit this
+    # strategy has ever run ("N days/cycles had 0 adjustments, N had 1,
+    # ..."). Requires positions.metadata to carry a "leg_role" of
+    # "original" (the first/entry leg on a side) or "adjustment_<n>"
+    # (every later rebalancing leg) — see intraday_dtt_adjusted.py's
+    # `_enter`/`_adjust` for the reference shape.
+    #   "day"       — group by the IST calendar day each leg opened on
+    #                 (opened_at) — the right unit for an intraday
+    #                 strategy where one full cycle IS one trading day
+    #                 (e.g. intraday_dtt_adjusted).
+    #   "cycle_id"  — group by positions.metadata->>'cycle_id' instead —
+    #                 for a strategy whose own trading cycle can span
+    #                 MANY days (e.g. strangle_monthly_v2's monthly
+    #                 checkpoint-to-checkpoint cycles), where "day" would
+    #                 be meaningless (a single cycle touches dozens of
+    #                 calendar days, most with zero adjustments simply
+    #                 because nothing happened that day, not because the
+    #                 cycle itself was low-adjustment).
+    # None (default) — not supported; the histogram section is omitted
+    # entirely on the Detail page rather than shown empty/misleading.
+    ADJUSTMENT_GROUP_BY: Optional[str] = None
+
     @abstractmethod
     async def on_start(self, runner: "Any") -> None: ...
 
@@ -112,5 +136,56 @@ class StrategyBase(ABC):
         falls through to persisting whatever's already in memory, same
         as before this hook existed, rather than skipping the checkpoint
         entirely.
+        """
+        return None
+
+    def get_status_fields(self) -> Optional[list]:
+        """
+        Optional (Step 87): a small list of live indicator values worth
+        surfacing on the Detail page's Stats tab, specific to THIS
+        strategy — e.g. SuperTrend's own current trend/value and pivot
+        levels, something a straddle strategy has no equivalent of and
+        most strategies have nothing at all to add here. Each entry is
+        `{"label": str, "value": <JSON-safe>}`; return None (the
+        default) if there's nothing beyond the generic P&L/position
+        stats every deployment already shows.
+
+        Called directly against the LIVE, currently-running strategy
+        instance by GET /deployments/{id}/strategy-status, so read
+        whatever attributes this instance already tracks (self.st,
+        self.pivots, ...) — no separate bookkeeping needed just for
+        display. Keep it cheap and read-only: called on-demand from an
+        HTTP request, not gated behind any cache.
+
+        A deployment that ISN'T currently running (paused/stopped) has
+        no live instance to call this against — see
+        `status_fields_from_state` below for that case instead.
+        """
+        return None
+
+    @staticmethod
+    def status_fields_from_state(state: dict) -> Optional[list]:
+        """
+        Optional (Step 87): the paused/stopped counterpart to
+        get_status_fields() above — same return shape, but computed
+        from a PERSISTED `deployment_state` blob (the exact dict
+        get_persistable_state() last returned, reloaded via
+        queries.load_deployment_state) instead of a live instance,
+        since a non-running deployment has no live instance to ask.
+        Reasonably fresh in practice: that blob is written at the
+        moment a deployment pauses/stops (DeploymentRunner.stop()) and
+        at least once daily regardless (DeploymentManager.
+        post_market_dump_loop()) — see get_persistable_state's own
+        docstring for the exact staleness guarantee.
+
+        A `@staticmethod` (not an instance method) deliberately —
+        GET /deployments/{id}/strategy-status calls this against the
+        STRATEGY CLASS itself (looked up by name from the registry),
+        never having constructed an instance at all for a deployment
+        that isn't running. Default: None, same as get_status_fields.
+        Must tolerate a malformed/incompatible/missing `state` (a
+        future strategy version, a never-warmed-up deployment) by
+        returning None rather than raising — the caller has no other
+        fallback if this throws.
         """
         return None

@@ -378,13 +378,15 @@ const Detail = {
   // reason to re-fetch trades/positions/snapshots just because someone
   // switched the calendar's year.
   async renderStats() {
-    const [report, allTrades, closedPositions, snapshots, trendRows, calendarRows] = await Promise.all([
+    const [report, allTrades, closedPositions, snapshots, trendRows, calendarRows, strategyStatus, adjustmentHistogram] = await Promise.all([
       Api.getReport(this._id),
       Api.getTrades(this._id, 2000),
       Api.getPositions(this._id, 'closed'),
       Api.getSnapshots(this._id),
       Api.getPnlDigestForDeployment(this._id, this._statsTrendPeriod, 14),
       this._fetchStatsCalendarRows(),
+      Api.getStrategyStatus(this._id),
+      Api.getAdjustmentHistogram(this._id),
     ]);
     const body = document.getElementById('detailBody');
 
@@ -464,6 +466,8 @@ const Detail = {
         <span>Last activity <b>${lastFill ? fmtDateTime(lastFill.executed_at) : '—'}</b></span>
       </div>
 
+      ${this._strategyIndicatorsHtml(strategyStatus)}
+
       <div class="stat-grid">
         <div class="stat-card">
           <div class="stat-label">Realized P&amp;L</div>
@@ -522,6 +526,8 @@ const Detail = {
       </section>
       ` : ''}
 
+      ${this._adjustmentHistogramHtml(adjustmentHistogram)}
+
       <section>
         <h2>Equity Curve</h2>
         ${drawdown ? `<div class="card-meta" style="margin-bottom:10px;">
@@ -552,6 +558,69 @@ const Detail = {
       </section>
     `;
     scrollPnlHeatmapToEnd('detailStatsCalendar');
+  },
+
+  // ── Strategy-specific data (Step 87) — GET /deployments/{id}/
+  // strategy-status and .../adjustment-histogram, both opt-in per
+  // strategy (see StrategyBase.get_status_fields/ADJUSTMENT_GROUP_BY's
+  // own docstrings). Neither renders anything at all for a strategy
+  // that doesn't override its half of the contract — no empty section,
+  // no "not available" placeholder cluttering every other strategy's
+  // Stats tab. ─────────────────────────────────────────────────────
+
+  // Live indicator values (e.g. pivot_supertrend*'s current trend/
+  // value + pivot levels) -- a flex-wrap row of label/value pairs,
+  // same visual language as the "Deployed X ago / Last activity" line
+  // right above it. `source` distinguishes freshest-possible ("live",
+  // this deployment is currently running) from "as of its last
+  // pause/stop/daily checkpoint" ("persisted") so a paused deployment's
+  // numbers aren't mistaken for real-time.
+  _strategyIndicatorsHtml(status) {
+    if (!status || !status.fields || !status.fields.length) return '';
+    const staleness = status.source === 'persisted'
+      ? ' <span class="tag tag-warn" title="This deployment isn\'t currently running -- these are from its last pause/stop/daily checkpoint, not real-time.">as of last checkpoint</span>'
+      : '';
+    return `
+      <section>
+        <h2 style="display:flex; align-items:center; gap:8px;">Live Strategy Indicators${staleness}</h2>
+        <div class="card-meta">
+          ${status.fields.map(f => `<span>${escapeHtml(f.label)} <b>${escapeHtml(String(f.value))}</b></span>`).join('')}
+        </div>
+      </section>
+    `;
+  },
+
+  // Adjustment-count histogram (e.g. intraday_dtt_adjusted: "how many
+  // days had 0/1/2/3+ adjustments") -- reuses the single-direction
+  // win-rate bar CSS (report-winrate-track/-fill), the correct shape
+  // here too: a bucket's own count has no "negative" side, unlike the
+  // center-zero P&L bars elsewhere on this page.
+  _adjustmentHistogramHtml(histogram) {
+    if (!histogram || !histogram.supported || !histogram.buckets.length) return '';
+    const unitLabel = histogram.group_by === 'cycle_id' ? 'cycle' : 'day';
+    const totalUnits = histogram.buckets.reduce((sum, b) => sum + b.units, 0);
+    const maxUnits = Math.max(...histogram.buckets.map(b => b.units), 1);
+    return `
+      <section>
+        <h2>Adjustment Frequency</h2>
+        <div class="table-note" style="margin-bottom:8px;">
+          How many ${unitLabel}s (${totalUnits} total) needed how many adjustments, from
+          every ${unitLabel} this deployment has ever traded.
+        </div>
+        <div class="table-wrap">
+        <table><thead><tr><th>Adjustments</th><th>${unitLabel[0].toUpperCase()}${unitLabel.slice(1)}s</th><th></th></tr></thead>
+        <tbody>${histogram.buckets.map(b => `<tr>
+          <td>${escapeHtml(b.label)}</td>
+          <td>${b.units}</td>
+          <td>
+            <div class="report-winrate-track" style="max-width:220px;">
+              <div class="report-winrate-fill" style="width:${(b.units / maxUnits) * 100}%;"></div>
+            </div>
+          </td>
+        </tr>`).join('')}</tbody></table>
+        </div>
+      </section>
+    `;
   },
 
   // This deployment's own daily P&L as a GitHub-style heatmap (see

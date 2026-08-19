@@ -169,6 +169,21 @@ const Api = {
     if (!r.ok) throw new Error(`Could not load the P&L calendar data (${r.status})`);
     return r.json();
   },
+  // Step 87 -- strategy-specific live indicators (SuperTrend value,
+  // pivot levels, ...) and the adjustment-count histogram. Both are
+  // opt-in per strategy (see StrategyBase's own get_status_fields/
+  // ADJUSTMENT_GROUP_BY docstrings) -- callers check `source`/
+  // `supported` and render nothing when a strategy has neither.
+  async getStrategyStatus(id) {
+    const r = await fetch(`/deployments/${id}/strategy-status`);
+    if (!r.ok) throw new Error(`Could not load strategy status (${r.status})`);
+    return r.json();
+  },
+  async getAdjustmentHistogram(id) {
+    const r = await fetch(`/deployments/${id}/adjustment-histogram`);
+    if (!r.ok) throw new Error(`Could not load the adjustment histogram (${r.status})`);
+    return r.json();
+  },
 
   // ── Cross-deployment aggregates (Dashboard) ────────────────────
   async getAllPositions(status = 'open') {

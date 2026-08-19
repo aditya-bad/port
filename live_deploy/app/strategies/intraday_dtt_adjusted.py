@@ -304,6 +304,12 @@ def _legs_snapshot(legs: dict) -> dict:
     },
 )
 class IntradayDTTAdjustedStrategy(StrategyBase):
+    # One full cycle IS one trading day here (entry each morning, flat
+    # by force_exit_time) -- see StrategyBase.ADJUSTMENT_GROUP_BY's own
+    # docstring. Inherited as-is by intraday_dtt_advanced (same shape,
+    # same "original"/"adjustment_N" leg_role convention -- see that
+    # module's own docstring on reusing _adjust/_unwind_one unmodified).
+    ADJUSTMENT_GROUP_BY = "day"
 
     async def on_start(self, runner) -> None:
         cfg = runner.config
