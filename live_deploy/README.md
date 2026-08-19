@@ -5765,6 +5765,95 @@ app-wide (Dashboard, Catalog, Compare's status column) to confirm only
 treatment — every other `.tag` in the app is already a single,
 standalone chip with nothing to misalign against.
 
+## What's here (Step 89: dropped the SuperTrend script's dead seed-fetch phase + a NIFTY-to-BankNifty/Sensex straddle cloner)
+
+Two custom_scripts requests. First: "the super_trend register script...
+we changed params and all so I need to update it." Checked first,
+rather than guessing at numbers — a `git diff` against every commit
+since the script was last touched showed `pivot_supertrend_options`/
+`_inverse`'s own `default_config` genuinely hasn't changed a single
+key. The actual answer, confirmed directly with the user (who'd since
+deleted the original 4 deployments, ruling out "fetch current live
+params from the DB" as the fix): the script's own "phase 1" — fetching
+real Kite candles and validating computed SuperTrend against a chart
+reading BEFORE registering — was a leftover from when it was ALSO this
+strategy family's seed source. It stopped being that the moment every
+`pivot_supertrend*` strategy learned to self-seed live from Kite the
+instant its own `on_start` runs (Step 80); after that, phase 1 was
+pure duplicate work re-deriving "is my Kite session sane" the exact
+same question `on_start` is about to ask anyway, for zero benefit.
+Dropped entirely — the script's only job now is building the 4
+deployments' config and POSTing them. Dry-run (the default) needs
+`app/config.py` and nothing else at all: no Kite session, no database,
+no running server — verified directly, ran it in this sandbox with no
+`config.json` present and it printed the full 4-deployment plan
+correctly.
+
+Second, new: `clone_straddle_strategies_banknifty_sensex.py` — clones
+every existing NIFTY deployment of `intraday_dtt_simple`,
+`intraday_dtt_advanced`, and `intraday_dtt_adjusted` into a BANKNIFTY
+version and a SENSEX version each, "same params" meaning genuinely
+fetched from that NIFTY deployment's own CURRENT config in the
+database (`entry_time`, `force_exit_time`,
+`combined_premium_profit_pct`, every `adjustment_*` key,
+`lots_per_trade`, `catch_up_late_entry`,
+`switch_to_next_week_on_expiry`, ...) — carried over verbatim, never
+reset to the strategy's own registered defaults, which could easily
+have drifted from what's actually deployed (exactly the gap the first
+half of this step just fixed elsewhere). Only
+`instrument_tokens`/`symbol`/`options_underlying` and the
+`deployment_name` itself (literal `"Nifty"` → `"BankNifty"`/`"Sensex"`
+substring swap) change per clone.
+
+**BANKNIFTY, with the explicit instruction "do not add special support
+for it"**: NSE discontinued BANKNIFTY's weekly options a while back —
+it only has monthly contracts listed now. Traced
+`OptionsResolver._resolve_from_list` directly rather than assuming:
+`expiry_selector="THIS_WEEK"` has no "is this actually 7 days" logic
+anywhere in it at all — it's mechanically just `sorted(e for e in
+expiries if e >= today)[0]`, "the soonest LISTED expiry," full stop.
+For an underlying whose only listed expiries are monthly, that
+already, automatically, IS "this month" — confirmed directly against
+the real function (not a description of it) with a synthetic
+monthly-only expiry list: `THIS_WEEK` → the nearest monthly date,
+`NEXT_WEEK` → the one after, both correct, zero code changes needed
+anywhere, in this script or the strategies themselves. The one thing
+this script DOES add is a live, up-front verification that this is
+still true today — one Kite `instruments("NFO")` call confirming
+BANKNIFTY genuinely has at least one CE/PE contract with `expiry >=
+today` — using the exact same "soonest expiry" comparison inline
+(deliberately not reimplemented cleverly). If that ever comes back
+negative, BANKNIFTY clones are skipped entirely for that run (SENSEX
+still proceeds, since SENSEX's own options remain weekly and were
+never in question) — exactly "if this_week translates to this month
+then do it, else skip," driven by real data at run time, never a
+BANKNIFTY-specific branch.
+
+Both scripts follow the same safety convention as every other one
+here: dry run (prints the full plan) by default, `--register` to
+actually create anything, which needs the app server running (a bare
+database insert would leave an orphaned row with no live runner
+trading it).
+
+Verified: `_resolve_from_list` tested directly against a synthetic
+monthly-only expiry list (the core claim underpinning "no special
+support needed"); the clone script's `_clone_name`/`build_clone_config`
+tested directly (name substitution, verbatim param carry-over,
+underlying-key swap only); `banknifty_has_a_listed_expiry` tested
+against a fake Kite client for all three cases (a real upcoming expiry,
+only expired ones, no BANKNIFTY rows at all); the full `main()` dry-run
+flow tested end-to-end against fake `create_pool`/`list_deployments`
+(correctly filters to only the 3 target strategies' NIFTY deployments,
+correctly excludes an unrelated SENSEX `pivot_supertrend_options`
+deployment) and the full `--register` flow against a fake "no Kite
+session" response (correctly skips BANKNIFTY, still registers SENSEX);
+both scripts' real dry-run entry points actually executed in this
+sandbox (the SuperTrend one to completion with real output; the clone
+script far enough to reach — and correctly fail on — a real DB
+connection attempt, confirming everything before that point runs
+clean); `ast.parse` + `node --check` N/A here (no `.js` touched) —
+`python3 -c "import ast; ..."` across both scripts instead.
+
 ## Setup
 
 ```bash
