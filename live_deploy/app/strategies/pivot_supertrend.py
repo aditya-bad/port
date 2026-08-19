@@ -343,8 +343,13 @@ def approx_missing_band(candle: dict, atr: float, multiplier: float, need: str) 
 # ═════════════════════════════════════════════════════════════════════
 
 class CandleAggregator:
-    def __init__(self, interval_minutes: int = 5):
+    def __init__(self, interval_minutes: int = 5, label: Optional[str] = None):
         self.interval_minutes = interval_minutes
+        # Logging-only — typically the owning deployment's name, so a
+        # gap warning (below) is attributable when several deployments'
+        # aggregators are running concurrently. None just omits the
+        # prefix; doesn't affect bucketing/candle behavior at all.
+        self.label = label
         self._bucket_start: Optional[datetime] = None
         self._candle: Optional[dict] = None
 
@@ -356,6 +361,30 @@ class CandleAggregator:
         """
         Feed one tick. Returns the just-COMPLETED candle if this tick
         started a new bucket, else None (candle still forming).
+
+        GAP DETECTION: if this tick's bucket is more than one interval
+        past the bucket currently forming, one or more whole candles
+        never happened for this aggregator — no tick landed in them at
+        all, most likely because the upstream WebSocket dropped and
+        reconnected (see LiveDataDispatcher.reconnect_count) with no
+        backfill of whatever ticks were missed during the outage. This
+        matters far more here than it would for a stateless indicator:
+        SuperTrendState is RECURSIVE (each candle's bands depend on the
+        previous candle's), so a silently skipped candle doesn't just
+        leave a small gap in the chart — it permanently shifts every
+        subsequent ATR/band value away from what a continuous data feed
+        (e.g. what a real charting platform, or a fresh Kite REST
+        historical_data fetch, would show) would have produced. Logged
+        as a WARNING here so this is visible the moment it happens
+        instead of silently compounding for a full trading session
+        before anyone notices trend/pivot readings have drifted off the
+        real chart — see custom_scripts/resync_supertrend_state.py for
+        how to correct an already-drifted deployment's persisted state.
+        Only checked WITHIN the same calendar day — the very first tick
+        of a new day is expected to land a long "gap" past whenever the
+        previous day's last candle closed (overnight/weekend market
+        closure, not a real outage), so that transition is deliberately
+        not flagged.
         """
         bucket = self._floor(ts)
 
@@ -373,6 +402,19 @@ class CandleAggregator:
                 c["low"] = price
             c["close"] = price
             return None
+
+        if bucket.date() == self._bucket_start.date():
+            missed = int((bucket - self._bucket_start).total_seconds() // 60 // self.interval_minutes) - 1
+            if missed > 0:
+                logger.warning(
+                    "%sCandleAggregator: %d candle(s) apparently missing between "
+                    "%s and %s (no tick landed in that window) — likely a "
+                    "WebSocket reconnect gap. SuperTrend's recursive state has "
+                    "now silently skipped this window; consider running "
+                    "custom_scripts/resync_supertrend_state.py to correct it.",
+                    f"{self.label}: " if self.label else "",
+                    missed, self._bucket_start.time(), bucket.time(),
+                )
 
         completed = self._candle
         self._bucket_start = bucket
@@ -541,7 +583,7 @@ class PivotSupertrendStrategy(StrategyBase):
         self.market_open_time = _parse_hhmm(cfg.get("market_open_time", "09:15"))
         self.capital_per_trade = cfg.get("capital_per_trade")
 
-        self.aggregator = CandleAggregator(interval_minutes=5)
+        self.aggregator = CandleAggregator(interval_minutes=5, label=runner.deployment_name)
         self.st = SuperTrendState(period=ST_PERIOD, multiplier=ST_MULTIPLIER,
                                   atr_method=self.atr_method)
 

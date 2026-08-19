@@ -5078,6 +5078,79 @@ beyond the redeploy itself. Redeploying is itself state-safe per Step 77
 above (graceful `docker stop` → `runner.stop()` → state persisted before
 the container restarts).
 
+## What's here (Step 79: second real bug — SuperTrend state silently drifted from a WebSocket gap)
+
+Right after Step 78's exchange fix, checked whether `ST_PV_NIFTY` (never
+affected by that bug — NIFTY was always on the right exchange) had
+actually traded on what looked, from the chart, like a clean short
+signal. Its own log lines showed neither a successful entry nor a failed
+one — meaning the entry CONDITION itself, not execution, was never
+satisfied. Root-caused with a live diagnostic rather than a guess:
+paused the deployment (forces `DeploymentRunner.stop()` to persist
+whatever SuperTrend has computed live, exactly as Step 77 built it to
+do), queried `deployment_state` directly, and found `trend: "up"` —
+while the reference chart was clearly showing a bearish SuperTrend at
+the same moment.
+
+**Root cause**: `CandleAggregator.add_tick()` had no gap detection. If
+the Kite WebSocket drops and reconnects (the health endpoint showed
+`reconnect_count: 40` for the day), any 5-min candle(s) that fall
+entirely inside the outage window are silently never created — the
+aggregator just starts the next candle the moment a tick resumes,
+with no memory that time elapsed in between. SuperTrend(7,3) is
+*recursive* — each candle's ATR/bands depend on the previous candle's —
+so a single silently-skipped candle permanently shifts every value
+after it away from what a continuous feed (a real chart, or a fresh
+Kite REST fetch) would show. It matched exactly at registration
+(Step 76, a clean gap-free seed straight from Kite's historical API) and
+diverged over a live trading day with real reconnects — consistent with
+the numbers, not a coincidence.
+
+**Two-part fix**:
+
+1. **Visibility, permanent**: `CandleAggregator.add_tick()` now detects
+   when a new tick's bucket is more than one interval past the bucket
+   currently forming, WITHIN the same calendar day (an overnight/weekend
+   gap is expected and deliberately not flagged), and logs a `WARNING`
+   naming exactly how many candles were apparently missing and the time
+   window — attributed to the owning deployment via a new
+   `CandleAggregator(label=...)` param, wired from all three
+   `pivot_supertrend*` strategy files. This alone doesn't fix a
+   drifted deployment, but means the NEXT gap is visible the moment it
+   happens instead of silently compounding for a full session.
+
+2. **Correction, on demand**: `custom_scripts/resync_supertrend_state.py`
+   (new) — fetches gap-free 5-min candles from Kite's REST API (the
+   authoritative source a real chart is built from) for the last several
+   days through right now, replays them through a fresh
+   `SuperTrendState` (imported, not reimplemented — bit-for-bit the same
+   math the strategy itself runs), and overwrites just the
+   `supertrend`/`prev_trend` fields in `deployment_state` — pivots and
+   `prev_day_ohlc` are left untouched (a single daily-OHLC read, never
+   exposed to this failure mode). Defaults to resyncing all 4 standard
+   `ST_PV_*` deployments; `--dry-run` previews the before/after
+   comparison without writing. Explicitly does NOT touch a currently
+   running deployment's in-memory state — writing to the DB only changes
+   what the next `on_start()` loads, so an `active` deployment needs a
+   pause+resume (or a redeploy) afterward for the correction to actually
+   take effect; the script prints that reminder itself whenever it finds
+   one still active.
+
+Verified end-to-end against synthetic data (steadily-rising candles,
+asserting the corrected `trend` flips as expected): dry-run computes and
+prints without writing; a real run preserves `pivots`/`prev_day_ohlc`
+verbatim while replacing `supertrend`/`prev_trend`, and resets
+`pending_exit`/`pending_entry` to `None` rather than carrying forward a
+possibly-stale queued action; a missing deployment name is skipped, not
+a crash; the inverse strategy's smaller state shape (no
+pivots/`prev_day_ohlc`/`today_*` keys, matching its own
+`get_persistable_state()`) is produced correctly. Gap detection itself
+verified against three cases: ticks within one bucket (no candle, no
+warning), a normal adjacent-bucket close (candle returned, no warning),
+a real multi-candle gap (candle returned, warning logged naming the
+right count and window), and an overnight/day-boundary jump (candle
+returned, deliberately NOT flagged).
+
 ## Setup
 
 ```bash

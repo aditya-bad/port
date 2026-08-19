@@ -163,7 +163,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         self.force_exit_time = _parse_hhmm(cfg.get("force_exit_time", "15:00"))
         self.market_open_time = _parse_hhmm(cfg.get("market_open_time", "09:15"))
 
-        self.aggregator = CandleAggregator(interval_minutes=5)
+        self.aggregator = CandleAggregator(interval_minutes=5, label=runner.deployment_name)
         self.st = SuperTrendState(period=ST_PERIOD, multiplier=ST_MULTIPLIER,
                                   atr_method=self.atr_method)
 

@@ -186,7 +186,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         if self.lots_per_trade < 1:
             raise ValueError(f"lots_per_trade must be >= 1, got {self.lots_per_trade}")
 
-        self.aggregator = CandleAggregator(interval_minutes=5)
+        self.aggregator = CandleAggregator(interval_minutes=5, label=runner.deployment_name)
         self.st = SuperTrendState(period=ST_PERIOD, multiplier=ST_MULTIPLIER,
                                   atr_method=self.atr_method)
 

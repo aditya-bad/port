@@ -65,3 +65,23 @@ zero writes.
   SENSEX) fully seeded so pivots/SuperTrend are correct from minute
   one instead of needing a cold-start warmup day. See the script's own
   `--help` / module docstring for the full flag list.
+
+- **`resync_supertrend_state.py`** — corrects an ALREADY-REGISTERED
+  deployment's persisted SuperTrend state after it's drifted from
+  reality, which can happen because `CandleAggregator` has no built-in
+  way to notice a missing tick window (a WebSocket reconnect can
+  silently skip whole 5-min candles — SuperTrend is recursive, so one
+  skipped candle permanently shifts every value after it away from what
+  a real chart shows). Fetches gap-free 5-min candles straight from
+  Kite's REST `historical_data` (not the WS tick stream) for the last
+  `--lookback-days` (default 7) through right now, replays them through
+  a fresh `SuperTrendState`, and overwrites just the
+  `supertrend`/`prev_trend` fields in `deployment_state` — pivots and
+  `prev_day_ohlc` are untouched (they come from a single daily OHLC
+  read, never exposed to this failure mode). Defaults to all 4 standard
+  `ST_PV_*` names; `--deployment-name` scopes to one, `--dry-run`
+  previews without writing. **Does not affect a currently-running
+  deployment's in-memory state** — the deployment must be paused then
+  resumed (or the app redeployed) for the corrected state to actually
+  take effect; the script prints this reminder itself whenever it
+  resyncs a deployment it finds `active`.
