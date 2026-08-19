@@ -75,6 +75,27 @@ zero writes.
   request instead of skipping it outright. See the script's own
   `--help` / module docstring for the full flag list.
 
+- **`validate_supertrend_pivots.py`** — a diagnostic, not a mutation:
+  independently re-derives SuperTrend + pivot values for a
+  `pivot_supertrend*` deployment straight from Kite's REST API (the
+  EXACT SAME `fetch_seed_from_kite`/`SuperTrendState`/`compute_pivots`/
+  `supertrend_status_fields` code the strategy and
+  `GET /deployments/{id}/strategy-status` itself both run — imported,
+  not reimplemented) and compares it against what that live endpoint is
+  CURRENTLY reporting for `ST_PV_NIFTY`/`ST_PV_SENSEX` (or any
+  `--deployment` you name). Computes TWO candidate answers — pivots as
+  of before vs. after today's 15:45 IST post-market checkpoint, since
+  which one is correct depends on whether that's already run today, not
+  something knowable in advance — and reports which one (if either) the
+  live API matches. Every intermediate number (candle count, exact
+  `prev_day_ohlc` used, raw `SuperTrendState` fields, both candidates'
+  full field lists, the API's own raw response) is printed either way,
+  by design: this is meant to be copy-pasteable as-is into a bug report
+  and be enough on its own to diagnose from, not just a pass/fail.
+  Needs the app server running (it hits the real endpoint, not the
+  database directly) plus a real Kite session. See the script's own
+  `--help` / module docstring for the full flag list.
+
 - **`clone_straddle_strategies_banknifty_sensex.py`** — clones every
   existing NIFTY deployment of `intraday_dtt_simple`,
   `intraday_dtt_advanced`, and `intraday_dtt_adjusted` into a BANKNIFTY

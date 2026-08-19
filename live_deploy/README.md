@@ -5884,6 +5884,44 @@ deployments' own just-returned ids only); dry-run re-run in this
 sandbox, output confirms the corrected capital and an
 `[excluded from reports]` marker on both inverse entries.
 
+## What's here (Step 91: `custom_scripts/validate_supertrend_pivots.py` — a self-diagnosing SuperTrend/pivot checker)
+
+Follow-up to two questions about the Live Strategy Indicators section
+(Step 87): "is it actually live" and "will pivots recalibrate for
+tomorrow correctly." Answered both directly from the code at the time,
+but the user then asked for something to independently VERIFY it
+against real data going forward, with logs detailed enough to hand back
+if the answer's ever wrong.
+
+`validate_supertrend_pivots.py` re-derives SuperTrend + pivots for
+`ST_PV_NIFTY`/`ST_PV_SENSEX` (or any `--deployment`) straight from real
+Kite data — via the strategy's own `fetch_seed_from_kite`/
+`SuperTrendState`/`compute_pivots`/`supertrend_status_fields`, imported
+directly rather than reimplemented, so there's no risk of the
+VALIDATOR itself drifting from what it's validating — and compares
+against `GET /deployments/{id}/strategy-status`'s live answer. Computes
+BOTH candidates every time (pivots as of before vs. after today's
+15:45 IST post-market checkpoint) since which is currently correct
+depends on whether that's already fired today; whichever the API
+matches is reported as the verdict, and if it matches neither, every
+raw intermediate number — candle counts, exact `prev_day_ohlc` used on
+each side, the raw `SuperTrendState` fields, the full computed field
+lists, the API's own raw response — is already printed above the
+verdict, not something you'd need to re-run with more flags to get.
+
+Verified end-to-end against mocks rather than just unit-by-unit: a
+mocked `fetch_seed_from_kite` + a mocked deployment row + a mocked
+`GET .../strategy-status` response run through the real `validate_one`
+three times — (1) API response built from the real BEFORE-checkpoint
+computation → correctly reports MATCH-before; (2) a deliberately wrong
+API response (bogus trend/value, missing pivot keys) → correctly
+reports MISMATCH against both candidates with a full, readable per-
+field diff; (3) a deployment name that doesn't exist → fails cleanly
+with a clear message instead of a traceback. Also unit-tested
+`_compare`'s own tolerance/missing-key handling and confirmed a full
+`app.main` import still succeeds with the new script's imports in
+place.
+
 ## Setup
 
 ```bash
