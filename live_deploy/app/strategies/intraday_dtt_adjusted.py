@@ -246,7 +246,7 @@ from datetime import date
 from typing import Optional
 
 from ..deployments.strategy_base import StrategyBase
-from ..options import NoKiteSession, OptionsResolver
+from ..options import NoKiteSession, OptionsResolver, options_exchange_for
 from .intraday_dtt_simple import resolve_atm_straddle_legs
 from .pivot_supertrend import _parse_hhmm
 from .registry import register_strategy
@@ -379,7 +379,18 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         self.catch_up_late_entry = bool(cfg.get("catch_up_late_entry", True))
         self.switch_to_next_week_on_expiry = bool(cfg.get("switch_to_next_week_on_expiry", False))
 
-        self.resolver = OptionsResolver(runner.dispatcher)
+        # exchange=... : the options CHAIN's exchange (NFO for
+        # NIFTY/BANKNIFTY/..., BFO for SENSEX/BANKEX) — see
+        # options_exchange_for's own docstring in app/options/resolver.py
+        # for the real bug this fixes: options_underlying is a free-form
+        # config string here (not restricted to an enum), so a SENSEX/
+        # BANKEX deployment without this would silently fail every
+        # entry with "No option expiries found for 'SENSEX' on NFO" —
+        # the same bug pivot_supertrend_options.py had (see main
+        # README's Step 78). intraday_dtt_advanced.py inherits this
+        # unchanged (it subclasses this class and never overrides
+        # on_start's resolver construction).
+        self.resolver = OptionsResolver(runner.dispatcher, exchange=options_exchange_for(self.options_underlying))
 
         self.today: Optional[date] = None
         self.entered_today = False

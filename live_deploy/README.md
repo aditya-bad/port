@@ -5233,6 +5233,40 @@ on the live instance, not just in a return value) with zero restart
 involved; a missing Kite session falls through cleanly to a
 config-provided `prev_day_ohlc` seed.
 
+## What's here (Step 81: the same wrong-exchange bug, fixed in every other strategy that could hit it)
+
+Step 78 fixed `pivot_supertrend_options`/`_inverse` hardcoding `NFO` as
+`OptionsResolver`'s exchange (SENSEX/BANKEX options actually live on
+`BFO`), but that was fixed narrowly — only the two files the live
+incident happened to hit. Asked directly: are any of the OTHER
+strategies exposed to the identical bug? Checked every
+`OptionsResolver(runner.dispatcher, ...)` construction site across
+`app/strategies/`:
+
+- `calendar_btst.py`, `intraday_dtt_simple.py`, `intraday_dtt_adjusted.py`
+  — all three accept a free-form `options_underlying` config string
+  (default `"NIFTY"`, not restricted to an enum, same as
+  `pivot_supertrend_options` before Step 78) and ALL THREE built their
+  resolver with no exchange override — same latent bug, just never hit
+  yet because nobody had deployed one of these against SENSEX/BANKEX.
+  Fixed identically: `exchange=options_exchange_for(self.options_underlying)`.
+- `intraday_dtt_advanced.py` — subclasses `intraday_dtt_adjusted.py`
+  and never overrides `on_start` or constructs its own resolver, so it
+  inherits the fix automatically, same as it inherited the original bug.
+- `strangle_monthly_v2.py` — already correct (it's what confirmed the
+  fix pattern back in Step 78 — its own `SUPPORTED_INSTRUMENTS` dict
+  already mapped SENSEX/BANKEX to `BFO`).
+- `pivot_supertrend.py` (the plain, non-options variant) — never
+  constructs an `OptionsResolver` at all; it trades the underlying
+  index directly, so this bug class doesn't apply to it.
+
+Verified directly, not just by code inspection: constructed each of the
+three newly-fixed strategies with `options_underlying: "SENSEX"` and
+confirmed `resolver.exchange == "BFO"` on all three (using a fake
+dispatcher — `on_start` itself still fails past that point with no real
+Kite session available here, which is expected and irrelevant to what
+was being checked).
+
 ## Setup
 
 ```bash
