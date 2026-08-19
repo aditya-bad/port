@@ -82,3 +82,35 @@ class StrategyBase(ABC):
         reverting to a static seed value that may be long stale by then.
         """
         return None
+
+    async def on_post_market_checkpoint(self, runner: "Any") -> None:
+        """
+        Optional: called once a day by DeploymentManager.
+        post_market_dump_loop(), BEFORE it calls dump_state() to persist
+        whatever get_persistable_state() returns — a chance to actively
+        REFRESH live in-memory state from an authoritative outside source
+        (typically a REST fetch) rather than just persisting whatever
+        happens to already be sitting in memory. Default no-op: most
+        strategies have nothing that needs this (their positions/cash
+        are already resume-safe via the DB, with no separately-computed
+        indicator state that could have drifted).
+
+        The strategies in this codebase that DO override this
+        (pivot_supertrend / pivot_supertrend_options[_inverse]) use it to
+        re-fetch gap-free candles from Kite's REST API and recompute
+        SuperTrend fresh — correcting for a WebSocket tick gap's effect
+        on a RECURSIVE indicator (each candle's state depends on the
+        previous candle's, so one silently-missed candle, e.g. from a
+        reconnect, permanently drifts every value after it). Mutating
+        `self` here fixes the LIVE, currently-trading strategy instance
+        immediately, not just what gets persisted — a deployment that
+        stays running straight through this checkpoint self-heals
+        without needing a restart at all.
+
+        Exceptions raised here are caught and logged by the caller
+        (DeploymentRunner.post_market_checkpoint) — a failure here still
+        falls through to persisting whatever's already in memory, same
+        as before this hook existed, rather than skipping the checkpoint
+        entirely.
+        """
+        return None

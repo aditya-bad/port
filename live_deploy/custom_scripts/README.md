@@ -66,22 +66,22 @@ zero writes.
   one instead of needing a cold-start warmup day. See the script's own
   `--help` / module docstring for the full flag list.
 
-- **`resync_supertrend_state.py`** — corrects an ALREADY-REGISTERED
-  deployment's persisted SuperTrend state after it's drifted from
-  reality, which can happen because `CandleAggregator` has no built-in
-  way to notice a missing tick window (a WebSocket reconnect can
-  silently skip whole 5-min candles — SuperTrend is recursive, so one
-  skipped candle permanently shifts every value after it away from what
-  a real chart shows). Fetches gap-free 5-min candles straight from
-  Kite's REST `historical_data` (not the WS tick stream) for the last
-  `--lookback-days` (default 7) through right now, replays them through
-  a fresh `SuperTrendState`, and overwrites just the
-  `supertrend`/`prev_trend` fields in `deployment_state` — pivots and
-  `prev_day_ohlc` are untouched (they come from a single daily OHLC
-  read, never exposed to this failure mode). Defaults to all 4 standard
-  `ST_PV_*` names; `--deployment-name` scopes to one, `--dry-run`
-  previews without writing. **Does not affect a currently-running
-  deployment's in-memory state** — the deployment must be paused then
-  resumed (or the app redeployed) for the corrected state to actually
-  take effect; the script prints this reminder itself whenever it
-  resyncs a deployment it finds `active`.
+There used to be a `resync_supertrend_state.py` here — a standalone
+script to manually correct a `pivot_supertrend*` deployment's SuperTrend
+state after a WebSocket tick gap drifted it from reality (see
+`register_supertrend_options_strategies.py`'s own docstring above for
+what a tick gap does to a recursive indicator like SuperTrend). It's
+gone now because the fix moved INTO the strategy itself instead: every
+`pivot_supertrend`/`pivot_supertrend_options`/
+`pivot_supertrend_options_inverse` deployment now auto-seeds itself
+live from Kite's REST API on every `on_start` (cold deploy, resume,
+mid-day restart — no config-provided `seed_candles`/`prev_day_ohlc`
+needed at all, though still honored as a fallback), AND self-corrects
+its live in-memory state once a day at the post-market checkpoint
+without needing a restart. See `app/strategies/pivot_supertrend.py`'s
+`fetch_seed_from_kite`/`supertrend_from_seed_candles` and
+`StrategyBase.on_post_market_checkpoint` for the mechanism. The
+script's one remaining use case — "force a resync right now, without
+waiting" — is now just Pause then Resume on the deployment (from the
+UI or `POST /deployments/{id}/pause` + `/resume`), which triggers the
+exact same live re-seed `on_start` always does.

@@ -130,16 +130,21 @@ strategy's backtest never did that; it's always exactly one lot in, one
 lot out.
 """
 
+import asyncio
 import logging
 from collections import deque
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, timedelta, time as dtime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from ..deployments.strategy_base import StrategyBase
+from ..options import NoKiteSession, get_kite_connect
 from .registry import register_strategy
 from .trade_meta import build_trade_meta
 
 logger = logging.getLogger("live_deploy.strategies.pivot_supertrend")
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 ST_PERIOD = 7
 ST_MULTIPLIER = 3
@@ -375,12 +380,14 @@ class CandleAggregator:
         subsequent ATR/band value away from what a continuous data feed
         (e.g. what a real charting platform, or a fresh Kite REST
         historical_data fetch, would show) would have produced. Logged
-        as a WARNING here so this is visible the moment it happens
-        instead of silently compounding for a full trading session
-        before anyone notices trend/pivot readings have drifted off the
-        real chart — see custom_scripts/resync_supertrend_state.py for
-        how to correct an already-drifted deployment's persisted state.
-        Only checked WITHIN the same calendar day — the very first tick
+        as a WARNING here purely for visibility/diagnosis — no separate
+        correction step is needed: on_start's own live auto-seed (see
+        fetch_seed_from_kite below) re-fetches gap-free candles straight
+        from Kite's REST API on every restart, and on_post_market_
+        checkpoint does the same once a day for whatever's still
+        running, so a gap this logs is already self-healing on its own
+        schedule; this warning just tells you it happened and roughly
+        when. Only checked WITHIN the same calendar day — the very first tick
         of a new day is expected to land a long "gap" past whenever the
         previous day's last candle closed (overnight/weekend market
         closure, not a real outage), so that transition is deliberately
@@ -409,9 +416,9 @@ class CandleAggregator:
                 logger.warning(
                     "%sCandleAggregator: %d candle(s) apparently missing between "
                     "%s and %s (no tick landed in that window) — likely a "
-                    "WebSocket reconnect gap. SuperTrend's recursive state has "
-                    "now silently skipped this window; consider running "
-                    "custom_scripts/resync_supertrend_state.py to correct it.",
+                    "WebSocket reconnect gap. Self-healing: the next on_start "
+                    "(or today's post-market checkpoint) re-seeds SuperTrend "
+                    "fresh from Kite's REST API, so no manual action is needed.",
                     f"{self.label}: " if self.label else "",
                     missed, self._bucket_start.time(), bucket.time(),
                 )
@@ -543,6 +550,130 @@ def apply_seed_to_state(
 
 
 # ═════════════════════════════════════════════════════════════════════
+# LIVE AUTO-SEEDING — self-fetched from Kite's REST API, not asked for
+# via config. Real incident this exists for: the WebSocket tick stream
+# can silently drop whole candles across a reconnect (CandleAggregator
+# has no way to notice a gap in ITS OWN input — see its own docstring),
+# and SuperTrend is RECURSIVE, so one skipped candle permanently drifts
+# every value after it away from what a continuous feed (a real chart,
+# or this same REST endpoint) would show. Rather than ask the deployer
+# to hand-feed seed_candles/prev_day_ohlc once at registration time (the
+# older apply_seed_to_state path above, kept only as a fallback), every
+# strategy in this family now fetches its OWN seed straight from Kite —
+# on EVERY on_start (cold deploy, resume from pause, or a mid-day
+# restart after a crash/redeploy — all the same call, always re-fetched,
+# never trusting whatever might already be in memory or the DB to still
+# be gap-free) AND once a day at the post-market checkpoint (see
+# StrategyBase.on_post_market_checkpoint), which additionally rolls
+# prev_day_ohlc/pivots forward to TOMORROW using today's own now-final
+# daily candle.
+# ═════════════════════════════════════════════════════════════════════
+
+AUTOSEED_LOOKBACK_DAYS = 7   # calendar days of 5-min candles to replay through "now" —
+                             # comfortably several real trading days even across a long
+                             # weekend; ATR(7)'s Wilder smoothing converges to the true
+                             # trajectory well within that, so this is safety margin, not
+                             # precision — there's no real downside to fetching more.
+
+
+async def fetch_seed_from_kite(
+    dispatcher, instrument_token: int, lookback_days: int = AUTOSEED_LOOKBACK_DAYS,
+    need_prev_day_ohlc: bool = True, include_today_ohlc: bool = False,
+) -> dict:
+    """
+    Live REST fetch (via the SAME Kite session the dispatcher's
+    WebSocket is already authenticated with — get_kite_connect, no
+    separate login) producing everything a strategy needs to seed
+    itself cleanly, straight from Kite's own historical_data endpoint —
+    the authoritative, gap-free source a real chart is built from, NOT
+    this app's own WebSocket tick stream / CandleAggregator, which is
+    exactly the thing that can silently develop gaps.
+
+    Returns {"seed_candles": [{"date","high","low","close"}, ...],
+             "prev_day_ohlc": {"high","low","close"} | None}.
+
+    seed_candles: gap-free 5-min candles for the last `lookback_days`
+    calendar days through right now — feed these through a fresh
+    SuperTrendState.update() call each to get the mathematically
+    correct current trend/bands, immune to whatever WS gaps happened in
+    between.
+
+    prev_day_ohlc (only fetched if need_prev_day_ohlc — the inverse
+    strategy never uses pivots at all, so skips this round trip
+    entirely): WHICH day depends on include_today_ohlc, since pivots'
+    source day is a genuinely different question at different call
+    sites —
+      - include_today_ohlc=False (on_start, ANY time of day including a
+        mid-session restart): today's own pivots must come from the
+        most recently COMPLETED trading day strictly BEFORE today — the
+        normal "yesterday" meaning, correct whether this fires at 9:16am
+        or 1pm, since today itself is never a candidate no matter how
+        far into the session it already is.
+      - include_today_ohlc=True (the post-market checkpoint, which only
+        ever runs after the day's close): today's session is NOW
+        complete, so this call is rolling pivots forward to TOMORROW —
+        today's own daily candle is exactly the right source.
+    None if no completed day matching that rule exists yet in the
+    fetched window (e.g. a brand new instrument, or lookback_days too
+    short) — caller falls back to whatever it already has, same as a
+    cold start with no seed ever did.
+
+    Raises NoKiteSession (propagated from get_kite_connect) if no Kite
+    session exists yet at all — caller decides how to degrade (this
+    module's own on_start/on_post_market_checkpoint callers all catch
+    this and fall through to persisted state / cold start, never let it
+    crash the runner).
+    """
+    kite = get_kite_connect(dispatcher)   # raises NoKiteSession
+    now = datetime.now(_IST).replace(tzinfo=None)
+    today = now.date()
+
+    candle_start = datetime.combine(today - timedelta(days=lookback_days), dtime(0, 0))
+    raw_candles = await asyncio.to_thread(kite.historical_data, instrument_token, candle_start, now, "5minute")
+    seed_candles = []
+    for c in raw_candles:
+        d = c["date"]
+        if d.tzinfo is not None:
+            d = d.astimezone(_IST).replace(tzinfo=None)
+        seed_candles.append({
+            "date": d, "high": float(c["high"]), "low": float(c["low"]), "close": float(c["close"]),
+        })
+
+    prev_day_ohlc = None
+    if need_prev_day_ohlc:
+        # A few extra days on the daily-candle side so a long weekend or
+        # holiday cluster right before "today" still resolves to a real
+        # completed day, not an empty result.
+        daily_start = datetime.combine(today - timedelta(days=lookback_days + 10), dtime(0, 0))
+        daily_raw = await asyncio.to_thread(kite.historical_data, instrument_token, daily_start, now, "day")
+        candidates = []
+        for row in daily_raw:
+            row_date = row["date"].date() if hasattr(row["date"], "date") else row["date"]
+            if (row_date == today) if include_today_ohlc else (row_date < today):
+                candidates.append(row)
+        if candidates:
+            last = candidates[-1]
+            prev_day_ohlc = {
+                "high": round(float(last["high"]), 2), "low": round(float(last["low"]), 2),
+                "close": round(float(last["close"]), 2),
+            }
+
+    return {"seed_candles": seed_candles, "prev_day_ohlc": prev_day_ohlc}
+
+
+def supertrend_from_seed_candles(seed_candles: list[dict], atr_method: str = "wilder") -> "SuperTrendState":
+    """A brand new SuperTrendState, fully replayed through `seed_candles`
+    in order — the mathematically correct current state, immune to
+    whatever gaps this deployment's own tick-driven CandleAggregator may
+    have hit, since these candles came straight from fetch_seed_from_kite
+    (Kite's REST API), not the WS stream."""
+    st = SuperTrendState(period=ST_PERIOD, multiplier=ST_MULTIPLIER, atr_method=atr_method)
+    for c in seed_candles:
+        st.update(c)
+    return st
+
+
+# ═════════════════════════════════════════════════════════════════════
 # STRATEGY
 # ═════════════════════════════════════════════════════════════════════
 
@@ -605,31 +736,72 @@ class PivotSupertrendStrategy(StrategyBase):
         self.pending_entry: Optional[dict] = None
         self.prev_trend: Optional[str] = None
 
-        # Prefer whatever this deployment last persisted (see
-        # get_persistable_state below) over the static config seed —
-        # it's genuinely more current, having been captured live at the
-        # last graceful stop rather than typed in once at initial
-        # deploy. Only a first-ever start (or a strategy that's never
-        # made it past cold-start) falls through to the config seed.
-        persisted = await runner.load_state()
-        if persisted and self._restore_from_state(runner, persisted):
-            pass
-        else:
-            self._apply_seed(runner, cfg)
-            if self.prev_day_ohlc:
+        # PRIMARY seeding path: fetch fresh, gap-free candles straight
+        # from Kite's REST API and replay them RIGHT NOW — on every
+        # single on_start, not just a first-ever cold deploy. This is
+        # deliberate, not merely a fallback: a mid-day restart (crash,
+        # redeploy, pause+resume) gets exactly the same live reseed as a
+        # brand new deployment would, which is what actually fixes drift
+        # rather than just carrying forward whatever was last persisted
+        # (itself possibly already gap-affected — see
+        # fetch_seed_from_kite's own docstring). include_today_ohlc is
+        # deliberately False here regardless of what time of day this
+        # runs — today's OWN pivots always come from the most recently
+        # COMPLETED day strictly before today, never today itself, even
+        # at 2pm mid-session.
+        try:
+            seed = await fetch_seed_from_kite(runner.dispatcher, self.instrument_token)
+            self.st = supertrend_from_seed_candles(seed["seed_candles"], self.atr_method)
+            self.prev_trend = self.st.trend
+            if seed["prev_day_ohlc"]:
+                self.prev_day_ohlc = seed["prev_day_ohlc"]
                 self.pivots = compute_pivots(
                     self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
                     self.prev_day_ohlc["close"], self.pivot_type,
                 )
-                logger.info("%s: pivots seeded from prev_day_ohlc -> %s",
-                           runner.deployment_name,
-                           {k: round(v, 2) for k, v in self.pivots.items()})
-            else:
-                logger.warning(
-                    "%s: no prev_day_ohlc/seed_candles given — pivots unavailable "
-                    "until a full trading day has been observed live (no entries "
-                    "until then).", runner.deployment_name,
-                )
+            logger.info(
+                "%s: auto-seeded live from Kite (%d candle(s)) -> trend=%s, pivots=%s",
+                runner.deployment_name, len(seed["seed_candles"]), self.st.trend, bool(self.pivots),
+            )
+            return
+        except NoKiteSession:
+            logger.warning(
+                "%s: no Kite session yet — cannot auto-seed live; falling back "
+                "to persisted state / config seed", runner.deployment_name,
+            )
+        except Exception:
+            logger.exception(
+                "%s: live auto-seed from Kite failed — falling back to "
+                "persisted state / config seed", runner.deployment_name,
+            )
+
+        # FALLBACK 1: whatever this deployment last persisted — only
+        # reached if the live fetch above failed outright (no session
+        # yet, a Kite API hiccup, ...).
+        persisted = await runner.load_state()
+        if persisted and self._restore_from_state(runner, persisted):
+            return
+
+        # FALLBACK 2: legacy config-provided seed (prev_day_ohlc /
+        # seed_candles / supertrend_seed) — no longer required or asked
+        # for at registration time, but still honored if given, and
+        # still the only path for a genuinely brand-new instrument Kite
+        # has no session/history for.
+        self._apply_seed(runner, cfg)
+        if self.prev_day_ohlc:
+            self.pivots = compute_pivots(
+                self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
+                self.prev_day_ohlc["close"], self.pivot_type,
+            )
+            logger.info("%s: pivots seeded from prev_day_ohlc -> %s",
+                       runner.deployment_name,
+                       {k: round(v, 2) for k, v in self.pivots.items()})
+        else:
+            logger.warning(
+                "%s: no live Kite seed, no persisted state, no config seed — "
+                "pivots unavailable until a full trading day has been observed "
+                "live (no entries until then).", runner.deployment_name,
+            )
 
     def _restore_from_state(self, runner, state: dict) -> bool:
         """Restore from a persisted deployment_state blob (see
@@ -701,6 +873,59 @@ class PivotSupertrendStrategy(StrategyBase):
             "pending_exit": self.pending_exit,
             "pending_entry": self.pending_entry,
         }
+
+    async def on_post_market_checkpoint(self, runner) -> None:
+        """Once a day, after market close (see StrategyBase's own
+        docstring for exactly when/why): re-fetch a clean candle window
+        AND today's own now-final daily OHLC straight from Kite's REST
+        API, recompute SuperTrend fresh, and roll prev_day_ohlc/pivots
+        forward to TOMORROW — all applied to LIVE in-memory state (self.
+        st/self.prev_trend/self.prev_day_ohlc/self.pivots), not just
+        what gets persisted afterward, so a deployment that stays
+        running straight through market close self-heals any drift
+        accumulated during today's session without needing a restart at
+        all. include_today_ohlc=True here (unlike on_start's own call)
+        is exactly why: this is the one call site where TODAY is the
+        correct source day, because today's session has just ended."""
+        try:
+            seed = await fetch_seed_from_kite(
+                runner.dispatcher, self.instrument_token, include_today_ohlc=True,
+            )
+        except NoKiteSession:
+            logger.warning("%s: post-market checkpoint skipped — no Kite session",
+                           runner.deployment_name)
+            return
+        except Exception:
+            logger.exception(
+                "%s: post-market checkpoint's Kite fetch failed — keeping "
+                "existing live state, will retry at tomorrow's checkpoint "
+                "(and next on_start regardless)", runner.deployment_name,
+            )
+            return
+
+        fresh_st = supertrend_from_seed_candles(seed["seed_candles"], self.atr_method)
+        if fresh_st.trend is None:
+            logger.warning(
+                "%s: post-market checkpoint's fresh replay never warmed up "
+                "(unexpected — leaving existing live state untouched)",
+                runner.deployment_name,
+            )
+            return
+        old_trend = self.st.trend
+        self.st = fresh_st
+        self.prev_trend = fresh_st.trend
+
+        if seed["prev_day_ohlc"]:
+            self.prev_day_ohlc = seed["prev_day_ohlc"]
+            self.pivots = compute_pivots(
+                self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
+                self.prev_day_ohlc["close"], self.pivot_type,
+            )
+        logger.info(
+            "%s: post-market checkpoint — resynced SuperTrend from live Kite "
+            "data (trend %s -> %s) and rolled pivots forward for tomorrow",
+            runner.deployment_name, old_trend, fresh_st.trend,
+        )
 
     def _apply_seed(self, runner, cfg: dict) -> None:
         prev_trend, derived = apply_seed_to_state(

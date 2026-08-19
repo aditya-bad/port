@@ -103,6 +103,8 @@ from .pivot_supertrend import (
     _parse_hhmm,
     apply_seed_to_state,
     compute_pivots,
+    fetch_seed_from_kite,
+    supertrend_from_seed_candles,
 )
 from .registry import register_strategy
 from .trade_meta import build_trade_meta
@@ -218,14 +220,45 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             )
             break
 
-        # Prefer whatever this deployment last persisted (see
-        # get_persistable_state below) over the static config seed —
-        # same reasoning as pivot_supertrend.py's identical block. Only
-        # a first-ever start falls through to the config seed.
+        # PRIMARY seeding path: fetch fresh, gap-free candles straight
+        # from Kite's REST API and replay them RIGHT NOW — see
+        # pivot_supertrend.py's identical block / fetch_seed_from_kite's
+        # own docstring for the full reasoning (every on_start, not just
+        # a cold deploy; include_today_ohlc=False since today's own
+        # pivots always come from the day strictly BEFORE today).
+        try:
+            seed = await fetch_seed_from_kite(runner.dispatcher, self.instrument_token)
+            self.st = supertrend_from_seed_candles(seed["seed_candles"], self.atr_method)
+            self.prev_trend = self.st.trend
+            if seed["prev_day_ohlc"]:
+                self.prev_day_ohlc = seed["prev_day_ohlc"]
+                self.pivots = compute_pivots(
+                    self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
+                    self.prev_day_ohlc["close"], self.pivot_type,
+                )
+            logger.info(
+                "%s: auto-seeded live from Kite (%d candle(s)) -> trend=%s, pivots=%s",
+                runner.deployment_name, len(seed["seed_candles"]), self.st.trend, bool(self.pivots),
+            )
+            return
+        except NoKiteSession:
+            logger.warning(
+                "%s: no Kite session yet — cannot auto-seed live; falling back "
+                "to persisted state / config seed", runner.deployment_name,
+            )
+        except Exception:
+            logger.exception(
+                "%s: live auto-seed from Kite failed — falling back to "
+                "persisted state / config seed", runner.deployment_name,
+            )
+
+        # FALLBACK 1: whatever this deployment last persisted.
         persisted = await runner.load_state()
         if persisted and self._restore_from_state(runner, persisted):
             return
 
+        # FALLBACK 2: legacy config-provided seed — no longer required,
+        # still honored if given.
         seeded_trend, derived = apply_seed_to_state(
             runner.deployment_name, self.st, self.atr_method, cfg, self.prev_day_ohlc,
             log=logger,
@@ -243,9 +276,9 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                        {k: round(v, 2) for k, v in self.pivots.items()})
         else:
             logger.warning(
-                "%s: no prev_day_ohlc/seed_candles given — pivots unavailable "
-                "until a full trading day has been observed live (no entries "
-                "until then).", runner.deployment_name,
+                "%s: no live Kite seed, no persisted state, no config seed — "
+                "pivots unavailable until a full trading day has been observed "
+                "live (no entries until then).", runner.deployment_name,
             )
         self.prev_trend = self.st.trend
 
@@ -310,6 +343,55 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             "pending_exit": self.pending_exit,
             "pending_entry": self.pending_entry,
         }
+
+    async def on_post_market_checkpoint(self, runner) -> None:
+        """See pivot_supertrend.py's identical method for the full
+        reasoning — re-fetches a clean candle window + today's own
+        now-final daily OHLC from Kite's REST API, recomputes SuperTrend
+        fresh, and rolls prev_day_ohlc/pivots forward to TOMORROW, all
+        applied to LIVE in-memory state so a deployment that stays
+        running straight through market close self-heals without a
+        restart. Does NOT touch active_leg_token/active_leg_symbol/
+        active_leg_exchange — an open option position is unaffected by
+        this (it's already resume-safe via the DB regardless)."""
+        try:
+            seed = await fetch_seed_from_kite(
+                runner.dispatcher, self.instrument_token, include_today_ohlc=True,
+            )
+        except NoKiteSession:
+            logger.warning("%s: post-market checkpoint skipped — no Kite session",
+                           runner.deployment_name)
+            return
+        except Exception:
+            logger.exception(
+                "%s: post-market checkpoint's Kite fetch failed — keeping "
+                "existing live state", runner.deployment_name,
+            )
+            return
+
+        fresh_st = supertrend_from_seed_candles(seed["seed_candles"], self.atr_method)
+        if fresh_st.trend is None:
+            logger.warning(
+                "%s: post-market checkpoint's fresh replay never warmed up "
+                "(unexpected — leaving existing live state untouched)",
+                runner.deployment_name,
+            )
+            return
+        old_trend = self.st.trend
+        self.st = fresh_st
+        self.prev_trend = fresh_st.trend
+
+        if seed["prev_day_ohlc"]:
+            self.prev_day_ohlc = seed["prev_day_ohlc"]
+            self.pivots = compute_pivots(
+                self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
+                self.prev_day_ohlc["close"], self.pivot_type,
+            )
+        logger.info(
+            "%s: post-market checkpoint — resynced SuperTrend from live Kite "
+            "data (trend %s -> %s) and rolled pivots forward for tomorrow",
+            runner.deployment_name, old_trend, fresh_st.trend,
+        )
 
     # ── Tick consumption — identical control flow to pivot_supertrend ──
 

@@ -161,18 +161,43 @@ class DeploymentRunner:
             self._queue = None
         logger.info("Runner stopped: %s", self.deployment_name)
 
+    async def post_market_checkpoint(self) -> None:
+        """Called once a day by DeploymentManager.post_market_dump_loop
+        — gives the strategy a chance to actively REFRESH its own live
+        in-memory state (see StrategyBase.on_post_market_checkpoint's own
+        docstring — typically a REST re-fetch correcting for a tick-gap-
+        drifted recursive indicator) before persisting via dump_state()
+        below. A strategy that doesn't override the hook is completely
+        unaffected — this is then exactly equivalent to calling
+        dump_state() directly, same as before this method existed. A
+        failure in the hook is caught and logged here, not propagated —
+        the checkpoint still falls through to persisting whatever's
+        already in memory rather than skipping the whole round over one
+        deployment's refresh failing."""
+        if self.strategy is not None:
+            try:
+                await self.strategy.on_post_market_checkpoint(self)
+            except Exception:
+                logger.exception(
+                    "%s: on_post_market_checkpoint() raised — persisting "
+                    "whatever state already exists in memory instead",
+                    self.deployment_name,
+                )
+        await self.dump_state()
+
     async def dump_state(self) -> None:
         """Persist get_persistable_state()'s current return value, if
         any, without touching anything else about this runner (no stop,
         no unsubscribe, no task cancellation) — safe to call while the
         runner keeps trading. Called from stop() (pause, stop, AND a
         graceful full-server shutdown all route through here) AND, once
-        a day, from DeploymentManager.post_market_dump_loop() as a
-        standing checkpoint — see StrategyBase.get_persistable_state's
-        own docstring for exactly when/why each of those fires. A
-        strategy that doesn't override get_persistable_state gets None
-        back and this is a no-op, same as always — existing strategies
-        are entirely unaffected."""
+        a day, from post_market_checkpoint() above (itself called from
+        DeploymentManager.post_market_dump_loop) as a standing checkpoint
+        — see StrategyBase.get_persistable_state's own docstring for
+        exactly when/why each of those fires. A strategy that doesn't
+        override get_persistable_state gets None back and this is a
+        no-op, same as always — existing strategies are entirely
+        unaffected."""
         try:
             state = self.strategy.get_persistable_state()
         except Exception:

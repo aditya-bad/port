@@ -444,22 +444,29 @@ class DeploymentManager:
         return (target - now).total_seconds()
 
     async def dump_state_all_active(self) -> None:
-        """Persist get_persistable_state() for every currently-running
-        deployment (self.runners — same scope as snapshot_all_active
-        above), WITHOUT stopping or otherwise touching any of them —
-        each runner keeps trading through this exactly as it does
-        through a snapshot round. A single deployment's dump failing
-        (e.g. a transient DB hiccup) must not stop the rest from being
-        checkpointed, so each is isolated and logged rather than
-        propagated — same pattern as snapshot_all_active."""
+        """Checkpoint every currently-running deployment (self.runners —
+        same scope as snapshot_all_active above) via
+        runner.post_market_checkpoint() — for a strategy that overrides
+        StrategyBase.on_post_market_checkpoint (currently the
+        pivot_supertrend family), this actively refreshes its live
+        in-memory state from an authoritative outside source BEFORE
+        persisting; for every other strategy it's exactly
+        runner.dump_state() as before this hook existed. WITHOUT
+        stopping or otherwise touching any of them — each runner keeps
+        trading through this exactly as it does through a snapshot
+        round. A single deployment's checkpoint failing (e.g. a
+        transient DB hiccup, or its own refresh hook raising) must not
+        stop the rest from being checkpointed, so each is isolated and
+        logged rather than propagated — same pattern as
+        snapshot_all_active."""
         dumped = 0
         for runner in list(self.runners.values()):
             try:
-                await runner.dump_state()
+                await runner.post_market_checkpoint()
                 dumped += 1
             except Exception:
                 logger.exception(
-                    "Post-market state dump failed for %s — continuing",
+                    "Post-market checkpoint failed for %s — continuing",
                     runner.deployment_name,
                 )
         logger.info("Post-market state dump: checked %d active deployment(s)", dumped)

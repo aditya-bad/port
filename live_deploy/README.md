@@ -5151,6 +5151,88 @@ a real multi-candle gap (candle returned, warning logged naming the
 right count and window), and an overnight/day-boundary jump (candle
 returned, deliberately NOT flagged).
 
+## What's here (Step 80: the SuperTrend self-seeding mechanism moved INTO the strategy — Step 79's script is gone)
+
+After Step 79's `resync_supertrend_state.py` fixed the immediate drift,
+explicit follow-up ask: don't want a script to run by hand when this
+happens — build the correction into the strategy itself, so it never
+needs noticing/running manually again. Three concrete asks: (1) no more
+manually-provided `seed_candles`/`prev_day_ohlc` at registration —
+the strategy should fetch its own seed before it starts; (2) the daily
+post-market dump (Step 77) should fetch real market data and recompute/
+update OHLC so a restart, even next-day, needs no re-seeding; (3) a
+MID-DAY restart specifically should also fetch today's candles and
+reseed SuperTrend correctly — and pivots need to correctly pick
+yesterday's vs. today's OHLC depending on when this runs.
+
+**`app/strategies/pivot_supertrend.py` gains two shared building
+blocks**, imported by both options variants (same pattern as
+`CandleAggregator`/`SuperTrendState`/`compute_pivots` already were):
+
+- **`fetch_seed_from_kite(dispatcher, instrument_token, lookback_days=7, need_prev_day_ohlc=True, include_today_ohlc=False)`**
+  — a live REST call via the SAME Kite session the WebSocket already
+  uses (`get_kite_connect`, no separate login), pulling gap-free 5-min
+  candles for the last `lookback_days` through right now (immune to
+  whatever WS reconnect gaps happened — this is Kite's authoritative
+  REST data, not this app's own tick-built candles) plus, optionally,
+  `prev_day_ohlc`. `include_today_ohlc` is the answer to ask (3)'s own
+  "does it need today's or yesterday's OHLC" question — it's a real
+  fork, not a single rule: `False` (used by `on_start`, at ANY time of
+  day including mid-session) means today's own pivots always come from
+  the most recently COMPLETED day strictly BEFORE today; `True` (used
+  only by the post-market checkpoint, which only ever runs after
+  today's own close) means today's now-final session becomes the
+  source, rolling pivots forward to TOMORROW.
+- **`supertrend_from_seed_candles(seed_candles, atr_method)`** — a
+  brand new `SuperTrendState`, fully replayed through a candle sequence
+  in order.
+
+**Every `on_start` (`pivot_supertrend`/`pivot_supertrend_options`/
+`pivot_supertrend_options_inverse`) now tries a live auto-seed FIRST** —
+not just on a cold first-ever deploy, on every single start, including a
+pause+resume or a mid-day crash/redeploy restart, which is exactly ask
+(3): a mid-day restart gets the same live reseed a brand new deployment
+would, self-healing whatever drift existed rather than trusting
+possibly-gap-affected persisted state. Falls through gracefully (no
+Kite session yet, a transient API error) to: 1) whatever was last
+persisted, then 2) the legacy config-provided seed (still honored, no
+longer required or asked for at registration — `register_supertrend_
+options_strategies.py` from Step 76 still works unchanged, its seed is
+just redundant now, immediately overwritten by the fresh live one), then
+3) a cold start.
+
+**New `StrategyBase.on_post_market_checkpoint(runner)` hook** (default
+no-op) — called by `DeploymentManager.dump_state_all_active` (via a new
+`DeploymentRunner.post_market_checkpoint()`, itself calling the hook
+then the existing `dump_state()`) at the Step 77 daily 15:45 checkpoint,
+BEFORE persisting. All three `pivot_supertrend*` strategies override it:
+re-fetch (via `fetch_seed_from_kite(..., include_today_ohlc=True)`),
+recompute SuperTrend fresh, and roll `prev_day_ohlc`/pivots forward —
+applied to LIVE `self.st`/`self.prev_trend`/`self.prev_day_ohlc`/
+`self.pivots`, not just what gets persisted. This is the answer to ask
+(2), and it's actually stronger than a script could ever be: a
+deployment that stays running straight through market close self-heals
+its OWN live trading state at 15:45 every day, with no restart involved
+at all — a script could only ever have fixed the database.
+
+**Step 79's `resync_supertrend_state.py` is deleted** — every one of
+its use cases is now covered automatically (mid-day restart: `on_start`
+auto-seed; daily drift: the post-market checkpoint), and its one
+remaining "force it right now" case is just Pause-then-Resume on the
+deployment (UI or API), which triggers the identical live re-seed
+`on_start` always does — no script needed.
+
+Verified end-to-end (synthetic candles, real modules, no mocked network
+beyond `get_kite_connect`): `fetch_seed_from_kite` correctly excludes
+"today" from `prev_day_ohlc` when called mid-session and propagates
+`NoKiteSession` cleanly; all three strategies' `on_start` auto-seed from
+a fake Kite client to the correct `trend`/pivots; `on_post_market_
+checkpoint` demonstrably flips a strategy's LIVE in-memory trend
+(rising-candle seed → falling-candle re-fetch → trend actually changes
+on the live instance, not just in a return value) with zero restart
+involved; a missing Kite session falls through cleanly to a
+config-provided `prev_day_ohlc` seed.
+
 ## Setup
 
 ```bash
