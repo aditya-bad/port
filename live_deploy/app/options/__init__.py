@@ -23,6 +23,6 @@ See resolver.py's module docstring for the full method list.
 
 from .models import OptionLeg
 from .client import NoKiteSession, get_kite_connect
-from .resolver import OptionsResolver
+from .resolver import OptionsResolver, options_exchange_for
 
-__all__ = ["OptionLeg", "NoKiteSession", "get_kite_connect", "OptionsResolver"]
+__all__ = ["OptionLeg", "NoKiteSession", "get_kite_connect", "OptionsResolver", "options_exchange_for"]

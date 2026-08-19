@@ -86,6 +86,32 @@ INDEX_SPOT_SYMBOL: dict[str, tuple[str, str]] = {
     "BANKEX": ("BSE", "BANKEX"),
 }
 
+# Which exchange an underlying's OPTIONS CHAIN itself lives on — a
+# SEPARATE question from INDEX_SPOT_SYMBOL above (that's the spot tick
+# source). NSE indices' options trade on NFO; BSE indices' (SENSEX,
+# BANKEX) trade on BFO, a completely different exchange code in Kite's
+# instrument master. OptionsResolver's own `exchange` constructor
+# parameter defaults to "NFO" — a strategy resolving options for a
+# BSE-listed underlying MUST pass exchange="BFO" explicitly (see
+# options_exchange_for below), or every resolve_expiry/get_atm_leg call
+# for it fails with `ValueError("No option expiries found for 'SENSEX'
+# on NFO")`. That error looks exactly like — and got mistaken in
+# practice for — an expired/missing Kite session (both surface as "the
+# entry silently didn't happen") until the actual traceback was checked;
+# it is a completely different failure with a completely different fix.
+OPTIONS_EXCHANGE_FOR_UNDERLYING: dict[str, str] = {
+    "NIFTY": "NFO", "BANKNIFTY": "NFO", "FINNIFTY": "NFO", "MIDCPNIFTY": "NFO",
+    "SENSEX": "BFO", "BANKEX": "BFO",
+}
+
+
+def options_exchange_for(underlying: str) -> str:
+    """NFO for anything not explicitly known to be BSE-listed (NIFTY and
+    every other NSE index/stock underlying) — the same default
+    OptionsResolver's own constructor already uses, so an unrecognized
+    underlying behaves exactly as it always has."""
+    return OPTIONS_EXCHANGE_FOR_UNDERLYING.get(underlying.strip().upper(), "NFO")
+
 # The four exchanges this whole codebase already knows how to trade on
 # (see strangle_monthly_v2.py's own SUPPORTED_INSTRUMENTS: NSE/BSE for
 # the underlying equities/indices themselves, NFO/BFO for their

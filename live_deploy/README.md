@@ -5023,6 +5023,61 @@ the exact-boundary case, so it can never busy-loop at 0 seconds), and
 while isolating one deployment's failure from the rest. Also confirmed
 `runner.stop()` still calls `dump_state()` after the rename.
 
+## What's here (Step 78: real bug fix — SENSEX options resolved on the wrong exchange)
+
+`ST_PV_SENSEX` never traded even on a clean pivot-break + SuperTrend-down
+signal. Root-caused from real container logs (`docker logs live-deploy`),
+NOT a guess: `grep -A5 "failed to resolve/price"` surfaced the actual
+traceback underneath the error line —
+
+```
+ValueError: No option expiries found for 'SENSEX' on NFO
+```
+
+The bug: `OptionsResolver` defaults its `exchange` constructor param to
+`"NFO"` (NSE's F&O segment — where NIFTY/BANKNIFTY options live), and
+both `pivot_supertrend_options.py` and `pivot_supertrend_options_inverse.py`
+constructed their resolver with no override —
+`OptionsResolver(runner.dispatcher)` — regardless of which
+`options_underlying` the deployment was actually configured for. SENSEX
+(and BANKEX) options aren't listed on NFO at all — they're on BSE's F&O
+segment, exchange code `"BFO"`, a completely different instrument-master
+list. So every SENSEX entry attempt resolved zero expiries and threw,
+caught by the strategy's own broad `except Exception` around leg
+resolution, logged, and silently skipped — while `ST_PV_NIFTY` (same
+code, `options_underlying="NIFTY"`, correctly on NFO) traded fine the
+whole time, which is exactly why this only showed up for the Sensex leg.
+Worth noting: this looked, from the *outside*, identical to a stale/
+missing Kite session (the leading candidate ruled out first) — both
+failure modes surface as "an entry signal fired but nothing happened,"
+logged one level up as vague-sounding skip messages. The full traceback
+underneath the error line is what actually told them apart; `--nifty-st`/
+`--sensex-st` mismatch-flagging in Step 76's registration script and this
+symptom are unrelated despite superficially rhyming ("Sensex-specific
+thing not working").
+
+**Fix**: `app/options/resolver.py` gains `OPTIONS_EXCHANGE_FOR_UNDERLYING`
+(NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY → NFO, SENSEX/BANKEX → BFO) and
+`options_exchange_for(underlying)`, exported from `app/options/__init__.py`
+alongside `OptionsResolver`. Both strategy files now build their resolver
+as `OptionsResolver(runner.dispatcher, exchange=options_exchange_for(self.options_underlying))`
+— the exact pattern `strangle_monthly_v2.py` already used correctly for
+its own SENSEX/BANKEX support (its own local `SUPPORTED_INSTRUMENTS`
+dict was left as-is, not refactored onto the new shared helper, to avoid
+touching an already-working, already-tested file for this fix). An
+underlying not in the map still defaults to `"NFO"`, so NIFTY (and any
+future NSE-listed underlying) behaves exactly as before.
+
+No entries were retroactively created — this only fixes future signal
+detection. Once redeployed, `ST_PV_SENSEX`/`ST_PV_INV_SENSEX` self-heal
+on their own within one 5-min candle: `active_leg_token` is already
+`None` (flat) and `prev_trend`/`pivots` are already known from persisted
+state, so the very next candle close that breaks a pivot level re-fires
+entry detection fresh — no manual restart of the signal logic needed
+beyond the redeploy itself. Redeploying is itself state-safe per Step 77
+above (graceful `docker stop` → `runner.stop()` → state persisted before
+the container restarts).
+
 ## Setup
 
 ```bash

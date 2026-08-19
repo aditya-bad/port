@@ -114,7 +114,7 @@ from datetime import datetime
 from typing import Optional
 
 from ..deployments.strategy_base import StrategyBase
-from ..options import NoKiteSession, OptionsResolver
+from ..options import NoKiteSession, OptionsResolver, options_exchange_for
 from .pivot_supertrend import (
     ST_MULTIPLIER,
     ST_PERIOD,
@@ -199,7 +199,14 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         self.pending_exit: Optional[dict] = None    # {"trigger_values": {...}}
         self.prev_trend: Optional[str] = None
 
-        self.resolver = OptionsResolver(runner.dispatcher)
+        # exchange=... : the options CHAIN's exchange (NFO for
+        # NIFTY/BANKNIFTY/..., BFO for SENSEX/BANKEX) — see
+        # options_exchange_for's own docstring in app/options/resolver.py
+        # for the real bug this fixes (every SENSEX entry attempt here
+        # was silently failing with "No option expiries found for
+        # 'SENSEX' on NFO", identical to pivot_supertrend_options.py's
+        # own copy of this same bug).
+        self.resolver = OptionsResolver(runner.dispatcher, exchange=options_exchange_for(self.options_underlying))
 
         self.active_leg_token: Optional[int] = None
         self.active_leg_symbol: Optional[str] = None
