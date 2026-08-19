@@ -5315,6 +5315,70 @@ started this thread: two straddle legs sold at 145.40 and 105.15 for
 `600,000 (capital) + 211.25 (realized) + 16,285.75 = 616,497.00` —
 matching the real Cash figure shown, to the paisa.
 
+## What's here (Step 83: a third real bug — a trade "at 1:30pm" logged as if it happened at 9:20am)
+
+Reported directly: ST_PV_NIFTY took a real trade at 1:30pm real time,
+but the trade/chart shows it as if it happened at 9:20am. Asked whether
+Steps 79-82 already covered this — they didn't; this is a genuinely
+different bug from the SuperTrend-drift one, sharing only the same
+root trigger (a WebSocket tick gap).
+
+**Mechanism, traced precisely**: `_on_candle_closed` in every
+`pivot_supertrend*` strategy uses `candle["date"]` — the completed
+candle's OWN bucket-start time — for two different things: (1) the
+timestamp passed to `runner.buy()/sell()` as `executed_at`, and (2) the
+cutoff comparisons (`force_exit_time`/`market_open_time`). Under normal
+operation `candle["date"]` is always ~one candle-width behind the real
+moment this code is running (by construction — `CandleAggregator`
+hands over a candle exactly when the FOLLOWING tick starts a new
+bucket), which is fine, a few seconds to a minute of lag nobody notices.
+
+But across a WebSocket gap, `CandleAggregator.add_tick` (Step 79) hands
+back whatever candle was mid-formation when the gap started, unchanged
+— its `date` is still the PRE-GAP time, even though this candle only
+reaches `_on_candle_closed` whenever the first tick AFTER the gap
+arrives, at REAL time. If a `pending_entry` had been queued right
+before the gap (detected off a legitimate pivot break at 9:20), it gets
+EXECUTED the moment ticks resume — fetching a live quote at TODAY's
+real 1:30pm price, but logged with `executed_at = candle["date"] =
+9:20` — a real fill, mislabeled with a stale time and a price
+disconnected from what the signal was actually about. Confirmed with a
+direct repro (see below) before writing any fix.
+
+**Fix** — `app/strategies/pivot_supertrend.py` gains a shared
+`is_stale_candle_close(candle_date, interval_minutes, now)`: true if
+the REAL tick timestamp that triggered this candle-close (`now`, now
+threaded through `on_tick` → `_on_candle_closed` in all three
+strategies, replacing every use of `candle["date"]` for cutoff checks)
+is more than 2 candle-widths past when the candle should have closed —
+generous enough to never trip on ordinary jitter, nowhere near long
+enough to miss a real multi-candle outage. When true (`stale`):
+
+- Any `pending_entry`/`pending_exit` (a signal detected before the gap)
+  is DISCARDED, not executed — logged clearly, not silently dropped.
+- Fresh signal detection (a new pivot break, a new SuperTrend flip)
+  is skipped for this one call — nothing lost, the very next (timely)
+  candle re-evaluates from current data exactly as it always would.
+- SuperTrend/ATR is STILL updated from the candle's real OHLC (this is
+  legitimate historical data, just arriving late — absorbing it keeps
+  the recursive indicator's math correct going forward) and force-exit
+  now always uses real `now`, not candle time, so an open position
+  correctly force-exits if real time is already past cutoff even when
+  the triggering candle-close event itself arrived stale.
+
+Applied identically to `pivot_supertrend.py`, `pivot_supertrend_options.py`,
+and `pivot_supertrend_options_inverse.py` (the inverse file's own
+post-resume hold-counter reconciliation is untouched — a different
+mechanism, unaffected by this).
+
+Verified with a direct repro of the reported incident: a `pending_entry`
+queued on a candle timestamped 9:20, first reaching `_on_candle_closed`
+at real time 13:30 (the exact scenario reported) — confirmed discarded,
+`_enter`/`_exit` never called, across all three strategies. Also
+verified: a normal (non-stale, ~5s lag) pending entry still executes
+exactly as before (no regression), and a force-exit correctly fires off
+real time even when the candle carrying it reads as still-before-cutoff.
+
 ## Setup
 
 ```bash

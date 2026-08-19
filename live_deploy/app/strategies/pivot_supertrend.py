@@ -673,6 +673,41 @@ def supertrend_from_seed_candles(seed_candles: list[dict], atr_method: str = "wi
     return st
 
 
+# How late (past a candle's own theoretical close time) a candle-close
+# event can arrive before it's treated as GAP-AFFECTED rather than
+# ordinary processing lag. In normal operation, `_on_candle_closed`
+# fires within a few seconds to a minute of a candle's real close (the
+# very next tick after the boundary triggers it) — two full candle-
+# widths of grace comfortably covers that, with no risk of mistaking
+# real jitter for a gap, while being nowhere near long enough to miss a
+# genuine multi-candle WebSocket outage (see CandleAggregator.add_tick's
+# own gap-detection comment — this is the SAME failure mode, checked at
+# the point where it actually matters: before a trade gets executed off
+# a stale timestamp and a now-disconnected live price).
+STALE_CANDLE_GRACE_INTERVALS = 2
+
+
+def is_stale_candle_close(candle_date: datetime, interval_minutes: int, now: datetime) -> bool:
+    """True if `now` (the REAL tick timestamp that triggered this
+    candle-close — see each strategy's own on_tick, which passes the
+    live tick's exchange_timestamp through, never the candle's own
+    bucket-start) is suspiciously far past when `candle_date` should
+    have closed.
+
+    Real incident this exists for: a WebSocket gap from ~9:20 to
+    ~13:30 meant the candle that had been forming when the gap started
+    (date=9:20) wasn't handed to _on_candle_closed until the first tick
+    after the gap arrived at ~13:30 — REAL time. Every pivot_supertrend*
+    strategy blindly used candle["date"] (9:20) as the executed trade's
+    timestamp, so a signal detected before the gap got executed hours
+    later, at a live price with no relation to the original setup,
+    LOGGED as if it happened at 9:20 — which is exactly backwards from
+    what actually happened (a real fill at ~13:30's price, mislabeled).
+    """
+    theoretical_close = candle_date + timedelta(minutes=interval_minutes)
+    return (now - theoretical_close).total_seconds() > STALE_CANDLE_GRACE_INTERVALS * interval_minutes * 60
+
+
 # ═════════════════════════════════════════════════════════════════════
 # STRATEGY
 # ═════════════════════════════════════════════════════════════════════
@@ -955,7 +990,7 @@ class PivotSupertrendStrategy(StrategyBase):
         if completed is None:
             return
 
-        await self._on_candle_closed(runner, completed)
+        await self._on_candle_closed(runner, completed, ts)
 
         if self.today_high is None or completed["high"] > self.today_high:
             self.today_high = completed["high"]
@@ -980,8 +1015,35 @@ class PivotSupertrendStrategy(StrategyBase):
             )
         self.today_high = self.today_low = self.today_last_close = None
 
-    async def _on_candle_closed(self, runner, candle: dict) -> None:
-        t = candle["date"].time()
+    async def _on_candle_closed(self, runner, candle: dict, now: datetime) -> None:
+        # GAP GUARD — see is_stale_candle_close's own docstring for the
+        # real incident this fixes: without it, a pending entry/exit
+        # detected right before a WebSocket outage gets EXECUTED hours
+        # later, the moment ticks resume, timestamped as if it happened
+        # back when the signal fired (candle["date"]) — a real fill at
+        # today's actual current price, mislabeled with a stale time and
+        # priced off a candle from hours ago. `now` is `ts`, the REAL
+        # tick timestamp that triggered this candle-close (passed from
+        # on_tick above) — never candle["date"] itself, which is always
+        # ~one interval behind `now` by construction even in the normal
+        # case, and can be arbitrarily far behind after a real gap.
+        stale = is_stale_candle_close(candle["date"], self.aggregator.interval_minutes, now)
+        if stale:
+            logger.warning(
+                "%s: candle closed at %s but only reached this strategy at %s "
+                "(%.0f min late) — likely the same tick gap CandleAggregator "
+                "already flagged. Absorbing this candle's real OHLC into "
+                "SuperTrend, but discarding any pending entry/exit rather than "
+                "executing it now at a disconnected price/time, and skipping "
+                "fresh signal detection off data this stale.",
+                runner.deployment_name, candle["date"], now,
+                (now - candle["date"]).total_seconds() / 60,
+            )
+
+        t = now.time()   # real wall-clock time, not the candle's own (always
+                          # somewhat-behind) bucket-start — matters most here
+                          # for the force-exit check below, which must reflect
+                          # reality regardless of how late this call arrived.
         before_cutoff = self.force_exit_time is None or t < self.force_exit_time
         # Lower bound — see market_open_time in CONFIG/the module
         # docstring's RULES section. Only ever combined into step 5
@@ -991,22 +1053,37 @@ class PivotSupertrendStrategy(StrategyBase):
 
         # 1 — execute a pending ST-flip exit at THIS candle's open
         if self.pending_exit is not None:
-            await self._exit(runner, candle, "st_flip", self.pending_exit["trigger_values"])
+            if stale:
+                logger.warning("%s: discarding a pending ST-flip exit detected "
+                               "before the gap — too stale to execute safely",
+                               runner.deployment_name)
+            else:
+                await self._exit(runner, candle, "st_flip", self.pending_exit["trigger_values"])
             self.pending_exit = None
 
         # 2 — execute a pending entry at THIS candle's open
         if self.pending_entry is not None and before_cutoff:
-            await self._enter(runner, candle, self.pending_entry["side"], self.pending_entry["trigger_values"])
+            if stale:
+                logger.warning("%s: discarding a pending entry detected before "
+                               "the gap — too stale to execute safely",
+                               runner.deployment_name)
+            else:
+                await self._enter(runner, candle, self.pending_entry["side"], self.pending_entry["trigger_values"])
         self.pending_entry = None
 
-        # 3 — force-exit at/after cutoff if still open
+        # 3 — force-exit at/after cutoff if still open (real `now`, not
+        # candle time — a stale/delayed candle-close must still force-exit
+        # correctly if real time is already past cutoff)
         if self.force_exit_time is not None and t >= self.force_exit_time:
             if self.instrument_token in runner.open_positions:
                 await self._exit(runner, candle, "force_exit", {
                     "candle_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
                 })
 
-        # 4 — advance SuperTrend, detect a flip. trigger_values captured
+        # 4 — advance SuperTrend, detect a flip (still runs even if
+        # stale — absorbing this candle's real OHLC into the recursive
+        # indicator is correct regardless of how late it arrived; ONLY
+        # acting on the result is what's gated below). trigger_values captured
         # HERE (detection time) since this is the only point that has
         # both the pre-flip and post-flip trend plus the candle that
         # caused it — by the time step 1 executes the exit next call,
@@ -1029,8 +1106,10 @@ class PivotSupertrendStrategy(StrategyBase):
         # 5 — detect a fresh entry signal (flat, pivots known, ST ready,
         # within the entry window). Same detection-time capture as step
         # 4: records WHICH specific pivot level broke, not just that
-        # "some" R/S did.
-        if self.instrument_token not in runner.open_positions and self.pivots is not None \
+        # "some" R/S did. Skipped entirely if stale — nothing lost, the
+        # very next (timely) candle re-evaluates from current data
+        # anyway, same as any other candle where nothing broke yet.
+        if not stale and self.instrument_token not in runner.open_positions and self.pivots is not None \
                 and self.prev_trend is not None and before_cutoff and after_open:
             close = candle["close"]
             if self.prev_trend == "up":
