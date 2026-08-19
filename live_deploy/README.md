@@ -5379,6 +5379,59 @@ verified: a normal (non-stale, ~5s lag) pending entry still executes
 exactly as before (no regression), and a force-exit correctly fires off
 real time even when the candle carrying it reads as still-before-cutoff.
 
+## What's here (Step 84: Step 83's fix was real but incomplete — the actual mechanism was a pause/resume, not a WS gap)
+
+Direct correction from testing Step 83's fix in practice: "that was not
+the issue, the strategy was resumed immediately after I gave you logs
+... I think it is some logical error." Right call — `is_stale_candle_close`
+(Step 83) only catches a signal delayed by a WebSocket TICK gap during
+otherwise-continuous operation; it does nothing for a signal that
+survives a MANUAL pause/resume, because the candle that finally
+executes it after a resume is perfectly fresh (real ticks, no gap at
+all) — `is_stale_candle_close` correctly says "not stale" and lets it
+straight through.
+
+**The actual mechanism**: `_restore_from_state` (existing, by design)
+faithfully restores `pending_entry`/`pending_exit` from persisted state
+on every resume — meant for a brief pause, so a signal detected right
+before a stop doesn't get silently lost. But it restores them with NO
+age check at all. A pivot break detected at 9:20, still queued (the
+very next candle hadn't closed to execute it yet) when the deployment
+gets paused, comes back to life on resume exactly as designed — and
+executes on the first candle after resume, however much later that
+turns out to be. Traced directly in the code: `pending_entry`/
+`pending_exit` dicts had no timestamp of their own at all before this
+fix — nothing to check their age against.
+
+**Fix**: every `pending_entry`/`pending_exit` construction (9 sites
+across the 3 `pivot_supertrend*` files) now stamps a `detected_at`
+field with the detecting candle's own date. A new
+`is_stale_pending_signal(pending, interval_minutes, now)` in
+`pivot_supertrend.py` checks THIS timestamp's age against real `now` —
+a fundamentally different question from `is_stale_candle_close`'s "is
+the candle handed to THIS call old," and the one that actually matters
+at the execution point. It replaces `is_stale_candle_close` as the gate
+on steps 1/2 (executing a queued exit/entry) in all three strategies;
+`is_stale_candle_close` still gates step 5 (skip fresh detection on
+backlogged data) — the two checks answer different questions and both
+stay useful. Turns out `is_stale_pending_signal` alone actually
+subsumes the original WS-gap case too (a pending_entry queued right
+before a gap has an equally old `detected_at`), so this one check now
+correctly covers both root causes with a single mechanism. Missing/
+unparseable `detected_at` (state persisted by a pre-fix version of the
+strategy) is treated as UNKNOWN age and fails safe — discarded, not
+assumed fresh.
+
+Verified with a direct repro of the CORRECTED scenario across all three
+strategies: a `pending_entry` with `detected_at=9:20`, restored via
+`_restore_from_state`, first reaching `_on_candle_closed` on a
+completely FRESH candle at real time 13:30 (explicitly confirmed
+`is_stale_candle_close` says "not stale" for this exact candle, proving
+Step 83's check alone would have let it through) — confirmed discarded
+by the new check, `_enter`/`_exit` never called. Also verified: a
+signal still within normal timing (~1 minute) still executes exactly as
+before, no regression.
+
 ## Setup
 
 ```bash

@@ -105,6 +105,7 @@ from .pivot_supertrend import (
     compute_pivots,
     fetch_seed_from_kite,
     is_stale_candle_close,
+    is_stale_pending_signal,
     supertrend_from_seed_candles,
 )
 from .registry import register_strategy
@@ -466,22 +467,31 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         # step 5 (fresh entry DETECTION) below.
         after_open = self.market_open_time is None or t >= self.market_open_time
 
-        # 1 — execute a pending ST-flip exit at THIS candle's open
+        # 1 — execute a pending ST-flip exit at THIS candle's open. Gated
+        # by is_stale_pending_signal (the SIGNAL's own age, not this
+        # call's candle) — see pivot_supertrend.py's own docstring for
+        # why this catches a signal that survived a manual pause/resume
+        # too, which `stale` alone does not.
         if self.pending_exit is not None:
-            if stale:
-                logger.warning("%s: discarding a pending ST-flip exit detected "
-                               "before the gap — too stale to execute safely",
-                               runner.deployment_name)
+            if is_stale_pending_signal(self.pending_exit, self.aggregator.interval_minutes, now):
+                logger.warning(
+                    "%s: discarding a pending ST-flip exit detected at %s — "
+                    "too stale to execute safely now (%s)", runner.deployment_name,
+                    self.pending_exit.get("detected_at", "unknown time"), now,
+                )
             else:
                 await self._exit(runner, candle, "st_flip", self.pending_exit["trigger_values"])
             self.pending_exit = None
 
-        # 2 — execute a pending entry at THIS candle's open
+        # 2 — execute a pending entry at THIS candle's open (same
+        # is_stale_pending_signal gating as step 1 above)
         if self.pending_entry is not None and before_cutoff:
-            if stale:
-                logger.warning("%s: discarding a pending entry detected before "
-                               "the gap — too stale to execute safely",
-                               runner.deployment_name)
+            if is_stale_pending_signal(self.pending_entry, self.aggregator.interval_minutes, now):
+                logger.warning(
+                    "%s: discarding a pending entry detected at %s — too stale "
+                    "to execute safely now (%s)", runner.deployment_name,
+                    self.pending_entry.get("detected_at", "unknown time"), now,
+                )
             else:
                 await self._enter(runner, candle, self.pending_entry["side"], self.pending_entry["trigger_values"])
         self.pending_entry = None
@@ -503,6 +513,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             if prev_trend_before_update is not None and new_trend != prev_trend_before_update:
                 if self.active_leg_token is not None:
                     self.pending_exit = {
+                        "detected_at": candle["date"].isoformat(),
                         "trigger_values": {
                             "prev_trend": prev_trend_before_update, "new_trend": new_trend,
                             "close": round(candle["close"], 2),
@@ -524,6 +535,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                     if close > level:
                         self.pending_entry = {
                             "side": "long",
+                            "detected_at": candle["date"].isoformat(),
                             "trigger_values": {
                                 "close": round(close, 2), "trend": self.prev_trend,
                                 "broken_level_key": k, "broken_level": round(level, 2),
@@ -537,6 +549,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                     if close < level:
                         self.pending_entry = {
                             "side": "short",
+                            "detected_at": candle["date"].isoformat(),
                             "trigger_values": {
                                 "close": round(close, 2), "trend": self.prev_trend,
                                 "broken_level_key": k, "broken_level": round(level, 2),

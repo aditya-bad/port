@@ -708,6 +708,49 @@ def is_stale_candle_close(candle_date: datetime, interval_minutes: int, now: dat
     return (now - theoretical_close).total_seconds() > STALE_CANDLE_GRACE_INTERVALS * interval_minutes * 60
 
 
+def is_stale_pending_signal(pending: Optional[dict], interval_minutes: int, now: datetime) -> bool:
+    """True if a queued pending_entry/pending_exit dict is too old to
+    safely execute NOW — a DIFFERENT question from is_stale_candle_close
+    above (which asks "is the candle handed to THIS call old", a proxy
+    for a WebSocket gap during otherwise-continuous operation).
+
+    Real incident this exists for: is_stale_candle_close alone does NOT
+    catch this one. A pending_entry detected at ~9:20, still un-executed
+    (the very next candle hadn't closed yet) when the deployment gets
+    manually PAUSED, is faithfully carried through by
+    _restore_from_state on resume — by design, meant for a brief pause
+    (see that method's own docstring). But the candle that finally
+    executes it, whenever trading resumes, is itself perfectly FRESH
+    (today's real ticks, no gap) — so is_stale_candle_close says "not
+    stale" and lets it through. The pending signal's own age is what
+    actually matters here, completely independent of whether the
+    executing candle is fresh: a resume hours after 9:20 still executes
+    an hours-old signal at a live current price with no relation to it,
+    at whatever time the resume+next-candle happened to land on.
+
+    This check subsumes the WebSocket-gap case too (a pending_entry
+    queued right before a gap has an equally old "detected_at", so this
+    alone is sufficient at the actual execution points; see each
+    strategy's own step 1/2 for exactly what still uses
+    is_stale_candle_close — only gating step 5's FRESH detection, not
+    execution of an already-queued signal).
+
+    Missing/unparseable "detected_at" (state persisted by a version of
+    this strategy before this field existed) is treated as UNKNOWN age,
+    not "assume fresh" — fails safe: a signal whose age can't be shown
+    to be recent doesn't get executed."""
+    if not pending:
+        return False   # nothing queued -- not "stale", just absent; caller's own None-check handles this
+    detected_at_raw = pending.get("detected_at")
+    if not detected_at_raw:
+        return True
+    try:
+        detected_at = datetime.fromisoformat(detected_at_raw)
+    except (TypeError, ValueError):
+        return True
+    return (now - detected_at).total_seconds() > STALE_CANDLE_GRACE_INTERVALS * interval_minutes * 60
+
+
 # ═════════════════════════════════════════════════════════════════════
 # STRATEGY
 # ═════════════════════════════════════════════════════════════════════
@@ -1051,22 +1094,33 @@ class PivotSupertrendStrategy(StrategyBase):
         # pending entry are never gated by this.
         after_open = self.market_open_time is None or t >= self.market_open_time
 
-        # 1 — execute a pending ST-flip exit at THIS candle's open
+        # 1 — execute a pending ST-flip exit at THIS candle's open. Gated
+        # by is_stale_pending_signal — the SIGNAL's own age (candle it was
+        # detected on), not this call's own candle — see that function's
+        # own docstring for why this is a different (and more complete)
+        # check than `stale` above: it also catches a signal that
+        # survived a manual pause/resume, which `stale` alone does not
+        # (the executing candle after a resume is perfectly fresh).
         if self.pending_exit is not None:
-            if stale:
-                logger.warning("%s: discarding a pending ST-flip exit detected "
-                               "before the gap — too stale to execute safely",
-                               runner.deployment_name)
+            if is_stale_pending_signal(self.pending_exit, self.aggregator.interval_minutes, now):
+                logger.warning(
+                    "%s: discarding a pending ST-flip exit detected at %s — "
+                    "too stale to execute safely now (%s)", runner.deployment_name,
+                    self.pending_exit.get("detected_at", "unknown time"), now,
+                )
             else:
                 await self._exit(runner, candle, "st_flip", self.pending_exit["trigger_values"])
             self.pending_exit = None
 
-        # 2 — execute a pending entry at THIS candle's open
+        # 2 — execute a pending entry at THIS candle's open (same
+        # is_stale_pending_signal gating as step 1 above)
         if self.pending_entry is not None and before_cutoff:
-            if stale:
-                logger.warning("%s: discarding a pending entry detected before "
-                               "the gap — too stale to execute safely",
-                               runner.deployment_name)
+            if is_stale_pending_signal(self.pending_entry, self.aggregator.interval_minutes, now):
+                logger.warning(
+                    "%s: discarding a pending entry detected at %s — too stale "
+                    "to execute safely now (%s)", runner.deployment_name,
+                    self.pending_entry.get("detected_at", "unknown time"), now,
+                )
             else:
                 await self._enter(runner, candle, self.pending_entry["side"], self.pending_entry["trigger_values"])
         self.pending_entry = None
@@ -1094,6 +1148,7 @@ class PivotSupertrendStrategy(StrategyBase):
             if prev_trend_before_update is not None and new_trend != prev_trend_before_update:
                 if self.instrument_token in runner.open_positions:
                     self.pending_exit = {
+                        "detected_at": candle["date"].isoformat(),
                         "trigger_values": {
                             "prev_trend": prev_trend_before_update, "new_trend": new_trend,
                             "close": round(candle["close"], 2),
@@ -1118,6 +1173,7 @@ class PivotSupertrendStrategy(StrategyBase):
                     if close > level:
                         self.pending_entry = {
                             "side": "long",
+                            "detected_at": candle["date"].isoformat(),
                             "trigger_values": {
                                 "close": round(close, 2), "trend": self.prev_trend,
                                 "broken_level_key": k, "broken_level": round(level, 2),
@@ -1131,6 +1187,7 @@ class PivotSupertrendStrategy(StrategyBase):
                     if close < level:
                         self.pending_entry = {
                             "side": "short",
+                            "detected_at": candle["date"].isoformat(),
                             "trigger_values": {
                                 "close": round(close, 2), "trend": self.prev_trend,
                                 "broken_level_key": k, "broken_level": round(level, 2),
