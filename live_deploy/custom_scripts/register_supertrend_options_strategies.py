@@ -3,23 +3,31 @@
 live_deploy — custom_scripts/register_supertrend_options_strategies.py
 
 Registers 4 real deployments — pivot_supertrend_options and
-pivot_supertrend_options_inverse, each for NIFTY and SENSEX — seeded
-with today's real 5-min candles + daily OHLC fetched straight from
-Kite, so pivots/SuperTrend are correct from the very first tick
-tomorrow instead of needing a full cold-start day to warm up.
+pivot_supertrend_options_inverse, each for NIFTY and SENSEX.
+
+Registered with NO seed at all in their config — every pivot_supertrend*
+strategy now self-seeds live from Kite's own REST API the moment it
+starts (see app/strategies/pivot_supertrend.py's fetch_seed_from_kite /
+StrategyBase.on_post_market_checkpoint), so there's nothing for THIS
+script to fetch and hand over any more; that used to be phase 1's whole
+job and is not needed today.
 
 TWO PHASES, deliberately separate:
 
   1. FETCH + VALIDATE (the default, no flags needed) — standalone,
      talks directly to Kite's REST API + this app's own database (via
      app/config.py + app/db/queries.py, exactly like
-     clean_deployment_names.py) to pull today's data, computes
+     clean_deployment_names.py) to pull today's data and compute
      SuperTrend(7,3) through the EXACT SAME code the strategy itself
      runs (imported directly from app/strategies/pivot_supertrend.py,
-     not reimplemented — bit-for-bit identical, no drift risk), and
-     checks it against the last SuperTrend value you read off your own
-     chart. Writes everything fetched to a JSON file. Does NOT need
-     the app server running, and does NOT create anything.
+     not reimplemented — bit-for-bit identical, no drift risk) — now
+     purely a PRE-FLIGHT SANITY CHECK, not a seed source: confirms a
+     Kite session exists and actually returns sane data, and checks the
+     computed value against the last SuperTrend value you read off your
+     own chart, catching a bad session/wrong-instrument/data problem
+     BEFORE registering anything, not after. Writes everything fetched
+     to a JSON file for the record. Does NOT need the app server
+     running, and does NOT create anything.
 
   2. REGISTER (only with --register) — needs the app server actually
      running (real deployments only start trading once a real
@@ -27,7 +35,10 @@ TWO PHASES, deliberately separate:
      leave an orphaned row with no live runner, which a standalone
      script has no way to start on its own). Posts the 4 deployments
      to that running server's real API, so registering one is
-     indistinguishable from doing it through the UI.
+     indistinguishable from doing it through the UI. Each deployment's
+     own on_start then does its own live fetch the moment it starts
+     trading — this script's own phase 1 fetch above is validation
+     only, never passed into the deployment's config.
 
 USAGE:
     cd live_deploy
@@ -55,18 +66,15 @@ USAGE:
         # override the chart reference values (defaults below are
         # exactly what was read off the (7,3) chart in chat).
 
-WHY TODAY'S data, not yesterday's -- the one thing explicitly flagged
-for double-checking: prev_day_ohlc means "the most recently completed
-trading day's H/L/C", and seed_candles means "recent real 5-min
-candles to warm SuperTrend up from". By the time these deployments
-actually start reacting to ticks TOMORROW, TODAY is that most-recently-
-completed session (the market is closed right now) -- so both fields
-correctly come from today's data, not yesterday's. Confirmed directly
-against the strategy's own code, not assumed: pivot_supertrend.py's
-own _roll_over_day() sets prev_day_ohlc from whatever the CURRENTLY
-just-finished trading day looked like, the moment the day rolls over --
-today's close is exactly that roll-over's source data from tomorrow's
-point of view.
+WHY the validation fetch still pulls TODAY'S data, not yesterday's, even
+though it's no longer a seed: it's checking "does what Kite has on file
+for today's session match what I read off my own chart right now" — the
+whole point is confirming the Kite session/instrument/data are sane
+BEFORE trusting this run enough to register anything, and that question
+is only meaningful against the session that just happened, not an older
+one. (The registered deployments themselves don't care what day this
+script runs on at all — their own on_start fetches fresh, live, correct
+for whatever day THEY start on, entirely independent of this script.)
 """
 
 import argparse
@@ -257,7 +265,8 @@ async def register_deployment(base_url: str, api_key: str, spec: dict, config: d
         "initial_capital": spec["initial_capital"],
         "config": config,
         "notes": f"Registered by custom_scripts/register_supertrend_options_strategies.py "
-                 f"— seeded from real Kite data on {trade_date}.",
+                 f"on {trade_date} — self-seeds live from Kite on its own on_start, "
+                 f"no static seed passed in config.",
     }
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(f"{base_url}/deployments", headers={"X-API-Key": api_key}, json=payload)
@@ -352,9 +361,14 @@ async def main() -> int:
         return 0
 
     print(f"\nRegistering 4 deployments against {args.base_url} ...")
+    # No seed_candles/prev_day_ohlc/supertrend_seed here at all — every
+    # pivot_supertrend* strategy self-seeds live from Kite the moment
+    # its own on_start runs (see this module's own docstring). Passing
+    # this run's fetch into the config would just be immediately
+    # overwritten and, worse, sit in Edit Config later looking like it
+    # meant something.
     for spec in DEPLOYMENTS:
         underlying = UNDERLYINGS[spec["underlying"]]
-        seed = fetched[spec["underlying"]]
         config = {
             "instrument_tokens": [underlying["instrument_token"]],
             "symbol": underlying["symbol"],
@@ -364,13 +378,10 @@ async def main() -> int:
             "force_exit_time": "15:00",
             "market_open_time": "09:15",
             "lots_per_trade": 1,
-            "seed_candles": seed["seed_candles"],
-            "supertrend_seed": None,
         }
         if spec["strategy"] == "pivot_supertrend_options":
-            config["prev_day_ohlc"] = seed["prev_day_ohlc"]
             config["pivot_type"] = "classic"
-        else:   # pivot_supertrend_options_inverse -- no prev_day_ohlc/pivot_type key at all
+        else:   # pivot_supertrend_options_inverse -- no pivot_type key at all
             config["hold_candles"] = 1
         await register_deployment(args.base_url, cfg["app_auth_secret"], spec, config, trade_date)
 

@@ -56,14 +56,18 @@ zero writes.
   running app server to pick it up and start a live runner — a bare
   database insert would just leave an orphaned row with nothing
   trading it. Fetches today's real 5-min candles + daily OHLC for
-  NIFTY and SENSEX from Kite, computes SuperTrend(7,3) through the
-  actual strategy code (imported, not reimplemented), checks it
-  against a chart reading you provide, saves everything fetched to
-  `custom_scripts/data/*.json` (gitignored), and — only once that
-  validation passes, or with `--force` — registers 4 deployments
-  (`pivot_supertrend_options` + its inverse, each for NIFTY and
-  SENSEX) fully seeded so pivots/SuperTrend are correct from minute
-  one instead of needing a cold-start warmup day. See the script's own
+  NIFTY and SENSEX from Kite and computes SuperTrend(7,3) through the
+  actual strategy code (imported, not reimplemented) as a PRE-FLIGHT
+  SANITY CHECK — confirms a Kite session exists and the numbers agree
+  with a chart reading you provide — saves everything fetched to
+  `custom_scripts/data/*.json` (gitignored) for the record, and — only
+  once that validation passes, or with `--force` — registers 4
+  deployments (`pivot_supertrend_options` + its inverse, each for
+  NIFTY and SENSEX). Registers them with NO seed in their config at
+  all: every `pivot_supertrend*` strategy now self-seeds live from
+  Kite's own REST API the instant its `on_start` runs (see the main
+  README's Step 80), so this script's own fetch above is validation
+  only — it's never passed into the deployment. See the script's own
   `--help` / module docstring for the full flag list.
 
 There used to be a `resync_supertrend_state.py` here — a standalone
