@@ -85,12 +85,19 @@ UNDERLYINGS = {
 }
 
 # Deployment name + initial capital for each of the 4 -- exactly what
-# was confirmed in chat.
+# was confirmed in chat. The inverse pair also gets "exclude_from_reports"
+# -- POST /deployments' own DeploymentCreate schema has no
+# include_in_reports field at all (only PATCH /deployments/{id}'s
+# DeploymentUpdate does — see that schema's own docstring: it's
+# deliberately editable "regardless of status," no create-time
+# equivalent exists), so this is applied as an immediate follow-up
+# PATCH right after each inverse deployment registers, not a field in
+# the POST body itself. See register_deployment() below.
 DEPLOYMENTS = [
-    {"underlying": "NIFTY", "strategy": "pivot_supertrend_options", "deployment_name": "ST_PV_NIFTY", "initial_capital": 200000},
-    {"underlying": "SENSEX", "strategy": "pivot_supertrend_options", "deployment_name": "ST_PV_SENSEX", "initial_capital": 200000},
-    {"underlying": "NIFTY", "strategy": "pivot_supertrend_options_inverse", "deployment_name": "ST_PV_INV_NIFTY", "initial_capital": 50000},
-    {"underlying": "SENSEX", "strategy": "pivot_supertrend_options_inverse", "deployment_name": "ST_PV_INV_SENSEX", "initial_capital": 50000},
+    {"underlying": "NIFTY", "strategy": "pivot_supertrend_options", "deployment_name": "ST_PV_NIFTY", "initial_capital": 250000},
+    {"underlying": "SENSEX", "strategy": "pivot_supertrend_options", "deployment_name": "ST_PV_SENSEX", "initial_capital": 250000},
+    {"underlying": "NIFTY", "strategy": "pivot_supertrend_options_inverse", "deployment_name": "ST_PV_INV_NIFTY", "initial_capital": 100000, "exclude_from_reports": True},
+    {"underlying": "SENSEX", "strategy": "pivot_supertrend_options_inverse", "deployment_name": "ST_PV_INV_SENSEX", "initial_capital": 100000, "exclude_from_reports": True},
 ]
 
 
@@ -134,10 +141,26 @@ async def register_deployment(base_url: str, api_key: str, spec: dict, config: d
     }
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(f"{base_url}/deployments", headers={"X-API-Key": api_key}, json=payload)
-    if r.status_code == 201:
-        print(f"  OK  {spec['deployment_name']} ({spec['strategy']}) -> id={r.json()['id']}")
-    else:
-        print(f"  FAILED  {spec['deployment_name']}: HTTP {r.status_code} — {r.text}")
+        if r.status_code != 201:
+            print(f"  FAILED  {spec['deployment_name']}: HTTP {r.status_code} — {r.text}")
+            return
+        new_id = r.json()["id"]
+        print(f"  OK  {spec['deployment_name']} ({spec['strategy']}) -> id={new_id}")
+
+        if spec.get("exclude_from_reports"):
+            # PATCH, not part of the POST body above -- see DEPLOYMENTS'
+            # own comment for why (DeploymentCreate has no
+            # include_in_reports field at all). Editable "regardless of
+            # status" per DeploymentUpdate's own docstring, so this is
+            # safe to fire immediately, no pause needed first.
+            pr = await client.patch(
+                f"{base_url}/deployments/{new_id}", headers={"X-API-Key": api_key},
+                json={"include_in_reports": False},
+            )
+            if pr.status_code == 200:
+                print(f"      excluded from reports")
+            else:
+                print(f"      FAILED to exclude from reports: HTTP {pr.status_code} — {pr.text}")
 
 
 async def main() -> int:
@@ -158,7 +181,8 @@ async def main() -> int:
               "create these deployments.\n")
         for spec in DEPLOYMENTS:
             config = build_config(spec)
-            print(f"  {spec['deployment_name']} ({spec['strategy']}, capital={spec['initial_capital']})")
+            tag = " [excluded from reports]" if spec.get("exclude_from_reports") else ""
+            print(f"  {spec['deployment_name']} ({spec['strategy']}, capital={spec['initial_capital']}){tag}")
             for k, v in config.items():
                 print(f"      {k}: {v}")
         return 0

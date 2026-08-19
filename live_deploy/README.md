@@ -5854,6 +5854,36 @@ connection attempt, confirming everything before that point runs
 clean); `ast.parse` + `node --check` N/A here (no `.js` touched) —
 `python3 -c "import ast; ..."` across both scripts instead.
 
+## What's here (Step 90: correct capital + exclude-from-reports for `register_supertrend_options_strategies.py`)
+
+Two small corrections to the just-simplified SuperTrend registration
+script: `pivot_supertrend_options`' capital was 200000, should be
+250000; `..._inverse`'s was 50000, should be 100000 — both fixed in
+`DEPLOYMENTS`.
+
+Also asked: if there's an option to mark the inverse pair "exclude from
+reports" at registration time, add it; if there isn't, skip it. Checked
+first — `POST /deployments`' own `DeploymentCreate` schema genuinely has
+no `include_in_reports` field at all (only `PATCH /deployments/{id}`'s
+`DeploymentUpdate` does, which that schema's own docstring already notes
+is deliberately editable "regardless of status," no create-time
+equivalent). Since the capability DOES exist, just not in the same
+request, `register_deployment()` now fires an immediate follow-up
+`PATCH .../{id}` with `include_in_reports: false` right after a
+successful `POST`, but ONLY for the two inverse deployments
+(`spec["exclude_from_reports"]`) — the options pair is unaffected. A
+PATCH failure is reported distinctly from a POST failure rather than
+silently swallowed; the deployment itself is already live either way,
+just possibly still counted in reports until re-tried by hand.
+
+Verified: full `register_deployment()` flow tested against a mocked
+HTTP transport (`httpx.MockTransport`) — confirmed exactly 4 `POST`s
+(250000/250000/100000/100000 capital, in that order) and exactly 2
+`PATCH`es (`{"include_in_reports": false}`, against the inverse
+deployments' own just-returned ids only); dry-run re-run in this
+sandbox, output confirms the corrected capital and an
+`[excluded from reports]` marker on both inverse entries.
+
 ## Setup
 
 ```bash

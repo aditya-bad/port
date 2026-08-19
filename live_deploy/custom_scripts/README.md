@@ -65,8 +65,15 @@ zero writes.
   entirely (Step 89) once that made it pure duplicate work — needs no
   Kite session, no database, nothing but `app/config.py` at all in its
   default dry-run mode, which just prints the 4 deployments' exact
-  config with nothing created. See the script's own `--help` / module
-  docstring for the full flag list.
+  config with nothing created. Capital: 250000 for each
+  `pivot_supertrend_options`, 100000 for each `..._inverse` (Step 90).
+  The inverse pair also gets an immediate follow-up
+  `PATCH .../include_in_reports=false` right after each one registers
+  — `POST /deployments`' own `DeploymentCreate` schema has no
+  `include_in_reports` field at all (only `PATCH` does), so this can't
+  be set in the same create call; the script does it as a second
+  request instead of skipping it outright. See the script's own
+  `--help` / module docstring for the full flag list.
 
 - **`clone_straddle_strategies_banknifty_sensex.py`** — clones every
   existing NIFTY deployment of `intraday_dtt_simple`,
