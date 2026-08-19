@@ -1,17 +1,21 @@
 // live_deploy — Strategy Detail view: the deep-dive for one deployment.
-// Header + 4 tabs (Config / Positions / Trades / Stats). This is the
-// tab the trade-reason logging retrofit was actually FOR — Trades
-// keeps the table scannable (time/action/symbol/price/reason + a
-// trigger-type badge) and reveals the full trigger_values/target_basis/
-// resulting_state on click, rather than cramming structured metadata
-// into visible columns or dumping raw JSON into every row by default.
+// Header + 5 tabs (Config / Positions / Trades / Stats / Activity) --
+// Stats also carries the Equity Curve, Recent Periods trend table, and
+// P&L Calendar (the last two folded in from a separate Calendar tab,
+// Step 86). Trades is the tab the trade-reason logging retrofit was
+// actually FOR — keeps the table scannable (time/action/symbol/price/
+// reason + a trigger-type badge) and reveals the full trigger_values/
+// target_basis/resulting_state on click, rather than cramming
+// structured metadata into visible columns or dumping raw JSON into
+// every row by default.
 
 const Detail = {
   _id: null,
   _tab: 'positions',   // most immediately useful thing to see on arrival
   _trades: [],
   _openTradeRows: new Set(),
-  _calendarRange: 'recent',   // Calendar tab's own range state (Step 74) -- reset per deployment below, persists across switching away from/back to the tab for the SAME one
+  _calendarRange: 'recent',   // Stats tab's P&L Calendar range state (Step 74) -- reset per deployment below, persists across switching away from/back to Stats for the SAME deployment
+  _statsTrendPeriod: 'day',   // Stats tab's Recent Periods bucketing (Step 86) -- same persistence rule as _calendarRange above
 
   async load(id) {
     this._stopLivePositionUpdates();   // leaving whatever deployment/tab was showing before
@@ -19,6 +23,7 @@ const Detail = {
     this._trades = [];
     this._openTradeRows = new Set();
     this._calendarRange = 'recent';
+    this._statsTrendPeriod = 'day';
     document.getElementById('detailHeader').innerHTML = spinnerHtml();
     document.getElementById('detailTabs').innerHTML = '';
     document.getElementById('detailBody').innerHTML = spinnerHtml();
@@ -76,7 +81,7 @@ const Detail = {
   },
 
   renderTabs() {
-    const tabs = [['config', 'Config'], ['positions', 'Positions'], ['trades', 'Trades'], ['stats', 'Stats'], ['calendar', 'Calendar'], ['events', 'Activity']];
+    const tabs = [['config', 'Config'], ['positions', 'Positions'], ['trades', 'Trades'], ['stats', 'Stats'], ['events', 'Activity']];
     document.getElementById('detailTabs').innerHTML = tabs.map(([key, label]) =>
       `<button class="${this._tab === key ? 'active' : ''}" onclick="Detail.switchTab('${key}')">${label}</button>`
     ).join('');
@@ -100,7 +105,6 @@ const Detail = {
       if (this._tab === 'positions') return await this.renderPositions();
       if (this._tab === 'trades') return await this.renderTrades();
       if (this._tab === 'stats') return await this.renderStats();
-      if (this._tab === 'calendar') return await this.renderCalendar();
       if (this._tab === 'events') return await this.renderEvents();
     } catch (e) {
       console.error('Detail tab render failed:', e);
@@ -364,12 +368,23 @@ const Detail = {
   },
 
   // ── Stats ───────────────────────────────────────────────────────
+  // Also owns the "Recent Periods" trend table and the P&L Calendar
+  // (Step 86) -- both used to be a separate Calendar tab, folded in
+  // here on request so everything about this deployment's performance
+  // lives on one tab instead of being split across two. Each still
+  // fetches independently and refreshes into its OWN sub-container
+  // (#detailStatsTrend / #detailStatsCalendar) when its own period/year
+  // control changes, rather than re-running this whole method — no
+  // reason to re-fetch trades/positions/snapshots just because someone
+  // switched the calendar's year.
   async renderStats() {
-    const [report, allTrades, closedPositions, snapshots] = await Promise.all([
+    const [report, allTrades, closedPositions, snapshots, trendRows, calendarRows] = await Promise.all([
       Api.getReport(this._id),
       Api.getTrades(this._id, 2000),
       Api.getPositions(this._id, 'closed'),
       Api.getSnapshots(this._id),
+      Api.getPnlDigestForDeployment(this._id, this._statsTrendPeriod, 14),
+      this._fetchStatsCalendarRows(),
     ]);
     const body = document.getElementById('detailBody');
 
@@ -515,36 +530,70 @@ const Detail = {
         </div>` : ''}
         ${renderEquityChart(snapshots)}
       </section>
-    `;
-  },
 
-  // ── Calendar — this deployment's own daily P&L as a GitHub-style
-  // heatmap (see renderPnlHeatmap, api.js), backed by GET
-  // /deployments/{id}/pnl-digest (deployment-scoped twin of the
-  // Reports page's portfolio-wide GET /portfolio/pnl-digest). Its own
-  // tab rather than folded into Stats -- a full-year grid is a big
-  // enough visual element to earn one, and Stats was already dense.
-  async renderCalendar() {
-    const year = this._calendarRange === 'recent' ? null : this._calendarRange;
-    const rows = year
-      ? await Api.getPnlDigestForDeployment(this._id, 'day', 400, year)
-      : await Api.getPnlDigestForDeployment(this._id, 'day', 400);
-    const body = document.getElementById('detailBody');
-    body.innerHTML = `
+      <section>
+        <div class="report-section-header" style="cursor:default; padding:0; margin-bottom:10px; justify-content:space-between; flex-wrap:wrap;">
+          <h2 style="margin:0;">Recent Periods</h2>
+          <div class="tabs" id="detailStatsTrendTabs" style="margin:0;">
+            <button class="${this._statsTrendPeriod === 'day' ? 'active' : ''}" data-period="day" onclick="Detail.changeStatsTrendPeriod('day')">Daily</button>
+            <button class="${this._statsTrendPeriod === 'week' ? 'active' : ''}" data-period="week" onclick="Detail.changeStatsTrendPeriod('week')">Weekly</button>
+            <button class="${this._statsTrendPeriod === 'month' ? 'active' : ''}" data-period="month" onclick="Detail.changeStatsTrendPeriod('month')">Monthly</button>
+          </div>
+        </div>
+        <div id="detailStatsTrend">${renderPnlTrendTable(trendRows, { periodLabel: iso => this._statsPeriodLabel(iso) })}</div>
+      </section>
+
       <section>
         <h2>P&amp;L Calendar</h2>
-        ${renderPnlHeatmap(rows, {
-          year,
+        <div id="detailStatsCalendar">${renderPnlHeatmap(calendarRows, {
+          year: this._calendarRange === 'recent' ? null : this._calendarRange,
           selector: { value: this._calendarRange, onChange: 'Detail.changeCalendarRange(this.value)' },
-        })}
+        })}</div>
       </section>
     `;
-    scrollPnlHeatmapToEnd('detailBody');
+    scrollPnlHeatmapToEnd('detailStatsCalendar');
+  },
+
+  // This deployment's own daily P&L as a GitHub-style heatmap (see
+  // renderPnlHeatmap, api.js), backed by GET /deployments/{id}/pnl-digest
+  // (deployment-scoped twin of the Reports page's portfolio-wide
+  // GET /portfolio/pnl-digest). Used to be its own Calendar tab; folded
+  // into Stats (Step 86) on request -- these two helpers now only ever
+  // refresh their own sub-container, not the whole Stats tab.
+  _fetchStatsCalendarRows() {
+    const year = this._calendarRange === 'recent' ? null : this._calendarRange;
+    return year
+      ? Api.getPnlDigestForDeployment(this._id, 'day', 400, year)
+      : Api.getPnlDigestForDeployment(this._id, 'day', 400);
   },
 
   async changeCalendarRange(value) {
     this._calendarRange = value === 'recent' ? 'recent' : Number(value);
-    await this.renderCalendar();
+    const rows = await this._fetchStatsCalendarRows();
+    const year = this._calendarRange === 'recent' ? null : this._calendarRange;
+    document.getElementById('detailStatsCalendar').innerHTML = renderPnlHeatmap(rows, {
+      year,
+      selector: { value: this._calendarRange, onChange: 'Detail.changeCalendarRange(this.value)' },
+    });
+    scrollPnlHeatmapToEnd('detailStatsCalendar');
+  },
+
+  _statsPeriodLabel(iso) {
+    if (this._statsTrendPeriod === 'week') return `Week of ${fmtDate(iso)}`;
+    if (this._statsTrendPeriod === 'month') {
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { year: 'numeric', month: 'short' });
+    }
+    return fmtDate(iso);
+  },
+
+  async changeStatsTrendPeriod(period) {
+    this._statsTrendPeriod = period;
+    document.querySelectorAll('#detailStatsTrendTabs button').forEach(b =>
+      b.classList.toggle('active', b.dataset.period === period));
+    const rows = await Api.getPnlDigestForDeployment(this._id, period, 14);
+    document.getElementById('detailStatsTrend').innerHTML =
+      renderPnlTrendTable(rows, { periodLabel: iso => this._statsPeriodLabel(iso) });
   },
 
   // ── Header actions ──────────────────────────────────────────────

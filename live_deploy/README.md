@@ -5534,6 +5534,54 @@ across every touched `.py` file (all 7 strategies plus the new/changed
 backend modules) and `node --check` across every touched `.js`
 file/inline `<script>` block.
 
+## What's here (Step 86: Detail's Calendar folded into Stats + a per-deployment "Recent Periods" trend table)
+
+Requested directly: fold the Detail page's separate Calendar tab into
+Stats (one place for a deployment's whole performance picture instead
+of two tabs), and bring Reports' "Recent Periods" trend table — the
+one with the center-zero P&L bar per row — onto Detail too, scoped to
+just this one deployment.
+
+**Calendar merge**: the Calendar tab (and `renderTabs()`'s ['calendar',
+'Calendar'] entry) is gone; Stats now ends with a "P&L Calendar" section
+using the exact same `renderPnlHeatmap` + year-picker as before, fed by
+the same `GET /deployments/{id}/pnl-digest` endpoint. Its year selector
+no longer re-renders the whole tab (that used to be the entire point of
+`renderCalendar()` being its own tab-body method) — it now refreshes only
+its own `#detailStatsCalendar` sub-container, so switching years doesn't
+re-fetch trades/positions/snapshots/report that the rest of Stats
+already has on screen.
+
+**Recent Periods, deployment-scoped**: the table itself — Period /
+Realized P&L (with the bar) / Positions closed / Win rate / Fills — was
+Reports-page-only code, built directly against the portfolio-wide `GET
+/portfolio/pnl-digest`. Extracted the actual row-rendering into a new
+shared `renderPnlTrendTable(rows, opts)` in `api.js` (`opts.periodLabel`
+lets each caller format its own Day/Week/Month period_start string) —
+Reports' own `renderTrend` is now a two-line call into this same
+function. Detail's copy is fed by the already-existing deployment-scoped
+twin, `GET /deployments/{id}/pnl-digest` (period=day/week/month, limit
+14) — no backend changes needed, that endpoint already supported all
+three periods, Detail's Calendar tab just never used anything but `day`.
+Gets its own small Daily/Weekly/Monthly tab strip (mirroring Reports'
+own period nav) that, like the calendar above, only re-fetches and
+replaces its own `#detailStatsTrend` sub-container on switch.
+
+Both new sections' own range/period state (`_calendarRange` -- Step
+74's field, now doc-commented as Stats' rather than Calendar's own --
+and the new `_statsTrendPeriod`) persist across switching to another
+tab and back to Stats for the SAME deployment, same rule the old
+Calendar tab's state already followed; both reset to their defaults on
+`load()`ing a different deployment.
+
+Verified: `node --check` across `api.js`/`detail.js`/`reports.js` and
+`index.html`'s inline script; grepped for any remaining reference to the
+removed Calendar tab / `renderCalendar` / `'calendar'` tab key — none
+found; confirmed `GET /deployments/{id}/pnl-digest`'s `period` param
+already validates against the same `("day", "week", "month")` set the
+portfolio endpoint uses, so Detail's new Weekly/Monthly buttons need no
+backend change at all.
+
 ## Setup
 
 ```bash

@@ -200,39 +200,8 @@ const Reports = {
   },
 
   renderTrend(rows) {
-    const el = document.getElementById('reportsTrend');
-    if (!rows.length) {
-      el.innerHTML = emptyHtml('No closed positions recorded yet.');
-      return;
-    }
-    const maxAbs = Math.max(...rows.map(r => Math.abs(r.realized_pnl)), 1);
-    el.innerHTML = `
-      <div class="table-wrap">
-      <table><thead><tr>
-        <th>Period</th><th>Realized P&amp;L</th><th>Positions closed</th><th>Win rate</th><th>Fills</th>
-      </tr></thead>
-      <tbody>${rows.map(row => {
-        const pct = (Math.abs(row.realized_pnl) / maxAbs) * 50;   // 50% = half the track, since the bar grows from a CENTER zero-line
-        const decided = row.wins + row.losses;
-        const winRate = decided > 0 ? ((row.wins / decided) * 100).toFixed(0) + '%' : '—';
-        return `<tr>
-          <td>${this._periodLabel(row.period_start)}</td>
-          <td>
-            <div class="report-row-value">
-              <div class="report-bar-track">
-                <div class="report-bar-zero"></div>
-                <div class="report-bar-fill ${row.realized_pnl >= 0 ? 'gain' : 'loss'}" style="width:${pct}%"></div>
-              </div>
-              <span class="${pnlClass(row.realized_pnl)}">${fmtSignedMoney(row.realized_pnl)}</span>
-            </div>
-          </td>
-          <td>${row.positions_closed}</td>
-          <td>${winRate}</td>
-          <td>${row.fills}</td>
-        </tr>`;
-      }).join('')}</tbody></table>
-      </div>
-    `;
+    document.getElementById('reportsTrend').innerHTML =
+      renderPnlTrendTable(rows, { periodLabel: iso => this._periodLabel(iso) });
   },
 
   // ── Collapsible sections — instant show/hide, persisted per-section

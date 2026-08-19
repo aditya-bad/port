@@ -765,6 +765,51 @@ function scrollPnlHeatmapToEnd(containerId) {
   });
 }
 
+// "Recent Periods" trend table — a bucketed realized-P&L history with a
+// center-zero bar per row (see the .report-bar-* CSS), same PnlDigestRow
+// shape (period_start/realized_pnl/positions_closed/wins/losses/fills)
+// GET /portfolio/pnl-digest and GET /deployments/{id}/pnl-digest both
+// return. Originally only Reports' own portfolio-wide trend; extracted
+// here once Detail's Stats tab needed the identical table against the
+// deployment-scoped endpoint instead (Step 86) — same rendering either
+// way, only which digest endpoint fed it differs.
+// opts.periodLabel(iso): formats one row's period_start for the first
+// column — callers pass their own (day/week/month all read differently).
+function renderPnlTrendTable(rows, opts = {}) {
+  const periodLabel = opts.periodLabel || (iso => fmtDate(iso));
+  if (!rows.length) {
+    return emptyHtml('No closed positions recorded yet.');
+  }
+  const maxAbs = Math.max(...rows.map(r => Math.abs(r.realized_pnl)), 1);
+  return `
+    <div class="table-wrap">
+    <table><thead><tr>
+      <th>Period</th><th>Realized P&amp;L</th><th>Positions closed</th><th>Win rate</th><th>Fills</th>
+    </tr></thead>
+    <tbody>${rows.map(row => {
+      const pct = (Math.abs(row.realized_pnl) / maxAbs) * 50;   // 50% = half the track, since the bar grows from a CENTER zero-line
+      const decided = row.wins + row.losses;
+      const winRate = decided > 0 ? ((row.wins / decided) * 100).toFixed(0) + '%' : '—';
+      return `<tr>
+        <td>${periodLabel(row.period_start)}</td>
+        <td>
+          <div class="report-row-value">
+            <div class="report-bar-track">
+              <div class="report-bar-zero"></div>
+              <div class="report-bar-fill ${row.realized_pnl >= 0 ? 'gain' : 'loss'}" style="width:${pct}%"></div>
+            </div>
+            <span class="${pnlClass(row.realized_pnl)}">${fmtSignedMoney(row.realized_pnl)}</span>
+          </div>
+        </td>
+        <td>${row.positions_closed}</td>
+        <td>${winRate}</td>
+        <td>${row.fills}</td>
+      </tr>`;
+    }).join('')}</tbody></table>
+    </div>
+  `;
+}
+
 // ── Strategy config field widgets ────────────────────────────────────
 // Shared by the Deploy modal (Catalog) AND the Edit Config modal
 // (Detail, Step 51) — one <div class="field"> per config key, widget
