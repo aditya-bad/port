@@ -666,7 +666,21 @@ function _equityChartPointerAt(chartId, clientX, clientY, areaEl) {
   const dot = document.getElementById(`${chartId}-dot`);
   if (crosshair) { crosshair.style.left = `${leftPx}px`; crosshair.style.display = 'block'; }
   if (dot) { dot.style.left = `${leftPx}px`; dot.style.top = `${topPx}px`; dot.style.display = 'block'; }
-  ChartTooltip.show(clientX, clientY, `<b>${fmtMoney(s.total_value)}</b><br>${fmtDateTime(s.snapshot_at)}`);
+  // day_high/day_low/max_profit/max_loss (Step 97) only exist on a
+  // per-deployment curve (queries.list_snapshots) -- the Portfolio
+  // curve's own points (queries.list_portfolio_equity_curve) don't
+  // carry them (no single well-defined "portfolio's intraday high" once
+  // several deployments' own snapshots are summed at possibly different
+  // instants -- see that function's own docstring), so this whole block
+  // is skipped gracefully rather than showing "₹undefined" there.
+  const dayRangeHtml = s.max_profit !== undefined ? `
+    <div style="margin-top:4px; padding-top:4px; border-top:1px solid var(--row-line); font-size:10px;">
+      Day range: ${fmtMoney(s.day_low)} – ${fmtMoney(s.day_high)}<br>
+      Best that day: <span class="pos">+${fmtMoney(s.max_profit)}</span> ·
+      Worst: <span class="${pnlClass(s.max_loss)}">${fmtSignedMoney(s.max_loss)}</span>
+    </div>` : '';
+  ChartTooltip.show(clientX, clientY,
+    `<b>${fmtMoney(s.total_value)}</b><br>${fmtDateTime(s.snapshot_at)}${dayRangeHtml}`);
 }
 
 function _equityChartTouch(chartId, event, areaEl) {

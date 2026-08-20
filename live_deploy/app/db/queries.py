@@ -696,6 +696,25 @@ async def list_snapshots(
     "how has this deployment actually performed," which is what the
     equity curve is for.
 
+    Each day's row ALSO carries `day_high`/`day_low` (Step 97) — the
+    highest and lowest `total_value` any of that day's own raw
+    ~5-minute snapshots ever reached — plus `max_profit`/`max_loss`,
+    the same two numbers expressed as a delta from the day's OWN
+    opening total_value (its first snapshot that day), not from the
+    previous day's close or the deployment's all-time total_value. That
+    choice is deliberate: "today's max profit" should answer "how much
+    better did today get than where today itself started," not "what's
+    the highest this account has ever been added to whatever residual
+    cumulative profit already existed" (a number that would trend
+    upward every single day regardless of whether today itself did
+    anything, and be actively misleading for exactly the "how do I
+    improve THIS strategy" use case this exists for — e.g. spotting a
+    day where the position was up 1800 at its best moment but only
+    closed up 200, meaning an exit is leaving real money on the table).
+    `max_loss` is <= 0 (0 on a day that only ever went up from its own
+    open) — a negative number, same signed convention every other P&L
+    field in this app already uses.
+
     `limit` now means "at most this many most-recent DAYS" (picked via
     the inner ORDER BY ... DESC LIMIT, then re-sorted ascending for the
     chart), not raw rows — 1000 days is years of history, same
@@ -705,24 +724,48 @@ async def list_snapshots(
     precise timestamptz from a real snapshot_loop tick), never a
     synthesized day-boundary value — `date_trunc('day', ... AT TIME ZONE
     'Asia/Kolkata')` is used only to GROUP rows by IST calendar day
-    (DISTINCT ON's key), never returned as the value itself, so this
-    can't reintroduce the naive-datetime class of bug this codebase has
-    already been bitten by more than once (see Step 92/95's own
-    write-ups) — every timestamp leaving this function is exactly as
-    timezone-aware as the one that went into the database.
+    (DISTINCT ON's key / the day_stats join key), never returned as the
+    value itself, so this can't reintroduce the naive-datetime class of
+    bug this codebase has already been bitten by more than once (see
+    Step 92/95's own write-ups) — every timestamp leaving this function
+    is exactly as timezone-aware as the one that went into the database.
     """
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
-            SELECT * FROM (
-                SELECT DISTINCT ON (date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata'))
-                    *
+            WITH day_stats AS (
+                SELECT
+                    date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata') AS day_key,
+                    MAX(total_value) AS day_high,
+                    MIN(total_value) AS day_low,
+                    (array_agg(total_value ORDER BY snapshot_at ASC))[1] AS day_open
                 FROM deployment_snapshots
                 WHERE deployment_id = $1
-                ORDER BY date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata') DESC, snapshot_at DESC
-                LIMIT $2
-            ) recent_days
-            ORDER BY snapshot_at
+                GROUP BY day_key
+            ),
+            day_close AS (
+                SELECT
+                    date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata') AS day_key,
+                    id, deployment_id, snapshot_at, cash, open_positions_value,
+                    total_value, realized_pnl_cumulative, metadata
+                FROM (
+                    SELECT DISTINCT ON (date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata'))
+                        *
+                    FROM deployment_snapshots
+                    WHERE deployment_id = $1
+                    ORDER BY date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata') DESC, snapshot_at DESC
+                    LIMIT $2
+                ) picked
+            )
+            SELECT
+                dc.id, dc.deployment_id, dc.snapshot_at, dc.cash, dc.open_positions_value,
+                dc.total_value, dc.realized_pnl_cumulative, dc.metadata,
+                ds.day_high, ds.day_low,
+                (ds.day_high - ds.day_open) AS max_profit,
+                (ds.day_low - ds.day_open) AS max_loss
+            FROM day_close dc
+            JOIN day_stats ds ON ds.day_key = dc.day_key
+            ORDER BY dc.day_key
             """,
             deployment_id, limit,
         )

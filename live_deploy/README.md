@@ -6306,6 +6306,62 @@ enough data yet" empty-state copy in `api.js`/`portfolio.js`/
 `compare.js` and the affected docstrings, all previously worded around
 "snapshots every 5 minutes."
 
+## What's here (Step 97: each day's equity point also carries its own max profit/max loss)
+
+Direct follow-up to Step 96: collapsing the curve to one point per day
+threw away the intraday range entirely, but the user explicitly wants
+that back in a different form — not the noisy hourly line, but "the
+max profit that has been recorded" (and max loss) per day, specifically
+to spot days where a strategy was up a lot at some point but gave it
+back by the close (or down a lot and recovered) — real signal for
+tuning exits, not something a single close-of-day number can show.
+
+**Added to `queries.list_snapshots`** (the per-deployment curve —
+Detail, Compare): each day's row now also carries `day_high`/`day_low`
+(the highest/lowest `total_value` any of that day's own raw ~5-minute
+snapshots ever reached) and `max_profit`/`max_loss` — those same two
+numbers expressed as a delta from the day's OWN opening total_value
+(its first snapshot that day), not the previous day's close and not
+the deployment's all-time total. That distinction matters: baselining
+against anything but the day's own start would make "today's max
+profit" trend upward every single day regardless of what actually
+happened today, on top of whatever cumulative profit already existed —
+actively misleading for "how did TODAY go," which is the whole point.
+`max_loss` is <= 0, signed the same way every other P&L field in this
+app already is.
+
+**Deliberately NOT added to `list_portfolio_equity_curve`** (Portfolio's
+combined curve): there's no single well-defined "portfolio's intraday
+high" once several deployments' own snapshots are summed — each
+deployment's actual peak happens at its own instant, not necessarily
+the same moment as any other deployment's, so a naive sum of each
+one's own day_high would be an optimistic (never actually achievable)
+upper bound, not a real number the account ever actually touched.
+Rather than ship something that LOOKS precise but is quietly wrong,
+this stays scoped to the per-deployment curve, where the semantics are
+exact — which also happens to be exactly what "make the strategy
+better" means anyway (a single strategy's own performance, not the
+whole portfolio's).
+
+Surfaced in the equity chart's existing hover tooltip (`api.js`'s
+`_equityChartPointerAt`, shared by Detail and Portfolio) — a day range
+line plus "Best"/"Worst" deltas appended below the existing value/date,
+shown ONLY when the hovered point actually carries `max_profit` (so
+Portfolio's own points, which don't, render exactly as they did
+before — no "₹undefined" leaking through).
+
+Verified against the same real local Postgres instance as Step 96
+(migrations applied fresh), with hand-seeded synthetic snapshots
+constructed so the expected day_open/day_high/day_low/max_profit/
+max_loss were known in advance rather than eyeballed after the fact:
+a day that opened at 100000, peaked at 102000, dipped to 98500, and
+closed at 101200 correctly reports `max_profit=2000, max_loss=-1500`;
+a second, purely-losing day that opened at 101200 and only ever went
+down correctly reports `max_profit=0` (the open itself was the day's
+own high) and `max_loss=-2200`. `SnapshotOut` schema extended with the
+four new required fields; full `app.main` import and `node --check`
+both clean.
+
 ## Setup
 
 ```bash

@@ -241,7 +241,15 @@ class ReportOut(BaseModel):
 class SnapshotOut(BaseModel):
     """One point on a deployment's equity curve — see
     queries.record_snapshot/list_snapshots and DeploymentManager's
-    periodic snapshot loop for how these rows actually get written.
+    periodic snapshot loop for how these rows actually get written. One
+    row per IST calendar day (Step 96) — `snapshot_at`/`cash`/
+    `open_positions_value`/`total_value`/`realized_pnl_cumulative` are
+    that day's LAST snapshot (its post-market value); `day_high`/
+    `day_low`/`max_profit`/`max_loss` (Step 97) summarize the whole
+    day's range, computed from every raw snapshot that day, not just
+    the closing one — see list_snapshots' own docstring for exactly
+    what "max profit/loss" means (a delta from the day's OWN open, not
+    the previous day's close or the deployment's all-time total).
 
     `open_positions_value` is the mark-to-market UNREALIZED P&L sum of
     every position open at snapshot time (not the notional value of the
@@ -258,6 +266,10 @@ class SnapshotOut(BaseModel):
     open_positions_value: float
     total_value: float
     realized_pnl_cumulative: float
+    day_high: float
+    day_low: float
+    max_profit: float
+    max_loss: float
 
 
 class PortfolioSnapshotOut(BaseModel):
