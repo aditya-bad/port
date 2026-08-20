@@ -319,6 +319,18 @@ function fmtPct(n, decimals = 2) {
   return Number(n).toFixed(decimals) + '%';
 }
 
+// Both fmtDateTime and fmtDate pin an explicit timeZone: 'Asia/Kolkata'
+// (Step 95) -- toLocaleString/toLocaleDateString silently fall back to
+// the VIEWER's own device timezone whenever timeZone is omitted, which
+// isn't a cosmetic difference for a trading app: every fill/position
+// timestamp in the database is a real market event that happened at a
+// specific IST wall-clock moment (see queries.py's own IST-bucketing
+// comments), and a viewer whose device isn't set to IST would otherwise
+// see a DIFFERENT (wrong) hour for the exact same underlying instant --
+// e.g. a 10:00 IST entry rendering as "04:30" to anyone on a UTC device,
+// which reads as a bizarre pre-market entry time rather than what it
+// actually was. `_isoDateIST` below already established this exact
+// pattern for date-only display; these two share it for date+time.
 function fmtDateTime(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -326,6 +338,7 @@ function fmtDateTime(iso) {
   return d.toLocaleString('en-IN', {
     year: 'numeric', month: 'short', day: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    timeZone: 'Asia/Kolkata',
   });
 }
 
@@ -338,7 +351,7 @@ function fmtDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
   if (isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-IN', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'Asia/Kolkata' });
 }
 
 function pnlClass(n) {

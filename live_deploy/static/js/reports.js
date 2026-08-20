@@ -194,7 +194,7 @@ const Reports = {
     if (this._period === 'week') return `Week of ${fmtDate(iso)}`;
     if (this._period === 'month') {
       const d = new Date(iso);
-      return isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { year: 'numeric', month: 'short' });
+      return isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { year: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
     }
     return fmtDate(iso);
   },

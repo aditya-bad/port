@@ -6184,6 +6184,57 @@ with a live-fetched price, confirms the inverse strategy's
 one early or late), and confirms its post-resume hold-counter
 reconciliation still exits immediately when already overdue.
 
+## What's here (Step 95: a real timezone display bug — fill/position times rendered in the VIEWER's own device timezone, not IST)
+
+Follow-up to Step 94: the user pushed back on "that CSV row is just the
+`positions` rollup, not a bug" — rightly, because a closer look showed
+the actual complaint wasn't about the rollup shape at all. Pointed at a
+concrete symptom instead: some rows showing an entry time like "4:30"
+— hours before the market even opens — which is exactly what you'd see
+if a real 10:00 IST entry got displayed in the wrong timezone (UTC is
+5:30 behind IST; 10:00 IST literally **is** 04:30 in raw UTC).
+
+**Root cause, confirmed**: `fmtDateTime`/`fmtDate` (`api.js`) — used
+for essentially every fill/position/event timestamp shown anywhere in
+the app — called `Date.prototype.toLocaleString`/`toLocaleDateString`
+with `'en-IN'` as the locale but no `timeZone` option. `'en-IN'` only
+controls the FORMAT (date ordering, punctuation) — the actual timezone
+used defaults silently to whatever the VIEWER's own device is set to
+when `timeZone` is omitted. Every timestamp in the database is a
+genuine IST market event (see `queries.py`'s own IST-bucketing
+comments), so this was never meant to vary by viewer — a UTC or PST
+browser was seeing a DIFFERENT, WRONG hour for the exact same instant
+in the database, most jarringly for anything near market open/close
+where the offset (+5:30) crosses into a completely different-looking
+part of the day. The exact same duplicated formatting logic (no
+`timeZone`) was also inlined separately in `detail.js` and `reports.js`
+for their own month-label helper, so all three needed the fix.
+
+Confirmed live with a reproduction rather than guessed: `_isoDateIST`
+(also in `api.js`, added back in the P&L-heatmap year-selector work)
+already established the correct pattern — its own comment explicitly
+says this exact thing ("a user in a different timezone still sees...
+not one day off around midnight IST") — but `fmtDateTime`/`fmtDate`
+never got the same treatment when they were written, so this was an
+inconsistency with the codebase's own already-documented convention,
+not a new judgment call.
+
+**Fix**: all four call sites (`fmtDateTime`, `fmtDate` in `api.js`;
+the inlined month-label formatter duplicated in `detail.js` and
+`reports.js`) now pass `timeZone: 'Asia/Kolkata'` explicitly, same as
+`_isoDateIST` already did. Every viewer now sees the same IST wall-clock
+time for the same fill, regardless of their own device's timezone.
+
+Verified with a direct reproduction, not just a code read: ran the
+exact before/after formatting logic under `TZ=UTC` (Node respects an
+explicit `Intl.DateTimeFormat` `timeZone` option independent of the
+process's own TZ, so this genuinely exercises "a viewer whose device
+isn't set to IST," not just IST-on-IST). Before the fix,
+`2026-08-20 04:30:00+00` (this exact bug's real reported value)
+rendered as `04:30:00` — reproducing the report exactly; after the fix,
+the same input renders as `10:00:00`, the correct IST time. `node --check`
+clean on all three edited files.
+
 ## Setup
 
 ```bash
