@@ -93,6 +93,17 @@ module's docstring):
   "pivot_type" / "atr_smoothing" / "force_exit_time" / "market_open_time":
       identical meaning and defaults to pivot_supertrend — see that
       module's CONFIG section for market_open_time specifically.
+  "max_trades_per_day": 3 (default) — a hard cap on fresh ENTRIES per
+      IST calendar day (Step 98); null/0 disables it (unlimited, the old
+      behavior). Counts only actual fills — a signal that fires but
+      can't be filled (no Kite session, a resolver error) doesn't use
+      up a slot. Exits and force-exit are NEVER blocked by this — the
+      cap only ever stops a NEW position from being opened, never
+      closing an existing one. Resets to 0 at the next IST day
+      boundary, same day-rollover check on_tick already does for
+      pivots. Persisted (today + trades_today) across a restart mid-day
+      so a redeploy can't reset the count and grant extra trades for
+      the rest of the day it wouldn't otherwise have had.
 
 A dynamic instrument subscription is added to the dispatcher for
 whichever option leg is currently open (so its live LTP feeds
@@ -118,6 +129,7 @@ from .pivot_supertrend import (
     ST_PERIOD,
     CandleAggregator,
     SuperTrendState,
+    _IST,
     _parse_hhmm,
     apply_seed_to_state,
     compute_pivots,
@@ -150,6 +162,7 @@ logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options")
         "atr_smoothing": "wilder",
         "force_exit_time": "15:00",
         "market_open_time": "09:15",
+        "max_trades_per_day": 3,
         "prev_day_ohlc": None,
         "seed_candles": None,
         "supertrend_seed": None,
@@ -185,6 +198,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         self.atr_method = cfg.get("atr_smoothing", "wilder")
         self.force_exit_time = _parse_hhmm(cfg.get("force_exit_time", "15:00"))
         self.market_open_time = _parse_hhmm(cfg.get("market_open_time", "09:15"))
+        # None (from an explicit null OR a 0) disables the cap entirely --
+        # see this class's own module docstring for the full reasoning.
+        raw_max_trades = cfg.get("max_trades_per_day", 3)
+        self.max_trades_per_day: Optional[int] = int(raw_max_trades) if raw_max_trades else None
 
         self.aggregator = CandleAggregator(interval_minutes=5, label=runner.deployment_name)
         self.st = SuperTrendState(period=ST_PERIOD, multiplier=ST_MULTIPLIER,
@@ -194,6 +211,30 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         self.today_high: Optional[float] = None
         self.today_low: Optional[float] = None
         self.today_last_close: Optional[float] = None
+        self.trades_today = 0   # resets in _roll_over_day; see max_trades_per_day above
+
+        # Fetched once, here, unconditionally -- reused below by FALLBACK
+        # 1 so this isn't a second DB read. Resume-safety for the daily
+        # trade cap needs it EVEN when the primary Kite-seed path below
+        # succeeds (the common case): unlike SuperTrend/pivots, which
+        # that path always re-derives fresh FROM KITE ITSELF (making a
+        # persisted today/today_high/today_low genuinely redundant on a
+        # same-day restart), there's no external source of truth for
+        # "how many entries already happened today" to re-derive from —
+        # the only record of it is whatever this deployment last
+        # persisted, so it can't wait for the primary path to fail
+        # before checking. Only applied if the persisted day actually
+        # IS today — a restart on a NEW day should start that day's
+        # count at 0, same as the normal _roll_over_day path would.
+        persisted = await runner.load_state()
+        if persisted:
+            today_str = persisted.get("today")
+            if today_str:
+                try:
+                    if date.fromisoformat(today_str) == datetime.now(_IST).date():
+                        self.trades_today = persisted.get("trades_today", 0)
+                except ValueError:
+                    pass
 
         self.prev_day_ohlc: Optional[dict] = cfg.get("prev_day_ohlc")
         self.pivots: Optional[dict] = None
@@ -268,8 +309,8 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 "persisted state / config seed", runner.deployment_name,
             )
 
-        # FALLBACK 1: whatever this deployment last persisted.
-        persisted = await runner.load_state()
+        # FALLBACK 1: whatever this deployment last persisted (already
+        # fetched above, for the trade-cap resume check).
         if persisted and self._restore_from_state(runner, persisted):
             return
 
@@ -314,6 +355,12 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             self.today_high = state.get("today_high")
             self.today_low = state.get("today_low")
             self.today_last_close = state.get("today_last_close")
+            # Same value on_start's own early check already applied (see
+            # its comment) -- restored again here too so this method
+            # stays a complete, correct restore on its own, regardless
+            # of which call site reaches it.
+            if self.today == datetime.now(_IST).date():
+                self.trades_today = state.get("trades_today", 0)
         except (KeyError, TypeError, ValueError):
             logger.exception(
                 "%s: persisted state was malformed — ignoring it and "
@@ -346,6 +393,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             "today_high": self.today_high,
             "today_low": self.today_low,
             "today_last_close": self.today_last_close,
+            "trades_today": self.trades_today,
         }
 
     def get_status_fields(self) -> Optional[list]:
@@ -447,6 +495,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 {k: round(v, 2) for k, v in self.pivots.items()},
             )
         self.today_high = self.today_low = self.today_last_close = None
+        # Daily trade cap (Step 98) resets with every new day, same as
+        # pivots do above -- a fresh count for a fresh day, regardless of
+        # how many entries yesterday used up.
+        self.trades_today = 0
 
     async def _on_candle_closed(self, runner, candle: dict, now: datetime) -> None:
         # GAP GUARD — see pivot_supertrend.py's is_stale_candle_close for
@@ -523,11 +575,24 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         # leg").
         if not stale and self.active_leg_token is None and self.pivots is not None \
                 and self.prev_trend is not None and before_cutoff and after_open:
+            # Daily trade cap (Step 98) — checked here, not folded into
+            # the outer `if` above, so a signal that genuinely fires but
+            # gets blocked by the cap is distinguishable (and logged,
+            # below) from the ordinary "nothing broke" case, which isn't
+            # worth a log line every candle.
+            at_daily_cap = self.max_trades_per_day is not None and self.trades_today >= self.max_trades_per_day
             close = candle["close"]
             if self.prev_trend == "up":
                 for k in R_KEYS:
                     level = self.pivots[k]
                     if close > level:
+                        if at_daily_cap:
+                            logger.info(
+                                "%s: pivot break (long, %s @ %.2f) but max_trades_per_day "
+                                "(%d) already reached today — staying flat",
+                                runner.deployment_name, k, close, self.max_trades_per_day,
+                            )
+                            break
                         trigger_values = {
                             "close": round(close, 2), "trend": self.prev_trend,
                             "broken_level_key": k, "broken_level": round(level, 2),
@@ -539,6 +604,13 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 for k in S_KEYS:
                     level = self.pivots[k]
                     if close < level:
+                        if at_daily_cap:
+                            logger.info(
+                                "%s: pivot break (short, %s @ %.2f) but max_trades_per_day "
+                                "(%d) already reached today — staying flat",
+                                runner.deployment_name, k, close, self.max_trades_per_day,
+                            )
+                            break
                         trigger_values = {
                             "close": round(close, 2), "trend": self.prev_trend,
                             "broken_level_key": k, "broken_level": round(level, 2),
@@ -593,6 +665,11 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         self.active_leg_token = leg.instrument_token
         self.active_leg_symbol = leg.tradingsymbol
         self.active_leg_exchange = leg.exchange
+        # Counted here, not at signal-detection time above — this is the
+        # point a real fill actually happened; a signal that fired but
+        # never got filled (the two early-returns above) doesn't use up
+        # one of today's slots.
+        self.trades_today += 1
         await runner.notify_execution(
             "entry", f"Sold {qty} {leg.tradingsymbol} @ {price}", metadata=meta,
         )

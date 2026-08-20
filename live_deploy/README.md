@@ -6362,6 +6362,67 @@ own high) and `max_loss=-2200`. `SnapshotOut` schema extended with the
 four new required fields; full `app.main` import and `node --check`
 both clean.
 
+## What's here (Step 98: a max-trades-per-day cap for `pivot_supertrend_options` and its inverse)
+
+Feedback flagged a real gap, not a bug in existing logic: nothing
+counted how many entries a `pivot_supertrend_options*` deployment had
+already taken today, so a genuinely fast, choppy session could fire a
+4th, 5th, Nth entry with no ceiling at all. Added `max_trades_per_day`
+(default 3, matching the specific example given) to both
+`pivot_supertrend_options.py` and `pivot_supertrend_options_inverse.py`
+— a hard cap on fresh ENTRIES per IST calendar day; a signal that would
+otherwise fire the 4th entry is blocked and the deployment just sits
+flat until the next force-exit or the next day, exactly as described.
+
+**What counts as "a trade"**: only a real, successful ENTRY fill —
+incremented at the end of `_enter()`, after `runner.buy`/`sell` actually
+succeeds, not at signal-detection time. A signal that fires but never
+gets filled (no Kite session yet, a resolver error resolving the ATM
+leg) doesn't use up one of today's slots. Exits — an ST-flip exit, a
+force-exit at cutoff — are NEVER blocked by this; the cap only ever
+stops a NEW position from opening, never closes an existing one. `0`
+or `null` disables it entirely (unlimited, the old behavior).
+
+**Resets at the IST day boundary** — `pivot_supertrend_options.py`
+already had day-tracking (for pivots); this just adds one more counter
+to what `_roll_over_day` resets. `pivot_supertrend_options_inverse.py`
+had NONE at all before this (its own module docstring used to say "no
+day-rollover needed" — true for pivots/SuperTrend, which this strategy
+never uses, but not for a per-day trade counter) — added a `self.today`
+field, a day-rollover check in `on_tick`, and a `_roll_over_day` whose
+only job is resetting the count.
+
+**Persisted across a restart, not just reset at day-rollover** — same
+"today"/`trades_today` pair added to both strategies'
+`get_persistable_state`/`_restore_from_state`. This needed a bit more
+care than it first looks: the PRIMARY seeding path in `on_start`
+(fetching fresh candles straight from Kite, which succeeds on nearly
+every restart with a live session) `return`s immediately on success,
+NEVER reaching the `_restore_from_state` fallback branch at all — fine
+for SuperTrend/pivots, which that same Kite fetch already re-derives
+more authoritatively than anything persisted could, but there's no
+equivalent external source of truth for "how many entries already
+happened today." Restoring `trades_today` therefore happens in its own
+unconditional step near the top of `on_start`, BEFORE either seeding
+path runs, using the exact same `runner.load_state()` call FALLBACK 1
+already needed (reused, not a second DB read) — and only actually
+applies the persisted count if the persisted day genuinely IS today; a
+restart on a new day starts that day's count at 0 like normal, same as
+`_roll_over_day` would. Without this, a mid-day redeploy would have
+silently reset the count and granted extra trades for the rest of that
+day, working around the very cap it was supposed to enforce.
+
+Verified with a dedicated functional test (no DB/Kite session) for
+both strategies: built up `trades_today=3` directly, then confirmed a
+4th, otherwise perfectly valid signal is blocked — stays flat, no fill,
+count still 3 — and confirmed setting the cap to `None` lets a 4th
+trade through normally (the disable path). A separate test mocked each
+module's own `datetime.now()` to verify the resume-safety split
+exactly: a persisted state whose `today` matches the (mocked) current
+date restores its `trades_today` count, while one whose `today` is
+YESTERDAY correctly starts fresh at 0 rather than wrongly carrying
+yesterday's count into today's cap.
+
 ## Setup
 
 ```bash

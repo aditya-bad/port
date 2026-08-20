@@ -101,6 +101,13 @@ CONFIG:
       primary exit mechanism, not force_exit_time).
   "market_open_time": "09:15" (default) — nullable to disable (NOT
       recommended), identical meaning to pivot_supertrend.
+  "max_trades_per_day": 3 (default) — a hard cap on fresh ENTRIES per
+      IST calendar day (Step 98), identical meaning/reasoning to
+      pivot_supertrend_options' own copy of this — see that module's
+      docstring for the full rationale (only entries count, never
+      exits/force-exit; resets at the next IST day boundary; persisted
+      across a restart so it can't be reset mid-day for extra trades).
+      null/0 disables it.
   "lots_per_trade": 1 (default) — lots bought per entry.
   "seed_candles" / "supertrend_seed": SuperTrend warmup, identical
       meaning to pivot_supertrend (see that module's docstring) — NOTE
@@ -114,7 +121,7 @@ does.
 """
 
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional
 
 from ..deployments.strategy_base import StrategyBase
@@ -124,6 +131,7 @@ from .pivot_supertrend import (
     ST_PERIOD,
     CandleAggregator,
     SuperTrendState,
+    _IST,
     _parse_hhmm,
     apply_seed_to_state,
     fetch_seed_from_kite,
@@ -154,6 +162,7 @@ logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options_inve
         "hold_candles": 1,
         "force_exit_time": "15:00",
         "market_open_time": "09:15",
+        "max_trades_per_day": 3,
         "lots_per_trade": 1,
         "seed_candles": None,
         "supertrend_seed": None,
@@ -190,6 +199,10 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         raw_force_exit = cfg.get("force_exit_time", "15:00")
         self.force_exit_time = _parse_hhmm(raw_force_exit)   # None disables it, same as pivot_supertrend
         self.market_open_time = _parse_hhmm(cfg.get("market_open_time", "09:15"))
+        # None (from an explicit null OR a 0) disables the cap entirely --
+        # see this class's own module docstring for the full reasoning.
+        raw_max_trades = cfg.get("max_trades_per_day", 3)
+        self.max_trades_per_day: Optional[int] = int(raw_max_trades) if raw_max_trades else None
 
         self.lots_per_trade = int(cfg.get("lots_per_trade") or 1)
         if self.lots_per_trade < 1:
@@ -215,6 +228,32 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         self.active_leg_exchange: Optional[str] = None
         self.candles_held = 0
         self._reattach_entry_date: Optional[datetime] = None
+
+        # Day-tracking (Step 98) exists ONLY to reset the daily trade cap
+        # below — this strategy still has no pivots/prev_day_ohlc to
+        # recompute at a day boundary (see module docstring), so unlike
+        # pivot_supertrend_options.py there's no _roll_over_day beyond
+        # that one job.
+        self.today: Optional[date] = None
+        self.trades_today = 0
+
+        # Resume-safety for the daily trade cap: restored HERE,
+        # unconditionally, before the primary Kite-seed path below runs
+        # — see pivot_supertrend_options.py's identical block for the
+        # full reasoning (there's no external source of truth to
+        # re-derive "how many entries already happened today" from the
+        # way SuperTrend itself gets re-derived fresh from Kite on every
+        # restart, so this can't wait for that path to fail first).
+        # Only applied if the persisted day actually IS today.
+        persisted = await runner.load_state()
+        if persisted:
+            today_str = persisted.get("today")
+            if today_str:
+                try:
+                    if date.fromisoformat(today_str) == datetime.now(_IST).date():
+                        self.trades_today = persisted.get("trades_today", 0)
+                except ValueError:
+                    pass
 
         # Resume-safety: reattach to an already-open leg from the DB.
         for token, pos in runner.open_positions.items():
@@ -270,8 +309,8 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                 "persisted state / config seed", runner.deployment_name,
             )
 
-        # FALLBACK 1: whatever this deployment last persisted.
-        persisted = await runner.load_state()
+        # FALLBACK 1: whatever this deployment last persisted (already
+        # fetched above, for the trade-cap resume check).
         if persisted and self._restore_from_state(runner, persisted):
             return
 
@@ -286,15 +325,25 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
 
     def _restore_from_state(self, runner, state: dict) -> bool:
         """See pivot_supertrend.py's identical method for the full
-        rationale. No pivots/today tracking here (this strategy never
-        uses them at all), so there's just SuperTrend + prev_trend to
-        restore. Returns False (nothing mutated) on anything malformed,
-        so the caller falls through to the config-seed path."""
+        rationale. No pivots tracking here (this strategy never uses
+        them at all) -- `today`/`trades_today` (Step 98) exist purely
+        for the daily trade cap, not for anything pivot-related, same as
+        on_start's own early restore of them. Returns False (nothing
+        mutated) on anything malformed, so the caller falls through to
+        the config-seed path."""
         try:
             if state.get("version") != 1:
                 return False
             self.st = SuperTrendState.from_snapshot(state["supertrend"])
             self.prev_trend = state.get("prev_trend")
+            today_str = state.get("today")
+            self.today = date.fromisoformat(today_str) if today_str else None
+            # Same value on_start's own early check already applied (see
+            # its comment) -- restored again here too so this method
+            # stays a complete, correct restore on its own, regardless
+            # of which call site reaches it.
+            if self.today == datetime.now(_IST).date():
+                self.trades_today = state.get("trades_today", 0)
         except (KeyError, TypeError, ValueError):
             logger.exception(
                 "%s: persisted state was malformed — ignoring it and "
@@ -317,6 +366,8 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             return None
         return {
             "version": 1, "supertrend": self.st.snapshot(), "prev_trend": self.prev_trend,
+            "today": self.today.isoformat() if self.today else None,
+            "trades_today": self.trades_today,
         }
 
     def get_status_fields(self) -> Optional[list]:
@@ -367,8 +418,9 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             "data (trend %s -> %s)", runner.deployment_name, old_trend, fresh_st.trend,
         )
 
-    # ── Tick consumption — no day-rollover needed: no pivots, and
-    # SuperTrend itself runs continuously across day boundaries (never
+    # ── Tick consumption — day-rollover ONLY resets the daily trade cap
+    # (Step 98) now; there's still no pivots to recompute and SuperTrend
+    # itself still runs continuously across day boundaries (never
     # reset), same as pivot_supertrend/pivot_supertrend_options. ───────
 
     async def on_tick(self, runner, tick: dict) -> None:
@@ -376,10 +428,26 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         price = tick.get("last_price")
         if ts is None or price is None:
             return
+
+        day = ts.date()
+        if self.today is None:
+            self.today = day
+        elif day != self.today:
+            self._roll_over_day(runner)
+            self.today = day
+
         completed = self.aggregator.add_tick(ts, price)
         if completed is None:
             return
         await self._on_candle_closed(runner, completed, ts)
+
+    def _roll_over_day(self, runner) -> None:
+        # Only job here (unlike pivot_supertrend_options.py's own
+        # _roll_over_day) is resetting the daily trade cap for the new
+        # day — see module docstring, this strategy never computes
+        # pivots at all.
+        logger.info("%s: new trading day -> trade count reset", runner.deployment_name)
+        self.trades_today = 0
 
     async def _on_candle_closed(self, runner, candle: dict, now: datetime) -> None:
         # GAP GUARD — see pivot_supertrend.py's is_stale_candle_close for
@@ -482,14 +550,27 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         if new_trend is not None:
             if (not stale and prev_trend_before_update is not None and new_trend != prev_trend_before_update
                     and self.active_leg_token is None and before_cutoff and after_open):
-                option_type = "PE" if new_trend == "down" else "CE"
-                trigger_values = {
-                    "prev_trend": prev_trend_before_update, "new_trend": new_trend,
-                    "close": round(candle["close"], 2),
-                    "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
-                    "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
-                }
-                await self._enter(runner, candle, option_type, trigger_values)
+                # Daily trade cap (Step 98) — checked here, separate from
+                # the compound condition above, purely so a flip that
+                # genuinely qualifies but gets blocked by the cap is
+                # distinguishable (and logged) from every OTHER candle
+                # where nothing flipped at all.
+                if self.max_trades_per_day is not None and self.trades_today >= self.max_trades_per_day:
+                    logger.info(
+                        "%s: SuperTrend flipped (%s -> %s) but max_trades_per_day "
+                        "(%d) already reached today — staying flat",
+                        runner.deployment_name, prev_trend_before_update, new_trend,
+                        self.max_trades_per_day,
+                    )
+                else:
+                    option_type = "PE" if new_trend == "down" else "CE"
+                    trigger_values = {
+                        "prev_trend": prev_trend_before_update, "new_trend": new_trend,
+                        "close": round(candle["close"], 2),
+                        "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
+                        "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
+                    }
+                    await self._enter(runner, candle, option_type, trigger_values)
             self.prev_trend = new_trend
 
     # ── Execution — buy an option leg to open, sell it to close ────────
@@ -538,6 +619,11 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         self.active_leg_symbol = leg.tradingsymbol
         self.active_leg_exchange = leg.exchange
         self.candles_held = 0
+        # Counted here, not at flip-detection time above — this is the
+        # point a real fill actually happened; a flip that fired but
+        # never got filled (the two early-returns above) doesn't use up
+        # one of today's slots.
+        self.trades_today += 1
         await runner.notify_execution(
             "entry", f"Bought {qty} {leg.tradingsymbol} @ {price}", metadata=meta,
         )
