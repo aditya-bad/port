@@ -592,8 +592,8 @@ const _equityChartRegistry = {};   // chartId -> { snapshots, min, max }
 function renderEquityChart(snapshots, emptyMessage, chartId) {
   if (snapshots.length < 2) {
     return emptyHtml(emptyMessage || (
-      'Not enough snapshot data yet — equity snapshots are recorded roughly every 5 minutes per ' +
-      'active deployment. Check back once this deployment has been running a while.'
+      'Not enough equity history yet — one point is recorded per trading day this deployment ' +
+      'has been active. Check back after it\'s run a couple of days.'
     ));
   }
   chartId = chartId || `equity-${Math.random().toString(36).slice(2)}`;

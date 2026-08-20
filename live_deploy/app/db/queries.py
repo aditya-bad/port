@@ -682,64 +682,130 @@ async def record_snapshot(
 async def list_snapshots(
     pool: asyncpg.Pool, deployment_id: UUID, limit: int = 1000,
 ) -> list[asyncpg.Record]:
+    """One point per IST CALENDAR DAY (Step 96), not every ~5-minute row
+    snapshot_loop ever wrote — specifically the LAST snapshot recorded
+    that day. Since the app process keeps running (and snapshot_loop
+    keeps firing) straight through and past market close, that last
+    snapshot is effectively "today's post-market equity" — cash plus
+    whatever's still open (nothing, for a normal intraday deployment
+    that's already force-exited everything by then) — not a mid-session
+    reading. This directly replaces the old "every 5 minutes, all day"
+    equity curve, which visibly moved on nothing more than an open
+    option leg's live mark-to-market premium ticking around intraday —
+    real information for "how's today going right now," but noise for
+    "how has this deployment actually performed," which is what the
+    equity curve is for.
+
+    `limit` now means "at most this many most-recent DAYS" (picked via
+    the inner ORDER BY ... DESC LIMIT, then re-sorted ascending for the
+    chart), not raw rows — 1000 days is years of history, same
+    practical headroom the old row-based limit had.
+
+    Deliberately still returns each row's REAL `snapshot_at` (an actual,
+    precise timestamptz from a real snapshot_loop tick), never a
+    synthesized day-boundary value — `date_trunc('day', ... AT TIME ZONE
+    'Asia/Kolkata')` is used only to GROUP rows by IST calendar day
+    (DISTINCT ON's key), never returned as the value itself, so this
+    can't reintroduce the naive-datetime class of bug this codebase has
+    already been bitten by more than once (see Step 92/95's own
+    write-ups) — every timestamp leaving this function is exactly as
+    timezone-aware as the one that went into the database.
+    """
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
-            SELECT * FROM deployment_snapshots
-            WHERE deployment_id = $1
+            SELECT * FROM (
+                SELECT DISTINCT ON (date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata'))
+                    *
+                FROM deployment_snapshots
+                WHERE deployment_id = $1
+                ORDER BY date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata') DESC, snapshot_at DESC
+                LIMIT $2
+            ) recent_days
             ORDER BY snapshot_at
-            LIMIT $2
             """,
             deployment_id, limit,
         )
 
 
 async def list_portfolio_equity_curve(
-    pool: asyncpg.Pool, bucket_seconds: int = 300, limit: int = 1000,
+    pool: asyncpg.Pool, limit: int = 1000,
 ) -> list[asyncpg.Record]:
-    """One combined equity-curve point per time bucket, summed across
-    EVERY deployment's snapshots (not just currently-active ones) —
-    the Portfolio view's whole-account equity curve.
+    """One combined equity-curve point per IST CALENDAR DAY (Step 96),
+    summed across EVERY deployment's snapshots (not just currently-active
+    ones) — the Portfolio view's whole-account equity curve.
 
-    Snapshots for all active deployments are recorded in the same
-    snapshot_loop iteration (see DeploymentManager.snapshot_all_active),
-    but each deployment's own row still gets its own datetime.now() call,
-    so rows from the same "tick" can differ by a few milliseconds —
-    bucket_seconds (default 300, matching DEFAULT_SNAPSHOT_INTERVAL_SECONDS)
-    floors snapshot_at down to the nearest bucket so same-tick rows from
-    different deployments always land together instead of scattering
-    into their own single-row buckets.
+    Used to be one point per fixed `bucket_seconds` time bucket (5
+    minutes) — replaced with one point per day for the same reason
+    list_snapshots (the per-deployment version, see its own docstring)
+    was: an intraday reading moves on nothing more than an open
+    option leg's live mark-to-market premium ticking around, which is
+    noise for "how has this portfolio actually performed," not signal.
+    `bucket_seconds` is gone entirely — there's no fixed-interval
+    bucketing left to parameterize.
+
+    For each deployment, only its OWN last snapshot of a given IST day
+    contributes to that day's sum (not a same-instant bucket the way
+    fixed time-bucketing needed — different deployments' snapshot_loop
+    rows land at slightly different literal timestamps even within the
+    same iteration, but "each one's last snapshot that day" doesn't
+    depend on them lining up at all). `bucket_at` is the MAX of those
+    real per-deployment snapshot_at values for the day, not a
+    synthesized day-boundary — deliberately still a genuine, precise
+    timestamptz for the same naive-datetime-avoidance reason
+    list_snapshots documents.
 
     Deliberately not scoped to any particular deployment status: a
-    bucket's sum reflects however many deployments actually had a
-    runner (i.e. were active) AT THAT POINT IN TIME — a since-paused
-    deployment's older snapshots still contribute to its own past
-    buckets (paper-trading history doesn't retroactively change), it
-    just stops contributing to NEW buckets the moment it's no longer
-    active, same as it stops accumulating its own per-deployment curve.
+    day's sum reflects however many deployments actually had a runner
+    (i.e. were active) with at least one snapshot THAT DAY — a
+    since-paused deployment's older days still contribute their own
+    historical sums (paper-trading history doesn't retroactively
+    change), it just stops contributing to NEW days the moment it's no
+    longer active, same as it stops accumulating its own per-deployment
+    curve.
 
     IS scoped by include_in_reports though, unlike status — see the
     0009 migration's own comment: this is Portfolio's own combined
     equity curve, a cross-deployment aggregate the toggle exists
     specifically to let a deployment opt out of, same as every other
     view in this file that joins deployments for exactly this reason.
+
+    `limit` means "at most this many most-recent DAYS" (same convention
+    as list_snapshots), not raw rows.
     """
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
-            SELECT
-                to_timestamp(floor(extract(epoch FROM ds.snapshot_at) / $1) * $1) AS bucket_at,
-                SUM(ds.total_value) AS total_value,
-                SUM(ds.realized_pnl_cumulative) AS realized_pnl_cumulative,
-                COUNT(DISTINCT ds.deployment_id) AS deployments_count
-            FROM deployment_snapshots ds
-            JOIN deployments d ON d.id = ds.deployment_id
-            WHERE d.include_in_reports = true
-            GROUP BY bucket_at
-            ORDER BY bucket_at
-            LIMIT $2
+            WITH daily_per_deployment AS (
+                SELECT DISTINCT ON (
+                    ds.deployment_id, date_trunc('day', ds.snapshot_at AT TIME ZONE 'Asia/Kolkata')
+                )
+                    ds.deployment_id, ds.snapshot_at, ds.total_value, ds.realized_pnl_cumulative
+                FROM deployment_snapshots ds
+                JOIN deployments d ON d.id = ds.deployment_id
+                WHERE d.include_in_reports = true
+                ORDER BY
+                    ds.deployment_id,
+                    date_trunc('day', ds.snapshot_at AT TIME ZONE 'Asia/Kolkata'),
+                    ds.snapshot_at DESC
+            ),
+            daily_totals AS (
+                SELECT
+                    date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata') AS day_key,
+                    MAX(snapshot_at) AS bucket_at,
+                    SUM(total_value) AS total_value,
+                    SUM(realized_pnl_cumulative) AS realized_pnl_cumulative,
+                    COUNT(DISTINCT deployment_id) AS deployments_count
+                FROM daily_per_deployment
+                GROUP BY day_key
+            )
+            SELECT bucket_at, total_value, realized_pnl_cumulative, deployments_count
+            FROM (
+                SELECT * FROM daily_totals ORDER BY day_key DESC LIMIT $1
+            ) recent
+            ORDER BY day_key
             """,
-            float(bucket_seconds), limit,
+            limit,
         )
 
 

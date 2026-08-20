@@ -163,8 +163,8 @@ const Compare = {
     const withData = result.filter(r => r.points.length >= 2);
     if (!withData.length) {
       el.innerHTML = emptyHtml(
-        'None of the selected deployments have at least 2 equity snapshots yet — snapshots are ' +
-        'recorded roughly every 5 minutes per active deployment. Check back once they\'ve been running a while.'
+        'None of the selected deployments have at least 2 days of equity history yet — one point ' +
+        'is recorded per trading day. Check back once they\'ve been running a couple of days.'
       );
       return;
     }

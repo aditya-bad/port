@@ -6235,6 +6235,77 @@ rendered as `04:30:00` — reproducing the report exactly; after the fix,
 the same input renders as `10:00:00`, the correct IST time. `node --check`
 clean on all three edited files.
 
+## What's here (Step 96: equity curves — one point per trading day, not every 5-minute mark-to-market tick)
+
+Feedback on the equity curves (Portfolio, Detail, Compare): too noisy,
+moving on nothing more than an open option leg's live premium ticking
+around intraday ("why are the temp premium sell added in that") — the
+request was to simplify to one point per day, the post-market/final
+account value, no intraday graph at all.
+
+**What was happening**: `snapshot_loop` records one row per active
+deployment roughly every 5 minutes, all day — `total_value = cash +
+open_positions_value`, where `open_positions_value` is the live
+mark-to-market unrealized P&L of whatever's currently open. For an
+intraday options-selling strategy, that number swings around on the
+open leg's premium the whole time the position is on, even though
+nothing about the deployment's actual PERFORMANCE has changed yet — a
+real, meaningful move only happens once a trade actually closes. Every
+equity chart in the app plotted every one of these raw ~5-minute rows,
+so the curve visibly wiggled on intraday noise that says nothing about
+how the strategy is actually doing.
+
+**Fix**: `queries.list_snapshots` (Detail's/Compare's per-deployment
+curve) and `queries.list_portfolio_equity_curve` (Portfolio's combined
+curve) now return exactly ONE point per IST calendar day — the LAST
+snapshot recorded that day. Since `snapshot_loop` keeps running well
+past market close (no market-hours gating on it at all), that last
+snapshot is effectively the day's post-market reading: for a normal
+intraday deployment (force-exited by 15:00 or so), everything's
+already flat by then, so `total_value` at that point IS just cash —
+exactly "what is the final cash, that is the curve." For a genuinely
+positional deployment that rides a real position overnight, it's cash
+plus that position's fair value rather than cash alone, so a real open
+position doesn't read as a misleading dip in account value the day it
+was entered — deliberately not switching to a bare `cash` column for
+this reason, though the two are identical in the common case.
+
+For the Portfolio view specifically, each contributing deployment's
+OWN last snapshot of the day is summed (not a same-instant time bucket
+the way the old 5-minute-bucket version needed — different
+deployments' snapshot_loop rows never land at literally the same
+millisecond anyway). `bucket_seconds` (previously the only way to
+control the old fixed-interval bucketing) is gone from
+`list_portfolio_equity_curve` and the `/portfolio/equity-curve`
+endpoint entirely — there's no fixed interval left to parameterize.
+`limit` on both functions now means "at most this many most-recent
+DAYS," not raw rows.
+
+Every returned timestamp is still a real, precise `timestamptz` from
+an actual snapshot row (`MAX(snapshot_at)` for the portfolio's summed
+day, the picked row's own `snapshot_at` for the per-deployment
+version) — `date_trunc('day', ... AT TIME ZONE 'Asia/Kolkata')` is used
+only to GROUP rows into IST calendar days, never returned as the
+point's own value, deliberately avoiding the naive-datetime bug class
+Steps 92 and 95 already hit twice in this same codebase.
+
+Verified against a real local Postgres instance (migrations applied
+fresh, not assumed compatible) with synthetic multi-day, multi-
+deployment, multi-timezone-boundary data seeded by hand: confirmed
+`list_snapshots` correctly picks each day's 23:55 IST end-of-day
+snapshot over its own intraday dips, and correctly falls back to
+whatever's available (a single mid-day reading) for the current,
+still-in-progress day with no EOD snapshot yet; confirmed
+`list_portfolio_equity_curve` sums exactly the two `include_in_reports`
+deployments per day (never the third, excluded one, on any day,
+despite it having its own recorded snapshot), correctly reports
+`deployments_count = 1` on the partial day where only one of the two
+contributed a snapshot so far, and correctly keeps the N most RECENT
+days (not oldest) under a smaller `limit`. Also updated the "not
+enough data yet" empty-state copy in `api.js`/`portfolio.js`/
+`compare.js` and the affected docstrings, all previously worded around
+"snapshots every 5 minutes."
+
 ## Setup
 
 ```bash

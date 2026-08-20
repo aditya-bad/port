@@ -161,26 +161,26 @@ async def recent_trades(request: Request, limit: int = 20):
 
 
 async def fetch_portfolio_equity_curve(pool) -> list[dict]:
-    """limit=1000, bucket_seconds=300 are the only values the frontend
-    ever actually requests (Portfolio.load() calls
-    Api.getPortfolioEquityCurve() with no args) -- pulled out on its own
-    so app.state.cache's background loop can call it directly, same
-    pattern as fetch_positions_open/fetch_trades_recent above."""
-    rows = await queries.list_portfolio_equity_curve(pool, bucket_seconds=300, limit=1000)
+    """limit=1000 is the only value the frontend ever actually requests
+    (Portfolio.load() calls Api.getPortfolioEquityCurve() with no args)
+    -- pulled out on its own so app.state.cache's background loop can
+    call it directly, same pattern as fetch_positions_open/
+    fetch_trades_recent above."""
+    rows = await queries.list_portfolio_equity_curve(pool, limit=1000)
     return [dict(r) for r in rows]
 
 
 @router.get("/portfolio/equity-curve", response_model=list[PortfolioSnapshotOut])
-async def portfolio_equity_curve(request: Request, bucket_seconds: int = 300, limit: int = 1000):
-    """The Portfolio view's combined equity curve — every deployment's
-    snapshots summed into shared time buckets. See
-    queries.list_portfolio_equity_curve for the bucketing/summing and
-    exactly what "combined" means once deployments start/stop/pause at
-    different times."""
-    if bucket_seconds == 300 and limit == 1000:
+async def portfolio_equity_curve(request: Request, limit: int = 1000):
+    """The Portfolio view's combined equity curve — one point per IST
+    calendar day (Step 96), every deployment's OWN last snapshot that
+    day summed together. See queries.list_portfolio_equity_curve for
+    the day-bucketing/summing and exactly what "combined" means once
+    deployments start/stop/pause at different times."""
+    if limit == 1000:
         return await request.app.state.cache.get("portfolio_equity_curve")
     pool = request.app.state.db_pool
-    rows = await queries.list_portfolio_equity_curve(pool, bucket_seconds=bucket_seconds, limit=limit)
+    rows = await queries.list_portfolio_equity_curve(pool, limit=limit)
     return [dict(r) for r in rows]
 
 

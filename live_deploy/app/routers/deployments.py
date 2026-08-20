@@ -314,11 +314,16 @@ async def get_report(deployment_id: UUID, request: Request):
 @router.get("/{deployment_id}/snapshots", response_model=list[SnapshotOut])
 async def get_snapshots(deployment_id: UUID, request: Request, limit: int = 1000):
     """
-    Equity-curve material — see DeploymentManager's periodic snapshot
-    loop for how these rows get written (roughly every 5 minutes per
-    active deployment, not per tick). An empty list is a normal state,
-    not an error: a deployment younger than one snapshot interval, or
-    one that's spent its whole life paused, genuinely has none yet.
+    Equity-curve material — one point per IST calendar day (Step 96;
+    see queries.list_snapshots for why: the day's LAST snapshot, i.e.
+    its post-market value, not an intraday reading that moves on an
+    open leg's live mark-to-market). Underlying rows are still written
+    by DeploymentManager's periodic snapshot loop roughly every 5
+    minutes — this just collapses them to one representative point per
+    day before they ever reach the frontend. An empty list is a normal
+    state, not an error: a deployment younger than one snapshot
+    interval, or one that's spent its whole life paused, genuinely has
+    none yet.
     """
     pool = request.app.state.db_pool
     dep = await queries.get_deployment(pool, deployment_id)
