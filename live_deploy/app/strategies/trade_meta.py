@@ -59,8 +59,9 @@ def build_trade_meta(
     `resulting_state` — a compact snapshot of the position immediately
         after this fill. Same default-to-`{}` reasoning as above.
     `target_basis` — OMITTED entirely (not even as `{}`) unless the
-        caller passes one, since it doesn't apply to every strategy (see
-        pivot_supertrend, which trades the underlying directly) and
+        caller passes one, since it doesn't apply to every strategy (e.g.
+        intraday_dtt_simple's underlying-based entries never select a
+        strike/premium the way an options-selling strategy does) and
         forcing an empty dict onto every call site would misrepresent
         "this trigger never selects a strike/premium" as "a selection
         happened but nothing about it was recorded".

@@ -6,29 +6,47 @@ backtested version of this variant in tg_int_st_pp; the signal engine
 one from `pivot_supertrend.py`, only WHAT gets traded on each signal is
 different.
 
-RULES — same signal timing as pivot_supertrend, different execution:
+RULES — same signal source as pivot_supertrend.py's shared engine,
+different execution:
   Long signal  (5-min close above R1/R2/R3, ST green) -> SELL THIS_WEEK
       ATM PE (bullish: profit if NIFTY stays above the strike; a put
       seller is a defined-premium bull).
   Short signal (5-min close below S1/S2/S3, ST red)   -> SELL THIS_WEEK
       ATM CE (bearish: profit if NIFTY stays below the strike).
   Exit — BUY BACK (close) whichever leg is open, on a SuperTrend flip or
-      force-exit time, same triggers as pivot_supertrend. Both entry and
-      exit still execute at the NEXT candle's open (signal timing is
-      unchanged), but the PRICE used is the option's own live LTP at
-      that moment (fetched via a REST call), not the underlying's price
-      — the underlying's candle open is only used to decide WHEN to act.
+      force-exit time.
   Only 1 open option position at a time, matching the original's "one
   lot in, one lot out" — a fresh entry can fire immediately after an
   exit closes the previous leg.
 
-  NO entry before `market_open_time` (config, default 09:15) — see
-  pivot_supertrend.py's own module docstring for the full reasoning
-  (no `entry_time` schedule here at all, so without this floor, a
-  pivot/trend combination already "ready" from a prior day could queue
-  a real entry off a pre-market indicative-price tick). Only gates
-  fresh signal DETECTION; exits and an already-queued pending entry are
-  unaffected.
+  EXECUTION TIMING (Step 94 fix): both entry and exit fire IMMEDIATELY
+  off the same candle-close event that confirms the signal — no more
+  "detect now, execute next candle" deferral. That deferral used to be
+  the plain pivot_supertrend.py convention, ported here unchanged even
+  though it doesn't mean the same thing for an OPTION: the underlying
+  strategy prices a deferred fill off `candle["open"]`, a value already
+  captured back when the deferred candle STARTED (i.e. still the
+  correct, un-stale price) — but this strategy prices every fill with a
+  live `get_ltp()` REST call made at the moment `_enter`/`_exit` actually
+  RUNS. Under the old "wait one more candle" timing, that moment was a
+  FULL candle (5 min) after the signal genuinely confirmed — a real
+  option-premium price at the wrong instant, not merely a late-but-
+  correct one, silently contradicting this exact file's own former
+  claim that entries/exits "execute at the next candle's open" (they
+  didn't — they executed at the CANDLE AFTER the next one's open, since
+  that's when `_on_candle_closed` next runs). Firing the LTP fetch
+  immediately, in the same call that detects the break/flip, closes
+  that gap: the option price now genuinely reflects the moment the
+  underlying's own signal confirmed, not five minutes later.
+
+  NO fresh signal before `market_open_time` (config, default 09:15) —
+  see pivot_supertrend.py's own module docstring for the full reasoning
+  AND for why this must check the SIGNAL CANDLE's own bucket start, not
+  the real wall-clock time this code happens to run at (a second, related
+  bug the immediate-execution fix above also required fixing: a naive
+  "is it currently past market open" check is trivially true for the
+  very first candle of every single day now, since that candle's own
+  close is exactly when this code runs).
 
 WHY SELL, NOT BUY: this always SELLS a leg to open and BUYS to close it,
 regardless of signal direction — we're always writing premium, just
@@ -105,7 +123,6 @@ from .pivot_supertrend import (
     compute_pivots,
     fetch_seed_from_kite,
     is_stale_candle_close,
-    is_stale_pending_signal,
     supertrend_from_seed_candles,
     supertrend_status_fields,
     supertrend_status_fields_from_state,
@@ -181,11 +198,6 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         self.prev_day_ohlc: Optional[dict] = cfg.get("prev_day_ohlc")
         self.pivots: Optional[dict] = None
 
-        # Both hold trigger_values captured at DETECTION time, not bare
-        # flags — see pivot_supertrend.py's identical comment; same
-        # "decide on close, act on next open" timing applies here.
-        self.pending_exit: Optional[dict] = None
-        self.pending_entry: Optional[dict] = None
         self.prev_trend: Optional[str] = None
 
         # exchange=... : the options CHAIN's exchange, not the
@@ -302,16 +314,6 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             self.today_high = state.get("today_high")
             self.today_low = state.get("today_low")
             self.today_last_close = state.get("today_last_close")
-            # See pivot_supertrend.py's identical restore block for the
-            # full rationale — without this, a restart landing between a
-            # flip/break's DETECTION and its EXECUTION silently dropped
-            # it; for pending_exit specifically that can leave a
-            # position open indefinitely (self.prev_trend already
-            # reflects the post-flip trend, so the same flip never gets
-            # re-detected either), not just delayed the way a lost
-            # pending_entry harmlessly would be.
-            self.pending_exit = state.get("pending_exit")
-            self.pending_entry = state.get("pending_entry")
         except (KeyError, TypeError, ValueError):
             logger.exception(
                 "%s: persisted state was malformed — ignoring it and "
@@ -344,8 +346,6 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             "today_high": self.today_high,
             "today_low": self.today_low,
             "today_last_close": self.today_last_close,
-            "pending_exit": self.pending_exit,
-            "pending_entry": self.pending_entry,
         }
 
     def get_status_fields(self) -> Optional[list]:
@@ -450,62 +450,63 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
 
     async def _on_candle_closed(self, runner, candle: dict, now: datetime) -> None:
         # GAP GUARD — see pivot_supertrend.py's is_stale_candle_close for
-        # the real incident this fixes: without it, a pending entry/exit
-        # detected right before a WebSocket outage gets EXECUTED hours
-        # later, the moment ticks resume, timestamped as if it happened
-        # back when the signal fired. `now` is `ts`, the REAL tick
-        # timestamp that triggered this candle-close (from on_tick above)
-        # — never candle["date"] itself.
+        # the real incident this fixes: without it, a fresh signal
+        # computed off a candle that only reached this strategy hours
+        # late (a WebSocket reconnect gap) gets acted on at a completely
+        # disconnected price. `now` is `ts`, the REAL tick timestamp that
+        # triggered this candle-close (from on_tick above) — never
+        # candle["date"] itself.
         stale = is_stale_candle_close(candle["date"], self.aggregator.interval_minutes, now)
         if stale:
             logger.warning(
                 "%s: candle closed at %s but only reached this strategy at %s "
-                "(%.0f min late) — likely the same tick gap CandleAggregator "
-                "already flagged. Absorbing this candle's real OHLC into "
-                "SuperTrend, but discarding any pending entry/exit rather than "
-                "executing it now at a disconnected price/time, and skipping "
-                "fresh signal detection off data this stale.",
+                "(%.0f min late) — likely a WebSocket reconnect gap. Absorbing "
+                "this candle's real OHLC into SuperTrend, but skipping any "
+                "fresh entry decision off data this stale (an exit, if one's "
+                "otherwise due, is never blocked by this).",
                 runner.deployment_name, candle["date"], now,
                 (now - candle["date"]).total_seconds() / 60,
             )
 
-        t = now.time()   # real wall-clock time, not the candle's own bucket-start
+        t = now.time()   # real wall-clock time -- deliberately used for the
+                          # force-exit cutoff below (must reflect reality
+                          # regardless of how late this call arrived), NOT
+                          # for after_open (see the comment on it below).
         before_cutoff = self.force_exit_time is None or t < self.force_exit_time
-        # Lower bound — see market_open_time in pivot_supertrend.py's
-        # own CONFIG/RULES for the full reasoning. Only combined into
-        # step 5 (fresh entry DETECTION) below.
-        after_open = self.market_open_time is None or t >= self.market_open_time
+        # Checked against THIS CANDLE'S OWN bucket start, never real
+        # wall-clock `now` (Step 94 fix) — see pivot_supertrend.py's own
+        # module docstring for exactly why a `now.time()` check here was
+        # a real bug: with immediate execution (below), the call
+        # evaluating the very first candle of every day always runs at
+        # real time ~market_open_time, trivially passing a wall-clock
+        # check regardless of whether the candle's own data was actually
+        # from the regular session.
+        after_open = self.market_open_time is None or candle["date"].time() >= self.market_open_time
 
-        # 1 — execute a pending ST-flip exit at THIS candle's open. Gated
-        # by is_stale_pending_signal (the SIGNAL's own age, not this
-        # call's candle) — see pivot_supertrend.py's own docstring for
-        # why this catches a signal that survived a manual pause/resume
-        # too, which `stale` alone does not.
-        if self.pending_exit is not None:
-            if is_stale_pending_signal(self.pending_exit, self.aggregator.interval_minutes, now):
-                logger.warning(
-                    "%s: discarding a pending ST-flip exit detected at %s — "
-                    "too stale to execute safely now (%s)", runner.deployment_name,
-                    self.pending_exit.get("detected_at", "unknown time"), now,
-                )
-            else:
-                await self._exit(runner, candle, "st_flip", self.pending_exit["trigger_values"])
-            self.pending_exit = None
+        # 1 — advance SuperTrend, detect a flip, and act on it
+        # IMMEDIATELY — same candle-close event that confirmed it, not
+        # deferred to the next one (Step 94 fix — see module docstring's
+        # EXECUTION TIMING section for why deferring here used to mean a
+        # real 5-minutes-late option price, not just a 5-minutes-late
+        # bookkeeping timestamp). Never gated by `stale` — an exit is
+        # always allowed through regardless of how this candle arrived,
+        # same as force-exit below; only FRESH entries (step 3) are
+        # stale-gated.
+        prev_trend_before_update = self.prev_trend
+        new_trend = self.st.update(candle)
+        if new_trend is not None:
+            if (prev_trend_before_update is not None and new_trend != prev_trend_before_update
+                    and self.active_leg_token is not None):
+                trigger_values = {
+                    "prev_trend": prev_trend_before_update, "new_trend": new_trend,
+                    "close": round(candle["close"], 2),
+                    "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
+                    "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
+                }
+                await self._exit(runner, candle, "st_flip", trigger_values)
+            self.prev_trend = new_trend
 
-        # 2 — execute a pending entry at THIS candle's open (same
-        # is_stale_pending_signal gating as step 1 above)
-        if self.pending_entry is not None and before_cutoff:
-            if is_stale_pending_signal(self.pending_entry, self.aggregator.interval_minutes, now):
-                logger.warning(
-                    "%s: discarding a pending entry detected at %s — too stale "
-                    "to execute safely now (%s)", runner.deployment_name,
-                    self.pending_entry.get("detected_at", "unknown time"), now,
-                )
-            else:
-                await self._enter(runner, candle, self.pending_entry["side"], self.pending_entry["trigger_values"])
-        self.pending_entry = None
-
-        # 3 — force-exit at/after cutoff if still open (real `now`, not
+        # 2 — force-exit at/after cutoff if still open (real `now`, not
         # candle time)
         if self.force_exit_time is not None and t >= self.force_exit_time:
             if self.active_leg_token is not None:
@@ -513,28 +514,13 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                     "candle_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
                 })
 
-        # 4 — advance SuperTrend, detect a flip (still runs even if stale
-        # — see pivot_supertrend.py's identical comment) — trigger_values
-        # captured at detection time (see pivot_supertrend.py's identical comment).
-        prev_trend_before_update = self.prev_trend
-        new_trend = self.st.update(candle)
-        if new_trend is not None:
-            if prev_trend_before_update is not None and new_trend != prev_trend_before_update:
-                if self.active_leg_token is not None:
-                    self.pending_exit = {
-                        "detected_at": candle["date"].isoformat(),
-                        "trigger_values": {
-                            "prev_trend": prev_trend_before_update, "new_trend": new_trend,
-                            "close": round(candle["close"], 2),
-                            "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
-                            "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
-                        },
-                    }
-            self.prev_trend = new_trend
-
-        # 5 — detect a fresh entry signal (flat, pivots known, ST ready,
-        # within the entry window). Skipped entirely if stale — see
-        # pivot_supertrend.py's identical comment.
+        # 3 — a fresh entry signal, detected AND acted on immediately
+        # (flat, pivots known, ST ready, within the entry window, this
+        # candle's own data genuinely fresh and from the regular
+        # session). Firing right after an exit in step 1/2 above, same
+        # call, is intentional — see module docstring's RULES ("a fresh
+        # entry can fire immediately after an exit closes the previous
+        # leg").
         if not stale and self.active_leg_token is None and self.pivots is not None \
                 and self.prev_trend is not None and before_cutoff and after_open:
             close = candle["close"]
@@ -542,29 +528,23 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 for k in R_KEYS:
                     level = self.pivots[k]
                     if close > level:
-                        self.pending_entry = {
-                            "side": "long",
-                            "detected_at": candle["date"].isoformat(),
-                            "trigger_values": {
-                                "close": round(close, 2), "trend": self.prev_trend,
-                                "broken_level_key": k, "broken_level": round(level, 2),
-                                "r_levels": {rk: round(self.pivots[rk], 2) for rk in R_KEYS},
-                            },
+                        trigger_values = {
+                            "close": round(close, 2), "trend": self.prev_trend,
+                            "broken_level_key": k, "broken_level": round(level, 2),
+                            "r_levels": {rk: round(self.pivots[rk], 2) for rk in R_KEYS},
                         }
+                        await self._enter(runner, candle, "long", trigger_values)
                         break
             elif self.prev_trend == "down":
                 for k in S_KEYS:
                     level = self.pivots[k]
                     if close < level:
-                        self.pending_entry = {
-                            "side": "short",
-                            "detected_at": candle["date"].isoformat(),
-                            "trigger_values": {
-                                "close": round(close, 2), "trend": self.prev_trend,
-                                "broken_level_key": k, "broken_level": round(level, 2),
-                                "s_levels": {sk: round(self.pivots[sk], 2) for sk in S_KEYS},
-                            },
+                        trigger_values = {
+                            "close": round(close, 2), "trend": self.prev_trend,
+                            "broken_level_key": k, "broken_level": round(level, 2),
+                            "s_levels": {sk: round(self.pivots[sk], 2) for sk in S_KEYS},
                         }
+                        await self._enter(runner, candle, "short", trigger_values)
                         break
 
     # ── Execution — sell an option leg to open, buy it back to close ───

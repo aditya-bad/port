@@ -6084,6 +6084,106 @@ CSS class the new JS references (`.row-menu`, `.row-menu-dropdown`,
 (`open_cost_basis`, `strategy_registered`, `current_cash`, etc.)
 confirmed present on `DeploymentOut` with safe defaults.
 
+## What's here (Step 94: a real one-candle-late option-price bug, fixed — and the plain `pivot_supertrend` strategy removed)
+
+A viewer of the strategy's own explainer video flagged a specific,
+checkable claim: that entries/exits fire one candle later than the
+video describes — a signal confirmed at a candle's 9:50 close should
+act immediately, using the option's price right around 9:50, not wait
+for the 9:50-9:55 candle to ALSO close before acting at 9:55's price.
+Traced end-to-end against the actual code rather than taken on faith,
+and confirmed TRUE for `pivot_supertrend_options.py` and
+`pivot_supertrend_options_inverse.py` — a real bug, not a
+misunderstanding of the video.
+
+**Root cause**: both strategies used a "detect now, execute on the
+NEXT candle-close" pending-signal architecture — inherited unchanged
+from `pivot_supertrend.py`, which traded the underlying directly. For
+the underlying, this was harmless: a deferred fill still priced off
+`candle["open"]`, a value already captured back when the deferred
+candle STARTED (i.e. still the correct, un-stale price) — the
+processing was one call late, but the recorded price wasn't. For an
+OPTION, there's no equivalent historical OHLC to fall back on: `_enter`/
+`_exit` price every fill with a live `get_ltp()` REST call made at the
+moment they actually RUN — which, under the deferred design, was a full
+candle (5 minutes) after the signal genuinely confirmed. The trade's
+timestamp got backdated to look like a 9:50 fill; the option's actual
+premium was whatever it was trading at 9:55 instead — silently
+contradicting this exact file's own docstring, which claimed entries
+"execute at the next candle's open" (they didn't; they executed at the
+candle AFTER the next one's open).
+
+**Fix**: both `_on_candle_closed` methods now detect AND act on a
+signal in the SAME call, immediately — no more `pending_entry`/
+`pending_exit` staging, no more `is_stale_pending_signal` (removed
+entirely, now dead code with nothing left to gate). A candle's close
+confirming a break/flip now fetches the option's live LTP and places
+the order in that same instant, matching what the underlying-trading
+version's design always intended.
+
+**A second, related bug surfaced while validating the fix, from a
+different angle — the user noticed a live `positions` row with
+`opened_at` sitting at exactly 09:15:00, the earliest theoretically
+possible entry time**. Tracing why: `after_open` (the `market_open_time`
+floor gating fresh signal detection) checked `now.time() >= market_open_time`
+— the WALL-CLOCK time this async call happened to run at, not the
+SIGNAL CANDLE's own data. Under the (now-removed) one-candle-deferred
+design this was mostly latent, but with immediate execution the call
+evaluating a candle spanning 09:10-09:15 always runs at real time
+~09:15 — trivially satisfying a wall-clock check on literally the
+first candle of every single day, regardless of whether that candle's
+own close reflects real regular-session trading or pre-open/call-
+auction price discovery, exactly the leak `market_open_time` was
+supposed to close (see Step 4's original RULES section — the intent
+was always there, the check just verified the wrong clock). Fixed by
+checking `candle["date"].time() >= market_open_time` instead — the
+signal candle's own bucket start, immune to whenever the code
+processing it happens to run.
+
+**The other data point from the same report — a `positions` row
+showing both `opened_at` and `closed_at` on one line, status=`closed`,
+qty=0** — is NOT a bug: `positions` is a per-position ROLLUP (see
+`migrations/0001_init.sql`), one row per full position lifecycle,
+summarizing whatever individual buy/sell executions live in
+`position_lots`. A short sold to open and later bought back to close
+correctly ends up as exactly one `closed` row with both timestamps —
+this is the schema working as designed, not evidence that "sell"
+somehow means "immediately closed" in the backend logic. (The BankNifty/
+NIFTY rows also pasted alongside this, from `intraday_dtt_*`/
+`calendar_btst` deployments, are a different strategy family entirely
+and out of scope for this fix — flagged to the user as a separate,
+unconfirmed item, not investigated here.)
+
+**`pivot_supertrend.py` (the plain, underlying-trading strategy) is
+gone** — per explicit request, since every real deployment in practice
+already traded options off the same signal instead. What's left in that
+file is purely the SHARED library both surviving strategies import from
+(`CandleAggregator`, `SuperTrendState`, `compute_pivots`,
+`fetch_seed_from_kite`, `supertrend_from_seed_candles`,
+`supertrend_status_fields(_from_state)`, `is_stale_candle_close`, the
+`_parse_hhmm` etc. helpers four OTHER strategies also import from it) —
+its own `@register_strategy` call and `PivotSupertrendStrategy` class
+are deleted, along with the now-fully-dead `is_stale_pending_signal`.
+`app/strategies/__init__.py` no longer imports the module directly for
+its "registers on import" side effect (it has none left) — Python still
+loads it as an ordinary dependency the moment either surviving strategy
+does `from .pivot_supertrend import (...)`.
+
+Verified: a full `app.main` import succeeds, and
+`registry.list_strategies()` lists exactly the intended 7 strategies —
+`pivot_supertrend` genuinely gone, both options variants and all 5
+others unaffected. Wrote a standalone functional test (no DB, no Kite
+session — a fake runner/resolver/dispatcher) exercising
+`_on_candle_closed` directly against synthetic candles for both
+rewritten strategies: confirms an entry fires in the SAME call that
+detects the pivot break (not deferred), confirms a 09:10-09:15 candle
+does NOT produce a signal even when evaluated at wall-clock 09:15
+(the market_open_time fix), confirms an ST-flip exit fires immediately
+with a live-fetched price, confirms the inverse strategy's
+`hold_candles` counter still exits on EXACTLY the right candle (not
+one early or late), and confirms its post-resume hold-counter
+reconciliation still exits immediately when already overdue.
+
 ## Setup
 
 ```bash
@@ -7370,7 +7470,7 @@ live_deploy/
     │   ├── __init__.py                         # import list — triggers registration
     │   ├── registry.py                          # @register_strategy
     │   ├── trade_meta.py                          # step 14 — build_trade_meta(), shared metadata-dict shape
-    │   ├── pivot_supertrend.py                   # step 4 — ports tg_int_st_pp's backtested rules to live ticks
+    │   ├── pivot_supertrend.py                   # step 4 — shared pivot/SuperTrend engine (step 94: no longer a deployable strategy itself)
     │   ├── pivot_supertrend_options.py            # step 6 — same signal engine, sells options instead
     │   ├── intraday_dtt_simple.py                 # step 8 — short straddle, decay/spike/time exits
     │   ├── pivot_supertrend_options_inverse.py    # step 9 — buys on ST flip, holds N candles

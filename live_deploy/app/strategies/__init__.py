@@ -18,8 +18,13 @@ response flags it via `strategy_registered: false` so this is never
 silently misleading.
 """
 
-from . import pivot_supertrend  # noqa: F401  (registers on import)
 from . import pivot_supertrend_options  # noqa: F401  (registers on import)
+# NOTE: pivot_supertrend.py itself is no longer imported here — it's a
+# shared signal-engine module (pivots/SuperTrend/candle aggregation),
+# not a deployable strategy any more (Step 94; see its own module
+# docstring). It has no @register_strategy call left to run, but Python
+# still loads it as a normal dependency the moment either line below
+# does `from .pivot_supertrend import (...)`.
 from . import intraday_dtt_simple  # noqa: F401  (registers on import)
 from . import pivot_supertrend_options_inverse  # noqa: F401  (registers on import)
 from . import intraday_dtt_adjusted  # noqa: F401  (registers on import)

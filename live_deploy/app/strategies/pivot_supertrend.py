@@ -1,38 +1,68 @@
 """
-live_deploy — Pivot Points + SuperTrend(7,3) live paper-trading strategy.
+live_deploy — Pivot Points + SuperTrend(7,3) SHARED SIGNAL ENGINE.
 
-Ports the exact rules validated in
-tg_int_st_pp/strategy_pivot_supertrend.py (pivot formulas, SuperTrend
-recursion, next-candle-open execution timing, only-1-position rule) to
-live streaming ticks. Re-implemented here rather than imported —
-live_deploy stays standalone from the rest of the repo, same as every
-other folder in it.
+Ports the exact math validated in tg_int_st_pp/strategy_pivot_supertrend.py
+(pivot formulas, SuperTrend recursion) to live streaming ticks: pivot
+computation, incremental SuperTrend, 5-min candle bucketing, live REST
+seeding from Kite, and the gap/staleness guards every pivot_supertrend*
+strategy needs. Re-implemented here rather than imported from
+tg_int_st_pp — live_deploy stays standalone from the rest of the repo,
+same as every other folder in it.
 
-RULES (identical to the backtested version):
-  Long entry  — 5-min close above any of R1/R2/R3 AND SuperTrend green.
-  Short entry — 5-min close below any of S1/S2/S3 AND SuperTrend red.
-  Both entries and exits execute at the NEXT candle's open, never the
-  signal candle's own close (can't trade on a price that hasn't printed).
-  Exit on SuperTrend flip, OR force-exit at force_exit_time (default
-  15:00) if still set — whichever comes first. Only 1 open position at
-  a time; a fresh entry can fire immediately after an exit.
+NOT A DEPLOYABLE STRATEGY ITSELF (Step 94) — this file used to also
+register `"pivot_supertrend"`, a strategy trading the underlying index/
+futures instrument directly. That variant is gone: every real deployment
+in practice traded options off this same signal instead (selling premium
+on a pivot breakout via `pivot_supertrend_options.py`, or buying it on a
+SuperTrend flip via `pivot_supertrend_options_inverse.py`), and keeping
+the direct-underlying version around meant maintaining a third, unused
+copy of the same "decide on close, act on next candle" execution timing
+— removed at the same time as Step 94's actual fix (see those two
+modules' own docstrings for what changed and why). What's left here is
+purely the shared library both of them import from: `CandleAggregator`,
+`SuperTrendState`, `compute_pivots`, `fetch_seed_from_kite`,
+`apply_seed_to_state`, `supertrend_from_seed_candles`,
+`supertrend_status_fields(_from_state)`, `is_stale_candle_close`, and the
+small parsing helpers (`_parse_hhmm` etc.) — nothing below registers a
+strategy, so importing this module alone has no side effects beyond
+defining these.
 
-  NO entry before `market_open_time` (config, default 09:15) — unlike
-  intraday_dtt_simple/calendar_btst/strangle_monthly_v2, this strategy
-  has no `entry_time` schedule at all: it watches continuously and
-  reacts the instant a signal breaks, any time of day, which used to
-  implicitly mean "any time the market is actually open" back when
-  pre-market data simply never reached this pipeline. NSE now
-  disseminates LIVE pre-open indicative-price ticks through the same
-  feed (equity index dissemination during the 09:00-09:15 call auction,
-  plus a genuine F&O futures pre-open session since Dec 2025) — without
-  this floor, a pivot/trend combination already "ready" from a prior
-  day (the normal state of any established deployment) could queue a
-  real entry off a pre-market signal, executing the moment regular
-  trading begins, priced off auction-based price discovery rather than
-  real continuous trading. Only gates fresh signal DETECTION (step 5
-  below) — an exit, or a pending entry already queued from a REGULAR-
-  session candle, is never blocked by this.
+SIGNAL RULES (shared by both strategies that consume this engine):
+  Long signal  — 5-min close above any of R1/R2/R3 AND SuperTrend green.
+  Short signal — 5-min close below any of S1/S2/S3 AND SuperTrend red.
+  A SuperTrend flip (trend reverses) is the OTHER half of the shared
+  signal — pivot_supertrend_options exits an open leg on it,
+  pivot_supertrend_options_inverse ENTERS on it (see that module's own
+  docstring — it's deliberately the mirror image of the pivot-breakout
+  rule above).
+
+  NO fresh signal before `market_open_time` (config, default 09:15) —
+  neither consuming strategy has an `entry_time` schedule at all: both
+  watch continuously and react the instant a signal breaks, any time of
+  day, which used to implicitly mean "any time the market is actually
+  open" back when pre-market data simply never reached this pipeline.
+  NSE now disseminates LIVE pre-open indicative-price ticks through the
+  same feed (equity index dissemination during the 09:00-09:15 call
+  auction, plus a genuine F&O futures pre-open session since Dec 2025)
+  — without this floor, a pivot/trend combination already "ready" from
+  a prior day (the normal state of any established deployment) could
+  queue a real entry off a pre-market signal, executing the moment
+  regular trading begins, priced off auction-based price discovery
+  rather than real continuous trading. Only gates fresh signal
+  DETECTION — an exit is never blocked by this.
+
+  IMPORTANT (Step 94 fix): this gate must be checked against the
+  SIGNAL CANDLE'S OWN bucket start (`candle["date"].time()`), never
+  against the real wall-clock time the code happens to be running at.
+  The two consuming strategies both process each candle's close the
+  moment it closes (no more deferred "decide now, act next candle"
+  gap — see their own docstrings), which means the call evaluating a
+  candle spanning e.g. 09:10-09:15 always runs at real time ~09:15 —
+  a naive `now.time() >= market_open_time` check is then trivially true
+  for the FIRST candle of the day, every single day, letting a signal
+  computed off pre-open/call-auction data leak straight through as
+  "detected after market open" purely because of when the check
+  happened to run, not what the data itself represents.
 
 WHAT'S GENUINELY NEW vs. the backtest (live streaming, not a batch file):
   - Ticks arrive one at a time, not as a pre-loaded candle array — see
@@ -93,41 +123,18 @@ until ready"):
   candles, ~35 min at 5-min bars) AND a full trading day has been
   observed for pivots.
 
-OTHER CONFIG:
-  "instrument_tokens": [<single token>] — required, a ONE-ELEMENT list.
-      Plural/list to match the same key every other deployment's config
-      uses (DeploymentRunner filters the shared tick stream by
-      config["instrument_tokens"], and DeploymentManager's dynamic
-      dispatcher subscription reads the same key) — this strategy only
-      ever trades one instrument, but still reads element [0] from that
-      list rather than inventing a separate singular key.
-  "symbol": optional, for display/logging only
+SHARED CONFIG KEYS (both consuming strategies accept these with the same
+meaning — see each one's own CONFIG section for the rest):
   "pivot_type": classic (default) | fibonacci | camarilla | woodie
   "atr_smoothing": wilder (default) | sma | ema
   "force_exit_time": "15:00" (default) | null (disable — let SuperTrend
       flips be the ONLY exit trigger, i.e. positions can ride overnight
       — this is what a "positional" deployment would typically set)
-  "market_open_time": "09:15" (default) | null (disable — allow entries
+  "market_open_time": "09:15" (default) | null (disable — allow signals
       off pre-market ticks too; NOT recommended, see the RULES section's
-      "NO entry before market_open_time" paragraph above for why) — the
-      earliest time a fresh entry signal is allowed to be DETECTED.
-      Doesn't affect exits, or an entry already queued from a candle
-      that closed during regular hours.
-  "capital_per_trade": null (default — use ALL of the deployment's
-      current cash on each entry, sized as floor(cash / price)) | a
-      fixed rupee amount to cap each entry's size instead
-
-Position sizing is a genuinely NEW dimension not present in the
-backtest at all — the original tg_int_st_pp version reported raw index
-points per trade with no capital model, since the NIFTY 50 index isn't
-itself a tradeable instrument. This paper-trading engine tracks real
-cash, so entries are sized in whole "units" of the index's price as if
-it were directly tradeable, using available capital — a deliberate
-simplification consistent with how the strategy was originally
-backtested (point-based, index-referenced), not a claim that you can
-literally buy the index. No averaging, no multi-lot sizing — this
-strategy's backtest never did that; it's always exactly one lot in, one
-lot out.
+      "NO fresh signal before market_open_time" paragraph above for why)
+      — the earliest time a fresh signal is allowed to be DETECTED.
+      Never affects exits.
 """
 
 import asyncio
@@ -137,10 +144,7 @@ from datetime import date, datetime, timedelta, time as dtime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, get_kite_connect
-from .registry import register_strategy
-from .trade_meta import build_trade_meta
 
 logger = logging.getLogger("live_deploy.strategies.pivot_supertrend")
 
@@ -773,547 +777,3 @@ def is_stale_candle_close(candle_date: datetime, interval_minutes: int, now: dat
     """
     theoretical_close = candle_date + timedelta(minutes=interval_minutes)
     return (now - theoretical_close).total_seconds() > STALE_CANDLE_GRACE_INTERVALS * interval_minutes * 60
-
-
-def is_stale_pending_signal(pending: Optional[dict], interval_minutes: int, now: datetime) -> bool:
-    """True if a queued pending_entry/pending_exit dict is too old to
-    safely execute NOW — a DIFFERENT question from is_stale_candle_close
-    above (which asks "is the candle handed to THIS call old", a proxy
-    for a WebSocket gap during otherwise-continuous operation).
-
-    Real incident this exists for: is_stale_candle_close alone does NOT
-    catch this one. A pending_entry detected at ~9:20, still un-executed
-    (the very next candle hadn't closed yet) when the deployment gets
-    manually PAUSED, is faithfully carried through by
-    _restore_from_state on resume — by design, meant for a brief pause
-    (see that method's own docstring). But the candle that finally
-    executes it, whenever trading resumes, is itself perfectly FRESH
-    (today's real ticks, no gap) — so is_stale_candle_close says "not
-    stale" and lets it through. The pending signal's own age is what
-    actually matters here, completely independent of whether the
-    executing candle is fresh: a resume hours after 9:20 still executes
-    an hours-old signal at a live current price with no relation to it,
-    at whatever time the resume+next-candle happened to land on.
-
-    This check subsumes the WebSocket-gap case too (a pending_entry
-    queued right before a gap has an equally old "detected_at", so this
-    alone is sufficient at the actual execution points; see each
-    strategy's own step 1/2 for exactly what still uses
-    is_stale_candle_close — only gating step 5's FRESH detection, not
-    execution of an already-queued signal).
-
-    Missing/unparseable "detected_at" (state persisted by a version of
-    this strategy before this field existed) is treated as UNKNOWN age,
-    not "assume fresh" — fails safe: a signal whose age can't be shown
-    to be recent doesn't get executed."""
-    if not pending:
-        return False   # nothing queued -- not "stale", just absent; caller's own None-check handles this
-    detected_at_raw = pending.get("detected_at")
-    if not detected_at_raw:
-        return True
-    try:
-        detected_at = datetime.fromisoformat(detected_at_raw)
-    except (TypeError, ValueError):
-        return True
-    return (now - detected_at).total_seconds() > STALE_CANDLE_GRACE_INTERVALS * interval_minutes * 60
-
-
-# ═════════════════════════════════════════════════════════════════════
-# STRATEGY
-# ═════════════════════════════════════════════════════════════════════
-
-@register_strategy(
-    "pivot_supertrend",
-    description="Pivot points (R1-R3/S1-S3) + SuperTrend(7,3) intraday — "
-               "long above resistance with ST green, short below support "
-               "with ST red, exit on ST flip or force-exit time.",
-    default_config={
-        "instrument_tokens": [256265],
-        "symbol": "NIFTY 50",
-        "pivot_type": "classic",
-        "atr_smoothing": "wilder",
-        "force_exit_time": "15:00",
-        "market_open_time": "09:15",
-        "capital_per_trade": None,
-        "prev_day_ohlc": None,
-        "seed_candles": None,
-        "supertrend_seed": None,
-    },
-)
-class PivotSupertrendStrategy(StrategyBase):
-
-    async def on_start(self, runner) -> None:
-        cfg = runner.config
-        tokens = cfg.get("instrument_tokens") or []
-        if len(tokens) != 1:
-            raise ValueError(
-                "pivot_supertrend requires config.instrument_tokens to be a "
-                f"ONE-ELEMENT list (the single instrument this deployment "
-                f"trades) — got {tokens!r}"
-            )
-        self.instrument_token = tokens[0]
-        self.symbol = cfg.get("symbol", str(self.instrument_token))
-        self.pivot_type = cfg.get("pivot_type", "classic")
-        self.atr_method = cfg.get("atr_smoothing", "wilder")
-        self.force_exit_time = _parse_hhmm(cfg.get("force_exit_time", "15:00"))
-        self.market_open_time = _parse_hhmm(cfg.get("market_open_time", "09:15"))
-        self.capital_per_trade = cfg.get("capital_per_trade")
-
-        self.aggregator = CandleAggregator(interval_minutes=5, label=runner.deployment_name)
-        self.st = SuperTrendState(period=ST_PERIOD, multiplier=ST_MULTIPLIER,
-                                  atr_method=self.atr_method)
-
-        self.today: Optional[date] = None
-        self.today_high: Optional[float] = None
-        self.today_low: Optional[float] = None
-        self.today_last_close: Optional[float] = None
-
-        self.prev_day_ohlc: Optional[dict] = cfg.get("prev_day_ohlc")
-        self.pivots: Optional[dict] = None
-
-        # Both hold trigger_values captured at DETECTION time (step 4/5
-        # below), not bare flags — this strategy's "decide on close, act
-        # on next open" timing means the triggering candle's own data
-        # (close price, trend before/after, which pivot level broke) is
-        # gone by the time the deferred trade actually executes, so it
-        # has to be stashed here to make it into the fill's metadata.
-        self.pending_exit: Optional[dict] = None
-        self.pending_entry: Optional[dict] = None
-        self.prev_trend: Optional[str] = None
-
-        # PRIMARY seeding path: fetch fresh, gap-free candles straight
-        # from Kite's REST API and replay them RIGHT NOW — on every
-        # single on_start, not just a first-ever cold deploy. This is
-        # deliberate, not merely a fallback: a mid-day restart (crash,
-        # redeploy, pause+resume) gets exactly the same live reseed as a
-        # brand new deployment would, which is what actually fixes drift
-        # rather than just carrying forward whatever was last persisted
-        # (itself possibly already gap-affected — see
-        # fetch_seed_from_kite's own docstring). include_today_ohlc is
-        # deliberately False here regardless of what time of day this
-        # runs — today's OWN pivots always come from the most recently
-        # COMPLETED day strictly before today, never today itself, even
-        # at 2pm mid-session.
-        try:
-            seed = await fetch_seed_from_kite(runner.dispatcher, self.instrument_token)
-            self.st = supertrend_from_seed_candles(seed["seed_candles"], self.atr_method)
-            self.prev_trend = self.st.trend
-            if seed["prev_day_ohlc"]:
-                self.prev_day_ohlc = seed["prev_day_ohlc"]
-                self.pivots = compute_pivots(
-                    self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
-                    self.prev_day_ohlc["close"], self.pivot_type,
-                )
-            logger.info(
-                "%s: auto-seeded live from Kite (%d candle(s)) -> trend=%s, pivots=%s",
-                runner.deployment_name, len(seed["seed_candles"]), self.st.trend, bool(self.pivots),
-            )
-            return
-        except NoKiteSession:
-            logger.warning(
-                "%s: no Kite session yet — cannot auto-seed live; falling back "
-                "to persisted state / config seed", runner.deployment_name,
-            )
-        except Exception:
-            logger.exception(
-                "%s: live auto-seed from Kite failed — falling back to "
-                "persisted state / config seed", runner.deployment_name,
-            )
-
-        # FALLBACK 1: whatever this deployment last persisted — only
-        # reached if the live fetch above failed outright (no session
-        # yet, a Kite API hiccup, ...).
-        persisted = await runner.load_state()
-        if persisted and self._restore_from_state(runner, persisted):
-            return
-
-        # FALLBACK 2: legacy config-provided seed (prev_day_ohlc /
-        # seed_candles / supertrend_seed) — no longer required or asked
-        # for at registration time, but still honored if given, and
-        # still the only path for a genuinely brand-new instrument Kite
-        # has no session/history for.
-        self._apply_seed(runner, cfg)
-        if self.prev_day_ohlc:
-            self.pivots = compute_pivots(
-                self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
-                self.prev_day_ohlc["close"], self.pivot_type,
-            )
-            logger.info("%s: pivots seeded from prev_day_ohlc -> %s",
-                       runner.deployment_name,
-                       {k: round(v, 2) for k, v in self.pivots.items()})
-        else:
-            logger.warning(
-                "%s: no live Kite seed, no persisted state, no config seed — "
-                "pivots unavailable until a full trading day has been observed "
-                "live (no entries until then).", runner.deployment_name,
-            )
-
-    def _restore_from_state(self, runner, state: dict) -> bool:
-        """Restore from a persisted deployment_state blob (see
-        get_persistable_state below). Returns False (and leaves nothing
-        mutated) on anything malformed/incompatible, so the caller falls
-        through to the normal config-seed path instead of crashing on
-        e.g. a future/incompatible state version."""
-        try:
-            if state.get("version") != 1:
-                return False
-            self.st = SuperTrendState.from_snapshot(state["supertrend"])
-            self.prev_trend = state.get("prev_trend")
-            self.prev_day_ohlc = state.get("prev_day_ohlc")
-            self.pivots = state.get("pivots")
-            today_str = state.get("today")
-            self.today = date.fromisoformat(today_str) if today_str else None
-            self.today_high = state.get("today_high")
-            self.today_low = state.get("today_low")
-            self.today_last_close = state.get("today_last_close")
-            # A flip/break DETECTED on the last candle before a graceful
-            # stop, not yet EXECUTED (the "decide on close, act on next
-            # open" timing means there's always up to one candle-width
-            # of a gap between the two) — restoring these lets the very
-            # next candle that closes post-restart execute it normally,
-            # using THAT candle's own (current, not stale) open price.
-            # Without this, a restart landing in that gap silently
-            # dropped it — for pending_exit specifically, self.prev_trend
-            # already reflects the post-flip trend by the time it's
-            # queued (see step 4's on_tick), so the SAME flip would never
-            # be re-detected either: a lost pending_exit could leave a
-            # position open indefinitely past when SuperTrend said to
-            # close it, not just delayed by one candle the way a lost
-            # pending_entry harmlessly would be (re-evaluated fresh
-            # every candle from current price, so re-fires next candle
-            # on its own if the condition still holds).
-            self.pending_exit = state.get("pending_exit")
-            self.pending_entry = state.get("pending_entry")
-        except (KeyError, TypeError, ValueError):
-            logger.exception(
-                "%s: persisted state was malformed — ignoring it and "
-                "falling back to the config seed instead", runner.deployment_name,
-            )
-            return False
-        logger.info(
-            "%s: resumed from persisted live state (trend=%s, pivots=%s) — "
-            "ignoring any static seed config, since this is more current",
-            runner.deployment_name, self.st.trend, bool(self.pivots),
-        )
-        return True
-
-    def get_persistable_state(self) -> Optional[dict]:
-        """See StrategyBase's own docstring for when this gets called.
-        Persists nothing (returns None) until SuperTrend has actually
-        warmed up (self.st.trend is not None) — a deployment that's
-        never gotten that far has nothing more useful to hand back than
-        cold-start already gives it."""
-        if self.st.trend is None:
-            return None
-        return {
-            "version": 1,
-            "supertrend": self.st.snapshot(),
-            "prev_trend": self.prev_trend,
-            "prev_day_ohlc": self.prev_day_ohlc,
-            "pivots": self.pivots,
-            "today": self.today.isoformat() if self.today else None,
-            "today_high": self.today_high,
-            "today_low": self.today_low,
-            "today_last_close": self.today_last_close,
-            "pending_exit": self.pending_exit,
-            "pending_entry": self.pending_entry,
-        }
-
-    def get_status_fields(self) -> Optional[list]:
-        return supertrend_status_fields(self.st, self.pivots)
-
-    @staticmethod
-    def status_fields_from_state(state: dict) -> Optional[list]:
-        return supertrend_status_fields_from_state(state)
-
-    async def on_post_market_checkpoint(self, runner) -> None:
-        """Once a day, after market close (see StrategyBase's own
-        docstring for exactly when/why): re-fetch a clean candle window
-        AND today's own now-final daily OHLC straight from Kite's REST
-        API, recompute SuperTrend fresh, and roll prev_day_ohlc/pivots
-        forward to TOMORROW — all applied to LIVE in-memory state (self.
-        st/self.prev_trend/self.prev_day_ohlc/self.pivots), not just
-        what gets persisted afterward, so a deployment that stays
-        running straight through market close self-heals any drift
-        accumulated during today's session without needing a restart at
-        all. include_today_ohlc=True here (unlike on_start's own call)
-        is exactly why: this is the one call site where TODAY is the
-        correct source day, because today's session has just ended."""
-        try:
-            seed = await fetch_seed_from_kite(
-                runner.dispatcher, self.instrument_token, include_today_ohlc=True,
-            )
-        except NoKiteSession:
-            logger.warning("%s: post-market checkpoint skipped — no Kite session",
-                           runner.deployment_name)
-            return
-        except Exception:
-            logger.exception(
-                "%s: post-market checkpoint's Kite fetch failed — keeping "
-                "existing live state, will retry at tomorrow's checkpoint "
-                "(and next on_start regardless)", runner.deployment_name,
-            )
-            return
-
-        fresh_st = supertrend_from_seed_candles(seed["seed_candles"], self.atr_method)
-        if fresh_st.trend is None:
-            logger.warning(
-                "%s: post-market checkpoint's fresh replay never warmed up "
-                "(unexpected — leaving existing live state untouched)",
-                runner.deployment_name,
-            )
-            return
-        old_trend = self.st.trend
-        self.st = fresh_st
-        self.prev_trend = fresh_st.trend
-
-        if seed["prev_day_ohlc"]:
-            self.prev_day_ohlc = seed["prev_day_ohlc"]
-            self.pivots = compute_pivots(
-                self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
-                self.prev_day_ohlc["close"], self.pivot_type,
-            )
-        logger.info(
-            "%s: post-market checkpoint — resynced SuperTrend from live Kite "
-            "data (trend %s -> %s) and rolled pivots forward for tomorrow",
-            runner.deployment_name, old_trend, fresh_st.trend,
-        )
-
-    def _apply_seed(self, runner, cfg: dict) -> None:
-        prev_trend, derived = apply_seed_to_state(
-            runner.deployment_name, self.st, self.atr_method, cfg, self.prev_day_ohlc,
-        )
-        if prev_trend is not None:
-            self.prev_trend = prev_trend
-        if derived:
-            self.prev_day_ohlc = derived
-
-    async def on_tick(self, runner, tick: dict) -> None:
-        ts = tick.get("exchange_timestamp")
-        price = tick.get("last_price")
-        if ts is None or price is None:
-            # exchange_timestamp only exists in Kite's "full" tick mode —
-            # this strategy needs it for candle bucketing.
-            return
-
-        day = ts.date()
-        if self.today is None:
-            self.today = day
-        elif day != self.today:
-            self._roll_over_day(runner)
-            self.today = day
-
-        completed = self.aggregator.add_tick(ts, price)
-        if completed is None:
-            return
-
-        await self._on_candle_closed(runner, completed, ts)
-
-        if self.today_high is None or completed["high"] > self.today_high:
-            self.today_high = completed["high"]
-        if self.today_low is None or completed["low"] < self.today_low:
-            self.today_low = completed["low"]
-        self.today_last_close = completed["close"]
-
-    def _roll_over_day(self, runner) -> None:
-        if self.today_high is not None:
-            self.prev_day_ohlc = {
-                "high": self.today_high, "low": self.today_low,
-                "close": self.today_last_close,
-            }
-            self.pivots = compute_pivots(
-                self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
-                self.prev_day_ohlc["close"], self.pivot_type,
-            )
-            logger.info(
-                "%s: new trading day -> pivots recomputed from yesterday: %s",
-                runner.deployment_name,
-                {k: round(v, 2) for k, v in self.pivots.items()},
-            )
-        self.today_high = self.today_low = self.today_last_close = None
-
-    async def _on_candle_closed(self, runner, candle: dict, now: datetime) -> None:
-        # GAP GUARD — see is_stale_candle_close's own docstring for the
-        # real incident this fixes: without it, a pending entry/exit
-        # detected right before a WebSocket outage gets EXECUTED hours
-        # later, the moment ticks resume, timestamped as if it happened
-        # back when the signal fired (candle["date"]) — a real fill at
-        # today's actual current price, mislabeled with a stale time and
-        # priced off a candle from hours ago. `now` is `ts`, the REAL
-        # tick timestamp that triggered this candle-close (passed from
-        # on_tick above) — never candle["date"] itself, which is always
-        # ~one interval behind `now` by construction even in the normal
-        # case, and can be arbitrarily far behind after a real gap.
-        stale = is_stale_candle_close(candle["date"], self.aggregator.interval_minutes, now)
-        if stale:
-            logger.warning(
-                "%s: candle closed at %s but only reached this strategy at %s "
-                "(%.0f min late) — likely the same tick gap CandleAggregator "
-                "already flagged. Absorbing this candle's real OHLC into "
-                "SuperTrend, but discarding any pending entry/exit rather than "
-                "executing it now at a disconnected price/time, and skipping "
-                "fresh signal detection off data this stale.",
-                runner.deployment_name, candle["date"], now,
-                (now - candle["date"]).total_seconds() / 60,
-            )
-
-        t = now.time()   # real wall-clock time, not the candle's own (always
-                          # somewhat-behind) bucket-start — matters most here
-                          # for the force-exit check below, which must reflect
-                          # reality regardless of how late this call arrived.
-        before_cutoff = self.force_exit_time is None or t < self.force_exit_time
-        # Lower bound — see market_open_time in CONFIG/the module
-        # docstring's RULES section. Only ever combined into step 5
-        # (fresh entry DETECTION) below; exits and an already-queued
-        # pending entry are never gated by this.
-        after_open = self.market_open_time is None or t >= self.market_open_time
-
-        # 1 — execute a pending ST-flip exit at THIS candle's open. Gated
-        # by is_stale_pending_signal — the SIGNAL's own age (candle it was
-        # detected on), not this call's own candle — see that function's
-        # own docstring for why this is a different (and more complete)
-        # check than `stale` above: it also catches a signal that
-        # survived a manual pause/resume, which `stale` alone does not
-        # (the executing candle after a resume is perfectly fresh).
-        if self.pending_exit is not None:
-            if is_stale_pending_signal(self.pending_exit, self.aggregator.interval_minutes, now):
-                logger.warning(
-                    "%s: discarding a pending ST-flip exit detected at %s — "
-                    "too stale to execute safely now (%s)", runner.deployment_name,
-                    self.pending_exit.get("detected_at", "unknown time"), now,
-                )
-            else:
-                await self._exit(runner, candle, "st_flip", self.pending_exit["trigger_values"])
-            self.pending_exit = None
-
-        # 2 — execute a pending entry at THIS candle's open (same
-        # is_stale_pending_signal gating as step 1 above)
-        if self.pending_entry is not None and before_cutoff:
-            if is_stale_pending_signal(self.pending_entry, self.aggregator.interval_minutes, now):
-                logger.warning(
-                    "%s: discarding a pending entry detected at %s — too stale "
-                    "to execute safely now (%s)", runner.deployment_name,
-                    self.pending_entry.get("detected_at", "unknown time"), now,
-                )
-            else:
-                await self._enter(runner, candle, self.pending_entry["side"], self.pending_entry["trigger_values"])
-        self.pending_entry = None
-
-        # 3 — force-exit at/after cutoff if still open (real `now`, not
-        # candle time — a stale/delayed candle-close must still force-exit
-        # correctly if real time is already past cutoff)
-        if self.force_exit_time is not None and t >= self.force_exit_time:
-            if self.instrument_token in runner.open_positions:
-                await self._exit(runner, candle, "force_exit", {
-                    "candle_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
-                })
-
-        # 4 — advance SuperTrend, detect a flip (still runs even if
-        # stale — absorbing this candle's real OHLC into the recursive
-        # indicator is correct regardless of how late it arrived; ONLY
-        # acting on the result is what's gated below). trigger_values captured
-        # HERE (detection time) since this is the only point that has
-        # both the pre-flip and post-flip trend plus the candle that
-        # caused it — by the time step 1 executes the exit next call,
-        # this candle is gone.
-        prev_trend_before_update = self.prev_trend
-        new_trend = self.st.update(candle)
-        if new_trend is not None:
-            if prev_trend_before_update is not None and new_trend != prev_trend_before_update:
-                if self.instrument_token in runner.open_positions:
-                    self.pending_exit = {
-                        "detected_at": candle["date"].isoformat(),
-                        "trigger_values": {
-                            "prev_trend": prev_trend_before_update, "new_trend": new_trend,
-                            "close": round(candle["close"], 2),
-                            "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
-                            "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
-                        },
-                    }
-            self.prev_trend = new_trend
-
-        # 5 — detect a fresh entry signal (flat, pivots known, ST ready,
-        # within the entry window). Same detection-time capture as step
-        # 4: records WHICH specific pivot level broke, not just that
-        # "some" R/S did. Skipped entirely if stale — nothing lost, the
-        # very next (timely) candle re-evaluates from current data
-        # anyway, same as any other candle where nothing broke yet.
-        if not stale and self.instrument_token not in runner.open_positions and self.pivots is not None \
-                and self.prev_trend is not None and before_cutoff and after_open:
-            close = candle["close"]
-            if self.prev_trend == "up":
-                for k in R_KEYS:
-                    level = self.pivots[k]
-                    if close > level:
-                        self.pending_entry = {
-                            "side": "long",
-                            "detected_at": candle["date"].isoformat(),
-                            "trigger_values": {
-                                "close": round(close, 2), "trend": self.prev_trend,
-                                "broken_level_key": k, "broken_level": round(level, 2),
-                                "r_levels": {rk: round(self.pivots[rk], 2) for rk in R_KEYS},
-                            },
-                        }
-                        break
-            elif self.prev_trend == "down":
-                for k in S_KEYS:
-                    level = self.pivots[k]
-                    if close < level:
-                        self.pending_entry = {
-                            "side": "short",
-                            "detected_at": candle["date"].isoformat(),
-                            "trigger_values": {
-                                "close": round(close, 2), "trend": self.prev_trend,
-                                "broken_level_key": k, "broken_level": round(level, 2),
-                                "s_levels": {sk: round(self.pivots[sk], 2) for sk in S_KEYS},
-                            },
-                        }
-                        break
-
-    async def _enter(self, runner, candle: dict, side: str, trigger_values: dict) -> None:
-        price = candle["open"]
-        budget = self.capital_per_trade if self.capital_per_trade is not None else runner.cash
-        qty = int(budget // price) if price > 0 else 0
-        if qty < 1:
-            logger.warning(
-                "%s: entry signal (%s) but budget %.2f can't afford even 1 "
-                "unit @ %.2f — skipping", runner.deployment_name, side, budget, price,
-            )
-            return
-        action = runner.buy if side == "long" else runner.sell
-        meta = build_trade_meta(
-            trigger="pivot_break_long" if side == "long" else "pivot_break_short",
-            action="open_long" if side == "long" else "open_short",
-            trigger_values=trigger_values,
-            resulting_state={"side": side, "qty": qty, "entry_price": round(price, 2)},
-            pivots={k: round(v, 2) for k, v in self.pivots.items()},
-        )
-        await action(self.symbol, self.instrument_token, qty, price, candle["date"],
-                     reason="entry", metadata=meta)
-        await runner.notify_execution(
-            "entry", f"{side} {qty} {self.symbol} @ {price}", metadata=meta,
-        )
-
-    async def _exit(self, runner, candle: dict, reason: str, trigger_values: dict) -> None:
-        pos = runner.open_positions.get(self.instrument_token)
-        if pos is None:
-            return
-        price = candle["open"]
-        qty = float(pos["qty"])
-        action = runner.sell if pos["side"] == "long" else runner.buy
-        meta = build_trade_meta(
-            trigger=reason,
-            action="close_long" if pos["side"] == "long" else "close_short",
-            trigger_values=trigger_values,
-            resulting_state={"position": "flat"},
-        )
-        await action(self.symbol, self.instrument_token, qty, price, candle["date"],
-                     reason=reason, metadata=meta)
-        await runner.notify_execution(
-            "exit", f"{reason}: closed {qty} {self.symbol} @ {price}", metadata=meta,
-        )
-
-    async def on_stop(self, runner) -> None:
-        logger.info("%s: strategy stopped (trend=%s, pivots=%s)",
-                   runner.deployment_name, self.st.trend,
-                   "set" if self.pivots else "none")

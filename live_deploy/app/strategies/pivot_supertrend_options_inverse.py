@@ -21,18 +21,18 @@ RULES — deliberately the mirror image of pivot_supertrend_options:
   Exit is purely TIME-based, not SuperTrend-based (the flip already WAS
   the entry trigger, so there's nothing left for a second flip to exit
   on): hold for exactly `hold_candles` complete 5-min candles after
-  entry, then exit at the next candle's open. A `force_exit_time` safety
-  net (default 15:00, same as the rest of this strategy family) still
-  applies in case a late-day flip's hold period would otherwise run past
-  market close.
+  entry, then exit. A `force_exit_time` safety net (default 15:00, same
+  as the rest of this strategy family) still applies in case a late-day
+  flip's hold period would otherwise run past market close.
 
-  NO entry before `market_open_time` (config, default 09:15) — see
-  pivot_supertrend.py's own module docstring for the full reasoning (no
-  `entry_time` schedule here either, so a SuperTrend flip detected off
-  pre-market indicative-price ticks could otherwise queue a real entry
-  the moment regular trading begins). Only gates fresh entry DETECTION
-  (a flip while flat); an exit, or a pending entry already queued from
-  a regular-session candle, is unaffected.
+  NO fresh entry before `market_open_time` (config, default 09:15) —
+  see pivot_supertrend.py's own module docstring for the full reasoning
+  AND for why this is checked against the SIGNAL CANDLE's own bucket
+  start, never real wall-clock time (no `entry_time` schedule here
+  either, so a SuperTrend flip detected off pre-market indicative-price
+  ticks could otherwise queue a real entry the moment regular trading
+  begins). Only gates fresh entry DETECTION (a flip while flat); an
+  exit is never blocked by this.
 
 BUYING, NOT SELLING: this always BUYS a leg to open and SELLS it to
 close — standard long-option mechanics, the exact opposite fill
@@ -50,13 +50,18 @@ signal. Only one open position at a time (a flip that occurs while
 already holding one is simply missed, same "only 1 lot in, 1 lot out"
 rule the rest of this family uses).
 
-HOLD-CANDLES TIMING (config: `hold_candles`, default 1): entry executes
-at the open of the candle immediately after the flip is detected (same
-"decide on close, act on next open" timing every strategy in this
-family uses). From there, `hold_candles` counts full candle-close events
-— including the entry candle's own close — so `hold_candles: 1` exits at
-the very next candle's open after entry (held through exactly 1 candle);
-`hold_candles: 2` exits one candle further out, and so on.
+HOLD-CANDLES TIMING (config: `hold_candles`, default 1) — entry executes
+IMMEDIATELY off the SAME candle-close event that confirms the flip
+(Step 94: no more deferred "decide now, act next candle" timing — see
+pivot_supertrend_options.py's own module docstring for why that
+deferral used to mean a genuinely late, not just late-but-correctly-
+backdated, option price). From entry, `hold_candles` counts full
+candle-close events — including the entry candle's own close — so
+`hold_candles: 1` exits at the very end of the NEXT candle-close event
+after entry (held through exactly 1 candle); `hold_candles: 2` exits one
+candle further out, and so on. Same as entry, the exit itself now fires
+the instant the threshold is reached, in whichever call's candle-close
+crosses it — not deferred an extra candle the way it briefly was.
 
 RESUME-SAFETY FOR THE HOLD COUNTER: `candles_held` isn't itself stored
 anywhere durable — it's reconstructed on resume from the entry candle's
@@ -66,18 +71,17 @@ however many full candle-widths have elapsed since entry (the +1 is the
 entry candle's own close, which always counts as "1 held" the moment
 it's processed, same as it would without any restart at all). If that
 reconstructed count already meets or exceeds `hold_candles`, the
-position exits IMMEDIATELY, in that same call — not deferred to the
-candle after, the way a freshly-reached threshold normally is during
-uninterrupted operation. This is a deliberate, one-directional
-asymmetry: a resume can make this strategy exit up to one candle
-EARLIER than an uninterrupted run would have at the exact threshold
-candle, but it will never exit LATER — holding an options position any
-longer than intended after a resume is the worse failure mode, so the
-reconciliation errs toward closing sooner, not toward exact call-count
-parity with a hypothetical non-resumed run. Older position rows with no
-`entry_candle_date` in their metadata (shouldn't happen going forward,
-but defensively handled) just resume counting from 0, i.e. as if
-re-entering fresh — safer to hold a little long than to guess wrong.
+position exits IMMEDIATELY, in that same call. This is a deliberate,
+one-directional asymmetry: a resume can make this strategy exit up to
+one candle EARLIER than an uninterrupted run would have at the exact
+threshold candle, but it will never exit LATER — holding an options
+position any longer than intended after a resume is the worse failure
+mode, so the reconciliation errs toward closing sooner, not toward
+exact call-count parity with a hypothetical non-resumed run. Older
+position rows with no `entry_candle_date` in their metadata (shouldn't
+happen going forward, but defensively handled) just resume counting
+from 0, i.e. as if re-entering fresh — safer to hold a little long than
+to guess wrong.
 
 CONFIG:
   "instrument_tokens": [<single token>] — the UNDERLYING's token, used
@@ -124,7 +128,6 @@ from .pivot_supertrend import (
     apply_seed_to_state,
     fetch_seed_from_kite,
     is_stale_candle_close,
-    is_stale_pending_signal,
     supertrend_from_seed_candles,
     supertrend_status_fields,
     supertrend_status_fields_from_state,
@@ -196,13 +199,6 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         self.st = SuperTrendState(period=ST_PERIOD, multiplier=ST_MULTIPLIER,
                                   atr_method=self.atr_method)
 
-        # Both hold trigger_values captured at DETECTION time — the
-        # SuperTrend flip (pending_entry) and the hold-expiry threshold
-        # being crossed (pending_exit) are both detected one call before
-        # they execute, same "decide on close, act on next open" timing
-        # as pivot_supertrend.py.
-        self.pending_entry: Optional[dict] = None   # {"option_type": "PE"|"CE", "trigger_values": {...}}
-        self.pending_exit: Optional[dict] = None    # {"trigger_values": {...}}
         self.prev_trend: Optional[str] = None
 
         # exchange=... : the options CHAIN's exchange (NFO for
@@ -299,21 +295,6 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                 return False
             self.st = SuperTrendState.from_snapshot(state["supertrend"])
             self.prev_trend = state.get("prev_trend")
-            # pending_entry here is a FLIP trigger, a one-time event —
-            # unlike plain pivot_supertrend's pending_entry (a pivot
-            # break, re-evaluated fresh every candle from current price,
-            # so harmlessly self-heals if lost), self.prev_trend already
-            # advances to the post-flip value the moment this gets
-            # queued, so the SAME flip would never be re-detected if a
-            # restart drops it — same severity class as pending_exit in
-            # the other two pivot_supertrend variants. pending_exit here
-            # (hold-candles expiry) is comparatively low-risk — step 0's
-            # reconciliation above already re-derives candles_held from
-            # the position's own DB-stored entry_candle_date and
-            # re-queues it fresh if already overdue — but restoring it
-            # too is cheap and adds a second line of defense.
-            self.pending_exit = state.get("pending_exit")
-            self.pending_entry = state.get("pending_entry")
         except (KeyError, TypeError, ValueError):
             logger.exception(
                 "%s: persisted state was malformed — ignoring it and "
@@ -336,7 +317,6 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             return None
         return {
             "version": 1, "supertrend": self.st.snapshot(), "prev_trend": self.prev_trend,
-            "pending_exit": self.pending_exit, "pending_entry": self.pending_entry,
         }
 
     def get_status_fields(self) -> Optional[list]:
@@ -403,48 +383,50 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
 
     async def _on_candle_closed(self, runner, candle: dict, now: datetime) -> None:
         # GAP GUARD — see pivot_supertrend.py's is_stale_candle_close for
-        # the real incident this fixes: without it, a pending entry/exit
-        # detected right before a WebSocket outage gets EXECUTED hours
-        # later, the moment ticks resume, timestamped as if it happened
-        # back when the signal fired. `now` is `ts`, the REAL tick
-        # timestamp that triggered this candle-close (from on_tick above)
-        # — never candle["date"] itself. Does NOT affect step 0 below
-        # (post-resume hold-counter reconciliation) — that's a different
+        # the real incident this fixes: without it, a fresh flip signal
+        # computed off a candle that only reached this strategy hours
+        # late (a WebSocket reconnect gap) gets acted on at a completely
+        # disconnected price. `now` is `ts`, the REAL tick timestamp that
+        # triggered this candle-close (from on_tick above) — never
+        # candle["date"] itself. Does NOT affect step 0 below (post-
+        # resume hold-counter reconciliation) — that's a different
         # mechanism comparing two candle-based timestamps against each
         # other, not against real time.
         stale = is_stale_candle_close(candle["date"], self.aggregator.interval_minutes, now)
         if stale:
             logger.warning(
                 "%s: candle closed at %s but only reached this strategy at %s "
-                "(%.0f min late) — likely the same tick gap CandleAggregator "
-                "already flagged. Absorbing this candle's real OHLC into "
-                "SuperTrend, but discarding any pending entry/exit rather than "
-                "executing it now at a disconnected price/time, and skipping "
-                "fresh signal detection off data this stale.",
+                "(%.0f min late) — likely a WebSocket reconnect gap. Absorbing "
+                "this candle's real OHLC into SuperTrend, but skipping any "
+                "fresh entry decision off data this stale (an exit, if one's "
+                "otherwise due, is never blocked by this).",
                 runner.deployment_name, candle["date"], now,
                 (now - candle["date"]).total_seconds() / 60,
             )
 
-        t = now.time()   # real wall-clock time, not the candle's own bucket-start
+        t = now.time()   # real wall-clock time -- deliberately used for the
+                          # force-exit cutoff below, NOT for after_open
+                          # (see the comment on it below).
         before_cutoff = self.force_exit_time is None or t < self.force_exit_time
-        # Lower bound — see market_open_time in pivot_supertrend.py's
-        # own CONFIG/RULES for the full reasoning. Only combined into
-        # step 5 (fresh entry DETECTION, a flip while flat) below.
-        after_open = self.market_open_time is None or t >= self.market_open_time
+        # Checked against THIS CANDLE'S OWN bucket start, never real
+        # wall-clock `now` (Step 94 fix) — see pivot_supertrend.py's own
+        # module docstring for exactly why a `now.time()` check here was
+        # a real bug under immediate-execution timing (below).
+        after_open = self.market_open_time is None or candle["date"].time() >= self.market_open_time
 
         # 0 — one-time reconciliation of the hold counter after a resume
         # with an already-open position. Uses THIS candle's own
         # timestamp vs. the stored entry candle's timestamp, floor-
         # divided by the candle width, so it doesn't matter how long the
         # deployment was actually paused for. If that reconciliation
-        # finds the hold period is already overdue, queue an immediate
-        # exit (step 1 below, same call) rather than waiting further.
+        # finds the hold period is already overdue, exit IMMEDIATELY,
+        # right here, rather than waiting for step 2 below to catch up.
         just_reconciled = False
         if self._reattach_entry_date is not None:
             elapsed_seconds = (candle["date"] - self._reattach_entry_date).total_seconds()
             candle_seconds = self.aggregator.interval_minutes * 60
             # +1: the entry candle itself always counts as "1 held candle"
-            # the moment it's processed (see step 4 below, which runs
+            # the moment it's processed (see step 2 below, which runs
             # unconditionally on the entry call too) — elapsed_seconds
             # alone only counts FULL candle-widths that have passed
             # SINCE entry, missing that first one.
@@ -457,47 +439,12 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             self._reattach_entry_date = None
             just_reconciled = True
             if self.candles_held >= self.hold_candles:
-                self.pending_exit = {
-                    "detected_at": candle["date"].isoformat(),
-                    "trigger_values": {
-                        "candles_held": self.candles_held, "hold_candles": self.hold_candles,
-                        "reconciled_after_resume": True,
-                    },
-                }
+                await self._exit(runner, candle, "hold_expired", {
+                    "candles_held": self.candles_held, "hold_candles": self.hold_candles,
+                    "reconciled_after_resume": True,
+                })
 
-        # 1 — execute a pending hold-expiry exit at THIS candle's open.
-        # Gated by is_stale_pending_signal (the SIGNAL's own age, not
-        # this call's candle) — see pivot_supertrend.py's own docstring
-        # for why this catches a signal that survived a manual
-        # pause/resume too, which `stale` alone does not.
-        if self.pending_exit is not None:
-            if is_stale_pending_signal(self.pending_exit, self.aggregator.interval_minutes, now):
-                logger.warning(
-                    "%s: discarding a pending hold-expiry exit detected at %s "
-                    "— too stale to execute safely now (%s)", runner.deployment_name,
-                    self.pending_exit.get("detected_at", "unknown time"), now,
-                )
-            else:
-                await self._exit(runner, candle, "hold_expired", self.pending_exit["trigger_values"])
-            self.pending_exit = None
-
-        # 2 — execute a pending entry (flip detected on a previous close)
-        # at THIS candle's open (same is_stale_pending_signal gating as
-        # step 1 above)
-        if self.pending_entry is not None and before_cutoff:
-            if is_stale_pending_signal(self.pending_entry, self.aggregator.interval_minutes, now):
-                logger.warning(
-                    "%s: discarding a pending entry detected at %s — too "
-                    "stale to execute safely now (%s)", runner.deployment_name,
-                    self.pending_entry.get("detected_at", "unknown time"), now,
-                )
-            else:
-                await self._enter(
-                    runner, candle, self.pending_entry["option_type"], self.pending_entry["trigger_values"],
-                )
-        self.pending_entry = None
-
-        # 3 — force-exit at/after cutoff if still open (real `now`, not
+        # 1 — force-exit at/after cutoff if still open (real `now`, not
         # candle time)
         if self.force_exit_time is not None and t >= self.force_exit_time:
             if self.active_leg_token is not None:
@@ -505,43 +452,44 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                     "candle_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
                 })
 
-        # 4 — still holding a position -> one more full candle has
-        # elapsed since entry, count it toward hold_candles. Skipped on
-        # the same call a resumed position's counter was just
-        # reconstructed above, to avoid counting that candle twice.
+        # 2 — still holding a position -> one more full candle has
+        # elapsed since entry, count it toward hold_candles, and exit
+        # IMMEDIATELY (Step 94: not deferred to the next candle) once
+        # hold_candles is reached. Skipped on the same call a resumed
+        # position's counter was just reconstructed above, to avoid
+        # counting that candle twice.
         if self.active_leg_token is not None and not just_reconciled:
             self.candles_held += 1
             if self.candles_held >= self.hold_candles:
-                self.pending_exit = {
-                    "detected_at": candle["date"].isoformat(),
-                    "trigger_values": {
-                        "candles_held": self.candles_held, "hold_candles": self.hold_candles,
-                        "reconciled_after_resume": False,
-                    },
-                }
+                await self._exit(runner, candle, "hold_expired", {
+                    "candles_held": self.candles_held, "hold_candles": self.hold_candles,
+                    "reconciled_after_resume": False,
+                })
 
-        # 5 — advance SuperTrend (still runs even if stale — see this
-        # method's own top-of-function comment), detect a flip -> queue
-        # the INVERSE entry. Queueing a NEW entry is skipped if stale
-        # (nothing lost — the very next timely candle re-evaluates from
-        # current data). trigger_values captured at detection time (this
-        # candle's close is gone by the time step 2 executes it next call).
+        # 3 — advance SuperTrend, detect a flip -> BUY the inverse leg
+        # IMMEDIATELY (Step 94: same candle-close event that confirmed
+        # the flip, not deferred to the next one). A flip landing right
+        # after a hold-expiry exit in step 1/2 above, same call, is
+        # allowed through deliberately -- same "a fresh entry can fire
+        # immediately after an exit" precedent pivot_supertrend_options.py
+        # already established. Never gated by `stale` on the EXIT side
+        # (steps 0-2 above); only this fresh-entry detection is.
+        # trigger_values captured right here, at the moment the flip is
+        # confirmed -- no longer "gone by the time a deferred call
+        # executes it", since there is no deferred call anymore.
         prev_trend_before_update = self.prev_trend
         new_trend = self.st.update(candle)
         if new_trend is not None:
             if (not stale and prev_trend_before_update is not None and new_trend != prev_trend_before_update
                     and self.active_leg_token is None and before_cutoff and after_open):
                 option_type = "PE" if new_trend == "down" else "CE"
-                self.pending_entry = {
-                    "option_type": option_type,
-                    "detected_at": candle["date"].isoformat(),
-                    "trigger_values": {
-                        "prev_trend": prev_trend_before_update, "new_trend": new_trend,
-                        "close": round(candle["close"], 2),
-                        "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
-                        "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
-                    },
+                trigger_values = {
+                    "prev_trend": prev_trend_before_update, "new_trend": new_trend,
+                    "close": round(candle["close"], 2),
+                    "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
+                    "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
                 }
+                await self._enter(runner, candle, option_type, trigger_values)
             self.prev_trend = new_trend
 
     # ── Execution — buy an option leg to open, sell it to close ────────
