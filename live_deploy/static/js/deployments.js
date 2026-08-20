@@ -1,19 +1,131 @@
 // live_deploy — Deployed Strategies view: every deployment, filterable
-// by status and strategy, with running P&L pulled in directly (no
-// click-through needed just to see if something's currently winning or
-// losing) and Pause/Resume/Stop available right from the row. Clicking
-// a row (not a button) navigates to that deployment's Strategy Detail
-// page — a real drill-down, not an inline expand.
+// by status/strategy, searchable, sortable by any column, with a
+// column-visibility selector so a long list stays scannable instead of
+// clumsy (Step 93 — full redesign, replacing a fixed 10-column table
+// with always-visible action buttons). Running P&L is still pulled in
+// directly (no click-through needed just to see if something's
+// currently winning or losing). Clicking a row (not a button/menu)
+// navigates to that deployment's Strategy Detail page — a real
+// drill-down, not an inline expand.
+
+// Column definitions — the single source of truth this whole view is
+// built from: the header row, each body cell, the column-visibility
+// menu, sorting, and CSV export ALL read from this one list, so adding
+// a column here is the only place a new one needs wiring in.
+// `key`: stable id, used for localStorage persistence + sort state.
+// `label`: header text.
+// `always`: can't be hidden via the column selector (Name is the row's
+//   own anchor/link; Actions is the row menu — hiding either would
+//   leave a row with nothing to click or act on).
+// `numeric`: right-aligned, and sorts/exports as a raw number.
+// `sortValue(d)`: value to compare when sorting by this column.
+// `render(d)`: cell HTML.
+// `csvValue(d)`: plain value for CSV export (defaults to sortValue).
+const DEPLOY_COLUMNS = [
+  {
+    key: 'name', label: 'Name', always: true,
+    sortValue: d => (d.deployment_name || '').toLowerCase(),
+    // "unregistered"/"excluded from reports"/custom tags all moved to
+    // their own Tags column below (Step 93) -- deploymentTagsHtml()
+    // already renders all three from this same `d`, so this cell no
+    // longer duplicates any of it.
+    render: d => `
+      <a href="#/deployments/${d.id}" onclick="event.stopPropagation()">${escapeHtml(d.deployment_name)}</a>
+      ${d.notes ? `<div class="card-sub" style="margin-top:2px; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(d.notes)}">📝 ${escapeHtml(d.notes)}</div>` : ''}
+    `,
+  },
+  {
+    key: 'strategy', label: 'Strategy',
+    sortValue: d => (d.strategy_name || '').toLowerCase(),
+    render: d => escapeHtml(d.strategy_name),
+  },
+  {
+    key: 'status', label: 'Status',
+    sortValue: d => d.status,
+    render: d => `<span class="tag tag-${d.status}">${d.status}</span>`,
+  },
+  {
+    key: 'mode', label: 'Mode',
+    sortValue: d => d.mode,
+    render: d => escapeHtml(d.mode),
+  },
+  {
+    key: 'tags', label: 'Tags',
+    // Moved out of the Name cell into its own column (Step 93, on
+    // request) -- "excluded from reports" + every custom tag, same
+    // chip-row rendering as before, just independently sortable/
+    // searchable/hideable now rather than bolted onto Name.
+    sortValue: d => [
+      d.include_in_reports ? '' : 'excluded from reports',
+      ...(d.tags || []),
+    ].join(',').toLowerCase(),
+    render: d => deploymentTagsHtml(d) || '<span class="card-sub">—</span>',
+    csvValue: d => [
+      d.include_in_reports ? null : 'excluded from reports',
+      ...(d.tags || []),
+    ].filter(Boolean).join('; '),
+  },
+  {
+    key: 'capital', label: 'Capital', numeric: true,
+    sortValue: d => d.initial_capital || 0,
+    render: d => fmtMoney(d.initial_capital),
+  },
+  {
+    key: 'cash', label: 'Cash', numeric: true,
+    sortValue: d => d.current_cash || 0,
+    render: d => fmtMoney(d.current_cash),
+  },
+  {
+    key: 'open_cost', label: 'Open Cost',
+    headerTitle: "Entry-price value of currently open positions -- a credit for a sold option's premium (not yet Realized until it's bought back), a debit for a bought one. Cash always equals Capital + Realized + this.",
+    numeric: true,
+    sortValue: d => d.open_cost_basis || 0,
+    render: d => `<span class="${pnlClass(d.open_cost_basis)}" title="Cash = ${fmtMoney(d.initial_capital)} + ${fmtSignedMoney(d.realized_pnl)} + ${fmtSignedMoney(d.open_cost_basis)}">${fmtSignedMoney(d.open_cost_basis)}</span>`,
+  },
+  {
+    key: 'realized', label: 'Realized', numeric: true,
+    sortValue: d => d.realized_pnl || 0,
+    render: d => `<span class="${pnlClass(d.realized_pnl)}">${fmtSignedMoney(d.realized_pnl)}</span>`,
+  },
+  {
+    key: 'unrealized', label: 'Unrealized', numeric: true,
+    // Live-ticked in place after initial render (see the LivePnl.track
+    // handler in load() below) -- td gets a `live-pnl` class + the
+    // deployment id so that handler can find it again without a
+    // re-render.
+    sortValue: d => d.unrealized_pnl || 0,
+    render: d => `<span class="live-pnl ${pnlClass(d.unrealized_pnl)}">${fmtSignedMoney(d.unrealized_pnl)}</span>`,
+  },
+  {
+    key: 'actions', label: 'Actions', always: true, sortable: false,
+    render: d => `
+      <div class="row-menu">
+        <button class="row-menu-btn" onclick="Deployments.toggleRowMenu(event, '${d.id}')" aria-label="Actions">⋯</button>
+        <div class="row-menu-dropdown" id="rowMenu-${d.id}">
+          ${d.status === 'active' ? `<button onclick="Deployments.pause('${d.id}')">Pause</button>` : ''}
+          ${d.status === 'paused' ? `<button onclick="Deployments.resume('${d.id}')">Resume</button>` : ''}
+          ${d.status !== 'stopped' ? `<button class="danger" onclick="Deployments.stop('${d.id}')">Stop</button>` : ''}
+          ${d.status === 'stopped' ? `<button class="danger" onclick="Deployments.deleteDeployment('${d.id}')">Delete</button>` : ''}
+        </div>
+      </div>
+    `,
+  },
+];
 
 const Deployments = {
   _all: [],
   _livePnlHandler: null,
+  _sortKey: 'name',
+  _sortDir: 'asc',   // 'asc' | 'desc'
+  _visibleCols: null,   // Set<key> -- populated in load() from localStorage/defaults
+  _openRowMenuId: null,
 
   // quiet=true: event-driven background refresh -- see Dashboard.load()'s
   // own comment for why the spinner reset is skipped in that case.
   async load(quiet = false) {
     window.LivePnl.untrack(this._livePnlHandler);   // never stack trackers across reloads
     this._livePnlHandler = null;
+    this._loadColumnPrefs();
 
     const el = document.getElementById('deploymentsTable');
     if (!quiet) el.innerHTML = spinnerHtml();
@@ -73,18 +185,173 @@ const Deployments = {
     if (names.includes(current)) select.value = current;
   },
 
-  // Shared between render() and the live-tick handler below so both
+  // ── Search (Step 93) — plain client-side substring match, same
+  // "everything's already loaded, no reason to round-trip the server
+  // for this" reasoning as the status/strategy filters right next to
+  // it. Debounced the same way the live-tick refresh elsewhere in this
+  // app is (see _scheduleLiveRefresh, index.html) -- typing fast
+  // shouldn't re-render on every keystroke. ──────────────────────────
+  _searchDebounce: null,
+  onSearchInput() {
+    clearTimeout(this._searchDebounce);
+    this._searchDebounce = setTimeout(() => this.render(), 150);
+  },
+  _matchesSearch(d, query) {
+    if (!query) return true;
+    const haystack = [
+      d.deployment_name, d.strategy_name, d.mode, d.notes,
+      ...(d.tags || []),
+    ].filter(Boolean).join(' ').toLowerCase();
+    return haystack.includes(query);
+  },
+
+  // Shared between render() and the live-tick handler above so both
   // always agree on "what's currently visible" -- the total row's live
   // updates need this SAME filtered set on every tick, not just at
   // render time, or changing a filter without a fresh tick arriving
-  // yet would leave the total row summing the wrong rows.
+  // yet would leave the total row summing the wrong rows. Also applies
+  // the current sort -- so "what's visible, in what order" is one
+  // single source both the table body and the total row already agree
+  // with, no separate re-sort needed anywhere else.
   _filteredRows() {
     const statusFilter = document.getElementById('filterStatus').value;
     const strategyFilter = document.getElementById('filterStrategy').value;
-    return this._all.filter(d =>
+    const searchEl = document.getElementById('deploymentsSearch');
+    const query = (searchEl ? searchEl.value : '').trim().toLowerCase();
+    const rows = this._all.filter(d =>
       (!statusFilter || d.status === statusFilter) &&
-      (!strategyFilter || d.strategy_name === strategyFilter)
+      (!strategyFilter || d.strategy_name === strategyFilter) &&
+      this._matchesSearch(d, query)
     );
+    return this._sortRows(rows);
+  },
+
+  // ── Sorting (Step 93) — click a header to sort by it, click again to
+  // reverse. No server round-trip; everything's already loaded. ──────
+  setSort(key) {
+    if (this._sortKey === key) {
+      this._sortDir = this._sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      this._sortKey = key;
+      this._sortDir = 'asc';
+    }
+    this.render();
+  },
+  _sortRows(rows) {
+    const col = DEPLOY_COLUMNS.find(c => c.key === this._sortKey);
+    if (!col || !col.sortValue) return rows;
+    const dir = this._sortDir === 'desc' ? -1 : 1;
+    // Slice first -- Array.sort mutates in place, and rows here is
+    // already a freshly-filtered array so this is belt-and-suspenders,
+    // not strictly needed, but cheap insurance against ever sorting
+    // this._all itself by accident.
+    return rows.slice().sort((a, b) => {
+      const av = col.sortValue(a), bv = col.sortValue(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  },
+
+  // ── Column visibility (Step 93) — persisted per-browser in
+  // localStorage, same convention as SectionOrder (api.js) for
+  // Dashboard/Reports' own reorderable sections: a standing preference,
+  // not throwaway session state. ──────────────────────────────────────
+  _colPrefsKey: 'deploymentsVisibleColumns',
+  _loadColumnPrefs() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(this._colPrefsKey) || 'null'); }
+    catch (e) { saved = null; }
+    if (Array.isArray(saved)) {
+      this._visibleCols = new Set(saved);
+      // A column added in a later version than whoever's saved
+      // preference this is should still show up by default, not
+      // silently stay hidden forever just because it didn't exist yet
+      // when they last customized this -- same "new stuff defaults
+      // on" reasoning SectionOrder's own getOrder() already documents.
+      DEPLOY_COLUMNS.forEach(c => {
+        if (c.always) this._visibleCols.add(c.key);
+      });
+    } else {
+      this._visibleCols = new Set(DEPLOY_COLUMNS.map(c => c.key));   // default: everything visible
+    }
+  },
+  _saveColumnPrefs() {
+    localStorage.setItem(this._colPrefsKey, JSON.stringify([...this._visibleCols]));
+  },
+  toggleColumnMenu(event) {
+    event.stopPropagation();
+    const menu = document.getElementById('columnMenu');
+    const willOpen = !menu.classList.contains('open');
+    this._closeAllMenus();
+    if (willOpen) {
+      menu.innerHTML = `
+        ${DEPLOY_COLUMNS.filter(c => !c.always).map(c => `
+          <label>
+            <input type="checkbox" ${this._visibleCols.has(c.key) ? 'checked' : ''}
+                   onchange="Deployments.toggleColumn('${c.key}', this.checked)">
+            ${escapeHtml(c.label)}
+          </label>
+        `).join('')}
+        <div class="col-selector-footer">
+          <button class="btn btn-secondary btn-sm" style="width:100%;" onclick="Deployments.resetColumns()">Reset to default</button>
+        </div>
+      `;
+      menu.classList.add('open');
+    }
+  },
+  toggleColumn(key, visible) {
+    if (visible) this._visibleCols.add(key);
+    else this._visibleCols.delete(key);
+    this._saveColumnPrefs();
+    this.render();
+  },
+  resetColumns() {
+    this._visibleCols = new Set(DEPLOY_COLUMNS.map(c => c.key));
+    this._saveColumnPrefs();
+    document.getElementById('columnMenu').classList.remove('open');
+    this.render();
+  },
+
+  // ── Per-row "⋯" action menu (Step 93) — replaces a row of always-
+  // visible Pause/Resume/Stop/Delete buttons with one compact trigger.
+  // Only ever one open at a time, same as the column-visibility menu
+  // above; both close on any outside click via the SAME document-level
+  // listener (_initDeploymentsMenuDismissal, wired once below). ───────
+  toggleRowMenu(event, id) {
+    event.stopPropagation();
+    const dropdown = document.getElementById(`rowMenu-${id}`);
+    if (!dropdown) return;
+    const willOpen = dropdown.id !== this._openRowMenuId || !dropdown.classList.contains('open');
+    this._closeAllMenus();
+    if (willOpen) {
+      dropdown.classList.add('open');
+      this._openRowMenuId = dropdown.id;
+    }
+  },
+  _closeAllMenus() {
+    document.querySelectorAll('.row-menu-dropdown.open').forEach(el => el.classList.remove('open'));
+    const colMenu = document.getElementById('columnMenu');
+    if (colMenu) colMenu.classList.remove('open');
+    this._openRowMenuId = null;
+  },
+
+  // ── CSV export (Step 93) — exactly the currently filtered + sorted
+  // rows, exactly the currently VISIBLE columns (Actions excluded --
+  // a row-menu control has no meaningful CSV value). Same toCsv/
+  // downloadCsv helpers every other export in this app already uses
+  // (Detail's trades export, Reports' trend export). ──────────────────
+  exportCsv() {
+    const rows = this._filteredRows();
+    if (!rows.length) return;
+    const columns = DEPLOY_COLUMNS
+      .filter(c => c.key !== 'actions' && this._visibleCols.has(c.key))
+      .map(c => ({
+        label: c.label,
+        key: c.csvValue || c.sortValue || (d => d[c.key]),
+      }));
+    const csv = toCsv(rows, columns);
+    downloadCsv('deployments.csv', csv);
   },
 
   render() {
@@ -96,23 +363,15 @@ const Deployments = {
       return;
     }
     if (!rows.length) {
-      el.innerHTML = emptyHtml('No deployments match the current filters.');
+      el.innerHTML = emptyHtml('No deployments match the current filters/search.');
       return;
     }
 
-    // Totals row (tfoot) -- scoped to whatever the current filters
-    // actually show, not always every deployment, so it stays an
-    // honest sum of what's on screen rather than a fixed portfolio-wide
-    // figure that stops matching the visible rows the moment a filter
-    // is applied. Capital/Cash/Realized are exact from this same fetch;
-    // Unrealized starts here and then updates live below, same
-    // Zerodha-style pattern as Detail's own Positions table Total row.
-    //
-    // Separately, ALSO excludes anything with include_in_reports=false
-    // -- unlike the status/strategy filters above, this is not about
-    // what's "shown" (a toggled-off deployment still gets its own row,
-    // same as always) but about what counts toward the total, same
-    // "total P&L ignores this strategy" contract as Dashboard/Portfolio.
+    const cols = DEPLOY_COLUMNS.filter(c => c.always || this._visibleCols.has(c.key));
+
+    // Totals row (tfoot) -- scoped to whatever's currently filtered,
+    // not always every deployment (see _filteredRows()'s own comment),
+    // AND excluding include_in_reports=false same as before.
     const reportRows = rows.filter(d => d.include_in_reports);
     const totalCapital = reportRows.reduce((s, d) => s + (d.initial_capital || 0), 0);
     const totalCash = reportRows.reduce((s, d) => s + (d.current_cash || 0), 0);
@@ -123,48 +382,43 @@ const Deployments = {
     const totalLabel = excludedCount > 0
       ? `Total (${reportRows.length} of ${rows.length} shown — ${excludedCount} excluded)`
       : `Total (${rows.length} shown)`;
+    const totalByKey = {
+      capital: fmtMoney(totalCapital), cash: fmtMoney(totalCash),
+      open_cost: `<span class="${pnlClass(totalOpenCost)}">${fmtSignedMoney(totalOpenCost)}</span>`,
+      realized: `<span class="${pnlClass(totalRealized)}">${fmtSignedMoney(totalRealized)}</span>`,
+      unrealized: `<span class="live-pnl-total ${pnlClass(totalUnrealized)}">${fmtSignedMoney(totalUnrealized)}</span>`,
+    };
+    // The label spans every non-numeric, non-actions column so the
+    // total row's own numbers still line up under the right numeric
+    // columns regardless of which ones are currently visible/hidden.
+    const labelSpan = cols.filter(c => !c.numeric && c.key !== 'actions').length;
 
     el.innerHTML = `
       <div class="table-wrap">
       <table class="deploy-table"><thead><tr>
-        <th>Name</th><th>Strategy</th><th>Status</th><th>Mode</th>
-        <th>Capital</th><th>Cash</th>
-        <th title="Entry-price value of currently open positions -- a credit for a sold option's premium (not yet Realized until it's bought back), a debit for a bought one. Cash always equals Capital + Realized + this.">Open Cost ⓘ</th>
-        <th>Realized</th><th>Unrealized</th><th>Actions</th>
+        ${cols.map(c => {
+          if (c.sortable === false) return `<th${c.numeric ? ' class="text-right"' : ''}>${escapeHtml(c.label)}</th>`;
+          const isSorted = this._sortKey === c.key;
+          const arrow = isSorted ? (this._sortDir === 'asc' ? '▲' : '▼') : '▲';
+          return `<th class="sortable${c.numeric ? ' text-right' : ''}" onclick="Deployments.setSort('${c.key}')"
+                      ${c.headerTitle ? `title="${escapeHtml(c.headerTitle)}"` : ''}
+                      aria-sort="${isSorted ? (this._sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}">
+                    ${escapeHtml(c.label)}<span class="sort-arrow${isSorted ? ' active' : ''}">${arrow}</span>
+                  </th>`;
+        }).join('')}
       </tr></thead>
       <tbody>${rows.map(d => `
         <tr class="clickable-row" data-deployment-id="${d.id}" onclick="location.hash='#/deployments/${d.id}'">
-          <td>
-            <a href="#/deployments/${d.id}" onclick="event.stopPropagation()">${escapeHtml(d.deployment_name)}</a>
-            ${deploymentTagsHtml(d)}
-            ${d.notes ? `<div class="card-sub" style="margin-top:2px; max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(d.notes)}">📝 ${escapeHtml(d.notes)}</div>` : ''}
-          </td>
-          <td>${escapeHtml(d.strategy_name)}</td>
-          <td><span class="tag tag-${d.status}">${d.status}</span></td>
-          <td>${d.mode}</td>
-          <td>${fmtMoney(d.initial_capital)}</td>
-          <td>${fmtMoney(d.current_cash)}</td>
-          <td class="${pnlClass(d.open_cost_basis)}" title="Cash = ${fmtMoney(d.initial_capital)} + ${fmtSignedMoney(d.realized_pnl)} + ${fmtSignedMoney(d.open_cost_basis)}">${fmtSignedMoney(d.open_cost_basis)}</td>
-          <td class="${pnlClass(d.realized_pnl)}">${fmtSignedMoney(d.realized_pnl)}</td>
-          <td class="live-pnl ${pnlClass(d.unrealized_pnl)}">${fmtSignedMoney(d.unrealized_pnl)}</td>
-          <td onclick="event.stopPropagation()">
-            <div class="card-actions">
-              ${d.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.pause('${d.id}')">Pause</button>` : ''}
-              ${d.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="Deployments.resume('${d.id}')">Resume</button>` : ''}
-              ${d.status !== 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Deployments.stop('${d.id}')">Stop</button>` : ''}
-              ${d.status === 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Deployments.deleteDeployment('${d.id}')">Delete</button>` : ''}
-            </div>
-          </td>
+          ${cols.map(c => {
+            const isActions = c.key === 'actions';
+            return `<td${c.numeric ? ' class="text-right"' : ''}${isActions ? ' onclick="event.stopPropagation()"' : ''}>${c.render(d)}</td>`;
+          }).join('')}
         </tr>
       `).join('')}</tbody>
       <tfoot><tr class="positions-total-row">
-        <td colspan="4"><b>${totalLabel}</b></td>
-        <td>${fmtMoney(totalCapital)}</td>
-        <td>${fmtMoney(totalCash)}</td>
-        <td class="${pnlClass(totalOpenCost)}">${fmtSignedMoney(totalOpenCost)}</td>
-        <td class="${pnlClass(totalRealized)}">${fmtSignedMoney(totalRealized)}</td>
-        <td class="live-pnl-total ${pnlClass(totalUnrealized)}">${fmtSignedMoney(totalUnrealized)}</td>
-        <td></td>
+        <td colspan="${labelSpan}"><b>${totalLabel}</b></td>
+        ${cols.filter(c => c.numeric).map(c => `<td class="text-right">${totalByKey[c.key] || ''}</td>`).join('')}
+        ${cols.some(c => c.key === 'actions') ? '<td></td>' : ''}
       </tr></tfoot>
       </table>
       </div>
@@ -246,3 +500,17 @@ const Deployments = {
     this.load();
   },
 };
+
+// Dismiss the column-visibility menu or an open row action menu on any
+// click outside them -- one delegated listener, wired once (idempotent
+// against this file somehow loading twice), same "init once" idiom
+// Step 88's ChartTooltip delegation already established in api.js.
+function _initDeploymentsMenuDismissal() {
+  if (window._deploymentsMenuDismissalInit) return;
+  window._deploymentsMenuDismissalInit = true;
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('.row-menu, .col-selector')) return;
+    Deployments._closeAllMenus();
+  });
+}
+_initDeploymentsMenuDismissal();

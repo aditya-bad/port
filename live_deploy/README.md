@@ -5982,6 +5982,108 @@ only wall-clock-target scheduling call site (every other `datetime.now()`
 in this codebase already either passes `timezone.utc` explicitly or
 uses a fixed-interval sleep, immune to this whole class of bug).
 
+## What's here (Step 93: Deployed Strategies table — full redesign)
+
+The Deployed Strategies list had grown to 10 fixed columns plus a row
+of always-visible Pause/Resume/Stop/Delete buttons and a stack of tag
+chips crammed into the Name cell — with 15 real deployments running,
+this was reported as genuinely hard to use on both mobile and desktop:
+no way to sort, no way to hide columns you don't care about, no search,
+and buttons/tags visually clumsy at any width. Redesigned from scratch
+rather than patched:
+
+- **Single source of truth**: `static/js/deployments.js` now builds the
+  whole table off one `DEPLOY_COLUMNS` array (10 entries: Name,
+  Strategy, Status, Mode, Tags, Capital, Cash, Open Cost, Realized,
+  Unrealized, Actions) — header, body cells, the column-visibility
+  menu, sorting, and CSV export all read from this ONE list. Adding,
+  removing, or reordering a column is a one-place edit now, not four
+  separate spots that can silently drift out of sync with each other.
+- **Header-click sorting**: click any sortable header to sort by it,
+  click again to reverse — an arrow (▲/▼) marks the active sort column,
+  dim on every other header. Client-side only (everything's already
+  loaded for the filters that existed before this), same reasoning as
+  the status/strategy filters right next to it.
+- **Search**: a debounced (150ms) free-text box matching name, strategy,
+  mode, notes, and tags — same "no server round trip needed" reasoning.
+- **Column visibility selector**: a "Columns ▾" menu with a checkbox per
+  hideable column (Name and Actions are pinned — a row with neither has
+  nothing to click or act on). Persisted per-browser in `localStorage`
+  (`deploymentsVisibleColumns`), same convention `SectionOrder` already
+  uses for Dashboard/Reports' reorderable sections — and a column added
+  in some future step still shows by default for an existing saved
+  preference, same "new stuff defaults on" reasoning `SectionOrder`
+  documents, rather than silently staying hidden forever. A "Reset to
+  default" button clears back to everything visible.
+- **Tags became their own column**, independently sortable/searchable/
+  hideable, instead of chips bolted onto the Name cell — sorts/searches
+  by "excluded from reports" (synthesized from `include_in_reports`,
+  same as the chip rendering already did) plus every custom tag,
+  joined.
+- **Actions became a single "⋯" menu** per row instead of up to 2-3
+  always-visible buttons competing for space — a status-dependent
+  dropdown (Pause/Resume, Stop, Delete-when-stopped) that closes on any
+  outside click, mirroring Step 88's `_initChartTooltipDelegation`
+  "init once" idiom so wiring the dismissal listener can't double-fire
+  even if this script somehow loaded twice.
+- **No row limit or pagination** — the reported "shows 11, rest hidden"
+  symptom couldn't be reproduced from a code-level cause (no server-side
+  limit in `GET /deployments`, no CSS `max-height`/`overflow:hidden` on
+  any ancestor, no client-side `.slice()` anywhere in the old
+  `_filteredRows()`), so it was likely a scroll-position/viewport
+  perception issue rather than an actual bug — but per explicit
+  instruction ("do not put any limit on the row length") this redesign
+  structurally can't have that problem either way: every filtered/
+  sorted row renders, always.
+- **A real scrollable frame with a sticky header** — worth documenting
+  because the obvious approach silently doesn't work: the shared
+  `.table-wrap` class every table in this app uses for its horizontal
+  scrollbar sets `overflow-x: auto`, and per the CSS overflow spec that
+  makes the browser compute `overflow-y: auto` on it too (so one axis
+  scrolling doesn't leave content on the other axis unreachable) — with
+  no height of its own, `.table-wrap` never actually scrolls internally,
+  which means it silently becomes the sticky header's containing scroll
+  frame instead of the page, and then never sticks to anything at all.
+  Fixed by giving JUST the deployments table (`#deploymentsTable
+  .table-wrap`, not the shared rule — every other table in the app still
+  wants its plain unbounded height) an explicit `max-height: 70vh` +
+  `overflow-y: auto`, turning it into a real internally-scrolling frame
+  that the sticky `<thead>` now genuinely sticks within as you scroll a
+  long list — also a reasonable side benefit for the "15 rows is a lot"
+  complaint on its own, independent of the header fix.
+- **CSV export**, reusing the same `toCsv`/`downloadCsv` helpers Detail's
+  trades export and Reports' trend export already use — exactly the
+  currently filtered + sorted rows, exactly the currently visible
+  columns (Actions excluded; a row-menu control has no CSV value).
+- **Fixed a duplication bug found during this rewrite**: the "unregistered"
+  chip was about to render TWICE — once hardcoded in the Name cell (a
+  leftover from before Tags was its own column) and once already inside
+  `deploymentTagsHtml()`, which has synthesized that exact chip since
+  Step 88. Removed the Name-cell copy; `deploymentTagsHtml()` was
+  already the single source for it.
+
+Also investigated, separately: a report of Chrome never even prompting
+for notification permission (Step 85's push notifications). Traced
+`account.js`'s `_refreshNotificationsSection()` — it only renders an
+"Enable notifications" button at all if `Api.getVapidPublicKey()`
+returns a real key; with no VAPID keypair configured server-side
+(`generate_vapid_keys.py`, Step 85, never run), it instead shows "Not
+configured on this server yet" with NO button — meaning the native
+permission prompt has no trigger to fire from at all. Likely root cause,
+not yet confirmed against what the Account → Profile page is actually
+showing.
+
+Verified: `node --check` on `static/js/deployments.js` and on
+`index.html`'s inline `<script>` block (isolated via line range, since
+a naive regex split gets confused by a code comment that happens to
+mention `<script>` by name); a full HTML open/close tag-balance pass
+over `index.html` with Python's `html.parser` — zero mismatches; every
+CSS class the new JS references (`.row-menu`, `.row-menu-dropdown`,
+`.col-selector`, `.col-selector-menu`, `.sortable`, `.sort-arrow`,
+`.text-right`) confirmed present; every field the new columns read
+(`open_cost_basis`, `strategy_registered`, `current_cash`, etc.)
+confirmed present on `DeploymentOut` with safe defaults.
+
 ## Setup
 
 ```bash

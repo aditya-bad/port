@@ -555,7 +555,93 @@ td { padding: 9px 10px; border-bottom: 2px solid var(--row-line); font-family: v
 .neg { color: var(--loss); font-weight: 700; }
 .table-wrap { overflow-x: auto; border: 3px solid var(--line); background: var(--paper); box-shadow: var(--shadow-sm); }
 .table-note { color: var(--parchment); font-size: 11px; margin-top: 8px; }
-.deploy-table th:nth-child(n+5), .deploy-table td:nth-child(n+5) { text-align: right; }
+/* Column alignment (Step 93) is now driven explicitly per-column by
+   DEPLOY_COLUMNS' own `numeric` flag (deployments.js), not a fixed
+   nth-child position -- the old positional rule broke the moment
+   columns became independently show/hideable, since "5th column" no
+   longer reliably means the same field. */
+.text-right { text-align: right; }
+
+/* ── Sortable table headers (Step 93) ────────────────────────────────
+   Click a header to sort by it; click again to reverse. A plain arrow
+   glyph, dim until this column is the active sort, rather than a
+   separate icon font -- consistent with the rest of this app's "no
+   icon library" stance. */
+.deploy-table th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+.deploy-table th.sortable:hover { background: var(--stone); }
+.sort-arrow { display: inline-block; font-size: 9px; margin-left: 4px; opacity: 0.25; }
+.sort-arrow.active { opacity: 1; color: var(--accent); }
+
+/* Sticky header -- the whole point being a long deployment list still
+   shows column labels while scrolling through it, which a redesign
+   meant to make 15+ rows comfortable to scan needs. This ONLY works
+   relative to a bounded, actually-scrolling ancestor -- and per the
+   CSS overflow spec, setting overflow-x: auto on .table-wrap (the
+   shared class every table in this app uses, for its horizontal
+   scrollbar on narrow viewports) silently computes its overflow-y to
+   auto too, which makes IT the nearest scroll container instead of
+   the page... except with no height of its own, it never actually
+   scrolls internally, so a naive "sticky relative to the page" here
+   would silently never stick at all. Fixed by giving the deployments
+   table specifically (not the shared .table-wrap rule -- every other
+   table in the app still wants its ordinary unbounded height) its own
+   real internal scroll frame below, so the header sticks to the TOP
+   OF THAT FRAME as you scroll the list, not to the page. An explicit
+   background is required or the row content scrolling underneath
+   would show through while stuck. */
+#deploymentsTable .table-wrap { max-height: 70vh; overflow-y: auto; }
+.deploy-table thead th { position: sticky; top: 0; background: var(--panel); z-index: 3; }
+
+/* ── Column visibility selector ──────────────────────────────────── */
+.col-selector { position: relative; }
+.col-selector-menu {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 60;
+  background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm);
+  padding: 10px; min-width: 210px; max-height: 340px; overflow-y: auto; display: none;
+}
+.col-selector-menu.open { display: block; }
+.col-selector-menu label {
+  display: flex; align-items: center; gap: 8px; padding: 6px 4px; font-size: 12px;
+  font-weight: 600; cursor: pointer;
+}
+.col-selector-menu label input { width: auto; margin: 0; }
+.col-selector-menu .col-selector-footer {
+  border-top: 2px solid var(--row-line); margin-top: 6px; padding-top: 8px;
+}
+
+/* ── Per-row "⋯" action menu — replaces a row of always-visible
+   Pause/Resume/Stop/Delete buttons (Step 93): one compact trigger per
+   row instead of up to 2 buttons competing for space in every row at
+   once, especially cramped once Actions is squeezed by whatever other
+   columns are currently visible. ─────────────────────────────────── */
+.row-menu { position: relative; display: inline-block; }
+.row-menu-btn {
+  background: var(--paper); border: 2px solid var(--line); width: 30px; height: 30px;
+  cursor: pointer; font-weight: 800; font-size: 15px; line-height: 1; color: var(--ink);
+}
+.row-menu-btn:hover { background: var(--stone); }
+.row-menu-dropdown {
+  position: absolute; top: calc(100% + 4px); right: 0; z-index: 60;
+  background: var(--paper); border: 3px solid var(--line); box-shadow: var(--shadow-sm);
+  min-width: 130px; display: none;
+}
+.row-menu-dropdown.open { display: block; }
+.row-menu-dropdown button {
+  display: block; width: 100%; text-align: left; padding: 9px 12px; background: none; border: none;
+  cursor: pointer; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--ink); border-bottom: 2px solid var(--row-line); font-family: var(--font-body);
+}
+.row-menu-dropdown button:last-child { border-bottom: none; }
+.row-menu-dropdown button:hover { background: var(--stone); }
+.row-menu-dropdown button.danger { color: var(--loss); }
+
+/* ── Tags column (Step 93) — tags moved out of the Name cell into
+   their own column, so Name stays just the name (+ notes) and tags
+   become independently sortable/searchable/hideable data like every
+   other column, not decoration bolted onto another one. Same .chip-row
+   as before, just without the top margin a standalone column doesn't
+   need. */
+.deploy-table .chip-row { margin-top: 0; }
 
 /* Positions table's own Total row (Detail page) — a Zerodha-style
    summary row baked into the table itself instead of a separate stat
@@ -1203,6 +1289,13 @@ body.mobile-nav-open { overflow: hidden; }
         <select id="filterStrategy" onchange="Deployments.render()">
           <option value="">All strategies</option>
         </select>
+        <input type="text" id="deploymentsSearch" placeholder="Search name, strategy, tags, notes…"
+               oninput="Deployments.onSearchInput()" style="flex:1; min-width:180px;">
+        <div class="col-selector" id="colSelectorWrap">
+          <button class="btn btn-secondary btn-sm" onclick="Deployments.toggleColumnMenu(event)">Columns ▾</button>
+          <div class="col-selector-menu" id="columnMenu"></div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="Deployments.exportCsv()">⭳ Export CSV</button>
       </div>
       <div id="deploymentsTable"><div class="empty"><span class="spinner"></span> Loading…</div></div>
     </div>
