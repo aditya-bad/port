@@ -242,22 +242,31 @@ class SnapshotOut(BaseModel):
     """One point on a deployment's equity curve — see
     queries.record_snapshot/list_snapshots and DeploymentManager's
     periodic snapshot loop for how these rows actually get written. One
-    row per IST calendar day (Step 96) — `snapshot_at`/`cash`/
-    `open_positions_value`/`total_value`/`realized_pnl_cumulative` are
-    that day's LAST snapshot (its post-market value); `day_high`/
-    `day_low`/`max_profit`/`max_loss` (Step 97) summarize the whole
-    day's range, computed from every raw snapshot that day, not just
-    the closing one — see list_snapshots' own docstring for exactly
-    what "max profit/loss" means (a delta from the day's OWN open, not
-    the previous day's close or the deployment's all-time total).
+    row per IST calendar day (Step 96) — that day's LAST snapshot (its
+    post-market value), a single number, deliberately not a range (Step
+    99 REMOVED the intraday day_high/day_low/max_profit/max_loss Step
+    97 had briefly added — see DeploymentManager._snapshot_one's own
+    comment for why: those were computed off `total_value`, which used
+    to double-count a still-open short leg's entry premium, making
+    "max profit that day" measure premium COLLECTED rather than
+    premium actually EARNED; removed rather than re-derived from the
+    fixed number, by explicit request for one clean value per day).
 
     `open_positions_value` is the mark-to-market UNREALIZED P&L sum of
-    every position open at snapshot time (not the notional value of the
-    positions themselves — for short option legs "notional value"
-    isn't a meaningful equity contribution the way it is for a long
-    position, whereas unrealized P&L always is) — so `total_value =
-    cash + open_positions_value` is genuinely "what this deployment's
-    account is worth right now," the natural equity-curve Y axis.
+    every position open at snapshot time — but Step 99: this (and its
+    contribution to `total_value`) is now ALWAYS 0 for an "intraday"
+    deployment, never computed at all, regardless of whether a leg
+    happens to be open at snapshot time — an option leg's live premium
+    swinging around while still open mid-session isn't realized profit
+    yet, just noise, and intentionally never moves this number. Only a
+    genuinely "positional" deployment (one designed to carry a position
+    past market close) gets a real, non-zero value here. `total_value =
+    initial_capital + realized_pnl_cumulative + open_positions_value`
+    (NOT `cash + open_positions_value`, which is where the pre-Step-99
+    double-count came from — see _snapshot_one's own comment for the
+    full derivation) — "what this deployment's account is worth right
+    now," the equity-curve Y axis, correctly excluding any not-yet-real
+    intraday premium.
     """
     id: UUID
     deployment_id: UUID
@@ -266,10 +275,6 @@ class SnapshotOut(BaseModel):
     open_positions_value: float
     total_value: float
     realized_pnl_cumulative: float
-    day_high: float
-    day_low: float
-    max_profit: float
-    max_loss: float
 
 
 class PortfolioSnapshotOut(BaseModel):

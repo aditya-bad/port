@@ -537,26 +537,58 @@ class DeploymentManager:
         logger.info("Post-market state dump: checked %d active deployment(s)", dumped)
 
     async def _snapshot_one(self, runner: DeploymentRunner) -> None:
-        # Mark-to-market off the runner's OWN already-loaded
-        # open_positions cache (no extra DB round trip needed — this is
-        # exactly the state DeploymentRunner already maintains for the
-        # strategy itself) — see SnapshotOut's own docstring for why
-        # `open_positions_value` here means unrealized P&L, not notional
-        # position value.
+        # Step 99 fix — this used to compute total_value as `cash +
+        # open_positions_value`, which DOUBLE-COUNTS a still-open
+        # SHORT leg's entry premium: `cash` already carries the full
+        # premium credit the instant a leg opens (record_fill credits
+        # it immediately, no margin model — see routers/deployments.py's
+        # own _open_cost_basis, which documents the always-true identity
+        # `current_cash == initial_capital + realized_pnl +
+        # open_cost_basis`, where open_cost_basis is +qty*avg for an
+        # open short — that SAME premium, already sitting in cash).
+        # open_positions_value's own (avg - price)*qty term ALSO
+        # implicitly re-adds that same +avg*qty on top when summed with
+        # cash, since (avg-price) = +avg - price. The two together
+        # overstated total_value by exactly the entry premium for as
+        # long as a short leg stayed open — which is exactly what got
+        # reported as "max profit" once Step 97 started tracking each
+        # day's high/low off this same inflated number: it was
+        # measuring premium COLLECTED, not premium actually EARNED.
+        #
+        # Correct total is `initial_capital + realized_pnl +
+        # open_positions_value` (NOT cash) — this is the same identity
+        # rearranged: cash's own open_cost_basis component is exactly
+        # what needs to be REPLACED by open_positions_value (the
+        # CURRENT, price-dependent value), not added on top of it.
+        #
+        # Beyond just fixing the double-count, this also now EXCLUDES
+        # open_positions_value entirely for "intraday" deployments (by
+        # explicit request) — an option leg's live premium swinging
+        # around while it's still open mid-session isn't real profit
+        # yet, just noise, and shouldn't move the equity number even
+        # once double-counting is fixed; only "positional" deployments
+        # (designed to genuinely carry a position past market close)
+        # get their open leg's real mark-to-market folded in, since
+        # there a lingering open position IS an intended part of the
+        # account's value, not an artifact of the snapshot simply
+        # landing mid-trade.
         open_positions_value = 0.0
-        for token, pos in runner.open_positions.items():
-            price = self.dispatcher.last_prices.get(token)
-            if price is None:
-                continue
-            qty, avg = float(pos["qty"]), float(pos["avg_entry_price"])
-            open_positions_value += (price - avg) * qty if pos["side"] == "long" \
-                else (avg - price) * qty
+        if runner.mode == "positional":
+            # Mark-to-market off the runner's OWN already-loaded
+            # open_positions cache (no extra DB round trip needed).
+            for token, pos in runner.open_positions.items():
+                price = self.dispatcher.last_prices.get(token)
+                if price is None:
+                    continue
+                qty, avg = float(pos["qty"]), float(pos["avg_entry_price"])
+                open_positions_value += (price - avg) * qty if pos["side"] == "long" \
+                    else (avg - price) * qty
 
         realized = await queries.realized_pnl_total(self.pool, runner.deployment_id)
         await queries.record_snapshot(
             self.pool, runner.deployment_id, datetime.now(timezone.utc),
             cash=runner.cash, open_positions_value=open_positions_value,
-            total_value=runner.cash + open_positions_value,
+            total_value=runner.initial_capital + realized + open_positions_value,
             realized_pnl_cumulative=realized,
         )
 

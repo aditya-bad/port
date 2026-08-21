@@ -6423,6 +6423,89 @@ date restores its `trades_today` count, while one whose `today` is
 YESTERDAY correctly starts fresh at 0 rather than wrongly carrying
 yesterday's count into today's cap.
 
+## What's here (Step 99: a real double-counting bug in the equity curve — intraday premium was inflating "profit," fixed)
+
+Sharp, frustrated pushback on Step 96/97: the equity curve (and its
+max-profit/max-loss range) was STILL reflecting an option leg's
+intraday premium as if it were profit, even for a plain intraday
+deployment that's flat again by end of day — exactly the thing Step 96
+was supposed to have already fixed. Traced it to an actual accounting
+bug, not a rendering issue, and independently re-derived it from first
+principles before touching any code, since "trust but verify" matters
+more on money math than almost anywhere else in this app.
+
+**The bug**: `DeploymentManager._snapshot_one` computed `total_value =
+cash + open_positions_value`. For a SHORT option leg (selling to open —
+this is the NORMAL direction for `pivot_supertrend_options`), `cash`
+gets credited the FULL premium the instant the leg opens (no margin
+model — `record_fill` credits it immediately, real cash, same as any
+real broker). `open_positions_value` was computed as `(avg_entry_price
+- current_price) * qty` for a short — which ALSO implicitly re-adds
+that same entry premium via its own `+avg_entry_price` term. Summed
+together, `total_value` double-counted the entry premium for as long
+as the leg stayed open: selling a PE for ₹79.45 (75 qty, ₹5,958.75
+premium) inflated `total_value` by that full ₹5,958.75 the INSTANT the
+leg opened, regardless of whether the option's price had moved at all
+yet — genuinely fabricated "profit" from nothing but having collected
+a premium, not from the position actually being worth anything.
+
+Cross-checked this independently against `routers/deployments.py`'s
+own already-documented, provably-correct identity: `_open_cost_basis`'s
+docstring states `current_cash == initial_capital + realized_pnl +
+open_cost_basis`, ALWAYS true (`open_cost_basis` there is exactly the
+same `+qty*avg_entry_price` premium sitting in cash, uncredited to
+realized_pnl until closed). That identity, rearranged, gives the
+correct total: `initial_capital + realized_pnl + open_positions_value`
+— NOT `cash + open_positions_value`, which double-adds the same
+premium `open_cost_basis` already accounts for inside `cash`. Verified
+by hand with concrete numbers (see the fix's own code comment for the
+full worked arithmetic) before writing a single line of the fix.
+
+Step 97's `max_profit`/`max_loss` (already reverted in this same step,
+see below) was reading straight off this same inflated `total_value`,
+which is exactly why it kept surfacing "profit" that was really just
+premium collected — the user's phrase for it, "premium collected
+should not count towards M2M profit," turned out to be a precise,
+correct description of the actual bug, not a preference call.
+
+**The fix**: `total_value = initial_capital + realized_pnl_cumulative +
+open_positions_value` (the corrected, non-double-counted identity) —
+AND, by explicit further request, `open_positions_value` is now NEVER
+computed at all for an "intraday" deployment (the mode nearly every
+deployment here actually runs in), regardless of whether a leg happens
+to be open at snapshot time: an option leg's live premium swinging
+around mid-session isn't realized profit yet, just noise, and now
+never touches the equity number in any way, fixed double-count or not.
+Only a genuinely "positional" deployment (`mode == "positional"`,
+designed to carry a position past market close) gets a real,
+non-double-counted mark-to-market folded in — there, unlike intraday,
+a lingering open position IS an intended, real part of the account's
+value, not just an artifact of the snapshot landing mid-trade.
+
+**Step 97's max-profit/max-loss feature is REMOVED**, not re-derived
+off the fixed number — `list_snapshots` reverted to Step 96's simpler
+one-row-per-day shape, `SnapshotOut` back to its original fields, the
+equity chart tooltip back to a single value + date. Explicit request:
+"I want only one number" — a clean day-close value, no intraday range
+at all, now that the range was shown to be measuring the wrong thing
+in the first place.
+
+Verified two ways: (1) hand-derived arithmetic BEFORE writing the fix
+(concrete premium/price numbers run through both the old buggy formula
+and the corrected one, confirming the exact ₹avg_entry_price*qty
+discrepancy independently, not just asserted); (2) a functional test
+against the actual `_snapshot_one` method (mocked DB calls, no real
+Postgres needed) covering three scenarios — an intraday deployment
+with a short leg still open mid-day (`total_value` now exactly equals
+`initial_capital`, completely unaffected by the ₹5,958.75 sitting in
+cash from the still-open premium), the same deployment later that day
+once the leg has actually closed at a real ₹1,200 profit
+(`total_value` exactly `initial_capital + 1200`), and a positional
+deployment genuinely carrying an open long (`total_value` correctly
+includes its real, non-double-counted unrealized gain). Also re-ran
+the simplified `list_snapshots` SQL against a real local Postgres
+instance to confirm the Step 96 revert still behaves correctly.
+
 ## Setup
 
 ```bash
