@@ -6812,6 +6812,68 @@ total realized P&L (550) either way, only the bucketing differs. `node
 --check` on both api.js and detail.js, and a full `app.main` import,
 both clean.
 
+## What's here (Step 104: generic scratch storage, for the next weird ask)
+
+Not a feature request this time — the user, after several rounds of
+ad-hoc asks (Steps 96–103) each needing their own migration, offered
+"if you wanna play safe and have a dummy table so future asks can use
+it... be smart about it." Worth being honest about first: most of
+Steps 96–103 were about RESHAPING/RECOMPUTING data already sitting in
+`positions`/`position_lots`/`deployment_snapshots` (what does M2M mean,
+how should legs group, which array should a stat come from) — a
+scratch table wouldn't have saved any of those migrations, because
+nothing was missing to store. What it DOES help with is the other kind
+of ask: a small, low-stakes bit of NEW state (a saved preference, a
+per-deployment flag, a note-to-self, a cached one-off value) that isn't
+worth a full typed migration for, and whose eventual shape isn't
+obvious yet.
+
+**Migration 0012** adds two tables, both `(key -> JSONB value)`:
+`deployment_scratch` (composite PK `(deployment_id, key)`, `ON DELETE
+CASCADE` off `deployments` — can never outlive the deployment it
+describes) and `app_scratch` (PK `key`, no owner, for anything
+portfolio-wide rather than tied to one deployment). `key` is a
+free-form namespace the CALLER defines — nothing in the schema
+constrains what keys exist or what shape their values take; that
+discipline is deliberately left to whichever feature reads/writes a
+given key, not enforced here. The migration's own comment is explicit
+about what this table is NOT: a replacement for the typed-column
+discipline every other feature in this file got (tags, notes,
+include_in_reports, push subscriptions, ...) — it's the escape hatch
+for the smaller asks in between, and any key that turns out to matter
+enough to want real constraints or query performance should graduate
+into its own migration rather than staying here indefinitely.
+
+`queries.py` gets six matching functions —
+`get/set/delete_deployment_scratch` and `get/set/delete_app_scratch` —
+deliberately minimal (no "list every key" enumeration, since nothing
+needs one yet; trivial to add later without a migration). `value` is
+JSONB going in and comes back out as a plain Python dict/list/str/
+number/bool via the same auto-encoding codec `pool.py` already
+registers on every connection (no manual `json.dumps`/`loads` at any
+call site, same as every other JSONB column in this codebase) — set
+already upserts (`ON CONFLICT ... DO UPDATE`), so callers never need
+their own exists-check-then-insert-or-update dance.
+
+**Deliberately NOT built**: no API router, no UI, no consumer of any
+kind yet. There's no concrete feature asking for one — building that
+speculatively would just be unused surface area (and, for an API
+endpoint specifically, unnecessary attack surface) sitting on top of a
+table nothing has decided to use yet. Wiring a router endpoint or a
+small UI control onto a specific key is a cheap, fast addition the
+moment an actual "weird ask" needs to persist something through it —
+exactly the trade this table is for.
+
+Verified against a real local Postgres instance with the app's own
+connection pool (`app.db.pool.create_pool`, not a bare asyncpg
+connection) so the JSONB codec round-trip is the exact same path
+production uses: a dict, a list, and a plain string all round-trip
+through `deployment_scratch` unchanged; upserting an existing key
+updates in place (confirmed exactly one row afterward, not two);
+deleting a key falls back to the caller's own default; deleting the
+owning deployment cascades away its scratch rows; `app_scratch`
+behaves identically with no deployment tie. `app.main` imports clean.
+
 ## Setup
 
 ```bash

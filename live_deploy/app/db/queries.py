@@ -1924,6 +1924,79 @@ async def list_push_subscriptions(pool: asyncpg.Pool) -> list[asyncpg.Record]:
         return await conn.fetch("SELECT * FROM push_subscriptions ORDER BY created_at")
 
 
+# ═════════════════════════════════════════════════════════════════════
+# SCRATCH STORAGE (Step 104) — see migration 0012's own comment for the
+# "why a schema-less escape hatch" reasoning: a generic (key -> JSONB
+# value) slot, per-deployment or app-wide, for whatever small bit of
+# state a future ad-hoc feature needs to persist before it's clear it
+# deserves a real typed column. Deliberately minimal: get/set/delete
+# only, no "list every key" helper -- nothing needs to enumerate a
+# whole scratch space yet, and adding that later is a one-function
+# addition, not a migration. No API router or UI wired to these yet
+# either, on purpose -- there's no concrete feature asking for one, and
+# building that speculatively would just be unused surface area; wiring
+# it up is cheap the moment a real request actually needs it.
+# ═════════════════════════════════════════════════════════════════════
+
+async def get_deployment_scratch(
+    pool: asyncpg.Pool, deployment_id: UUID, key: str, default: Any = None,
+) -> Any:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT value FROM deployment_scratch WHERE deployment_id = $1 AND key = $2",
+            deployment_id, key,
+        )
+    return row["value"] if row is not None else default
+
+
+async def set_deployment_scratch(
+    pool: asyncpg.Pool, deployment_id: UUID, key: str, value: Any,
+) -> None:
+    """`value` is handed straight to the JSONB column -- any JSON-
+    serializable Python value (dict, list, str, number, bool, None) is
+    fine, per the codec pool.py registers on every connection."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO deployment_scratch (deployment_id, key, value, updated_at)
+            VALUES ($1, $2, $3, now())
+            ON CONFLICT (deployment_id, key) DO UPDATE SET value = $3, updated_at = now()
+            """,
+            deployment_id, key, value,
+        )
+
+
+async def delete_deployment_scratch(pool: asyncpg.Pool, deployment_id: UUID, key: str) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM deployment_scratch WHERE deployment_id = $1 AND key = $2",
+            deployment_id, key,
+        )
+
+
+async def get_app_scratch(pool: asyncpg.Pool, key: str, default: Any = None) -> Any:
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT value FROM app_scratch WHERE key = $1", key)
+    return row["value"] if row is not None else default
+
+
+async def set_app_scratch(pool: asyncpg.Pool, key: str, value: Any) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO app_scratch (key, value, updated_at)
+            VALUES ($1, $2, now())
+            ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now()
+            """,
+            key, value,
+        )
+
+
+async def delete_app_scratch(pool: asyncpg.Pool, key: str) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM app_scratch WHERE key = $1", key)
+
+
 async def get_deployment_notifications_enabled(pool: asyncpg.Pool, deployment_id: UUID) -> bool:
     """Read fresh from the DB on every execution notification (see
     DeploymentRunner.notify_execution's own docstring) rather than
