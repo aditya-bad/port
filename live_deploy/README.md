@@ -7109,6 +7109,68 @@ Return/Drawdown and the status filter both re-verified against this
 same real-file-loaded instance. `node --check` on api.js/detail.js/
 compare.js and a full `app.main` import both clean.
 
+## What's here (Step 108: Reports page's portfolio-wide Win Rate is per position, not per trade)
+
+Direct follow-up: "in the report page the win percentage is still
+based on trades not positions fix that too." Steps 103/106/107 already
+fixed this exact "a straddle's CE+PE legs count as 2 trades instead of
+1" problem for a single deployment's own Stats tab and the Compare
+leaderboard; the portfolio-wide Reports page's stat-card row (Realized
+P&L / Positions Closed / Wins / Losses / Win Rate) had the same bug —
+`pnl_summary_for_range` counted every closed `positions` row as its
+own win or loss, portfolio-wide.
+
+**Fixed by grouping into episodes PER DEPLOYMENT, portfolio-wide**: the
+query now fetches every included deployment's full position history,
+groups each deployment's OWN positions into episodes (the same
+`_group_into_episodes` every other episode feature in this app already
+uses), and counts an episode as "closed in this period" if its own
+end — the latest constituent leg's `closed_at` — falls in the selected
+[start, end) window. Grouping happens strictly within one deployment at
+a time: two different deployments' positions never merge into one
+episode just because their timestamps happen to overlap, verified
+explicitly (see below).
+
+**`realized_pnl` itself is deliberately left untouched** — still the
+exact sum of each individual leg's own realized_pnl, dated by THAT
+LEG's own `closed_at`, not its episode's. Only asked to fix the
+trade-counting (Win Rate and what feeds it), not to also change which
+period a rupee of P&L gets attributed to — an episode straddling a
+period boundary (one leg closes right before midnight, its roll closes
+right after) would otherwise shift real money between periods purely
+because of how legs get grouped for counting, a bigger and separate
+behavior change nobody asked for. `fills` is unaffected for the same
+reason a fill is inherently leg-level regardless of episode grouping.
+
+No schema or API shape change — same response fields as before
+(`realized_pnl`/`positions_closed`/`wins`/`losses`/`fills`), so
+`reports.js`'s own Win Rate calculation (`wins / (wins + losses)`)
+needed no frontend changes at all; it was always correct given whatever
+numbers the backend handed it, and those numbers are what needed
+fixing.
+
+Verified against a real local Postgres instance with three deployments:
+one running a CE+PE straddle that closed inside the period (correctly
+counted as ONE win, not two); a second, completely separate deployment
+whose own single losing trade's `opened_at`/`closed_at` were made to
+EXACTLY overlap the first deployment's straddle window (confirmed it
+stays its own separate episode/loss, never merging into the first
+deployment's just because the timestamps coincide); and a third
+deployment with `include_in_reports=false` holding a large winning
+trade (confirmed fully excluded, as before). Result: 2 positions
+closed, 1 win, 1 loss — matching hand-derived expectations exactly —
+with `realized_pnl` unchanged at the plain per-leg dated sum
+(500 − 200 − 400 = −100, the excluded deployment's +99999 and the
+first deployment's out-of-range −999 both correctly absent). A full
+`app.main` import clean.
+
+**Scope note**: this fixes the Win Rate stat card specifically (what
+was asked). The "By Strategy"/"By Deployment" breakdown tables lower on
+the Reports page still show `positions_closed` per raw `positions` row,
+not per episode — they don't display a win rate, only a count alongside
+realized P&L, so they weren't part of this specific complaint; happy to
+extend the same fix there too if that count matters as much.
+
 ## Setup
 
 ```bash

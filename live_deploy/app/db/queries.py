@@ -1391,27 +1391,58 @@ async def pnl_summary_for_range(
     pool: asyncpg.Pool, start: datetime, end: datetime,
 ) -> dict[str, Any]:
     """Portfolio-wide realized P&L + activity for one exact [start, end)
-    window — the Reports page's per-period stat-card row. Same
-    realized-only philosophy as list_pnl_digest (see its docstring),
-    just for a single caller-chosen window instead of many calendar
-    buckets at once — used to compute both the SELECTED period's
-    numbers and the PREVIOUS period's (for the delta shown next to
-    each stat), two calls with different [start, end) rather than one
-    query trying to do both at once.
+    window — the Reports page's per-period stat-card row (Realized P&L,
+    Positions Closed/Wins/Losses, Win Rate, Fills). Same realized-only
+    philosophy as list_pnl_digest (see its docstring), just for a
+    single caller-chosen window instead of many calendar buckets at
+    once — used to compute both the SELECTED period's numbers and the
+    PREVIOUS period's (for the delta shown next to each stat), two
+    calls with different [start, end) rather than one query trying to
+    do both at once.
 
-    Both queries JOIN deployments and filter on include_in_reports=true
-    — same portfolio-wide exclusion as list_pnl_digest above, for the
-    same reason (this is a cross-deployment aggregate through and
-    through).
+    Step 108 — `positions_closed`/`wins`/`losses` (and so Win Rate,
+    derived from them on the frontend) now count per EPISODE, not per
+    raw `positions` row: every leg/adjustment/roll of one strategic bet,
+    PER DEPLOYMENT (see _group_into_episodes — two different
+    deployments' positions never merge just because their timestamps
+    happen to overlap), combines into a single win or loss. Explicit
+    follow-up request after the same fix already landed for a single
+    deployment's own Stats tab (Step 103) and the Compare leaderboard
+    (Step 106/107) — the portfolio-wide Reports page had the exact same
+    "a straddle's CE+PE legs count as 2 trades instead of 1" problem.
+    An episode counts as "closed in this period" if its own END (the
+    LATEST constituent leg's closed_at) falls in [start, end) — an
+    episode with any leg still open never counts as closed, same as a
+    single still-open position never does.
+
+    `realized_pnl` is DELIBERATELY UNCHANGED — still the exact sum of
+    each individual leg's own realized_pnl, dated by THAT LEG's own
+    closed_at (not its episode's). Only asked to fix the trade-counting
+    semantics (Win Rate and its inputs), not to also change which
+    period a given rupee of P&L gets attributed to — an episode that
+    straddles a period boundary (one leg closes just before midnight,
+    its roll closes just after) would otherwise shift real money
+    between periods purely because of how legs get grouped for counting
+    purposes, which is a bigger, separate behavior change nobody asked
+    for here.
+
+    Needs each included deployment's FULL position history (not just
+    what falls in [start, end)) to group episodes correctly — an
+    episode with one leg closing just before this period and another
+    closing inside it still needs BOTH legs to compute the episode's
+    true combined realized_pnl and correct end date. Fetching that
+    full history and grouping in Python (reusing the exact same
+    _group_into_episodes every other episode feature in this app uses)
+    is simpler and safer than a bespoke SQL formulation, and keeps this
+    in lockstep with how an "episode" is defined everywhere else —
+    given this app's actual scale (a handful to a few dozen
+    deployments, not millions of positions), the cost of that full
+    fetch is not a concern.
     """
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
+        pnl_row = await conn.fetchrow(
             """
-            SELECT
-                COALESCE(SUM(p.realized_pnl), 0)::float8 AS realized_pnl,
-                COUNT(*) AS positions_closed,
-                COUNT(*) FILTER (WHERE p.realized_pnl > 0) AS wins,
-                COUNT(*) FILTER (WHERE p.realized_pnl < 0) AS losses
+            SELECT COALESCE(SUM(p.realized_pnl), 0)::float8 AS realized_pnl
             FROM positions p
             JOIN deployments d ON d.id = p.deployment_id
             WHERE p.status = 'closed' AND p.closed_at >= $1 AND p.closed_at < $2
@@ -1427,7 +1458,39 @@ async def pnl_summary_for_range(
             """,
             start, end,
         )
-        return {**dict(row), "fills": fills}
+        all_positions = await conn.fetch(
+            """
+            SELECT p.deployment_id, p.id, p.opened_at, p.closed_at, p.status, p.realized_pnl::float8 AS realized_pnl
+            FROM positions p
+            JOIN deployments d ON d.id = p.deployment_id
+            WHERE d.include_in_reports = true
+            ORDER BY p.deployment_id, p.opened_at ASC
+            """,
+        )
+
+    by_deployment: dict[UUID, list] = {}
+    for r in all_positions:
+        by_deployment.setdefault(r["deployment_id"], []).append(r)
+
+    positions_closed = wins = losses = 0
+    for dep_positions in by_deployment.values():
+        for ep in _group_into_episodes(dep_positions):
+            if ep["end"] is None or not (start <= ep["end"] < end):
+                continue
+            ep_pnl = sum(r["realized_pnl"] for r in ep["rows"])
+            positions_closed += 1
+            if ep_pnl > 0:
+                wins += 1
+            elif ep_pnl < 0:
+                losses += 1
+
+    return {
+        "realized_pnl": pnl_row["realized_pnl"],
+        "positions_closed": positions_closed,
+        "wins": wins,
+        "losses": losses,
+        "fills": fills,
+    }
 
 
 async def pnl_by_strategy_for_range(
