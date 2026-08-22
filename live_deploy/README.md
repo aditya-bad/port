@@ -6874,6 +6874,91 @@ deleting a key falls back to the caller's own default; deleting the
 owning deployment cascades away its scratch rows; `app_scratch`
 behaves identically with no deployment tie. `app.main` imports clean.
 
+## What's here (Step 105: historical equity data backfilled + "drawdown" redefined as capital lost forever)
+
+The user hadn't redeployed Step 99's fix yet, and spotted its exact
+signature live: an equity curve dipping ~8% (₹8,121.75) then fully
+round-tripping back to almost precisely the starting value, while the
+Recent Periods table's actual realized swings were only ever in the
+hundreds of rupees — the smoking gun for a still-open BOUGHT (long)
+option leg's premium being double-subtracted the whole time it was
+held (the mirror image of the SHORT-leg over-counting Step 99's own
+commit described: buying moves cash down by the premium immediately,
+and the old `cash + open_positions_value` formula subtracted that same
+premium a second time via `open_positions_value`'s own `-avg` term,
+understating total_value by exactly the premium paid for as long as
+the leg stayed open — vanishing the instant it closed). Confirmed via
+worked algebra before writing anything, then two follow-up asks:
+backfill the historical data so this doesn't linger forever, and redefine
+"drawdown" so a live paper dip on an open position never counts as one
+again, even once the underlying number is correct.
+
+**Migration 0013 backfills every existing `deployment_snapshots` row**,
+not a script the user has to remember to run separately — it rides the
+same automatic migration path every redeploy already goes through.
+This was possible with exact precision, invalidating Step 101's
+original assumption that pre-fix rows couldn't be reliably
+distinguished or corrected: `open_positions_value` and
+`realized_pnl_cumulative` were ALREADY correct on every row, before and
+after Step 99 — only what `total_value` summed them WITH (`cash`,
+already carrying the same premium a second time) was wrong. That means
+the correct value can be RECOMPUTED exactly from other already-correct
+columns sitting right there, with no need to reconstruct historical
+position state at all:
+
+```sql
+UPDATE deployment_snapshots ds
+SET open_positions_value = CASE WHEN d.mode = 'positional' THEN ds.open_positions_value ELSE 0 END,
+    total_value = d.initial_capital + ds.realized_pnl_cumulative +
+        (CASE WHEN d.mode = 'positional' THEN ds.open_positions_value ELSE 0 END)
+FROM deployments d WHERE ds.deployment_id = d.id;
+```
+
+Idempotent by construction — it recomputes both columns from scratch
+off other data rather than adjusting incrementally, so running it
+against an already-correct row (or re-running it a second time) is a
+no-op, verified explicitly. This one migration also transitively fixes
+every downstream reader of `deployment_snapshots.total_value` that
+existed before it: the equity chart itself, the portfolio-wide equity
+curve, Compare's own total-value column/CSV export, AND Step 102's
+positional M2M episode rows (`get_positional_episode_mtm_rows`'s own
+docstring updated — its "no attempt to reconstruct historical data"
+caveat from Step 101 no longer applies, now that the backfill fixes the
+data it reads out from under it).
+
+**"Drawdown" redefined** (`computeMaxDrawdown`, api.js — shared by
+Detail's Stats tab and Compare): now computed off each snapshot's
+`initial_capital + realized_pnl_cumulative` instead of `total_value`,
+per explicit request — "consider drawdown as the amount of capital
+lost forever." For an "intraday" deployment this is a no-op: Step 99
+already made `total_value` equal exactly this same sum there
+(`open_positions_value` is always 0 for intraday), so nothing changes
+for the common case. It only matters for a "positional" deployment,
+where `total_value` legitimately includes a currently-open position's
+real mark-to-market by design (Step 99) — a live paper loss that later
+recovers before the position ever closes no longer counts as a
+"drawdown," since nothing was actually, permanently lost. Both call
+sites updated to pass the relevant `initial_capital` alongside the
+snapshot series.
+
+Verified three ways: (1) the migration through the app's own
+`run_migrations` runner (not raw `psql`) against a fresh database,
+confirming it's picked up and applied as migration 13; (2) hand-seeded
+corrupted rows for both an intraday deployment (understated by a
+bought leg's premium) and a positional one (overstated by a sold leg's
+premium, plus a THIRD row with a genuine non-zero mark-to-market to
+confirm real positional M2M survives the backfill correctly) — all
+three recomputed exactly as hand-derived, and a third re-run of the raw
+SQL changed nothing further; (3) `computeMaxDrawdown`'s new logic,
+standalone under Node, against the exact screenshot's shape (a held-
+open position's ~8% total_value dip with realized_pnl_cumulative never
+actually dropping) — reports 0 drawdown; a genuine realized loss
+followed by a partial recovery still correctly reports its real
+peak-to-trough decline; and an intraday-shaped series produces the
+identical number the old total_value-based version would have. `node
+--check` on api.js/detail.js/compare.js, and a full `app.main` import,
+both clean.
+
 ## Setup
 
 ```bash

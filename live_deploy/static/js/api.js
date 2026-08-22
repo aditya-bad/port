@@ -693,22 +693,45 @@ function _equityChartClear(chartId) {
 }
 
 // ── Max drawdown ─────────────────────────────────────────────────────
-// Largest peak-to-trough decline in an equity-curve snapshot series'
-// own total_value — shared by Detail's Stats tab (originally inline
-// there) and Compare's comparison table, so two views showing the same
+// Largest peak-to-trough decline in a deployment's REALIZED equity
+// (Step 105) — shared by Detail's Stats tab (originally inline there)
+// and Compare's comparison table, so two views showing the same
 // concept can't quietly drift into two different definitions of it.
-// snapshots: [{total_value, ...}] in chronological order (both
-// deployment snapshots and portfolio snapshots share this shape).
-// Returns null if there isn't enough history to compute a real
-// peak-to-trough move (a single point has no "trough" relative to
-// anything).
-function computeMaxDrawdown(snapshots) {
+//
+// Deliberately NOT computed off `total_value` (Step 105 correction, at
+// explicit user request: "consider drawdown as the amount of capital
+// lost forever"). For a "positional" deployment, total_value
+// legitimately includes a currently-open position's live
+// mark-to-market (see SnapshotOut's own docstring) — a big paper loss
+// on an open position that later recovers before it's ever closed
+// would show as a "drawdown" under the old definition even though
+// nothing was actually, permanently lost. "Capital lost forever" can
+// only mean SETTLED history, so this is computed off `initialCapital +
+// s.realized_pnl_cumulative` at each point instead — a number that
+// only ever moves when a position actually closes. For an "intraday"
+// deployment this produces the EXACT same result as before: Step 99
+// already made total_value equal exactly this same sum for intraday
+// (open_positions_value is always 0 there), so nothing changes for the
+// common case, only for a positional deployment carrying a live
+// position through a real intraday price swing.
+//
+// snapshots: [{realized_pnl_cumulative, ...}] in chronological order
+// (both deployment snapshots and portfolio snapshots share this
+// shape). `initialCapital` is the deployment's own initial_capital (or
+// the SUMMED initial_capital across every deployment in view, for a
+// portfolio-wide series — same "peak/trough of one running number"
+// math either way). Returns null if there isn't enough history to
+// compute a real peak-to-trough move (a single point has no "trough"
+// relative to anything).
+function computeMaxDrawdown(snapshots, initialCapital) {
   if (!snapshots || snapshots.length < 2) return null;
-  let peak = snapshots[0].total_value;
+  const equity = s => initialCapital + (s.realized_pnl_cumulative || 0);
+  let peak = equity(snapshots[0]);
   let abs = null, pct = null;
   snapshots.forEach(s => {
-    if (s.total_value > peak) peak = s.total_value;
-    const dd = peak - s.total_value;
+    const v = equity(s);
+    if (v > peak) peak = v;
+    const dd = peak - v;
     if (abs == null || dd > abs) {
       abs = dd;
       pct = peak > 0 ? (dd / peak) * 100 : 0;

@@ -1115,8 +1115,14 @@ async def get_positional_episode_mtm_rows(
     Detail-page load, not a hot path.
 
     None (not 0.0) if no deployment_snapshots exist yet inside an
-    episode's window, and no attempt to reconstruct pre-Step-99
-    double-counted historical snapshots — both same as Step 101.
+    episode's window. Historical pre-Step-99 double-counted
+    `total_value` rows are no longer a special case here at all — Step
+    105's migration 0013 backfills every existing snapshot row with the
+    correct value (exact, not approximate: `open_positions_value` and
+    `realized_pnl_cumulative` were always correct, only what
+    `total_value` summed them with was wrong — see that migration's own
+    comment), so this reads correct numbers unconditionally, old rows
+    included.
 
     `limit` most-recent EPISODES (by their own start), not positions or
     calendar periods — one multi-leg episode can span many `positions`

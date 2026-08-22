@@ -594,11 +594,13 @@ const Detail = {
       (this._statsLotsByPosition[l.position_id] = this._statsLotsByPosition[l.position_id] || []).push(l);
     });
 
-    // Max drawdown -- largest peak-to-trough decline in the equity
-    // curve's own total_value series (the same snapshot data already
-    // fetched for the chart below, no extra request). Shared with
-    // Compare's own drawdown column via computeMaxDrawdown (api.js).
-    const drawdown = computeMaxDrawdown(snapshots);
+    // Max drawdown -- largest peak-to-trough decline in this
+    // deployment's REALIZED equity (Step 105 -- "capital lost forever,"
+    // not a live paper dip on an open position; see computeMaxDrawdown's
+    // own docstring), off the same snapshot data already fetched for
+    // the chart below, no extra request. Shared with Compare's own
+    // drawdown column via computeMaxDrawdown (api.js).
+    const drawdown = computeMaxDrawdown(snapshots, this._dep.initial_capital);
 
     // Deployed-since / last-activity — operational context: is this
     // thing actually doing anything, and how long has it been running.

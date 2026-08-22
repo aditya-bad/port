@@ -142,13 +142,15 @@ const Compare = {
         total_value: s.total_value,
         pct: base ? ((s.total_value - base) / base) * 100 : 0,
       }));
-      // computeMaxDrawdown wants the RAW snaps (rupee total_value), not
-      // the indexed % points -- drawdown as a % is already peak-relative
-      // by definition, so computing it off the already-indexed series
-      // would just double that peak-relativity for no reason. Same
-      // shared helper Detail's own Stats tab uses (api.js), so "max
-      // drawdown" can't mean two different things in two views.
-      return { deployment: d, points, drawdown: computeMaxDrawdown(snaps) };
+      // computeMaxDrawdown wants the RAW snaps (with their own
+      // realized_pnl_cumulative), not the indexed % points -- drawdown
+      // as a % is already peak-relative by definition, so computing it
+      // off the already-indexed series would just double that
+      // peak-relativity for no reason. Same shared helper Detail's own
+      // Stats tab uses (api.js), so "max drawdown" can't mean two
+      // different things in two views -- both mean capital actually,
+      // permanently lost (Step 105), not a live paper dip.
+      return { deployment: d, points, drawdown: computeMaxDrawdown(snaps, d.initial_capital) };
     });
 
     this._lastResult = result;
