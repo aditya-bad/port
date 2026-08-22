@@ -1007,15 +1007,20 @@ function scrollPnlHeatmapToEnd(containerId) {
 // docstring for why a portfolio-wide mark-to-market digest doesn't
 // exist), so the two extra columns only render when at least one row
 // actually has them -- Reports' table renders exactly as before.
-// `row.is_position_row` (Step 101) marks a POSITIONAL deployment's own
-// digest rows -- each one is a single POSITION, not a calendar bucket:
-// `period_start` is that position's own opened_at, `period_end` its
-// closed_at (null if it's still open). Can't tell this from `period_end`
-// alone -- an intraday row's `period_end` is ALSO always null (it's
-// simply unused there), so null means something different in each case;
-// `is_position_row` is what actually distinguishes them. `periodLabel`
-// is only ever asked to format a plain calendar bucket, so a position
-// row is formatted directly here instead, as a date range.
+// `row.is_position_row` (Step 101, redefined in Step 102) marks a
+// POSITIONAL deployment's own digest rows -- each one is a whole
+// EPISODE (every position/leg/adjustment/roll that was ever open at
+// the same time as another, combined -- see
+// queries.get_positional_episode_mtm_rows), not a calendar bucket and
+// not a single `positions` table row either: `period_start` is the
+// episode's earliest constituent leg's opened_at, `period_end` its
+// latest leg's closed_at (null if any leg in the episode is still
+// open). Can't tell this from `period_end` alone -- an intraday row's
+// `period_end` is ALSO always null (it's simply unused there), so null
+// means something different in each case; `is_position_row` is what
+// actually distinguishes them. `periodLabel` is only ever asked to
+// format a plain calendar bucket, so an episode row is formatted
+// directly here instead, as a date range.
 function _pnlRowPeriodLabel(row, periodLabel) {
   if (!row.is_position_row) return periodLabel(row.period_start);
   const opened = fmtDate(row.period_start);
@@ -1030,15 +1035,16 @@ function renderPnlTrendTable(rows, opts = {}) {
   }
   const maxAbs = Math.max(...rows.map(r => Math.abs(r.realized_pnl)), 1);
   const showMtm = rows.some(r => r.max_profit !== undefined && r.max_profit !== null);
-  // Positional mode's rows are one PER POSITION, not a calendar bucket
-  // -- see _pnlRowPeriodLabel's own comment -- so the header says so.
+  // Positional mode's rows are one PER EPISODE (every leg/adjustment/
+  // roll that overlapped in time, combined -- see _pnlRowPeriodLabel's
+  // own comment), not a calendar bucket -- so the header says so.
   const isPositional = rows.some(r => r.is_position_row);
   return `
     <div class="table-wrap">
     <table><thead><tr>
       <th>${isPositional ? 'Position' : 'Period'}</th><th>Realized P&amp;L</th><th>Positions closed</th><th>Win rate</th><th>Fills</th>
-      ${showMtm ? `<th title="${isPositional ? 'This position&#39;s own best mark-to-market standing, from its own open' : 'This period&#39;s own best mark-to-market standing, from its own start'}">M2M Best</th>` +
-                  `<th title="${isPositional ? 'This position&#39;s own worst mark-to-market standing, from its own open' : 'This period&#39;s own worst mark-to-market standing, from its own start'}">M2M Worst</th>` : ''}
+      ${showMtm ? `<th title="${isPositional ? 'This position&#39;s own best combined mark-to-market standing (every leg and adjustment together), from its own open' : 'This period&#39;s own best mark-to-market standing, from its own start'}">M2M Best</th>` +
+                  `<th title="${isPositional ? 'This position&#39;s own worst combined mark-to-market standing (every leg and adjustment together), from its own open' : 'This period&#39;s own worst mark-to-market standing, from its own start'}">M2M Worst</th>` : ''}
     </tr></thead>
     <tbody>${rows.map(row => {
       const pct = (Math.abs(row.realized_pnl) / maxAbs) * 50;   // 50% = half the track, since the bar grows from a CENTER zero-line

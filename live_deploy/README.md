@@ -6653,6 +6653,75 @@ exactly as hand-derived, `is_position_row=True` on both, newest-open-
 position-first ordering. `node --check` and a full `app.main` import
 both clean.
 
+## What's here (Step 102: positional M2M combines every overlapping leg/adjustment/roll into one episode)
+
+Another correction, right on Step 101's heels: "consider all position
+as whole and not individual position... in straddle all atm sell plus
+adjustments plus adjustments roll up all together constitute to max
+loss or gain — like how you give the realized and unrealized pnl, this
+is also same." Right: `positions` is one row per (deployment,
+instrument) open→close lifecycle — a straddle's CE leg and PE leg are
+two separate rows, and every adjustment/roll (see intraday_dtt_adjusted's
+`_adjust`/`_unwind_one`, reused by `strangle_monthly_v2`'s
+active-management mode) closes one leg and opens ANOTHER new row. Step
+101 treated each of those rows as its own M2M window — so a straddle
+with a mid-trade roll would show 3 separate "positions" in the table
+instead of the one strategic bet they actually are. The user's own
+comparison nails the fix: a deployment's `unrealized_pnl` has always
+been computed by summing `_mark_to_market` across EVERY open position
+(routers/deployments.py's `unrealized_map`), never reported per
+instrument — M2M needed the same treatment.
+
+**`get_positional_position_mtm_rows` (Step 101) is renamed
+`get_positional_episode_mtm_rows`** and reworked around an "episode": a
+maximal run of time during which the deployment had at least one open
+position, found by merging every position's own `[opened_at,
+closed_at]` interval (open positions treated as unbounded/"now") with
+any other interval it overlaps — standard sweep-line interval merging,
+sorted by `opened_at`. A straddle's CE and PE legs opened together
+already overlap and merge with zero special-casing; so does any
+adjustment/roll that opens a new leg while another leg is still
+open — which covers every real adjustment/roll pattern in this codebase
+(the side being rolled has other legs, or the OTHER side's legs, still
+open throughout). A `_EPISODE_GAP_TOLERANCE` of 5 minutes (matching the
+smallest candle interval used by every strategy here) also bridges the
+one pattern that wouldn't otherwise overlap at all: a genuinely
+single-leg roll with no other leg open anywhere, where "close the old
+leg" and "open the new leg" are two sequential awaits a fraction of a
+second apart — long enough to leave a real, if tiny, gap between
+`closed_at` and the next `opened_at`, but nowhere near a real "flat,
+waiting for the next signal" gap on a positional deployment (minutes to
+days). A deployment that never fully flattens legitimately collapses to
+ONE episode covering its whole history — not a bug, the same "combine
+everything" principle taken to its natural end.
+
+Per episode: `realized_pnl` sums every constituent position's own
+realized_pnl; `positions_closed`/`wins`/`losses` count them by outcome;
+`fills` counts every `position_lots` row across every constituent
+position (`position_id = ANY($ids)`, one query for the whole episode,
+not one per leg); `max_profit`/`max_loss` come from
+`deployment_snapshots` across the episode's full span (earliest leg's
+`opened_at` to latest leg's `closed_at`, or now) — unchanged from Step
+101's approach, since `DeploymentManager._snapshot_one` already sums
+`open_positions_value` across every open position per snapshot (Step
+99), so the underlying numbers were already deployment-wide; only the
+ROW GROUPING needed fixing, not the M2M arithmetic itself.
+
+Verified against a real local Postgres instance with two scenarios: (1)
+a straddle — CE opened with PE at the same instant, CE rolled 3 seconds
+after closing into a new leg (PE still open throughout, bridging the
+gap via real overlap, not the tolerance), everything closing 5 hours
+later — correctly merged into ONE episode with realized_pnl=600 (500 −
+200 + 300 across the 3 legs), 3 positions_closed, 6 fills, and
+max_profit/max_loss (3000/−1500) spanning the full 5-hour window, not
+any one leg's own slice of it; a separate position 2 days later
+correctly stayed its own episode. (2) The tolerance boundary itself,
+isolated: leg A closes, leg B opens 3 minutes later with nothing else
+open — merges into one episode (within the 5-minute tolerance); leg C
+opens 10 minutes after leg B closes — stays a separate episode (outside
+it). Both scenarios matched hand-derived expectations exactly. `node
+--check` and a full `app.main` import both clean.
+
 ## Setup
 
 ```bash

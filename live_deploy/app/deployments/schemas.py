@@ -316,29 +316,33 @@ class PnlDigestRowWithRange(PnlDigestRow):
     history — a rule that's still correct for a live, right-now
     unrealized number, but doesn't actually apply to what's computed
     here (see queries.get_intraday_mtm_range/
-    get_positional_position_mtm_rows' own docstrings): once a period is
+    get_positional_episode_mtm_rows' own docstrings): once a period is
     over, ITS OWN best/worst point during that period is a fixed
     historical fact, not something that keeps changing the way "today's
     live unrealized P&L" does. Scoped to this subclass, used ONLY by
     GET /deployments/{id}/pnl-digest (a single deployment's own trend
     table), never by the portfolio-wide one.
 
-    `is_position_row`/`period_start`/`period_end` (Step 101) mean
-    different things depending on the deployment's `mode` — see
-    queries.list_pnl_digest_for_deployment's own docstring: for
-    "intraday" mode (`is_position_row=False`) `period_start` is a
+    `is_position_row`/`period_start`/`period_end` (Step 101, redefined
+    in Step 102) mean different things depending on the deployment's
+    `mode` — see queries.list_pnl_digest_for_deployment's own docstring:
+    for "intraday" mode (`is_position_row=False`) `period_start` is a
     calendar bucket boundary (day/week/month) and `period_end` is
     always None (unused); for "positional" mode (`is_position_row=True`)
-    each row is ONE POSITION instead of a calendar bucket,
-    `period_start` is that position's own `opened_at`, and `period_end`
-    is its `closed_at` (None if it's still open — which is ALSO what an
-    intraday row's `period_end` looks like, hence `is_position_row`
-    existing at all: `period_end` alone can't tell the two apart, since
-    None means something different in each — always ignored/unused vs.
-    genuinely still open).
+    each row is one EPISODE — every position/leg/adjustment/roll that
+    was ever open at the same time as another, combined into one — not
+    a calendar bucket and not a single `positions` table row either
+    (Step 101's first, since-corrected attempt). `period_start` is the
+    episode's earliest constituent leg's `opened_at`, and `period_end`
+    is its latest leg's `closed_at` (None if any leg in the episode is
+    still open — which is ALSO what an intraday row's `period_end`
+    looks like, hence `is_position_row` existing at all: `period_end`
+    alone can't tell the two apart, since None means something
+    different in each — always ignored/unused vs. genuinely still
+    open).
 
     max_profit/max_loss optional, defaulting to None (not 0.0) — None
-    means "not computed for this row" (e.g. a position that opened
+    means "not computed for this row" (e.g. an episode that opened
     moments ago, before the next snapshot_loop tick), rendered as "—"
     rather than a misleading zero.
     """

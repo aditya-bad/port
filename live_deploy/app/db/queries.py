@@ -19,7 +19,7 @@ one qty-equality check in record_fill — the schema already supports it.
 """
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
@@ -958,68 +958,118 @@ async def get_intraday_mtm_range(
     return {r["period_start"]: {"max_profit": r["max_profit"], "max_loss": r["max_loss"]} for r in rows}
 
 
-async def get_positional_position_mtm_rows(
+# Step 102 — how close two positions' opened_at/closed_at have to be to
+# count as the SAME strategy episode rather than two separate ones (see
+# get_positional_episode_mtm_rows). A straddle's own legs, plus any
+# adjustment/roll that opens a new leg while another leg is still open,
+# already OVERLAP in time and merge with no tolerance needed at all —
+# this constant only matters for the one pattern that wouldn't
+# otherwise overlap: a single-leg roll with no other leg bridging the
+# gap, where "close the old leg" and "open the new leg" are two
+# sequential awaits a fraction of a second apart. 5 minutes matches the
+# smallest candle interval used across every strategy in this codebase
+# (a natural "still the same decision" bound) — comfortably longer than
+# any real roll's execution latency, comfortably shorter than any
+# genuine "flat, waiting for the next signal" gap on a positional
+# deployment (realistically minutes to days).
+_EPISODE_GAP_TOLERANCE = timedelta(minutes=5)
+
+
+async def get_positional_episode_mtm_rows(
     pool: asyncpg.Pool, deployment_id: UUID, limit: int = 400,
 ) -> list[dict]:
-    """Step 101 — ONE ROW PER POSITION for a "positional" deployment,
-    not per calendar day/week/month the way get_intraday_mtm_range is:
-    a positional deployment can hold the SAME position across many
-    days, so "today's own M2M swing" is close to meaningless on its
-    own — what actually matters is the WHOLE position's own best/worst
-    mark-to-market standing across its ENTIRE holding period, from when
-    it was actually opened to when it closed (or now, if it's still
-    open). Explicit correction from Step 100's first attempt, which
-    still bucketed positional mode by calendar day — wrong: a
-    positional deployment's own "M2M" is the whole position combined,
-    not a fresh number reset every midnight.
+    """Step 102 — ONE ROW PER EPISODE for a "positional" deployment, not
+    per individual `positions` table row the way Step 101 first did it.
 
-    For each position, max_profit/max_loss come from every
-    deployment_snapshot recorded between that position's own opened_at
-    and closed_at (or NOW if still open) — MAX/MIN of total_value
-    across that WHOLE window, relative to the value at the position's
-    own first snapshot in that window (its own "opening" mark, same
-    "delta from where THIS thing started" principle the intraday
-    version applies per-day). One extra query per position (not a
-    single joined query) — deliberately: a positional deployment
-    doesn't churn positions the way an intraday one churns trades, so
-    `limit` recent positions is a small, cheap number of extra round
-    trips, not a hot path (Detail page load only).
+    Explicit correction from the user: a straddle's ATM sell PLUS every
+    adjustment PLUS every roll are all still ONE strategic position, and
+    should combine into ONE max-profit/max-loss number — exactly the
+    same "combine everything currently open" principle already used for
+    a deployment's own realized_pnl/unrealized_pnl totals (see
+    routers/deployments.py's `unrealized_map` summing `_mark_to_market`
+    across every open position for a deployment, not reporting one
+    number per instrument). Step 101 treated each `positions` row (one
+    per instrument_token's own open->close lifecycle) as its own M2M
+    row — wrong for any multi-leg strategy: a CE leg and a PE leg of the
+    same straddle, or the old and new leg of a roll, are separate
+    `positions` rows but the SAME strategic bet.
 
-    None (not 0.0) if no deployment_snapshots exist yet inside a
-    position's window — e.g. a position that opened moments ago,
-    before the next snapshot_loop tick — same "not computed" signal
-    every other max_profit/max_loss field in this feature uses.
+    An "episode" is a maximal run of time during which this deployment
+    had AT LEAST ONE open position, found by merging every position's
+    own [opened_at, closed_at] interval (closed_at treated as
+    unbounded/"now" while still open) with any other interval it
+    overlaps or is within `_EPISODE_GAP_TOLERANCE` of — standard
+    sweep-line interval merging, sorted by opened_at ascending. Once an
+    episode contains a still-open position, it has no end (stays
+    "ongoing") until queried again later, since the deployment hasn't
+    gone flat yet. A deployment that never fully flattens (always
+    something open, forever rolling) legitimately collapses to ONE
+    episode covering its entire history — that's not a bug, it's the
+    same "whole position combined" principle taken to its natural
+    conclusion.
 
-    Deliberately does NOT try to reconstruct correct numbers for
-    positions that closed before Step 99's double-counting fix — their
-    OWN historical deployment_snapshots rows may still carry the old,
-    inflated total_value, and there's no reliable way to tell a
-    pre-fix row from a post-fix one after the fact. Rather than risk
-    quietly re-surfacing wrong numbers dressed up as fixed, this makes
-    no attempt to distinguish old from new: a position whose window
-    only has pre-fix snapshots just reports whatever those (possibly
-    wrong) numbers say — no different from how every other historical
-    total_value in this app was already left as-is after Step 99,
-    rather than retroactively rewritten.
+    For each episode: `realized_pnl` sums every constituent position's
+    own realized_pnl (0 for the ones still open); `positions_closed`/
+    `wins`/`losses` count constituent positions by their own outcome;
+    `fills` counts every position_lot across every constituent position.
+    `max_profit`/`max_loss` come from every deployment_snapshot recorded
+    across the WHOLE episode's span (start of its earliest leg to the
+    end of its latest, or now) — MAX/MIN of total_value relative to the
+    value at the episode's own first snapshot, same "delta from where
+    THIS thing started" principle the intraday version applies per-day.
+    This is already deployment-wide per snapshot (DeploymentManager.
+    _snapshot_one sums open_positions_value across every open position),
+    so merging positions into episodes for the ROW STRUCTURE is the only
+    change needed here — the underlying snapshot numbers were already
+    correct for a multi-leg position.
 
-    `limit` most-recent positions (by opened_at), not calendar periods.
+    One extra snapshot-range query per episode (not a single joined
+    query) — same reasoning as Step 101: a positional deployment doesn't
+    churn positions (or episodes) the way an intraday one churns trades,
+    so this is a small, cheap number of extra round trips on a
+    Detail-page load, not a hot path.
+
+    None (not 0.0) if no deployment_snapshots exist yet inside an
+    episode's window, and no attempt to reconstruct pre-Step-99
+    double-counted historical snapshots — both same as Step 101.
+
+    `limit` most-recent EPISODES (by their own start), not positions or
+    calendar periods — one multi-leg episode can span many `positions`
+    rows, so this is not simply "the most recent `limit` positions."
     """
     async with pool.acquire() as conn:
         positions = await conn.fetch(
             """
-            SELECT
-                p.id, p.opened_at, p.closed_at, p.status, p.realized_pnl::float8 AS realized_pnl,
-                (SELECT COUNT(*) FROM position_lots pl WHERE pl.position_id = p.id) AS fills
-            FROM positions p
-            WHERE p.deployment_id = $1
-            ORDER BY p.opened_at DESC
-            LIMIT $2
+            SELECT id, opened_at, closed_at, status, realized_pnl::float8 AS realized_pnl
+            FROM positions
+            WHERE deployment_id = $1
+            ORDER BY opened_at ASC
             """,
-            deployment_id, limit,
+            deployment_id,
         )
-        out = []
+        if not positions:
+            return []
+
+        episodes: list[dict] = []
         for p in positions:
-            window_end = p["closed_at"] or datetime.now(timezone.utc)
+            if episodes and (
+                episodes[-1]["end"] is None
+                or p["opened_at"] <= episodes[-1]["end"] + _EPISODE_GAP_TOLERANCE
+            ):
+                ep = episodes[-1]
+                ep["rows"].append(p)
+                if ep["end"] is not None:
+                    ep["end"] = None if p["closed_at"] is None else max(ep["end"], p["closed_at"])
+            else:
+                episodes.append({"start": p["opened_at"], "end": p["closed_at"], "rows": [p]})
+
+        episodes.sort(key=lambda e: e["start"], reverse=True)
+        episodes = episodes[:limit]
+
+        now = datetime.now(timezone.utc)
+        out = []
+        for ep in episodes:
+            window_end = ep["end"] or now
             snap = await conn.fetchrow(
                 """
                 SELECT MAX(total_value) AS high, MIN(total_value) AS low,
@@ -1027,22 +1077,29 @@ async def get_positional_position_mtm_rows(
                 FROM deployment_snapshots
                 WHERE deployment_id = $1 AND snapshot_at >= $2 AND snapshot_at <= $3
                 """,
-                deployment_id, p["opened_at"], window_end,
+                deployment_id, ep["start"], window_end,
             )
             if snap and snap["open_value"] is not None:
                 max_profit = float(snap["high"]) - float(snap["open_value"])
                 max_loss = float(snap["low"]) - float(snap["open_value"])
             else:
                 max_profit = max_loss = None
+
+            position_ids = [r["id"] for r in ep["rows"]]
+            fills = await conn.fetchval(
+                "SELECT COUNT(*) FROM position_lots WHERE position_id = ANY($1::uuid[])",
+                position_ids,
+            )
+            closed_rows = [r for r in ep["rows"] if r["status"] == "closed"]
             out.append({
                 "is_position_row": True,
-                "period_start": p["opened_at"],
-                "period_end": p["closed_at"],
-                "realized_pnl": p["realized_pnl"],
-                "positions_closed": 1 if p["status"] == "closed" else 0,
-                "wins": 1 if p["status"] == "closed" and p["realized_pnl"] > 0 else 0,
-                "losses": 1 if p["status"] == "closed" and p["realized_pnl"] < 0 else 0,
-                "fills": p["fills"],
+                "period_start": ep["start"],
+                "period_end": ep["end"],
+                "realized_pnl": sum(r["realized_pnl"] for r in ep["rows"]),
+                "positions_closed": len(closed_rows),
+                "wins": sum(1 for r in closed_rows if r["realized_pnl"] > 0),
+                "losses": sum(1 for r in closed_rows if r["realized_pnl"] < 0),
+                "fills": fills,
                 "max_profit": max_profit,
                 "max_loss": max_loss,
             })
@@ -1066,12 +1123,16 @@ async def list_pnl_digest_for_deployment(
       'Asia/Kolkata'` round-trip, so the values compare equal as the
       same real timestamptz instant).
     - "positional": `period` is IGNORED entirely — see
-      get_positional_position_mtm_rows' own docstring for why a
-      positional deployment's own M2M is "the whole position combined,"
-      one row per POSITION (not a calendar bucket) with that position's
-      own opened_at as `period_start` and closed_at (or None, still
-      open) as `period_end`. Step 100's first attempt still bucketed
-      this mode by calendar day, which was wrong — corrected here.
+      get_positional_episode_mtm_rows' own docstring (Step 102) for why
+      a positional deployment's own M2M is "every currently-open
+      position combined into one episode," not one row per individual
+      `positions` table row (Step 101's first correction) and not a
+      calendar bucket (Step 100's original attempt, wrong on both
+      counts) — a straddle's legs plus every adjustment/roll on top of
+      them are one strategic bet, and get one combined max-profit/
+      max-loss number covering that whole episode's own opened_at
+      (earliest constituent leg) through closed_at (latest, or None if
+      still open).
 
     Both `positions` and `position_lots` carry `deployment_id` directly
     (not just via position_id -> positions), so the intraday digest is
@@ -1093,7 +1154,7 @@ async def list_pnl_digest_for_deployment(
     mutable structure.
     """
     if mode == "positional":
-        return await get_positional_position_mtm_rows(pool, deployment_id, limit=limit)
+        return await get_positional_episode_mtm_rows(pool, deployment_id, limit=limit)
 
     if period not in _DIGEST_PERIODS:
         raise ValueError(f"period must be one of {_DIGEST_PERIODS}, got {period!r}")
