@@ -354,10 +354,14 @@ async def get_pnl_digest(
     smaller-limit query needed this) -- those two fields just come back
     None for every row here, which the heatmap never reads anyway.
 
-    max_profit/max_loss (Step 100): only list_pnl_digest_for_deployment
-    (the non-year-scoped path, i.e. the Stats "Recent Periods" trend
-    table) computes these -- see that function's own docstring for the
-    mode-dependent (intraday vs positional) mechanism.
+    max_profit/max_loss (Step 100, corrected in Step 101): only
+    list_pnl_digest_for_deployment (the non-year-scoped path, i.e. the
+    Stats "Recent Periods" trend table) computes these -- see that
+    function's own docstring for the mode-dependent mechanism. For a
+    "positional" deployment specifically, `period` is silently ignored
+    and each row is one POSITION (not a calendar bucket) -- the
+    Calendar heatmap never hits that branch (it always passes `year`),
+    so this doesn't affect it either way.
     """
     pool = request.app.state.db_pool
     dep = await queries.get_deployment(pool, deployment_id)

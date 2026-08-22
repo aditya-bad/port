@@ -6584,6 +6584,75 @@ holding day" scenario above, re-tested after the fix, correctly
 produces a synthesized row instead of silently vanishing. `node
 --check` and a full `app.main` import both clean.
 
+## What's here (Step 101: positional M2M is one row per position, not one row per day)
+
+Two corrections to Step 100, from the user in the same breath:
+
+1. **"no need to handle backward things just show — for old trades"** —
+   don't try to retroactively reconstruct or approximate pre-Step-99
+   historical data for the new M2M columns. Nothing special was needed
+   for this: every M2M query here only ever ran against
+   `deployment_snapshots`/`positions` rows that exist, and simply
+   returns `None` (rendered as `—` by `renderPnlTrendTable`, already
+   its behavior for a missing value) for any period it has no snapshot
+   data to compute from. No synthetic backfill, no "best guess" — old
+   periods this can't compute cleanly for just show a dash.
+2. **"also for positinal intraday m2m is not max profit or less it is
+   whole days combined one"** — genuinely ambiguous between "one row per
+   calendar day, correctly computed this time" and "one row for the
+   ENTIRE position, not bucketed by day at all." Asked the user directly
+   via AskUserQuestion; answer was explicit: **whole position, one row**.
+
+**`queries.get_positional_mtm_range` (Step 100, day-bucketed) is
+deleted**, replaced with `queries.get_positional_position_mtm_rows`:
+one row per `positions` table row (open or closed), each with
+`max_profit`/`max_loss` computed from that position's OWN
+`opened_at` → `closed_at` (or NOW, if still open) window of
+`deployment_snapshots`, relative to that window's own first snapshot's
+`total_value`. No day bucketing, no week/month distinction (moot now —
+a position's holding period is whatever it actually is), no "quiet
+holding day" synthesis (Step 100's gap-filling logic for that no longer
+applies — there's no calendar grid to have gaps in). One extra
+snapshot-range query per position rather than a single joined query —
+deliberately accepted: positional deployments hold far fewer,
+longer-lived positions than intraday ones churn trades, and this only
+runs on a Detail-page load, not a hot path.
+
+`list_pnl_digest_for_deployment` now branches at the top on `mode`:
+`"positional"` returns `get_positional_position_mtm_rows` directly, in
+place of the day/week/month digest entirely; `"intraday"` keeps Step
+100's exact digest+M2M merge, unchanged.
+
+**Distinguishing a "whole position" row from a day/week/month row on
+the frontend needed a real field, not an inference.** `period_end`
+alone can't do it: Pydantic's `Optional[float] = None` (or here,
+`Optional[datetime] = None`) is serialized as an explicit JSON `null`,
+never omitted — so a still-open position's row (`closed_at` is
+genuinely `None`) and every ordinary intraday day-row (which never used
+`period_end` at all) both arrive as `null`, indistinguishable by that
+field alone. Added an explicit `is_position_row: bool` to
+`PnlDigestRowWithRange`, set `True`/`False` by the two respective code
+paths, and switched the frontend's row-rendering logic
+(`_pnlRowPeriodLabel` in api.js) to key off that flag: a position row
+renders as `"<opened date> → <closed date or 'now'>"` in the Period
+column instead of the usual day/week/month label, and `isPositional`
+(true when any row in the table is a position row) swaps the column
+header from "Period" to "Position" and adjusts the M2M tooltip wording.
+
+Also fixed a `NameError: name 'timezone' is not defined` caught the
+first time `get_positional_position_mtm_rows` ran against real
+Postgres (`datetime.now(timezone.utc)` — the module only imported
+`datetime`, not `timezone`, from the `datetime` module).
+
+Verified against a real local Postgres instance with two hand-seeded
+positions on the same deployment: one CLOSED position with a known
+snapshot range (max_profit=4000, max_loss=-1000, realized_pnl=2500,
+2 fills) and one still-OPEN position with a known range (max_profit=700,
+max_loss=0, no fills yet, `period_end` genuinely `None`). Both came back
+exactly as hand-derived, `is_position_row=True` on both, newest-open-
+position-first ordering. `node --check` and a full `app.main` import
+both clean.
+
 ## Setup
 
 ```bash

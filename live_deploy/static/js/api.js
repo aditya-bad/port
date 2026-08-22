@@ -1007,6 +1007,22 @@ function scrollPnlHeatmapToEnd(containerId) {
 // docstring for why a portfolio-wide mark-to-market digest doesn't
 // exist), so the two extra columns only render when at least one row
 // actually has them -- Reports' table renders exactly as before.
+// `row.is_position_row` (Step 101) marks a POSITIONAL deployment's own
+// digest rows -- each one is a single POSITION, not a calendar bucket:
+// `period_start` is that position's own opened_at, `period_end` its
+// closed_at (null if it's still open). Can't tell this from `period_end`
+// alone -- an intraday row's `period_end` is ALSO always null (it's
+// simply unused there), so null means something different in each case;
+// `is_position_row` is what actually distinguishes them. `periodLabel`
+// is only ever asked to format a plain calendar bucket, so a position
+// row is formatted directly here instead, as a date range.
+function _pnlRowPeriodLabel(row, periodLabel) {
+  if (!row.is_position_row) return periodLabel(row.period_start);
+  const opened = fmtDate(row.period_start);
+  const closed = row.period_end ? fmtDate(row.period_end) : 'now';
+  return `${opened} → ${closed}`;
+}
+
 function renderPnlTrendTable(rows, opts = {}) {
   const periodLabel = opts.periodLabel || (iso => fmtDate(iso));
   if (!rows.length) {
@@ -1014,19 +1030,22 @@ function renderPnlTrendTable(rows, opts = {}) {
   }
   const maxAbs = Math.max(...rows.map(r => Math.abs(r.realized_pnl)), 1);
   const showMtm = rows.some(r => r.max_profit !== undefined && r.max_profit !== null);
+  // Positional mode's rows are one PER POSITION, not a calendar bucket
+  // -- see _pnlRowPeriodLabel's own comment -- so the header says so.
+  const isPositional = rows.some(r => r.is_position_row);
   return `
     <div class="table-wrap">
     <table><thead><tr>
-      <th>Period</th><th>Realized P&amp;L</th><th>Positions closed</th><th>Win rate</th><th>Fills</th>
-      ${showMtm ? '<th title="This period&#39;s own best mark-to-market standing, from its own start">M2M Best</th>' +
-                  '<th title="This period&#39;s own worst mark-to-market standing, from its own start">M2M Worst</th>' : ''}
+      <th>${isPositional ? 'Position' : 'Period'}</th><th>Realized P&amp;L</th><th>Positions closed</th><th>Win rate</th><th>Fills</th>
+      ${showMtm ? `<th title="${isPositional ? 'This position&#39;s own best mark-to-market standing, from its own open' : 'This period&#39;s own best mark-to-market standing, from its own start'}">M2M Best</th>` +
+                  `<th title="${isPositional ? 'This position&#39;s own worst mark-to-market standing, from its own open' : 'This period&#39;s own worst mark-to-market standing, from its own start'}">M2M Worst</th>` : ''}
     </tr></thead>
     <tbody>${rows.map(row => {
       const pct = (Math.abs(row.realized_pnl) / maxAbs) * 50;   // 50% = half the track, since the bar grows from a CENTER zero-line
       const decided = row.wins + row.losses;
       const winRate = decided > 0 ? ((row.wins / decided) * 100).toFixed(0) + '%' : '—';
       return `<tr>
-        <td>${periodLabel(row.period_start)}</td>
+        <td>${_pnlRowPeriodLabel(row, periodLabel)}</td>
         <td>
           <div class="report-row-value">
             <div class="report-bar-track">
