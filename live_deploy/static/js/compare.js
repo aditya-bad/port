@@ -8,6 +8,16 @@
 // picked and validated (CVD-safe, both themes) via the dataviz skill,
 // deliberately NOT the app's own semantic gain/loss/brass/info tokens,
 // which carry fixed meaning everywhere else in the app.
+//
+// Step 106 — the table below the chart went from "return % and a
+// snapshot count" to an actual decision-support scorecard, per
+// explicit feedback that the page wasn't giving "meaningful insights
+// to compare and take decisions": risk-adjusted return (Return /
+// Drawdown), win rate and profit factor (per POSITION — every leg/
+// adjustment/roll of one strategic bet combined, same default Detail's
+// own Stats tab uses, Step 103), and a sortable header on every column
+// so whichever dimension matters right now can drive the ranking. See
+// COMPARE_COLUMNS' own comment below for why each column is there.
 
 const COMPARE_MAX = 6;   // matches the validated --chart-1..6 palette -- see index.html's :root comment
 const COMPARE_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)'];
@@ -60,16 +70,77 @@ function _compareChartClear() {
   ChartTooltip.hide();
 }
 
+// null -> "—" (nothing to show), Infinity -> "∞" (real gain, zero
+// drawdown/loss yet to divide by), otherwise 2 decimal places -- same
+// display convention Detail's Stats tab already uses for profit factor.
+function _fmtRatio(v) {
+  if (v == null) return '—';
+  if (v === Infinity) return '∞';
+  return v.toFixed(2);
+}
+
+function _lastPoint(r) {
+  return r.points.length ? r.points[r.points.length - 1] : null;
+}
+
+// One row per column: `sortValue` always returns a real, comparable
+// number/string (never null/undefined) so sorting never has to special-
+// case "no data yet" -- a deployment with nothing to show for a metric
+// just sorts to one end, exactly like Deployments' own DEPLOY_COLUMNS
+// (Step 93) does it. `headerTitle` carries the one-line explanation for
+// anything whose meaning isn't obvious from the label alone.
+const COMPARE_COLUMNS = [
+  { key: 'name', label: 'Deployment', sortValue: r => r.deployment.deployment_name.toLowerCase() },
+  { key: 'strategy', label: 'Strategy', sortValue: r => r.deployment.strategy_name.toLowerCase() },
+  { key: 'status', label: 'Status', sortValue: r => r.deployment.status },
+  {
+    key: 'days', label: 'Days', numeric: true,
+    headerTitle: 'One snapshot per trading day -- how much real history this comparison is actually based on.',
+    sortValue: r => r.points.length,
+  },
+  {
+    key: 'return', label: 'Return', numeric: true,
+    headerTitle: 'Percent return indexed to each deployment’s own first snapshot, not annualized -- weigh this against Days: a big return over 2 days proves far less than the same return over 2 months.',
+    sortValue: r => { const p = _lastPoint(r); return p ? p.pct : -Infinity; },
+  },
+  {
+    key: 'drawdown', label: 'Max drawdown', numeric: true,
+    headerTitle: 'Largest peak-to-trough decline in REALIZED equity -- capital actually, permanently lost, not a live paper dip on anything still open (Step 105).',
+    sortValue: r => r.drawdown ? -r.drawdown.pct : Infinity,   // smaller drawdown ranks better -- negate so ascending sort still means "best first"
+  },
+  {
+    key: 'ratio', label: 'Return / Drawdown', numeric: true,
+    headerTitle: 'Return earned per unit of capital actually lost along the way -- the single best "which of these is working" number here. A big return built on an even bigger drawdown ranks BELOW a steadier one.',
+    sortValue: r => r.returnToDrawdown == null ? -Infinity : (r.returnToDrawdown === Infinity ? Number.MAX_VALUE : r.returnToDrawdown),
+  },
+  {
+    key: 'winrate', label: 'Win rate', numeric: true,
+    headerTitle: 'Per POSITION -- every leg, adjustment, and roll of one strategic bet combined into a single win or loss, same default as each deployment’s own Stats tab (Step 103).',
+    sortValue: r => r.stats.winRatePct == null ? -1 : r.stats.winRatePct,
+  },
+  {
+    key: 'profitfactor', label: 'Profit factor', numeric: true,
+    headerTitle: 'Gross wins ÷ gross losses, per position. Above 1 means winners outweigh losers in rupee terms, not just in count.',
+    sortValue: r => r.stats.profitFactor == null ? -1 : (r.stats.profitFactor === Infinity ? Number.MAX_VALUE : r.stats.profitFactor),
+  },
+  { key: 'trades', label: 'Positions closed', numeric: true, sortValue: r => r.stats.closedCount },
+  { key: 'equity', label: 'Current equity', numeric: true, sortValue: r => { const p = _lastPoint(r); return p ? p.total_value : -Infinity; } },
+];
+
 const Compare = {
   _deployments: [],
   _selected: new Set(),
-  _lastResult: null,   // [{deployment, points: [{snapshot_at, total_value, pct}]}] -- kept around for exportCsv()
+  _lastResult: null,   // [{deployment, points, drawdown, stats, returnToDrawdown}] -- kept around for exportCsv()/re-sorting
+  _sortKey: 'ratio',    // Return/Drawdown first -- the one column most directly answers "which is actually working"
+  _sortDir: 'desc',
 
   async load() {
     document.getElementById('comparePicker').innerHTML = spinnerHtml();
     document.getElementById('compareResult').innerHTML = '';
     document.getElementById('compareExportBtn').style.display = 'none';
     this._lastResult = null;
+    this._sortKey = 'ratio';
+    this._sortDir = 'desc';
 
     // Every deployment, not just active/paused (unlike Portfolio's
     // combined equity curve) -- "how did my old stopped strategy do
@@ -125,7 +196,15 @@ const Compare = {
     document.getElementById('compareResult').innerHTML = spinnerHtml();
 
     const selectedDeployments = this._deployments.filter(d => this._selected.has(d.id));
-    const snapshotLists = await Promise.all(selectedDeployments.map(d => Api.getSnapshots(d.id)));
+    // Positions fetched alongside snapshots (status=all, so a still-
+    // open position's own episode is tagged correctly -- see
+    // queries.list_positions_with_episode's own reasoning) purely for
+    // the win rate/profit factor/trades-closed columns; nothing else
+    // here needs the individual lots.
+    const [snapshotLists, positionLists] = await Promise.all([
+      Promise.all(selectedDeployments.map(d => Api.getSnapshots(d.id))),
+      Promise.all(selectedDeployments.map(d => Api.getPositions(d.id, 'all'))),
+    ]);
 
     // % return, indexed to each deployment's OWN first snapshot -- not
     // its initial_capital, since the first snapshot already reflects
@@ -150,10 +229,38 @@ const Compare = {
       // Stats tab uses (api.js), so "max drawdown" can't mean two
       // different things in two views -- both mean capital actually,
       // permanently lost (Step 105), not a live paper dip.
-      return { deployment: d, points, drawdown: computeMaxDrawdown(snaps, d.initial_capital) };
+      const drawdown = computeMaxDrawdown(snaps, d.initial_capital);
+
+      // Step 106 -- per-position trade stats (win rate/profit factor/
+      // trades closed), same episode grouping and default granularity
+      // Detail's Stats tab uses. No per-trade toggle here on purpose:
+      // Compare's whole point is ranking several deployments against
+      // each other, and that only means something if every row is
+      // measured the same way.
+      const stats = computeUnitStats(groupPositionsIntoUnits(positionLists[i], 'position'));
+
+      // Return/drawdown -- a simple, standard risk-adjusted read: how
+      // much return this deployment is generating for the (permanent)
+      // capital loss it's actually taken on along the way. Infinity
+      // when there's real return and literally zero realized drawdown
+      // yet; null when there's nothing meaningful to divide (no return
+      // data at all, or flat/negative return with no drawdown either).
+      const last = _lastPoint({ points });
+      let returnToDrawdown = null;
+      if (last && drawdown && drawdown.pct > 0) {
+        returnToDrawdown = last.pct / drawdown.pct;
+      } else if (last && last.pct > 0 && drawdown && drawdown.pct === 0) {
+        returnToDrawdown = Infinity;
+      }
+
+      return { deployment: d, points, drawdown, stats, returnToDrawdown };
     });
 
     this._lastResult = result;
+    document.getElementById('compareResult').innerHTML = `
+      <div id="compareChartWrap"></div>
+      <div id="compareTableWrap"></div>
+    `;
     this.renderChart(result);
     this.renderTable(result);
     document.getElementById('compareExportBtn').style.display = result.some(r => r.points.length) ? '' : 'none';
@@ -161,7 +268,7 @@ const Compare = {
   },
 
   renderChart(result) {
-    const el = document.getElementById('compareResult');
+    const el = document.getElementById('compareChartWrap');
     const withData = result.filter(r => r.points.length >= 2);
     if (!withData.length) {
       el.innerHTML = emptyHtml(
@@ -239,30 +346,87 @@ const Compare = {
     `;
   },
 
+  // Step 106 -- click a column header to sort by it, click again to
+  // reverse; only re-renders the table (renderChart untouched), same
+  // "no server round-trip, everything's already loaded" pattern
+  // Deployments' own setSort (Step 93) uses. Metric columns default to
+  // DESC on first click (biggest/best at the top -- that's what
+  // "ranking by this" means); name/strategy/status default to ASC
+  // (alphabetical is the natural reading order for a text column).
+  setSort(key) {
+    if (this._sortKey === key) {
+      this._sortDir = this._sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      this._sortKey = key;
+      this._sortDir = ['name', 'strategy', 'status'].includes(key) ? 'asc' : 'desc';
+    }
+    this.renderTable(this._lastResult);
+  },
+
+  _sortRows(result) {
+    const col = COMPARE_COLUMNS.find(c => c.key === this._sortKey);
+    if (!col) return result;
+    const dir = this._sortDir === 'desc' ? -1 : 1;
+    return result.slice().sort((a, b) => {
+      const av = col.sortValue(a), bv = col.sortValue(b);
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  },
+
   renderTable(result) {
-    const wrap = document.getElementById('compareResult');
-    const rows = result.map((r, i) => {
-      const n = r.points.length;
-      const last = n ? r.points[n - 1] : null;
-      const swatch = `<span class="legend-swatch" style="background:${COMPARE_COLORS[i % COMPARE_COLORS.length]}"></span>`;
+    const wrap = document.getElementById('compareTableWrap');
+    const sorted = this._sortRows(result);
+    const rows = sorted.map(r => {
+      // Color swatch tracks the deployment's position in the ORIGINAL
+      // (unsorted) result/legend, not its row position after sorting --
+      // otherwise the same deployment's color would shift every time
+      // the table gets re-sorted, breaking the link to the chart legend.
+      const colorIdx = result.indexOf(r);
+      const swatch = `<span class="legend-swatch" style="background:${COMPARE_COLORS[colorIdx % COMPARE_COLORS.length]}"></span>`;
+      const last = _lastPoint(r);
       return `<tr>
         <td>${swatch} ${escapeHtml(r.deployment.deployment_name)}</td>
         <td>${escapeHtml(r.deployment.strategy_name)}</td>
         <td><span class="tag tag-${r.deployment.status}">${r.deployment.status}</span></td>
-        <td>${n}</td>
-        <td class="${last ? pnlClass(last.pct) : ''}">${last ? `${last.pct >= 0 ? '+' : ''}${last.pct.toFixed(2)}%` : '—'}</td>
-        <td>${last ? fmtMoney(last.total_value) : '—'}</td>
-        <td class="${r.drawdown ? 'neg' : ''}">${r.drawdown ? `${fmtMoney(r.drawdown.abs)} (${r.drawdown.pct.toFixed(2)}%)` : '—'}</td>
+        <td class="text-right">${r.points.length}</td>
+        <td class="text-right ${last ? pnlClass(last.pct) : ''}">${last ? `${last.pct >= 0 ? '+' : ''}${last.pct.toFixed(2)}%` : '—'}</td>
+        <td class="text-right ${r.drawdown ? 'neg' : ''}">${r.drawdown ? `${fmtMoney(r.drawdown.abs)} (${r.drawdown.pct.toFixed(2)}%)` : '—'}</td>
+        <td class="text-right">${_fmtRatio(r.returnToDrawdown)}</td>
+        <td class="text-right">${r.stats.winRatePct == null ? '—' : fmtPct(r.stats.winRatePct)}</td>
+        <td class="text-right">${_fmtRatio(r.stats.profitFactor)}</td>
+        <td class="text-right">${r.stats.closedCount}</td>
+        <td class="text-right">${last ? fmtMoney(last.total_value) : '—'}</td>
       </tr>`;
     }).join('');
-    wrap.innerHTML += `
+
+    // .deploy-table reused purely for its sortable-header CSS
+    // (cursor/hover/sticky-header) -- see index.html's own rule, not
+    // specific to the Deployments view despite the name.
+    wrap.innerHTML = `
       <div class="table-wrap" style="margin-top:14px;">
-      <table><thead><tr>
-        <th>Deployment</th><th>Strategy</th><th>Status</th><th>Snapshots</th><th>Return</th><th>Current equity</th><th>Max drawdown</th>
+      <table class="deploy-table"><thead><tr>
+        ${COMPARE_COLUMNS.map(c => {
+          const isSorted = this._sortKey === c.key;
+          const arrow = isSorted ? (this._sortDir === 'asc' ? '▲' : '▼') : '▲';
+          return `<th class="sortable${c.numeric ? ' text-right' : ''}" onclick="Compare.setSort('${c.key}')"
+                      ${c.headerTitle ? `title="${escapeHtml(c.headerTitle)}"` : ''}
+                      aria-sort="${isSorted ? (this._sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}">
+                    ${escapeHtml(c.label)}<span class="sort-arrow${isSorted ? ' active' : ''}">${arrow}</span>
+                  </th>`;
+        }).join('')}
       </tr></thead>
       <tbody>${rows}</tbody></table>
       </div>
-      <div class="table-note">Max drawdown — largest peak-to-trough decline in each deployment's own equity, same definition as its Stats tab.</div>
+      <div class="table-note">
+        Max drawdown / Return-Drawdown / Win rate / Profit factor all mean capital actually won or
+        permanently lost — never a live paper swing on anything still open. Win rate and profit factor
+        combine every leg, adjustment, and roll of one strategic bet into a single win or loss, same as
+        each deployment's own Stats tab default. Click any column to rank by it. Numbers built on only a
+        few days of history (see the Days column) are easy to over-read — a short lucky streak isn't a
+        proven edge yet.
+      </div>
     `;
   },
 
@@ -272,7 +436,12 @@ const Compare = {
   // index-based X axis comment above), so a wide layout would need
   // interpolation or ragged blank cells. Long format has no such
   // problem and is the more generically useful shape for pivoting
-  // elsewhere (Excel, pandas, ...) anyway.
+  // elsewhere (Excel, pandas, ...) anyway. Step 106: the summary
+  // metrics (drawdown/ratio/win rate/profit factor/trades) are the
+  // same for every row of a given deployment, so they're repeated
+  // per-row here rather than needing a second sheet/section — trivial
+  // to filter down to one row per deployment in a spreadsheet if only
+  // the summary is wanted.
   exportCsv() {
     if (!this._lastResult) return;
     const rows = this._lastResult.flatMap(r =>
@@ -282,6 +451,11 @@ const Compare = {
         snapshot_at: p.snapshot_at,
         total_value: p.total_value,
         pct_return: p.pct.toFixed(4),
+        max_drawdown_pct: r.drawdown ? r.drawdown.pct.toFixed(4) : '',
+        return_drawdown_ratio: r.returnToDrawdown == null ? '' : (r.returnToDrawdown === Infinity ? 'inf' : r.returnToDrawdown.toFixed(4)),
+        win_rate_pct: r.stats.winRatePct == null ? '' : r.stats.winRatePct.toFixed(2),
+        profit_factor: r.stats.profitFactor == null ? '' : (r.stats.profitFactor === Infinity ? 'inf' : r.stats.profitFactor.toFixed(4)),
+        positions_closed: r.stats.closedCount,
       }))
     );
     const csv = toCsv(rows, [
@@ -290,6 +464,11 @@ const Compare = {
       { key: 'snapshot_at', label: 'Time' },
       { key: 'total_value', label: 'Total Value' },
       { key: 'pct_return', label: 'Pct Return' },
+      { key: 'max_drawdown_pct', label: 'Max Drawdown Pct' },
+      { key: 'return_drawdown_ratio', label: 'Return/Drawdown' },
+      { key: 'win_rate_pct', label: 'Win Rate Pct' },
+      { key: 'profit_factor', label: 'Profit Factor' },
+      { key: 'positions_closed', label: 'Positions Closed' },
     ]);
     downloadCsv('strategy_comparison.csv', csv);
   },

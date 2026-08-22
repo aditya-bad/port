@@ -381,38 +381,13 @@ const Detail = {
   // Exit-Reason table should treat as a single win/loss, shaped
   // identically regardless of granularity so everything downstream
   // (win rate, avg win/loss, profit factor, largest win/loss, avg
-  // holding period, closed/open counts) is ONE code path, not two:
-  // - "trade": each `positions` row (one leg's own open->close
-  //   lifecycle) is its own unit -- the original, still-available
-  //   behavior.
-  // - "position" (default, per explicit user request): every position
-  //   tagged with the SAME episode (episode_opened_at/episode_closed_at
-  //   -- see queries.list_positions_with_episode/_group_into_episodes)
-  //   collapses into ONE unit -- a straddle's CE+PE legs, plus every
-  //   adjustment/roll on top of them, combine into the single strategic
-  //   bet they actually are, exactly like `unrealized_pnl` has always
-  //   summed across every open position for a deployment rather than
-  //   reporting one number per leg.
+  // holding period, closed/open counts) is ONE code path, not two.
+  // Step 106: the actual grouping is now the shared
+  // groupPositionsIntoUnits (api.js) so Compare can use the exact same
+  // logic without duplicating it -- this is a thin wrapper binding
+  // Detail's own `this._statsGranularity` toggle to it.
   _buildStatUnits(allPositions) {
-    if (this._statsGranularity === 'trade') {
-      return allPositions.map(p => ({
-        opened_at: p.opened_at, closed_at: p.closed_at, status: p.status,
-        realized_pnl: p.realized_pnl || 0, position_ids: [p.id],
-      }));
-    }
-    const groups = new Map();
-    allPositions.forEach(p => {
-      const key = `${p.episode_opened_at}|${p.episode_closed_at || 'open'}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key).push(p);
-    });
-    return Array.from(groups.values()).map(rows => ({
-      opened_at: rows[0].episode_opened_at,
-      closed_at: rows[0].episode_closed_at,
-      status: rows.every(p => p.status === 'closed') ? 'closed' : 'open',
-      realized_pnl: rows.reduce((s, p) => s + (p.realized_pnl || 0), 0),
-      position_ids: rows.map(p => p.id),
-    }));
+    return groupPositionsIntoUnits(allPositions, this._statsGranularity);
   },
 
   _statsGranularityNote() {

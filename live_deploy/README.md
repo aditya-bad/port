@@ -6959,6 +6959,76 @@ identical number the old total_value-based version would have. `node
 --check` on api.js/detail.js/compare.js, and a full `app.main` import,
 both clean.
 
+## What's here (Step 106: Compare page becomes an actual decision-support scorecard)
+
+Direct feedback after several days of real use: "I am not getting any
+meaningful insights from it for me to actually compare and take
+decisions." The old page had a % return chart plus a table of Return/
+Current equity/Max drawdown — enough to see WHAT happened, nothing to
+judge whether it was actually good, or which of several strategies is
+worth trusting with more capital.
+
+**New columns, each answering a specific comparison question a raw
+return number can't:**
+
+- **Days** — how much real history a comparison is even based on
+  (one snapshot per trading day, so this is literally the count). Sits
+  right next to Return specifically so a 2-day lucky streak is never
+  mistaken for a proven multi-week edge.
+- **Return / Drawdown** — the header metric, and the default sort. A
+  simple, standard risk-adjusted read: return earned per unit of
+  capital *actually, permanently lost* (Step 105) along the way. This
+  is the whole point of the feature — a deployment with double
+  another's raw return but a much bigger drawdown now visibly ranks
+  WORSE, not better, exactly the "don't just chase the biggest number"
+  signal a comparison page should give. Verified with a worked example
+  before shipping: a steady +2%/₹300-drawdown deployment scores 6.75
+  here; a flashier +4%/₹10,000-drawdown one scores 0.43 — quadruple the
+  headline return, but obviously the worse bet once the real cost is
+  accounted for.
+- **Win rate / Profit factor / Positions closed** — per POSITION (every
+  leg, adjustment, and roll of one strategic bet combined into a single
+  win or loss), same default Step 103 gave each deployment's own Stats
+  tab. No per-trade toggle here on purpose — Compare's whole point is
+  ranking deployments against each other, which only means something
+  if every row is measured the same way.
+
+**The whole table is now sortable** — click any header to rank by it,
+click again to reverse (same pattern, and the exact same `.deploy-table`
+sortable-header CSS, as the Deployments table's own Step 93 redesign).
+Metric columns default to descending on first click ("best" at the
+top); name/strategy/status default to ascending. Whichever question is
+top of mind right now — "which had the least pain for its gain," "which
+actually has a real win rate," "which has the longest track record" —
+is one click away instead of mentally scanning a fixed column order.
+
+**`groupPositionsIntoUnits`/`computeUnitStats` moved to api.js**, shared
+by both Detail's Stats tab and Compare — this is Step 103's own
+`_buildStatUnits` episode-merging logic extracted verbatim (not
+rewritten) so the two views can't quietly drift into two different
+answers for "how many trades did this deployment actually make."
+Detail's own `_buildStatUnits` is now a two-line wrapper binding its
+`_statsGranularity` toggle to the shared function; Compare calls it
+directly, always with `"position"` granularity, no toggle exposed.
+
+No backend changes at all — every new column comes from data already
+fetched via existing endpoints (`GET .../snapshots`, `GET
+.../positions?status=all`), computed client-side exactly like the
+return/drawdown numbers already were.
+
+Verified three ways: (1) a worked two-deployment scenario (standalone
+under Node) — a steady grower vs. a volatile one with a real
+peak-to-trough realized loss — confirms Return/Drawdown correctly
+ranks the steadier one on top despite its smaller headline return,
+and that sorting by that column actually produces that order; (2) the
+extracted `groupPositionsIntoUnits`/`computeUnitStats` re-run against
+Step 103's own original hand-verified straddle-plus-roll scenario, this
+time loading the REAL api.js file (via Node's `vm` module, not a
+hand-copied re-implementation) to confirm the extraction preserved
+Step 103's exact behavior byte-for-byte, not just in spirit; (3) `node
+--check` on api.js/detail.js/compare.js and a full `app.main` import,
+both clean.
+
 ## Setup
 
 ```bash

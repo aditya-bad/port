@@ -740,6 +740,68 @@ function computeMaxDrawdown(snapshots, initialCapital) {
   return { abs, pct };
 }
 
+// ── Position/episode grouping + trade stats (Step 106) ────────────────
+// Moved here from Detail's own _buildStatUnits (Step 103) so Compare
+// can use the EXACT same "per trade" vs "per position" grouping
+// without duplicating the episode-merge logic in a second file —
+// duplicating this is exactly the kind of thing that quietly drifts
+// into two different answers for "how many trades did this deployment
+// make" in two different views. See queries.list_positions_with_episode/
+// _group_into_episodes (Python side) for how episode_opened_at/
+// episode_closed_at get attached to each position in the first place.
+//
+// allPositions: `PositionOutWithEpisode` rows from GET
+// /deployments/{id}/positions?status=all. granularity: "trade" (each
+// `positions` row is its own unit — the original behavior) or
+// "position" (every row sharing an episode tag collapses into ONE
+// unit, realized_pnl summed across its legs — a straddle's CE+PE, plus
+// every adjustment/roll on top of them, become the single strategic
+// bet they actually are).
+function groupPositionsIntoUnits(allPositions, granularity) {
+  if (granularity === 'trade') {
+    return allPositions.map(p => ({
+      opened_at: p.opened_at, closed_at: p.closed_at, status: p.status,
+      realized_pnl: p.realized_pnl || 0, position_ids: [p.id],
+    }));
+  }
+  const groups = new Map();
+  allPositions.forEach(p => {
+    const key = `${p.episode_opened_at}|${p.episode_closed_at || 'open'}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p);
+  });
+  return Array.from(groups.values()).map(rows => ({
+    opened_at: rows[0].episode_opened_at,
+    closed_at: rows[0].episode_closed_at,
+    status: rows.every(p => p.status === 'closed') ? 'closed' : 'open',
+    realized_pnl: rows.reduce((s, p) => s + (p.realized_pnl || 0), 0),
+    position_ids: rows.map(p => p.id),
+  }));
+}
+
+// Win rate/profit factor/etc. off a `groupPositionsIntoUnits` result —
+// the lean cut Compare's table needs (no P&L-by-reason attribution,
+// which needs each unit's own lots too — Detail's Stats tab keeps that
+// part inline since it's the only consumer). `winRatePct`/
+// `profitFactor` are null (not 0) when there's no closed history yet
+// to compute them from, same "not computed" convention as every other
+// optional stat in this app — rendered as "—", never a misleading 0%.
+function computeUnitStats(units) {
+  const closedUnits = units.filter(u => u.status === 'closed');
+  const openUnits = units.filter(u => u.status === 'open');
+  const pnls = closedUnits.map(u => u.realized_pnl).filter(v => v != null);
+  const wins = pnls.filter(v => v > 0);
+  const grossWin = pnls.filter(v => v > 0).reduce((a, b) => a + b, 0);
+  const grossLoss = pnls.filter(v => v < 0).reduce((a, b) => a + b, 0);   // negative
+  return {
+    closedCount: closedUnits.length,
+    openCount: openUnits.length,
+    winRatePct: pnls.length ? (wins.length / pnls.length) * 100 : null,
+    profitFactor: grossLoss < 0 ? grossWin / Math.abs(grossLoss) : (grossWin > 0 ? Infinity : null),
+    totalRealizedPnl: pnls.reduce((a, b) => a + b, 0),
+  };
+}
+
 // ── Reorderable sections ─────────────────────────────────────────────
 // Shared by Dashboard and Reports (Step 50) — each view lists its own
 // widget/section ids in its own default order, and lets the user move
