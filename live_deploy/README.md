@@ -7029,6 +7029,86 @@ Step 103's exact behavior byte-for-byte, not just in spirit; (3) `node
 --check` on api.js/detail.js/compare.js and a full `app.main` import,
 both clean.
 
+## What's here (Step 107: Compare rebuilt as an always-on leaderboard, not a picker)
+
+"I am not at all happy with the compare page. redesign it completely.
+think of how it would benefit me and make it better." Step 106 added
+better metrics to the existing pick-2-6-then-click-Run flow; still not
+enough, because the FLOW itself was the problem, not just what it
+showed once you ran it. Rethought from what the page is actually for: a
+solo operator checking in — often on a phone — to decide which
+deployments to keep, kill, or trust with more capital. That's a "show
+me everything, ranked, right now" question, not a "let me go pick a
+couple of things to look at first" one.
+
+**No more picker, no more "Run" button.** Every deployment's snapshots
+and positions are fetched ONCE the moment the page opens; every later
+re-sort, re-filter, or chart selection is a pure client-side re-render
+with zero further network calls. The leaderboard sorts by Return/
+Drawdown (Step 106's risk-adjusted metric) by default — "which is
+actually working," not "which has the biggest number," is the view you
+land on, not something to discover by re-sorting.
+
+**Each row now carries a FLAG, computed with explicit precedence so it
+never misleads:**
+- 🆕 **New** — fewer than 3 days of snapshot history. Suppresses every
+  other flag on that row (including ever being called "top performer")
+  — a good first day is not a proven edge, and the page shouldn't imply
+  otherwise. Numbers still show in full, just not held up as a winner.
+- ⚠️ **N-loss streak** — its last 3 closed POSITIONS (the Step 103
+  episode grouping, not raw legs) were all losses. The most urgent
+  thing to know about a row that has enough history to judge.
+- 💤 **Quiet** — still `active`, but nothing has closed yet despite
+  enough time to judge one. A cheap, direct answer to "is this thing
+  even doing anything," which used to require opening its own Detail
+  page to check.
+- 🏆 **Top performer** — exactly one row, the single highest Return/
+  Drawdown among everything with enough history to be eligible. Not
+  "biggest return" — the worked example from Step 106 (quadruple the
+  raw return, quarter the risk-adjusted score) is exactly why this
+  isn't "highest Return" instead.
+
+**Each row also carries an inline sparkline** — a tiny, axis-free
+equity-curve shape right in the row, so "is this one trending up or
+choppy" doesn't require opening the big chart at all. The big overlaid
+% chart is still here, unchanged in how it draws, but it's now a
+natural extension of the leaderboard instead of the thing you have to
+set up before seeing anything: check any 2-6 rows and it appears below
+instantly, sourced from data already loaded (no fetch), with a stable
+per-row color swatch tracking selection order.
+
+A status filter (All/Active/Paused/Stopped, matching Deployments' own
+select) narrows the leaderboard without hiding anything by default —
+old stopped deployments stay comparable against current ones exactly
+like before, just no longer forced into view for someone who wants to
+focus on what's live right now.
+
+**CSV export changed shape** to match the page's new purpose: it used
+to dump the raw per-snapshot time series for whatever was picked (long
+format, one row per snapshot). Now it exports the leaderboard itself —
+one row per deployment, exactly as currently filtered/sorted, with
+every metric and its flag — because this page is a scorecard now, and
+a scorecard is what's actually worth taking elsewhere (a note, a
+spreadsheet of decisions made). The raw per-day series for any single
+deployment is still on its own Detail page.
+
+No backend changes — same two endpoints as Step 106 (`GET .../
+snapshots`, `GET .../positions?status=all`), just fetched once up front
+for every deployment instead of on-demand after a manual pick.
+
+Verified against the REAL loaded files (Node's `vm` module evaluating
+the actual api.js + compare.js, not a hand-copied reimplementation of
+their logic) with a four-deployment mock scenario built specifically to
+exercise every flag's precedence: a steady 5-day winner correctly gets
+🏆; a 3-straight-loss deployment correctly gets ⚠️, not 🏆, despite
+otherwise looking active and healthy; a deployment that's been running
+4 days with zero closes correctly gets 💤; and a deployment only 1 day
+old correctly gets 🆕 and is excluded from "best" consideration even
+though its single data point would otherwise look fine. Sorting by
+Return/Drawdown and the status filter both re-verified against this
+same real-file-loaded instance. `node --check` on api.js/detail.js/
+compare.js and a full `app.main` import both clean.
+
 ## Setup
 
 ```bash

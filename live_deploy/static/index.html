@@ -837,17 +837,9 @@ tr.trade-detail-row td {
 .legend-item .legend-name { color: var(--ink); }
 .legend-item .legend-value { font-family: var(--font-mono); }
 
-/* ── Deployment picker (Strategy Comparison) ─────────────────────────── */
-.compare-picker { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-bottom: 16px; }
-.compare-pick-item {
-  display: flex; align-items: center; gap: 10px; border: 3px solid var(--line); background: var(--paper);
-  padding: 10px 12px; cursor: pointer; user-select: none;
-}
-.compare-pick-item.checked { background: var(--sand); }
-.compare-pick-item.disabled { opacity: 0.45; cursor: not-allowed; }
-.compare-pick-item input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; cursor: inherit; }
-.compare-pick-name { font-weight: 700; font-size: 12.5px; }
-.compare-pick-meta { font-size: 10.5px; color: var(--parchment); margin-top: 2px; }
+/* ── Strategy Comparison leaderboard (Step 107) ──────────────────────── */
+.compare-flag { white-space: nowrap; }
+.compare-sparkline { display: block; margin-top: 2px; }
 
 /* ── Reports page — period-bucketed P&L bar, NOT the Compare view's
    categorical --chart-N palette: here color encodes an actual
@@ -1339,16 +1331,15 @@ body.mobile-nav-open { overflow: hidden; }
       <div class="view-header">
         <div>
           <h1>Compare</h1>
-          <div class="view-sub">Pick 2–6 deployments to overlay their equity curves, indexed to % return so different capital sizes compare fairly</div>
+          <div class="view-sub">Every deployment, ranked by risk-adjusted return — check up to 6 to overlay their equity curves below</div>
         </div>
         <div class="view-header-actions">
           <button class="btn btn-secondary btn-sm" id="compareExportBtn" onclick="Compare.exportCsv()" style="display:none;">⭳ Export CSV</button>
-          <button class="btn btn-primary btn-sm" id="compareRunBtn" onclick="Compare.run()" disabled>Compare selected</button>
         </div>
       </div>
 
-      <div id="comparePicker" class="compare-picker"><div class="empty"><span class="spinner"></span> Loading…</div></div>
-      <div id="compareResult"></div>
+      <div id="compareLeaderboard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      <div id="compareChartSection"></div>
     </div>
 
     <!-- ═══ Reports ═══ -->
