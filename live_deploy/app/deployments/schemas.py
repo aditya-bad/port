@@ -161,6 +161,21 @@ class PositionOut(BaseModel):
     unrealized_pnl: Optional[float] = None
 
 
+class PositionOutWithEpisode(PositionOut):
+    """PositionOut plus which EPISODE (Step 103) this position belongs
+    to — see queries.list_positions_with_episode/_group_into_episodes:
+    every position that overlapped in time with another (a straddle's
+    CE+PE legs, a leg before and after a roll) shares the same
+    `episode_opened_at`/`episode_closed_at` pair, the earliest opened_at
+    and latest closed_at (None if any leg in the episode is still open)
+    across the whole group. Used ONLY by GET /deployments/{id}/positions
+    -- the Detail page's Positions tab ignores the two extra fields, and
+    its Stats tab groups by them for the "per position" toggle instead
+    of treating each row as its own trade."""
+    episode_opened_at: datetime
+    episode_closed_at: Optional[datetime] = None
+
+
 class AggregatePositionOut(PositionOut):
     """PositionOut plus which deployment/strategy it belongs to — used
     ONLY by the cross-deployment /positions endpoint (the Dashboard's

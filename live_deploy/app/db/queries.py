@@ -249,6 +249,61 @@ async def list_open_positions(pool: asyncpg.Pool, deployment_id: UUID) -> list[a
     return await list_positions(pool, deployment_id, status="open")
 
 
+async def list_positions_with_episode(
+    pool: asyncpg.Pool, deployment_id: UUID, status: Optional[str] = None,
+) -> list[dict]:
+    """Step 103 — same rows as list_positions, each tagged with which
+    EPISODE it belongs to (see _group_into_episodes/
+    get_positional_episode_mtm_rows) via `episode_opened_at`/
+    `episode_closed_at` fields: the earliest `opened_at`/latest
+    `closed_at` (None if any leg in the episode is still open) across
+    every position that overlapped in time with this one.
+
+    Backs the Detail page's Stats tab "per trade" vs "per position"
+    toggle (Step 103): a straddle's CE leg and PE leg, or a leg before
+    and after a roll, are separate `positions` rows but the SAME
+    episode tag — grouping client-side by that tag turns "per trade"
+    stats (one verdict per row) into "per position" stats (one verdict
+    per whole strategic bet) without a second, differently-shaped
+    endpoint. Deliberately mode-agnostic — an intraday deployment's
+    same-day straddle-plus-adjustments needs exactly the same combining
+    a positional deployment's multi-day hold does; nothing here reads
+    `deployments.mode` at all.
+
+    ALWAYS fetches and groups the deployment's FULL position history
+    (every status) before filtering to the requested `status` — an
+    episode's correct start/end can depend on a leg with a DIFFERENT
+    status than the one being filtered for (e.g. a closed leg whose
+    episode also includes a still-open one), so filtering first would
+    tag some rows with an incomplete, wrong episode window.
+    `status=None` (or `"all"`/`""`, from a query string that can't pass
+    a real None) returns every position, still tagged.
+    """
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT * FROM positions WHERE deployment_id = $1 ORDER BY opened_at ASC",
+            deployment_id,
+        )
+    if not rows:
+        return []
+
+    episode_of: dict[UUID, tuple] = {}
+    for ep in _group_into_episodes(rows):
+        for r in ep["rows"]:
+            episode_of[r["id"]] = (ep["start"], ep["end"])
+
+    want = None if status in (None, "", "all") else status
+    out = []
+    for r in rows:
+        if want is not None and r["status"] != want:
+            continue
+        d = dict(r)
+        d["episode_opened_at"], d["episode_closed_at"] = episode_of[r["id"]]
+        out.append(d)
+    out.sort(key=lambda d: d["opened_at"], reverse=True)
+    return out
+
+
 async def get_adjustment_histogram(
     pool: asyncpg.Pool, deployment_id: UUID, group_by: str,
 ) -> list[dict]:
@@ -975,6 +1030,36 @@ async def get_intraday_mtm_range(
 _EPISODE_GAP_TOLERANCE = timedelta(minutes=5)
 
 
+def _group_into_episodes(positions: list) -> list[dict]:
+    """Step 103 — the actual interval-merge, factored out of
+    get_positional_episode_mtm_rows (Step 102) so it can also back
+    list_positions_with_episode below: standard sweep-line merge of
+    every position's own [opened_at, closed_at] interval (open
+    positions treated as unbounded/"now"), bridging real time overlap
+    with no tolerance needed, plus `_EPISODE_GAP_TOLERANCE` for the one
+    pattern that wouldn't otherwise overlap (a single-leg roll with
+    nothing else open) — see get_positional_episode_mtm_rows' own
+    docstring for the full reasoning, which still applies unchanged
+    here. `positions` must already be sorted by opened_at ASCENDING.
+    Returns `[{"start": ..., "end": ... or None, "rows": [...]}]` in
+    THE SAME order as the input (oldest episode first) — callers sort
+    however they need afterward.
+    """
+    episodes: list[dict] = []
+    for p in positions:
+        if episodes and (
+            episodes[-1]["end"] is None
+            or p["opened_at"] <= episodes[-1]["end"] + _EPISODE_GAP_TOLERANCE
+        ):
+            ep = episodes[-1]
+            ep["rows"].append(p)
+            if ep["end"] is not None:
+                ep["end"] = None if p["closed_at"] is None else max(ep["end"], p["closed_at"])
+        else:
+            episodes.append({"start": p["opened_at"], "end": p["closed_at"], "rows": [p]})
+    return episodes
+
+
 async def get_positional_episode_mtm_rows(
     pool: asyncpg.Pool, deployment_id: UUID, limit: int = 400,
 ) -> list[dict]:
@@ -1050,19 +1135,7 @@ async def get_positional_episode_mtm_rows(
         if not positions:
             return []
 
-        episodes: list[dict] = []
-        for p in positions:
-            if episodes and (
-                episodes[-1]["end"] is None
-                or p["opened_at"] <= episodes[-1]["end"] + _EPISODE_GAP_TOLERANCE
-            ):
-                ep = episodes[-1]
-                ep["rows"].append(p)
-                if ep["end"] is not None:
-                    ep["end"] = None if p["closed_at"] is None else max(ep["end"], p["closed_at"])
-            else:
-                episodes.append({"start": p["opened_at"], "end": p["closed_at"], "rows": [p]})
-
+        episodes = _group_into_episodes(positions)
         episodes.sort(key=lambda e: e["start"], reverse=True)
         episodes = episodes[:limit]
 

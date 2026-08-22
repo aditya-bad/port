@@ -6722,6 +6722,96 @@ opens 10 minutes after leg B closes — stays a separate episode (outside
 it). Both scenarios matched hand-derived expectations exactly. `node
 --check` and a full `app.main` import both clean.
 
+## What's here (Step 103: Stats tab gets a "per trade" / "per position" toggle, defaulting to "per position")
+
+Same underlying issue as Step 102, one level up: Step 102 fixed the
+Recent Periods trend table's M2M numbers, but the Stats tab's own
+headline win rate/avg win/avg loss/profit factor/largest win/loss/P&L-
+by-Exit-Reason table were STILL computed per `positions` row — a
+straddle with a mid-trade roll still counted as 3 separate "trades"
+there (2 wins + 1 loss diluting the win rate) instead of the one
+strategic bet it actually is. The user's own framing: "I need win rate
+of strategy not position... like how you give the realized and
+unrealized pnl, this is also same" — and explicitly asked for a TOGGLE
+(not a silent behavior change) so both cuts stay available, defaulting
+to the combined one. Also explicitly noted this needed to work for
+CURRENT deployments too, not just future positional ones — every
+deployment so far is "intraday," and an intraday straddle's own
+same-day legs/adjustments/rolls have exactly the same over-counting
+problem Step 102 fixed for positional M2M.
+
+**No migration needed** — despite the user explicitly offering "if you
+want to make any db changes for it then this is the time" (no
+positional strategies deployed yet, so now's the safe window for a
+breaking schema change): grouping is computed on the fly from data
+already in `positions`, nothing new to persist or keep in sync. The
+episode-merging logic itself is also deliberately **mode-agnostic** —
+it doesn't read `deployments.mode` at all, so it groups an intraday
+straddle's same-day legs exactly the same way it would group a
+positional deployment's multi-day hold.
+
+**Backend**: `_group_into_episodes` (Step 102's inline merge loop) is
+factored out into its own function so a new `queries.
+list_positions_with_episode(pool, deployment_id, status=None)` can
+reuse it — same interval-merge, but instead of computing M2M summary
+rows, it tags EVERY position row (open or closed) with
+`episode_opened_at`/`episode_closed_at`: the earliest `opened_at`/
+latest `closed_at` across every position that overlapped in time with
+it. Always groups the FULL position history first, THEN filters to the
+requested `status` — an episode's correct window can depend on a leg
+with a different status than the one being filtered for (a closed leg
+whose episode also includes a still-open one), so filtering first would
+tag some rows with an incomplete window. `GET /deployments/{id}/
+positions` now accepts `status=all` (alongside the existing open/
+closed) and returns `PositionOutWithEpisode` (a `PositionOut` subclass,
+scoped to this endpoint only — the portfolio-wide `AggregatePositionOut`
+sibling is untouched) carrying the two new fields; the Positions tab
+keeps calling with "open"/"closed" as before and just ignores them.
+
+**Frontend**: the Stats tab now fetches ALL positions once (`status=
+all`) instead of only closed ones, tags them into "units" via
+`_buildStatUnits` — for "per trade," each `positions` row is its own
+unit (the original behavior, unchanged); for "per position" (default),
+every row sharing the same episode tag collapses into ONE unit, with
+`realized_pnl` summed across its legs and `status` "closed" only once
+EVERY leg in it is closed. Every number that used to come from the
+backend's `build_report`/`GET .../report` (win rate, avg win/loss,
+profit factor, largest win/loss, closed/open counts, avg holding
+period) is now computed client-side from these units instead — ONE code
+path for both granularities, so switching the toggle is just switching
+which array they're computed from, not two divergent implementations.
+The P&L by Exit Reason table follows the same unit split: a unit's
+attributed reason is whichever lot, across EVERY position in it,
+executed last — for "per position" that's whichever fill actually
+closed the LAST remaining leg of the whole episode, not each leg's own
+last lot separately. `GET .../report` itself is untouched on the
+backend (still there for any other consumer), simply no longer called
+by this view. A "Per position"/"Per trade" segmented control (same
+visual language as Recent Periods' Daily/Weekly/Monthly tabs) sits
+above the stat-grid, with a one-line note underneath explaining what
+"one row" means in the selected mode; switching it recomputes and
+redraws just the stat-grid + P&L-by-Exit-Reason section from already-
+fetched data, no refetch.
+
+Verified three ways: (1) `queries.list_positions_with_episode` against
+real Postgres — a closed CE+PE straddle with one leg rolled (CE→CE2)
+correctly tags all 3 as one episode while a separate later open leg
+gets its own; `status=all/open/closed` all filter correctly while
+keeping the SAME episode tags. (2) The exact shape the router returns
+validated by constructing real `PositionOutWithEpisode` Pydantic models
+from the query output — no serialization surprises. (3) The frontend
+aggregation logic itself, re-implemented standalone and run under
+Node against a mock straddle-plus-roll dataset: "per trade" reports 4
+closed units (2 wins/2 losses, 50% win rate, P&L-by-reason split
+`roll_close: 500` / `force_exit: 100` / `stop_loss: -50`); "per
+position" reports 2 closed units (the whole straddle nets +600 as ONE
+win, the solo trade -50 as one loss) with P&L-by-reason correctly
+combining every leg's own last-lot reason into `force_exit: 600` for
+the straddle episode and `stop_loss: -50` for the solo trade — same
+total realized P&L (550) either way, only the bucketing differs. `node
+--check` on both api.js and detail.js, and a full `app.main` import,
+both clean.
+
 ## Setup
 
 ```bash

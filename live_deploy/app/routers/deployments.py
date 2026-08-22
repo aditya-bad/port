@@ -21,8 +21,8 @@ from .aggregate import year_bounds
 from ..db import queries
 from ..deployments.schemas import (
     AdjustmentHistogramOut, DeploymentCreate, DeploymentOut, DeploymentUpdate,
-    EventOut, LotsPage, PnlDigestRow, PnlDigestRowWithRange, PositionOut, ReportOut, SnapshotOut,
-    StrategyStatusOut,
+    EventOut, LotsPage, PnlDigestRow, PnlDigestRowWithRange, PositionOutWithEpisode,
+    ReportOut, SnapshotOut, StrategyStatusOut,
 )
 from ..strategies.registry import get_strategy_class, is_registered
 
@@ -258,14 +258,21 @@ async def update_deployment(deployment_id: UUID, payload: DeploymentUpdate, requ
     return out
 
 
-@router.get("/{deployment_id}/positions", response_model=list[PositionOut])
+@router.get("/{deployment_id}/positions", response_model=list[PositionOutWithEpisode])
 async def get_positions(deployment_id: UUID, request: Request, status: str | None = "open"):
+    """`status="all"` (Step 103, alongside the existing "open"/"closed")
+    returns every position, still tagged with its own episode — see
+    queries.list_positions_with_episode's own docstring for why episode
+    tagging always considers the FULL history regardless of this
+    filter. The Positions tab keeps using "open"/"closed" as before and
+    simply ignores the two new fields; the Stats tab's "per position"
+    toggle is what actually asks for "all"."""
     pool = request.app.state.db_pool
     dep = await queries.get_deployment(pool, deployment_id)
     if dep is None:
         raise HTTPException(404, "No such deployment")
 
-    rows = await queries.list_positions(pool, deployment_id, status=status)
+    rows = await queries.list_positions_with_episode(pool, deployment_id, status=status)
     dispatcher = request.app.state.dispatcher
 
     out = []

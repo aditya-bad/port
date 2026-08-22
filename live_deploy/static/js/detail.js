@@ -16,6 +16,7 @@ const Detail = {
   _openTradeRows: new Set(),
   _calendarRange: 'recent',   // Stats tab's P&L Calendar range state (Step 74) -- reset per deployment below, persists across switching away from/back to Stats for the SAME deployment
   _statsTrendPeriod: 'day',   // Stats tab's Recent Periods bucketing (Step 86) -- same persistence rule as _calendarRange above
+  _statsGranularity: 'position',   // Step 103 -- "per position" (episodes, every overlapping leg/adjustment/roll combined) vs "per trade" (raw positions rows); defaults to "position" per explicit user request
 
   async load(id) {
     this._stopLivePositionUpdates();   // leaving whatever deployment/tab was showing before
@@ -24,6 +25,7 @@ const Detail = {
     this._openTradeRows = new Set();
     this._calendarRange = 'recent';
     this._statsTrendPeriod = 'day';
+    this._statsGranularity = 'position';
     document.getElementById('detailHeader').innerHTML = spinnerHtml();
     document.getElementById('detailTabs').innerHTML = '';
     document.getElementById('detailBody').innerHTML = spinnerHtml();
@@ -375,65 +377,123 @@ const Detail = {
   // control changes, rather than re-running this whole method — no
   // reason to re-fetch trades/positions/snapshots just because someone
   // switched the calendar's year.
-  async renderStats() {
-    const [report, allTrades, closedPositions, snapshots, trendRows, calendarRows, strategyStatus, adjustmentHistogram] = await Promise.all([
-      Api.getReport(this._id),
-      Api.getTrades(this._id, 2000),
-      Api.getPositions(this._id, 'closed'),
-      Api.getSnapshots(this._id),
-      Api.getPnlDigestForDeployment(this._id, this._statsTrendPeriod, 14),
-      this._fetchStatsCalendarRows(),
-      Api.getStrategyStatus(this._id),
-      Api.getAdjustmentHistogram(this._id),
-    ]);
-    const body = document.getElementById('detailBody');
+  // Step 103 -- one "unit" per row the Performance stat-grid/P&L-by-
+  // Exit-Reason table should treat as a single win/loss, shaped
+  // identically regardless of granularity so everything downstream
+  // (win rate, avg win/loss, profit factor, largest win/loss, avg
+  // holding period, closed/open counts) is ONE code path, not two:
+  // - "trade": each `positions` row (one leg's own open->close
+  //   lifecycle) is its own unit -- the original, still-available
+  //   behavior.
+  // - "position" (default, per explicit user request): every position
+  //   tagged with the SAME episode (episode_opened_at/episode_closed_at
+  //   -- see queries.list_positions_with_episode/_group_into_episodes)
+  //   collapses into ONE unit -- a straddle's CE+PE legs, plus every
+  //   adjustment/roll on top of them, combine into the single strategic
+  //   bet they actually are, exactly like `unrealized_pnl` has always
+  //   summed across every open position for a deployment rather than
+  //   reporting one number per leg.
+  _buildStatUnits(allPositions) {
+    if (this._statsGranularity === 'trade') {
+      return allPositions.map(p => ({
+        opened_at: p.opened_at, closed_at: p.closed_at, status: p.status,
+        realized_pnl: p.realized_pnl || 0, position_ids: [p.id],
+      }));
+    }
+    const groups = new Map();
+    allPositions.forEach(p => {
+      const key = `${p.episode_opened_at}|${p.episode_closed_at || 'open'}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(p);
+    });
+    return Array.from(groups.values()).map(rows => ({
+      opened_at: rows[0].episode_opened_at,
+      closed_at: rows[0].episode_closed_at,
+      status: rows.every(p => p.status === 'closed') ? 'closed' : 'open',
+      realized_pnl: rows.reduce((s, p) => s + (p.realized_pnl || 0), 0),
+      position_ids: rows.map(p => p.id),
+    }));
+  },
+
+  _statsGranularityNote() {
+    return this._statsGranularity === 'position'
+      ? "One row per whole strategic bet — a straddle's legs, plus every adjustment and roll on top of them, combine into one win or loss."
+      : "One row per individual leg — a straddle's CE and PE count as two separate trades, and a roll's old and new leg each count too.";
+  },
+
+  async changeStatsGranularity(value) {
+    this._statsGranularity = value;
+    document.querySelectorAll('#detailStatsGranularityTabs button').forEach(b =>
+      b.classList.toggle('active', b.dataset.granularity === value));
+    document.getElementById('detailStatsGranularityNote').textContent = this._statsGranularityNote();
+    document.getElementById('detailStatsPerf').innerHTML = this._renderStatCardsAndReasonTable();
+  },
+
+  // Stat-grid + P&L by Exit Reason -- everything that depends on the
+  // "per trade"/"per position" toggle, factored out so
+  // changeStatsGranularity can redraw just this much on toggle instead
+  // of refetching the whole Stats tab. Reads the data renderStats
+  // already cached on `this` (_statsAllPositions/_statsLotsByPosition/
+  // _statsAllTradeLots) rather than taking parameters, same "cached on
+  // `this`, not threaded through call args" pattern _trades already
+  // uses for the Trades tab.
+  _renderStatCardsAndReasonTable() {
+    const allPositions = this._statsAllPositions;
+    const lotsByPosition = this._statsLotsByPosition;
 
     // Trigger breakdown -- the actual point of the trade-reason logging
     // retrofit: if a strategy is expected to hit e.g. checkpoints
-    // regularly and this shows zero, that's visible immediately.
+    // regularly and this shows zero, that's visible immediately. Every
+    // fill counts here regardless of granularity -- "how often did this
+    // reason fire" doesn't change depending on how legs get grouped.
     const counts = {};
-    allTrades.lots.forEach(l => {
+    this._statsAllTradeLots.forEach(l => {
       const r = l.reason || '(no reason recorded)';
       counts[r] = (counts[r] || 0) + 1;
     });
     const breakdown = Object.entries(counts).sort((a, b) => b[1] - a[1]);
 
+    const units = this._buildStatUnits(allPositions);
+    const closedUnits = units.filter(u => u.status === 'closed');
+    const openUnits = units.filter(u => u.status === 'open');
+
     // P&L by Exit Reason -- a DIFFERENT cut than the fill-count
-    // breakdown above: how much did closing for each reason actually
-    // make or lose, not just how often it fired. Every fill (entries,
-    // adjustments, exits alike) counts toward the breakdown above, but
-    // only a CLOSED position's own realized_pnl is real, settled money
-    // — and it's attributed to the reason of whichever lot actually
-    // closed it (that position's own last lot by executed_at), since a
-    // multi-lot position's earlier fills (an entry, an adjustment) may
-    // carry a different reason than what finally closed it out.
-    const lotsByPosition = {};
-    allTrades.lots.forEach(l => {
-      (lotsByPosition[l.position_id] = lotsByPosition[l.position_id] || []).push(l);
-    });
-    const pnlByReason = {};   // reason -> { pnl, count }
-    closedPositions.forEach(p => {
-      const posLots = (lotsByPosition[p.id] || []).slice()
-        .sort((a, b) => new Date(a.executed_at) - new Date(b.executed_at));
-      const lastLot = posLots[posLots.length - 1];
+    // breakdown above: how much did closing each unit actually make or
+    // lose, not just how often a reason fired. Attributed to the
+    // reason of whichever lot, across EVERY position in the unit,
+    // executed LAST -- for a "trade" unit (one position) that's the
+    // same "this position's own last lot" rule as before; for a
+    // "position" (episode) unit spanning several legs, it's whichever
+    // lot actually closed the LAST remaining leg of the whole episode.
+    const pnlByReason = {};
+    closedUnits.forEach(u => {
+      const lots = u.position_ids.flatMap(id => lotsByPosition[id] || [])
+        .slice().sort((a, b) => new Date(a.executed_at) - new Date(b.executed_at));
+      const lastLot = lots[lots.length - 1];
       const reason = (lastLot && lastLot.reason) || '(no reason recorded)';
       if (!pnlByReason[reason]) pnlByReason[reason] = { pnl: 0, count: 0 };
-      pnlByReason[reason].pnl += (p.realized_pnl || 0);
+      pnlByReason[reason].pnl += u.realized_pnl;
       pnlByReason[reason].count += 1;
     });
     const pnlBreakdown = Object.entries(pnlByReason).sort((a, b) => b[1].pnl - a[1].pnl);
 
-    // Average holding period, from closed positions' own opened_at/closed_at.
-    const durations = closedPositions
-      .filter(p => p.opened_at && p.closed_at)
-      .map(p => new Date(p.closed_at) - new Date(p.opened_at));
+    // Average holding period, from each closed unit's own opened_at/closed_at.
+    const durations = closedUnits
+      .filter(u => u.opened_at && u.closed_at)
+      .map(u => new Date(u.closed_at) - new Date(u.opened_at));
     const avgHoldMs = durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
 
-    // Profit factor + largest win/loss -- from each CLOSED position's
-    // own realized_pnl (position-level, not per-lot: a position can
-    // span several lots, but realized_pnl already nets the whole thing,
-    // so summing per-position avoids double-counting a multi-lot close).
-    const pnls = closedPositions.map(p => p.realized_pnl).filter(v => v != null);
+    // Win rate/avg win/avg loss/profit factor/largest win/largest loss
+    // -- from each CLOSED unit's own realized_pnl (already netted,
+    // whether that unit is one leg or several combined). Same
+    // <=0-counts-as-a-loss convention the old backend build_report used.
+    const pnls = closedUnits.map(u => u.realized_pnl).filter(v => v != null);
+    const wins = pnls.filter(v => v > 0);
+    const losses = pnls.filter(v => v <= 0);
+    const winRatePct = pnls.length ? (wins.length / pnls.length) * 100 : 0;
+    const avgWin = wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : 0;
+    const avgLoss = losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0;
+    const totalRealizedPnl = pnls.reduce((a, b) => a + b, 0);   // same total regardless of grouping -- grouping only changes the bucket count, not the sum
     const grossWin = pnls.filter(v => v > 0).reduce((a, b) => a + b, 0);
     const grossLoss = pnls.filter(v => v < 0).reduce((a, b) => a + b, 0);   // negative
     const profitFactor = grossLoss < 0 ? grossWin / Math.abs(grossLoss) : (grossWin > 0 ? Infinity : null);
@@ -443,9 +503,96 @@ const Detail = {
     // Total return -- realized + unrealized against the FIXED
     // initial_capital reference (same "capital, not compounding cash"
     // basis several strategies themselves size against — see e.g.
-    // strangle_monthly_v2's Section 3/4).
+    // strangle_monthly_v2's Section 3/4). Deployment-wide, unaffected
+    // by the toggle either way.
     const totalPnl = (this._dep.realized_pnl || 0) + (this._dep.unrealized_pnl || 0);
     const totalReturnPct = this._dep.initial_capital ? (totalPnl / this._dep.initial_capital) * 100 : null;
+
+    const unitWord = this._statsGranularity === 'trade' ? 'trade' : 'position';
+    const unitWordPlural = this._statsGranularity === 'trade' ? 'Trades' : 'Positions';
+
+    return `
+      <div class="stat-grid">
+        <div class="stat-card">
+          <div class="stat-label">Realized P&amp;L</div>
+          <div class="stat-value ${pnlClass(totalRealizedPnl)}">${fmtSignedMoney(totalRealizedPnl)}</div>
+          <div class="stat-sub">
+            <div class="row"><span>Win rate</span><b>${fmtPct(winRatePct)}</b></div>
+            <div class="row"><span>Avg win</span><b class="pos">${fmtMoney(avgWin)}</b></div>
+            <div class="row"><span>Avg loss</span><b class="neg">${fmtMoney(avgLoss)}</b></div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Total return</div>
+          <div class="stat-value ${totalReturnPct != null ? pnlClass(totalReturnPct) : ''}">${totalReturnPct != null ? fmtSignedMoney(totalPnl) + ` (${totalReturnPct >= 0 ? '+' : ''}${totalReturnPct.toFixed(2)}%)` : '—'}</div>
+          <div class="stat-sub">
+            <div class="row"><span>Profit factor</span><b>${profitFactor == null ? '—' : profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}</b></div>
+            <div class="row"><span>Largest win</span><b class="pos">${largestWin != null ? fmtMoney(largestWin) : '—'}</b></div>
+            <div class="row"><span>Largest loss</span><b class="neg">${largestLoss != null ? fmtMoney(largestLoss) : '—'}</b></div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">${unitWordPlural}</div>
+          <div class="stat-value">${closedUnits.length + openUnits.length}</div>
+          <div class="stat-sub">
+            <div class="row"><span>Closed</span><b>${closedUnits.length}</b></div>
+            <div class="row"><span>Open</span><b>${openUnits.length}</b></div>
+            <div class="row"><span>Avg holding period</span><b>${avgHoldMs != null ? fmtDuration(avgHoldMs) : '—'}</b></div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Trigger breakdown</div>
+          <div class="stat-value" style="font-size:13px;">${this._statsAllTradeLots.length} fill(s)</div>
+          <div class="stat-sub">
+            ${breakdown.length ? breakdown.map(([reason, n]) =>
+              `<div class="row"><span>${escapeHtml(reason)}${triggerBadgeHtml(reason)}</span><b>${n}×</b></div>`
+            ).join('') : '<div class="row"><span>—</span></div>'}
+          </div>
+        </div>
+      </div>
+
+      ${pnlBreakdown.length ? `
+      <section>
+        <h2>P&amp;L by Exit Reason</h2>
+        <div class="table-note" style="margin-bottom:8px;">
+          Which trigger actually closed each ${unitWord}, and what it made or lost — not just how
+          often it fired (see Trigger breakdown above for that). Sorted by total contribution.
+        </div>
+        <div class="table-wrap">
+        <table><thead><tr><th>Reason</th><th>${unitWordPlural} closed</th><th>Total P&amp;L</th><th>Avg P&amp;L</th></tr></thead>
+        <tbody>${pnlBreakdown.map(([reason, v]) => `<tr>
+          <td>${escapeHtml(reason)}${triggerBadgeHtml(reason)}</td>
+          <td>${v.count}</td>
+          <td class="${pnlClass(v.pnl)}">${fmtSignedMoney(v.pnl)}</td>
+          <td class="${pnlClass(v.pnl / v.count)}">${fmtSignedMoney(v.pnl / v.count)}</td>
+        </tr>`).join('')}</tbody></table>
+        </div>
+      </section>
+      ` : ''}
+    `;
+  },
+
+  async renderStats() {
+    const [allTrades, allPositions, snapshots, trendRows, calendarRows, strategyStatus, adjustmentHistogram] = await Promise.all([
+      Api.getTrades(this._id, 2000),
+      Api.getPositions(this._id, 'all'),
+      Api.getSnapshots(this._id),
+      Api.getPnlDigestForDeployment(this._id, this._statsTrendPeriod, 14),
+      this._fetchStatsCalendarRows(),
+      Api.getStrategyStatus(this._id),
+      Api.getAdjustmentHistogram(this._id),
+    ]);
+    const body = document.getElementById('detailBody');
+
+    // Cached for _renderStatCardsAndReasonTable/changeStatsGranularity's
+    // own targeted re-render -- toggling "per trade"/"per position"
+    // recomputes from these, it doesn't refetch anything.
+    this._statsAllPositions = allPositions;
+    this._statsAllTradeLots = allTrades.lots;
+    this._statsLotsByPosition = {};
+    allTrades.lots.forEach(l => {
+      (this._statsLotsByPosition[l.position_id] = this._statsLotsByPosition[l.position_id] || []).push(l);
+    });
 
     // Max drawdown -- largest peak-to-trough decline in the equity
     // curve's own total_value series (the same snapshot data already
@@ -466,63 +613,16 @@ const Detail = {
 
       ${this._strategyIndicatorsHtml(strategyStatus)}
 
-      <div class="stat-grid">
-        <div class="stat-card">
-          <div class="stat-label">Realized P&amp;L</div>
-          <div class="stat-value ${pnlClass(report.total_realized_pnl)}">${fmtSignedMoney(report.total_realized_pnl)}</div>
-          <div class="stat-sub">
-            <div class="row"><span>Win rate</span><b>${fmtPct(report.win_rate_pct)}</b></div>
-            <div class="row"><span>Avg win</span><b class="pos">${fmtMoney(report.avg_win)}</b></div>
-            <div class="row"><span>Avg loss</span><b class="neg">${fmtMoney(report.avg_loss)}</b></div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Total return</div>
-          <div class="stat-value ${totalReturnPct != null ? pnlClass(totalReturnPct) : ''}">${totalReturnPct != null ? fmtSignedMoney(totalPnl) + ` (${totalReturnPct >= 0 ? '+' : ''}${totalReturnPct.toFixed(2)}%)` : '—'}</div>
-          <div class="stat-sub">
-            <div class="row"><span>Profit factor</span><b>${profitFactor == null ? '—' : profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}</b></div>
-            <div class="row"><span>Largest win</span><b class="pos">${largestWin != null ? fmtMoney(largestWin) : '—'}</b></div>
-            <div class="row"><span>Largest loss</span><b class="neg">${largestLoss != null ? fmtMoney(largestLoss) : '—'}</b></div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Positions</div>
-          <div class="stat-value">${report.closed_positions + report.open_positions}</div>
-          <div class="stat-sub">
-            <div class="row"><span>Closed</span><b>${report.closed_positions}</b></div>
-            <div class="row"><span>Open</span><b>${report.open_positions}</b></div>
-            <div class="row"><span>Avg holding period</span><b>${avgHoldMs != null ? fmtDuration(avgHoldMs) : '—'}</b></div>
-          </div>
-        </div>
-        <div class="stat-card">
-          <div class="stat-label">Trigger breakdown</div>
-          <div class="stat-value" style="font-size:13px;">${allTrades.lots.length} fill(s)</div>
-          <div class="stat-sub">
-            ${breakdown.length ? breakdown.map(([reason, n]) =>
-              `<div class="row"><span>${escapeHtml(reason)}${triggerBadgeHtml(reason)}</span><b>${n}×</b></div>`
-            ).join('') : '<div class="row"><span>—</span></div>'}
-          </div>
+      <div class="report-section-header" style="cursor:default; padding:0; margin-bottom:10px; justify-content:space-between; flex-wrap:wrap;">
+        <h2 style="margin:0;">Performance</h2>
+        <div class="tabs" id="detailStatsGranularityTabs" style="margin:0;">
+          <button class="${this._statsGranularity === 'position' ? 'active' : ''}" data-granularity="position" onclick="Detail.changeStatsGranularity('position')">Per position</button>
+          <button class="${this._statsGranularity === 'trade' ? 'active' : ''}" data-granularity="trade" onclick="Detail.changeStatsGranularity('trade')">Per trade</button>
         </div>
       </div>
+      <div class="table-note" style="margin-bottom:14px;" id="detailStatsGranularityNote">${this._statsGranularityNote()}</div>
 
-      ${pnlBreakdown.length ? `
-      <section>
-        <h2>P&amp;L by Exit Reason</h2>
-        <div class="table-note" style="margin-bottom:8px;">
-          Which trigger actually closed each position, and what it made or lost — not just how
-          often it fired (see Trigger breakdown above for that). Sorted by total contribution.
-        </div>
-        <div class="table-wrap">
-        <table><thead><tr><th>Reason</th><th>Positions closed</th><th>Total P&amp;L</th><th>Avg P&amp;L</th></tr></thead>
-        <tbody>${pnlBreakdown.map(([reason, v]) => `<tr>
-          <td>${escapeHtml(reason)}${triggerBadgeHtml(reason)}</td>
-          <td>${v.count}</td>
-          <td class="${pnlClass(v.pnl)}">${fmtSignedMoney(v.pnl)}</td>
-          <td class="${pnlClass(v.pnl / v.count)}">${fmtSignedMoney(v.pnl / v.count)}</td>
-        </tr>`).join('')}</tbody></table>
-        </div>
-      </section>
-      ` : ''}
+      <div id="detailStatsPerf">${this._renderStatCardsAndReasonTable()}</div>
 
       ${this._adjustmentHistogramHtml(adjustmentHistogram)}
 
