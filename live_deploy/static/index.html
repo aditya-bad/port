@@ -837,9 +837,37 @@ tr.trade-detail-row td {
 .legend-item .legend-name { color: var(--ink); }
 .legend-item .legend-value { font-family: var(--font-mono); }
 
-/* ── Strategy Comparison leaderboard (Step 107) ──────────────────────── */
-.compare-flag { white-space: nowrap; }
-.compare-sparkline { display: block; margin-top: 2px; }
+/* ── Strategy Comparison (Step 109) ──────────────────────────────────── */
+/* "What needs attention" — plain-language callouts, not a table row;
+   left-border accent (not the categorical chart palette) since this IS
+   the semantic gain/loss/warn/info meaning those tokens carry
+   everywhere else in the app. */
+.attn-list { display: flex; flex-direction: column; gap: 8px; }
+.attn-item {
+  padding: 10px 14px; border-left: 4px solid var(--line); background: var(--panel);
+  font-size: 12.5px; line-height: 1.55;
+}
+.attn-item a { font-weight: 700; }
+.attn-item.attn-bad { border-left-color: var(--loss); }
+.attn-item.attn-warn { border-left-color: var(--brass); }
+.attn-item.attn-good { border-left-color: var(--gain); }
+.attn-item.attn-info { border-left-color: var(--info); }
+
+/* Card grid, not a wide table — one deployment's full comparison
+   picture in one glanceable block, no horizontal scrolling needed on a
+   phone the way an 8+ numeric-column table would. auto-fit collapses
+   to a single column on narrow screens automatically. */
+.compare-card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.compare-card { padding: 14px 16px; }
+.compare-card-head { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px; }
+.compare-card-check { display: flex; align-items: center; gap: 4px; padding-top: 3px; flex-shrink: 0; }
+.compare-sparkline { display: block; width: 100%; margin-top: 6px; }
+.compare-card-metrics { margin-top: 10px; font-size: 11.5px; font-family: var(--font-mono); display: flex; flex-direction: column; gap: 5px; }
+.compare-card-metrics .row { display: flex; justify-content: space-between; gap: 10px; }
+.compare-ratio-label {
+  font-size: 9px; color: var(--parchment); font-family: var(--font-sans, inherit);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
 
 /* ── Reports page — period-bucketed P&L bar, NOT the Compare view's
    categorical --chart-N palette: here color encodes an actual
@@ -1331,13 +1359,14 @@ body.mobile-nav-open { overflow: hidden; }
       <div class="view-header">
         <div>
           <h1>Compare</h1>
-          <div class="view-sub">Every deployment, ranked by risk-adjusted return — check up to 6 to overlay their equity curves below</div>
+          <div class="view-sub">What needs a decision, then every deployment's own card — check up to 6 to overlay their equity curves below</div>
         </div>
         <div class="view-header-actions">
           <button class="btn btn-secondary btn-sm" id="compareExportBtn" onclick="Compare.exportCsv()" style="display:none;">⭳ Export CSV</button>
         </div>
       </div>
 
+      <div id="compareAttention"></div>
       <div id="compareLeaderboard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
       <div id="compareChartSection"></div>
     </div>

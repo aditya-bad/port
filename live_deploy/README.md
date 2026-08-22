@@ -7171,6 +7171,69 @@ not per episode — they don't display a win rate, only a count alongside
 realized P&L, so they weren't part of this specific complaint; happy to
 extend the same fix there too if that count matters as much.
 
+## What's here (Step 109: Compare gets a plain-language "what needs attention" panel + a card layout)
+
+"the top performer and all is good but iam still unhappy" — asked
+directly what was still wrong, via AskUserQuestion, since two full
+redesigns (Step 106, Step 107) had already landed without fully
+satisfying the actual ask, and guessing a third time without more
+information was the wrong instinct. Answer, multi-select: **"Still
+can't decide"** and **"Layout / readability"**.
+
+**"Still can't decide"** — a sortable table/leaderboard, even a good
+one with flags, still makes the reader turn "Return/Drawdown = 0.43"
+into "don't trust this one" themselves. Fixed by adding a **"What needs
+attention" panel** above the leaderboard: one plain-English line per
+flagged deployment, not a number to interpret —
+
+> ⚠️ Rough Patch has lost its last 3 closed positions in a row
+> (−₹5,000 combined). Worth a closer look — is the strategy or the
+> market regime still working?
+>
+> 🏆 Steady Straddle is your best risk-adjusted performer right now
+> (Return/Drawdown 6.75 — **excellent**). A candidate for more capital,
+> once you trust its track record.
+
+Ordered worst-news-first (a loss streak or a quiet strategy is the most
+actionable thing to know right now), the positive callout after, and
+every "too new to judge" deployment batched into ONE footnote line
+rather than given its own — it's a caveat, not a decision point, and
+doesn't deserve equal billing with something that might need action
+today. A new `_ratioLabel` helper also gives the Return/Drawdown number
+itself a plain-language read wherever it appears (excellent / good /
+weak / losing money / no losses yet) — the same "don't make the reader
+do the interpretation" fix applied to the metric itself, not just the
+callout panel.
+
+**"Layout / readability"** — an 8+ numeric-column table needs constant
+horizontal scrolling on a phone, exactly the device this page is most
+likely checked from. Replaced the table with a **card per deployment**
+(`.compare-card-grid`, auto-collapsing to one column on narrow screens):
+name/strategy/status/flag together at the top, a full-width sparkline,
+then every metric in one glanceable block — no scrolling back and forth
+to match a row to a column header. Sorting moves from clickable table
+headers (which cards don't have) to a `<select>` (one option per metric,
+each with its own sensible default direction — smallest drawdown first,
+biggest everything else first) plus a direction-flip button.
+
+Structurally unchanged from Step 107 underneath: still loads and ranks
+every deployment the instant the page opens (no picker/Run button),
+still fetches snapshots+positions once up front so sorting/filtering/
+chart-selection are pure client-side re-renders, same flag precedence
+(New suppresses everything else; then loss-streak; then Quiet; then
+exactly one Top performer), same status filter, same CSV export shape.
+
+Verified against the REAL loaded files (Node's `vm` module) two ways:
+(1) re-ran Step 107's own flag/sort/filter test unmodified — confirms
+nothing about the underlying ranking logic regressed during the layout
+rewrite; (2) a new test covering `_ratioLabel`'s exact thresholds, each
+`SORT_KEYS` entry's own default direction, and `renderAttentionPanel`'s
+actual output against the same mock scenario — confirms the loss-streak
+deployment is named before the top performer, the top performer's line
+carries a plain-language label, and a new deployment is correctly
+batched into the footnote rather than given its own line. `node --check`
+on api.js/detail.js/compare.js and a full `app.main` import both clean.
+
 ## Setup
 
 ```bash

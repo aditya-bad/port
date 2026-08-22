@@ -1,41 +1,39 @@
-// live_deploy — Strategy Comparison view: a LEADERBOARD, not a picker.
+// live_deploy — Strategy Comparison view.
 //
-// Step 107 — complete redesign, per explicit feedback that the
-// pick-2-6-then-click-Run version (Step 106) still wasn't giving
-// "meaningful insights... to actually compare and take decisions."
-// Rethought from what the page is actually FOR: a solo operator running
-// several paper-trading deployments, checking in (often on a phone)
-// to decide which to keep, which to kill, which deserves more capital.
-// That's a "show me everything, ranked, right now" question, not a
-// "let me pick a couple of things to look at" one — so:
+// Step 109 — second round of redesign, per explicit feedback on Step
+// 107's leaderboard: "the top performer and all is good but I am
+// still unhappy" — narrowed down to two concrete things:
 //
-// - EVERY deployment loads and ranks itself the instant the page opens.
-//   No picker, no "Run" button, no empty page waiting for input. All
-//   the data (snapshots + positions) is fetched ONCE up front; every
-//   later re-sort/re-filter/chart-selection is a pure client-side
-//   re-render with zero extra network calls.
-// - Sorted by Return/Drawdown by default (Step 106's own risk-adjusted
-//   metric) — "which is actually working," not just "which has the
-//   biggest number," is the default view, not something you have to
-//   discover by re-sorting.
-// - Each row carries a FLAG — 🆕 too new to trust yet, ⚠️ a real losing
-//   streak, 💤 running but nothing has closed, 🏆 the single best
-//   risk-adjusted performer right now — so the table doesn't just show
-//   numbers, it points at what's actually worth a second look, the way
-//   a person scanning for decisions would want it done for them.
-// - Each row also carries an inline SPARKLINE — the shape of its
-//   equity curve at a glance, right in the row, no separate chart
-//   needed to see "is this one trending up or down."
-// - The big overlaid % chart is still here, but it's now a natural
-//   extension of the leaderboard: check any 2-6 rows and it appears
-//   below, updating instantly (same reasoning as above — the data's
-//   already loaded).
+// 1. "Still can't decide" — a sortable table of numbers, even a good
+//    one with flags, still makes the READER do the work of turning
+//    "Return/Drawdown = 0.43" into "don't trust this one." So this
+//    version leads with a "What needs attention" panel: plain-English
+//    callouts (see renderAttentionPanel), one per flagged deployment,
+//    that say the thing out loud instead of leaving it to be inferred
+//    from a number. The leaderboard below also gives the Return/
+//    Drawdown ratio a plain-language label (_ratioLabel) for the same
+//    reason — "6.75 (excellent)" needs no quant intuition to read.
+// 2. "Layout / readability" — an 8+ numeric-column table needs
+//    constant horizontal scrolling on a phone, exactly the device this
+//    page gets checked from most. Replaced with a CARD per deployment
+//    (see .compare-card-grid, index.html) — every number for one
+//    deployment lives in one glanceable block, no scrolling to
+//    correlate a row with a column header. Sorting moves from
+//    clickable table headers to a `<select>` + a direction toggle,
+//    since cards have no header row to click.
 //
-// See README's Step 40 for the categorical --chart-1..6 palette the
-// chart/swatches draw from — picked and validated (CVD-safe, both
-// themes) via the dataviz skill, deliberately NOT the app's own
-// semantic gain/loss/brass/info tokens, which carry fixed meaning
-// everywhere else in the app.
+// Structurally unchanged from Step 107: still an always-on leaderboard
+// (every deployment loads and ranks itself the instant the page opens,
+// no picker/Run button), still fetches snapshots+positions ONCE up
+// front so every later re-sort/re-filter/chart-selection is a pure
+// client-side re-render, still the same flag precedence (New suppresses
+// everything else; then loss-streak; then Quiet; then exactly one Top
+// performer). See README's Step 40 for the categorical --chart-1..6
+// palette the overlay chart/swatches draw from — picked and validated
+// (CVD-safe, both themes) via the dataviz skill, deliberately NOT the
+// app's own semantic gain/loss/brass/info tokens (those ARE used here,
+// for the attention panel's accent borders — that IS the semantic case
+// those tokens carry fixed meaning for everywhere else in the app).
 
 const COMPARE_MAX = 6;   // matches the validated --chart-1..6 palette -- see index.html's :root comment
 const COMPARE_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)'];
@@ -106,6 +104,21 @@ function _fmtRatio(v) {
   return v.toFixed(2);
 }
 
+// A plain-language read of the Return/Drawdown ratio, so "6.75" doesn't
+// require quant intuition to interpret -- directly answers "is this
+// number actually good," the thing raw metrics alone were leaving to
+// the reader (Step 109's whole point). Thresholds are deliberately
+// simple/round, not a precision-tuned model: this is a first-glance
+// label, not a score.
+function _ratioLabel(v) {
+  if (v == null) return null;
+  if (v === Infinity) return 'no losses yet';
+  if (v >= 3) return 'excellent';
+  if (v >= 1) return 'good';
+  if (v >= 0) return 'weak';
+  return 'losing money';
+}
+
 function _lastPoint(points) {
   return points.length ? points[points.length - 1] : null;
 }
@@ -113,11 +126,13 @@ function _lastPoint(points) {
 // A tiny inline equity-curve shape, no axes/labels/interaction -- the
 // full interactive chart is one checkbox away for anyone who wants to
 // dig in; this is purely "is this one trending up or down, and how
-// bumpy" at a glance, right in the row it belongs to.
+// bumpy" at a glance. A normalized viewBox + CSS width:100% (see
+// .compare-sparkline) lets this stretch to fill whatever width the
+// card gives it, rather than a fixed pixel size.
 function _sparklineSvg(points) {
-  const W = 72, H = 22;
+  const W = 100, H = 28;
   if (points.length < 2) {
-    return `<span class="table-note" style="margin:0; font-size:10px;">not enough history</span>`;
+    return `<div class="table-note" style="margin:6px 0 0; font-size:10px;">not enough history yet</div>`;
   }
   const vals = points.map(p => p.pct);
   const min = Math.min(...vals, 0), max = Math.max(...vals, 0);
@@ -128,54 +143,29 @@ function _sparklineSvg(points) {
     const y = H - ((p.pct - min) / range) * H;
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
-  return `<svg class="compare-sparkline" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
+  return `<svg class="compare-sparkline" height="${H}" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">
     <polyline points="${coords}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke" />
   </svg>`;
 }
 
-// One row per column. `sortValue` always returns a real, comparable
-// number/string (never null/undefined) so sorting never has to special-
-// case "no data yet" -- a deployment with nothing to show for a metric
-// just sorts to one end, same convention Deployments' own DEPLOY_COLUMNS
-// (Step 93) uses. `headerTitle` carries the one-line explanation for
-// anything whose meaning isn't obvious from the label alone.
-const COMPARE_COLUMNS = [
-  { key: 'select', label: '', sortable: false },
-  { key: 'name', label: 'Deployment', sortValue: r => r.deployment.deployment_name.toLowerCase() },
-  { key: 'flag', label: 'Flag', sortable: false },
-  {
-    key: 'days', label: 'Days', numeric: true,
-    headerTitle: 'One snapshot per trading day -- how much real history this row is actually based on.',
-    sortValue: r => r.points.length,
-  },
-  {
-    key: 'return', label: 'Return', numeric: true,
-    headerTitle: 'Percent return indexed to this deployment’s own first snapshot, not annualized -- weigh this against Days.',
-    sortValue: r => { const p = _lastPoint(r.points); return p ? p.pct : -Infinity; },
-  },
-  {
-    key: 'drawdown', label: 'Max drawdown', numeric: true,
-    headerTitle: 'Largest peak-to-trough decline in REALIZED equity -- capital actually, permanently lost, not a live paper dip on anything still open.',
-    sortValue: r => r.drawdown ? -r.drawdown.pct : Infinity,   // smaller drawdown ranks better -- negate so ascending sort still means "best first"
-  },
-  {
-    key: 'ratio', label: 'Return / Drawdown', numeric: true,
-    headerTitle: 'Return earned per unit of capital actually lost along the way -- the single best "which of these is working" number here. A big return built on an even bigger drawdown ranks BELOW a steadier one.',
-    sortValue: r => r.returnToDrawdown == null ? -Infinity : (r.returnToDrawdown === Infinity ? Number.MAX_VALUE : r.returnToDrawdown),
-  },
-  {
-    key: 'winrate', label: 'Win rate', numeric: true,
-    headerTitle: 'Per POSITION -- every leg, adjustment, and roll of one strategic bet combined into a single win or loss, same default as each deployment’s own Stats tab.',
-    sortValue: r => r.stats.winRatePct == null ? -1 : r.stats.winRatePct,
-  },
-  {
-    key: 'profitfactor', label: 'Profit factor', numeric: true,
-    headerTitle: 'Gross wins ÷ gross losses, per position. Above 1 means winners outweigh losers in rupee terms, not just in count.',
-    sortValue: r => r.stats.profitFactor == null ? -1 : (r.stats.profitFactor === Infinity ? Number.MAX_VALUE : r.stats.profitFactor),
-  },
-  { key: 'trades', label: 'Positions closed', numeric: true, sortValue: r => r.stats.closedCount },
-  { key: 'equity', label: 'Current equity', numeric: true, sortValue: r => { const p = _lastPoint(r.points); return p ? p.total_value : -Infinity; } },
-];
+// Sort key -> comparable value, always a real number/string (never
+// null/undefined) so sorting never has to special-case "no data yet" --
+// a deployment with nothing to show for a metric just sorts to one end,
+// same convention Deployments' own DEPLOY_COLUMNS (Step 93) uses.
+// `dir` is each key's OWN sensible default direction the moment it's
+// picked from the sort dropdown -- "best first" for every metric,
+// alphabetical for name -- overridable afterward via the direction
+// toggle button.
+const SORT_KEYS = {
+  ratio: { label: 'Return / Drawdown', dir: 'desc', value: r => r.returnToDrawdown == null ? -Infinity : (r.returnToDrawdown === Infinity ? Number.MAX_VALUE : r.returnToDrawdown) },
+  return: { label: 'Return', dir: 'desc', value: r => { const p = _lastPoint(r.points); return p ? p.pct : -Infinity; } },
+  drawdown: { label: 'Max drawdown (smallest first)', dir: 'asc', value: r => r.drawdown ? r.drawdown.pct : Infinity },
+  winrate: { label: 'Win rate', dir: 'desc', value: r => r.stats.winRatePct == null ? -1 : r.stats.winRatePct },
+  profitfactor: { label: 'Profit factor', dir: 'desc', value: r => r.stats.profitFactor == null ? -1 : (r.stats.profitFactor === Infinity ? Number.MAX_VALUE : r.stats.profitFactor) },
+  days: { label: 'Days live', dir: 'desc', value: r => r.points.length },
+  equity: { label: 'Current equity', dir: 'desc', value: r => { const p = _lastPoint(r.points); return p ? p.total_value : -Infinity; } },
+  name: { label: 'Name', dir: 'asc', value: r => r.deployment.deployment_name.toLowerCase() },
+};
 
 const Compare = {
   _rows: [],           // full computed dataset, one entry per deployment -- independent of filter/sort/selection
@@ -185,6 +175,7 @@ const Compare = {
   _selected: new Set(), // deployment ids currently checked for the overlay chart -- Set preserves insertion order, used for stable color assignment
 
   async load() {
+    document.getElementById('compareAttention').innerHTML = '';
     document.getElementById('compareLeaderboard').innerHTML = spinnerHtml();
     document.getElementById('compareChartSection').innerHTML = '';
     document.getElementById('compareExportBtn').style.display = 'none';
@@ -314,43 +305,40 @@ const Compare = {
 
   setStatusFilter(value) {
     this._statusFilter = value;
-    this.renderLeaderboard();
+    this.render();
   },
 
   _filteredRows() {
     return this._statusFilter ? this._rows.filter(r => r.deployment.status === this._statusFilter) : this._rows;
   },
 
-  // Click a column header to sort by it, click again to reverse; only
-  // re-renders the leaderboard (the chart section is untouched), same
-  // "no server round-trip, everything's already loaded" pattern
-  // Deployments' own setSort (Step 93) uses. Metric columns default to
-  // DESC on first click (biggest/best at the top -- that's what
-  // "ranking by this" means); name defaults to ASC (alphabetical is the
-  // natural reading order for a text column).
+  // Picking a new key from the sort dropdown adopts THAT key's own
+  // sensible default direction (see SORT_KEYS); the toggle button lets
+  // it be flipped afterward without needing to re-pick from the list.
   setSort(key) {
-    if (this._sortKey === key) {
-      this._sortDir = this._sortDir === 'asc' ? 'desc' : 'asc';
-    } else {
-      this._sortKey = key;
-      this._sortDir = key === 'name' ? 'asc' : 'desc';
-    }
+    this._sortKey = key;
+    this._sortDir = SORT_KEYS[key].dir;
+    this.renderLeaderboard();
+  },
+
+  toggleSortDir() {
+    this._sortDir = this._sortDir === 'asc' ? 'desc' : 'asc';
     this.renderLeaderboard();
   },
 
   _sortRows(rows) {
-    const col = COMPARE_COLUMNS.find(c => c.key === this._sortKey);
-    if (!col || !col.sortValue) return rows;
+    const key = SORT_KEYS[this._sortKey];
+    if (!key) return rows;
     const dir = this._sortDir === 'desc' ? -1 : 1;
     return rows.slice().sort((a, b) => {
-      const av = col.sortValue(a), bv = col.sortValue(b);
+      const av = key.value(a), bv = key.value(b);
       if (av < bv) return -1 * dir;
       if (av > bv) return 1 * dir;
       return 0;
     });
   },
 
-  // Checking a row adds it to the overlay chart below -- no fetch, the
+  // Checking a card adds it to the overlay chart below -- no fetch, the
   // data's already sitting in this._rows from load(). Capped at
   // COMPARE_MAX to match the validated chart palette.
   toggleSelect(id, checked) {
@@ -364,8 +352,65 @@ const Compare = {
   },
 
   render() {
+    this.renderAttentionPanel();
     this.renderLeaderboard();
     this.renderChartSection();
+  },
+
+  // Step 109 -- the direct answer to "still can't decide": one
+  // plain-English line per flagged deployment instead of leaving the
+  // reader to interpret a number. Worst news first (a loss streak or a
+  // quiet strategy is the most actionable thing to know right now),
+  // the positive callout after, and every "too new to judge" row
+  // batched into one footnote line rather than given its own -- it's
+  // not actionable, just a caveat, and doesn't deserve equal billing
+  // with something that might need a decision today. Reflects the
+  // CURRENT status filter (not the full unfiltered set), so "what
+  // needs attention" always matches what's actually visible below it.
+  renderAttentionPanel() {
+    const el = document.getElementById('compareAttention');
+    const rows = this._filteredRows();
+    const byFlag = label => rows.filter(r => r.flag && r.flag.label === label);
+    const lossStreaks = byFlag('3-loss streak');
+    const quiet = byFlag('Quiet');
+    const top = byFlag('Top performer');
+    const fresh = byFlag('New');
+
+    const items = [];
+    lossStreaks.forEach(r => {
+      const lastThree = r.units.filter(u => u.status === 'closed')
+        .slice().sort((a, b) => new Date(a.closed_at || a.opened_at) - new Date(b.closed_at || b.opened_at)).slice(-3);
+      const total = lastThree.reduce((s, u) => s + u.realized_pnl, 0);
+      items.push({ cls: 'attn-bad', html:
+        `⚠️ <a href="#/deployments/${r.deployment.id}">${escapeHtml(r.deployment.deployment_name)}</a> has lost its last 3 closed positions in a row ` +
+        `(${fmtSignedMoney(total)} combined). Worth a closer look — is the strategy or the market regime still working?` });
+    });
+    quiet.forEach(r => {
+      items.push({ cls: 'attn-warn', html:
+        `💤 <a href="#/deployments/${r.deployment.id}">${escapeHtml(r.deployment.deployment_name)}</a> has been running ${r.points.length} days without closing a single position. ` +
+        `Worth checking it’s actually generating signals.` });
+    });
+    top.forEach(r => {
+      items.push({ cls: 'attn-good', html:
+        `🏆 <a href="#/deployments/${r.deployment.id}">${escapeHtml(r.deployment.deployment_name)}</a> is your best risk-adjusted performer right now ` +
+        `(Return/Drawdown ${_fmtRatio(r.returnToDrawdown)} — ${_ratioLabel(r.returnToDrawdown)}). A candidate for more capital, once you trust its track record.` });
+    });
+    if (fresh.length) {
+      items.push({ cls: 'attn-info', html:
+        `🆕 ${fresh.length} deployment${fresh.length > 1 ? 's are' : ' is'} too new to judge yet: ` +
+        `${fresh.map(r => escapeHtml(r.deployment.deployment_name)).join(', ')}.` });
+    }
+
+    if (!items.length) {
+      el.innerHTML = '';
+      return;
+    }
+    el.innerHTML = `
+      <section style="margin-bottom:22px;">
+        <h2>What needs attention</h2>
+        <div class="attn-list">${items.map(it => `<div class="attn-item ${it.cls}">${it.html}</div>`).join('')}</div>
+      </section>
+    `;
   },
 
   renderLeaderboard() {
@@ -378,41 +423,44 @@ const Compare = {
     const sorted = this._sortRows(filtered);
     const selOrder = Array.from(this._selected);   // insertion order -> stable color per selected row
 
-    const bodyRows = sorted.map(r => {
+    const cards = sorted.map(r => {
       const selIdx = selOrder.indexOf(r.deployment.id);
       const isSelected = selIdx !== -1;
       const atCap = !isSelected && this._selected.size >= COMPARE_MAX;
       const last = _lastPoint(r.points);
-      return `<tr>
-        <td>
-          <input type="checkbox" ${isSelected ? 'checked' : ''} ${atCap ? 'disabled' : ''}
-                 onchange="Compare.toggleSelect('${r.deployment.id}', this.checked)"
-                 title="${atCap ? `Up to ${COMPARE_MAX} at a time for the chart below` : 'Add to the chart comparison below'}">
-          ${isSelected ? `<span class="legend-swatch" style="background:${COMPARE_COLORS[selIdx % COMPARE_COLORS.length]}; margin-left:6px;"></span>` : ''}
-        </td>
-        <td>
-          <div style="font-weight:700; display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-            <a href="#/deployments/${r.deployment.id}">${escapeHtml(r.deployment.deployment_name)}</a>
-            <span class="tag tag-${r.deployment.status}">${r.deployment.status}</span>
+      const ratioLabel = _ratioLabel(r.returnToDrawdown);
+      return `
+        <div class="card compare-card">
+          <div class="compare-card-head">
+            <label class="compare-card-check" title="${atCap ? `Up to ${COMPARE_MAX} at a time for the chart below` : 'Add to the chart comparison below'}">
+              <input type="checkbox" ${isSelected ? 'checked' : ''} ${atCap ? 'disabled' : ''}
+                     onchange="Compare.toggleSelect('${r.deployment.id}', this.checked)">
+              ${isSelected ? `<span class="legend-swatch" style="background:${COMPARE_COLORS[selIdx % COMPARE_COLORS.length]}"></span>` : ''}
+            </label>
+            <div style="flex:1; min-width:0;">
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <a href="#/deployments/${r.deployment.id}" style="font-weight:700;">${escapeHtml(r.deployment.deployment_name)}</a>
+                <span class="tag tag-${r.deployment.status}">${r.deployment.status}</span>
+                ${r.flag ? `<span class="tag ${r.flag.cls}" title="${escapeHtml(r.flag.title)}">${r.flag.icon} ${escapeHtml(r.flag.label)}</span>` : ''}
+              </div>
+              <div style="font-size:10.5px; color:var(--parchment); margin-top:1px;">${escapeHtml(r.deployment.strategy_name)}</div>
+            </div>
           </div>
-          <div style="font-size:10.5px; color:var(--parchment); margin:1px 0 4px;">${escapeHtml(r.deployment.strategy_name)}</div>
           ${_sparklineSvg(r.points)}
-        </td>
-        <td class="compare-flag">${r.flag ? `<span class="tag ${r.flag.cls}" title="${escapeHtml(r.flag.title)}">${r.flag.icon} ${escapeHtml(r.flag.label)}</span>` : ''}</td>
-        <td class="text-right">${r.points.length}</td>
-        <td class="text-right ${last ? pnlClass(last.pct) : ''}">${last ? `${last.pct >= 0 ? '+' : ''}${last.pct.toFixed(2)}%` : '—'}</td>
-        <td class="text-right ${r.drawdown ? 'neg' : ''}">${r.drawdown ? `${fmtMoney(r.drawdown.abs)} (${r.drawdown.pct.toFixed(2)}%)` : '—'}</td>
-        <td class="text-right">${_fmtRatio(r.returnToDrawdown)}</td>
-        <td class="text-right">${r.stats.winRatePct == null ? '—' : fmtPct(r.stats.winRatePct)}</td>
-        <td class="text-right">${_fmtRatio(r.stats.profitFactor)}</td>
-        <td class="text-right">${r.stats.closedCount}</td>
-        <td class="text-right">${last ? fmtMoney(last.total_value) : '—'}</td>
-      </tr>`;
+          <div class="compare-card-metrics">
+            <div class="row"><span>Return</span><b class="${last ? pnlClass(last.pct) : ''}">${last ? `${last.pct >= 0 ? '+' : ''}${last.pct.toFixed(2)}%` : '—'}</b></div>
+            <div class="row"><span>Max drawdown</span><b class="${r.drawdown ? 'neg' : ''}">${r.drawdown ? `${fmtMoney(r.drawdown.abs)} (${r.drawdown.pct.toFixed(2)}%)` : '—'}</b></div>
+            <div class="row"><span>Return / Drawdown</span><b>${_fmtRatio(r.returnToDrawdown)}${ratioLabel ? ` <span class="compare-ratio-label">${escapeHtml(ratioLabel)}</span>` : ''}</b></div>
+            <div class="row"><span>Win rate</span><b>${r.stats.winRatePct == null ? '—' : fmtPct(r.stats.winRatePct)}</b></div>
+            <div class="row"><span>Profit factor</span><b>${_fmtRatio(r.stats.profitFactor)}</b></div>
+            <div class="row"><span>Positions closed</span><b>${r.stats.closedCount}</b></div>
+            <div class="row"><span>Days live</span><b>${r.points.length}</b></div>
+            <div class="row"><span>Current equity</span><b>${last ? fmtMoney(last.total_value) : '—'}</b></div>
+          </div>
+        </div>
+      `;
     }).join('');
 
-    // .deploy-table reused purely for its sortable-header CSS
-    // (cursor/hover/sticky-header) -- see index.html's own rule, not
-    // specific to the Deployments view despite the name.
     el.innerHTML = `
       <div class="filters" style="margin-bottom:12px; align-items:center;">
         <select onchange="Compare.setStatusFilter(this.value)">
@@ -421,29 +469,21 @@ const Compare = {
           <option value="paused" ${this._statusFilter === 'paused' ? 'selected' : ''}>Paused</option>
           <option value="stopped" ${this._statusFilter === 'stopped' ? 'selected' : ''}>Stopped</option>
         </select>
+        <select onchange="Compare.setSort(this.value)">
+          ${Object.entries(SORT_KEYS).map(([key, def]) =>
+            `<option value="${key}" ${this._sortKey === key ? 'selected' : ''}>Sort: ${escapeHtml(def.label)}</option>`
+          ).join('')}
+        </select>
+        <button class="btn btn-secondary btn-sm" onclick="Compare.toggleSortDir()" title="Flip sort direction">
+          ${this._sortDir === 'desc' ? '▼ high to low' : '▲ low to high'}
+        </button>
         <span class="table-note" style="margin:0;">${sorted.length} deployment(s) · check up to ${COMPARE_MAX} to chart them below</span>
       </div>
-      <div class="table-wrap">
-      <table class="deploy-table"><thead><tr>
-        ${COMPARE_COLUMNS.map(c => {
-          if (c.sortable === false) return `<th${c.numeric ? ' class="text-right"' : ''}>${escapeHtml(c.label)}</th>`;
-          const isSorted = this._sortKey === c.key;
-          const arrow = isSorted ? (this._sortDir === 'asc' ? '▲' : '▼') : '▲';
-          return `<th class="sortable${c.numeric ? ' text-right' : ''}" onclick="Compare.setSort('${c.key}')"
-                      ${c.headerTitle ? `title="${escapeHtml(c.headerTitle)}"` : ''}
-                      aria-sort="${isSorted ? (this._sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}">
-                    ${escapeHtml(c.label)}<span class="sort-arrow${isSorted ? ' active' : ''}">${arrow}</span>
-                  </th>`;
-        }).join('')}
-      </tr></thead>
-      <tbody>${bodyRows}</tbody></table>
-      </div>
-      <div class="table-note">
+      <div class="compare-card-grid">${cards}</div>
+      <div class="table-note" style="margin-top:14px;">
         Return/Drawdown is the number most worth ranking by — return earned per unit of capital actually,
         permanently lost, not a live paper swing on anything still open. Win rate/Profit factor/Positions
         closed combine every leg, adjustment, and roll of one strategic bet into a single win or loss.
-        Flags: 🆕 too new to trust yet · ⚠️ last 3 closes were all losses · 💤 running but nothing has
-        closed yet · 🏆 best risk-adjusted return right now.
       </div>
     `;
   },
@@ -477,13 +517,13 @@ const Compare = {
     // different span, so a shared time axis would either squash a
     // short-lived deployment's curve into a sliver or need
     // interpolation this simple inline-SVG renderer isn't built for.
-    // Index-based keeps every curve's full shape readable; the
-    // leaderboard above carries the real timestamps for anyone who
-    // needs them. The hover/touch crosshair (Step 88) follows the same
-    // convention: the cursor's X FRACTION (0-1 across the chart) maps
-    // independently into each series' own nearest point by that same
-    // fraction, since there's no shared index to look up directly
-    // across series of different lengths.
+    // Index-based keeps every curve's full shape readable; each card
+    // above carries the real timestamps for anyone who needs them. The
+    // hover/touch crosshair (Step 88) follows the same convention: the
+    // cursor's X FRACTION (0-1 across the chart) maps independently
+    // into each series' own nearest point by that same fraction, since
+    // there's no shared index to look up directly across series of
+    // different lengths.
     const polylines = withData.map((r, i) => {
       const n = r.points.length;
       const points = r.points.map((p, j) => {
@@ -539,11 +579,11 @@ const Compare = {
   },
 
   // Summary export -- one row per deployment (the leaderboard exactly
-  // as currently filtered/sorted), not the old per-snapshot long
-  // format: this page is a scorecard now, and a scorecard is what's
-  // worth taking elsewhere (a note, a spreadsheet of decisions made).
-  // Anyone who wants the raw per-day series for one deployment still
-  // has that on its own Detail page.
+  // as currently filtered/sorted), not a per-snapshot long format:
+  // this page is a scorecard, and a scorecard is what's worth taking
+  // elsewhere (a note, a spreadsheet of decisions made). The raw
+  // per-day series for any single deployment is still on its own
+  // Detail page.
   exportCsv() {
     if (!this._rows.length) return;
     const rows = this._sortRows(this._filteredRows()).map(r => {
