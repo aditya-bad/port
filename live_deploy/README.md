@@ -6506,6 +6506,84 @@ includes its real, non-double-counted unrealized gain). Also re-ran
 the simplified `list_snapshots` SQL against a real local Postgres
 instance to confirm the Step 96 revert still behaves correctly.
 
+## What's here (Step 100: per-day M2M best/worst back in the Stats table — computed correctly this time, two different ways)
+
+Follow-up ask, in the Stats "Recent Periods" trend table this time, not
+the equity chart: bring back a per-period best/worst mark-to-market
+figure (what Step 97 briefly had and Step 99 removed for being wrong),
+now that Step 99 fixed the actual number it would be built on. Explicit
+scope from the user, in their own words: for an "intraday" deployment,
+combine every position AND adjustment that closed within the period
+into one swing; for a "positional" deployment, track the whole open
+position's own M2M range instead.
+
+Those are genuinely two different computations, so two different query
+functions:
+
+- **`queries.get_intraday_mtm_range`** — for "intraday" mode, replays
+  every position this deployment closed within a period (day/week/
+  month), IN THE EXACT ORDER they actually closed, as a running SQL
+  window-function SUM of `realized_pnl`, and reports that running
+  total's own MAX/MIN within the period. This is exact, not sampled:
+  an intraday deployment has nothing left open once the day's done (see
+  Step 99 — `open_positions_value` is never even computed for these),
+  so every bit of a day's real P&L movement happened at a discrete
+  trade-close instant. Summing THOSE in order — not polling
+  `deployment_snapshots` every ~5 minutes and hoping nothing peaked
+  in between two samples — can't miss a swing between snapshots, and
+  naturally covers "every position and adjustment combined" for free:
+  an adjustment is just another row in the same `positions` table,
+  with its own `closed_at`, contributing to the same running sum
+  whatever caused it to close.
+- **`queries.get_positional_mtm_range`** — for "positional" mode,
+  there's no equivalent discrete-event source (a positional deployment
+  can go the whole day without a single close) — its real day-to-day
+  swing comes from the open position's live PRICE, which only
+  `deployment_snapshots` (Step 99's now-correct `total_value`) tracks
+  at all. Day-only (`day_high`/`day_low` from that day's own snapshots,
+  minus the day's own opening value) — week/month aren't attempted;
+  no positional deployment's Stats tab has ever asked for anything
+  coarser than daily, and stitching several days' own snapshot ranges
+  into one meaningful weekly/monthly high/low would need real,
+  separate design work this wasn't worth guessing at.
+
+**A gap caught mid-implementation, before it shipped**: a positional
+deployment that holds a position with no trade activity at all on a
+given day has NOTHING in the existing realized-P&L digest for that day
+(built from `positions.closed_at`/`position_lots.executed_at` — see
+`list_pnl_digest_for_deployment`'s own long-standing philosophy) — so
+a naive merge would have silently DROPPED exactly the "just holding"
+days this feature exists for on positional deployments, the most
+common case for them. Fixed by synthesizing a zero-activity digest row
+(`realized_pnl`/`positions_closed`/`wins`/`losses`/`fills` all
+genuinely 0 — nothing traded, which is true) for any day
+`get_positional_mtm_range` has data for but the digest doesn't, so its
+max_profit/max_loss still surfaces. Caught this from re-testing against
+real data with a "quiet day" scenario deliberately included, not from
+a code read alone.
+
+New response fields live on their own `PnlDigestRowWithRange` schema,
+NOT added to the shared `PnlDigestRow` — that model is also the
+PORTFOLIO-wide digest's own response shape (`GET /portfolio/pnl-
+digest`, Reports page), whose docstring explicitly rejects mixing any
+mark-to-market number into a digest of settled history; scoping the
+new fields to a subclass used only by the single-deployment endpoint
+means Reports' own table is completely unaffected. `renderPnlTrendTable`
+(the actual shared rendering function, api.js) only shows the two new
+"M2M Best"/"M2M Worst" columns when at least one row actually carries
+them, so Reports' call site renders exactly as it did before this step.
+
+Verified against a real local Postgres instance (fresh migrations,
+hand-seeded data) end to end — not just the raw SQL in isolation, the
+actual async Python functions: an intraday deployment with 3 trades in
+one day (+1200, -400, +300, running totals [1200, 800, 1100]) reports
+`max_profit=1200, max_loss=800`, matching hand-derived expectations
+exactly; a positional deployment's day (open 52000, peak 54000, dip
+51000) reports `max_profit=2000, max_loss=-1000`; and the "quiet
+holding day" scenario above, re-tested after the fix, correctly
+produces a synthesized row instead of silently vanishing. `node
+--check` and a full `app.main` import both clean.
+
 ## Setup
 
 ```bash

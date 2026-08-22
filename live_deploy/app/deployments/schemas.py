@@ -306,6 +306,31 @@ class PnlDigestRow(BaseModel):
     fills: int
 
 
+class PnlDigestRowWithRange(PnlDigestRow):
+    """PnlDigestRow plus `max_profit`/`max_loss` (Step 100) — the
+    deployment's OWN best/worst mark-to-market standing reached within
+    that period. Deliberately its own subclass, NOT added to the base
+    PnlDigestRow: that model is shared with the PORTFOLIO-wide digest
+    (queries.list_pnl_digest), whose own docstring explicitly rejects
+    mixing any mark-to-market number into a digest of settled history —
+    a rule that's still correct for a live, right-now unrealized
+    number, but doesn't actually apply to what's computed here (see
+    queries.get_intraday_mtm_range/get_positional_mtm_range's own
+    docstrings): once a period is over, ITS OWN best/worst point during
+    that period is a fixed historical fact, not something that keeps
+    changing the way "today's live unrealized P&L" does. Scoped to this
+    subclass, used ONLY by GET /deployments/{id}/pnl-digest (a single
+    deployment's own trend table), never by the portfolio-wide one.
+
+    Optional, defaulting to None (not 0.0) — None means "not computed
+    for this bucket" (e.g. a positional deployment's week/month bucket,
+    which this doesn't attempt — see get_positional_mtm_range's own
+    docstring for why), rendered as "—" rather than a misleading zero.
+    """
+    max_profit: Optional[float] = None
+    max_loss: Optional[float] = None
+
+
 class PnlStrategyBreakdown(BaseModel):
     """One strategy's realized P&L within a single Reports-page period
     — see queries.pnl_by_strategy_for_range."""

@@ -904,30 +904,143 @@ async def list_pnl_digest(
         )
 
 
-async def list_pnl_digest_for_deployment(
-    pool: asyncpg.Pool, deployment_id: UUID, period: str = "day", limit: int = 400,
-) -> list[asyncpg.Record]:
-    """Same shape and philosophy as list_pnl_digest (see its own
-    docstring for the realized-only reasoning and the closes/fills
-    FULL OUTER JOIN), scoped to ONE deployment instead of the whole
-    portfolio — the P&L calendar heatmap's per-deployment source on
-    Detail's own tab. Both `positions` and `position_lots` carry
-    `deployment_id` directly (not just via position_id -> positions),
-    so this is a straight WHERE addition to the same query shape, not a
-    different join structure. `limit` defaults higher than the
-    portfolio digest's 30 (400 comfortably covers a full year of daily
-    buckets, ~371 for a GitHub-style 53-week grid) since a calendar
-    heatmap wants a full year in view, not a handful of recent periods.
-    Deliberately NOT filtered by include_in_reports, unlike its
-    portfolio-wide sibling above — a deployment's own P&L calendar on
-    its own Detail page shows its own history regardless of whether
-    it's opted out of cross-deployment reports (see the 0009
-    migration's own comment).
+async def get_intraday_mtm_range(
+    pool: asyncpg.Pool, deployment_id: UUID, period: str = "day",
+) -> dict[datetime, dict[str, float]]:
+    """Step 100 — {period_start: {"max_profit": ..., "max_loss": ...}}
+    for an "intraday" deployment: the best/worst RUNNING TOTAL of
+    realized_pnl reached at any point within each period, tracked
+    trade-by-trade (every position close that period, in the exact
+    chronological order they actually closed — a SQL window function's
+    running SUM, not a coarse snapshot sample), starting fresh at 0
+    each period. This is exact, not approximate: an intraday deployment
+    by design has nothing genuinely "open" once the day's done (see
+    DeploymentManager._snapshot_one's own Step 99 comment for why
+    open_positions_value is never even computed for these), so every
+    bit of that day's P&L movement happened at a discrete trade-close
+    instant — summing THOSE, in order, in exactly the sequence they
+    occurred, captures the day's real M2M swing regardless of how many
+    trades or adjustments happened, with no risk of missing a peak
+    between snapshot_loop's ~5-minute samples the way a snapshot-based
+    approach would.
+
+    `max_profit` can be negative (the least-bad point reached on an
+    all-losing period); `max_loss` can be positive (the least-good
+    point reached on an all-winning one) — both are just "the running
+    total's own high/low that period," not clamped to a sign.
+
+    Works for any period (day/week/month) — a week's own running total,
+    tracked trade-by-trade across every day in it, is just as
+    well-defined as a single day's.
     """
     if period not in _DIGEST_PERIODS:
         raise ValueError(f"period must be one of {_DIGEST_PERIODS}, got {period!r}")
     async with pool.acquire() as conn:
-        return await conn.fetch(
+        rows = await conn.fetch(
+            """
+            WITH per_close AS (
+                SELECT
+                    (date_trunc($2, closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    SUM(realized_pnl) OVER (
+                        PARTITION BY date_trunc($2, closed_at AT TIME ZONE 'Asia/Kolkata')
+                        ORDER BY closed_at
+                        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                    ) AS running_pnl
+                FROM positions
+                WHERE deployment_id = $1 AND status = 'closed' AND closed_at IS NOT NULL
+            )
+            SELECT period_start, MAX(running_pnl)::float8 AS max_profit, MIN(running_pnl)::float8 AS max_loss
+            FROM per_close
+            GROUP BY period_start
+            """,
+            deployment_id, period,
+        )
+    return {r["period_start"]: {"max_profit": r["max_profit"], "max_loss": r["max_loss"]} for r in rows}
+
+
+async def get_positional_mtm_range(
+    pool: asyncpg.Pool, deployment_id: UUID, period: str = "day",
+) -> dict[datetime, dict[str, float]]:
+    """Step 100 — same return shape as get_intraday_mtm_range, but for
+    a "positional" deployment: unlike intraday, a positional deployment
+    can genuinely still be holding a position at end of day, so there's
+    no discrete "trade closed" event to reconstruct an exact swing
+    from — its day-to-day M2M movement comes from the open position's
+    live PRICE, which only deployment_snapshots (Step 99's now-correct
+    total_value, per-deployment, every ~5 minutes) actually tracks.
+
+    ONLY supports period="day" — returns {} for week/month. A single
+    day's snapshot cadence (~5-minute samples) is a reasonable proxy
+    for that day's real high/low; stitching multiple days' own samples
+    into a meaningful WEEKLY or MONTHLY high/low would need a genuinely
+    different (and much heavier) query for a case this app doesn't
+    actually need yet — no positional deployment's Stats tab has asked
+    for anything coarser than daily. Rows this skips come back with
+    max_profit/max_loss = None (see PnlDigestRowWithRange's own
+    docstring), not 0 — "not computed", not "zero swing".
+    """
+    if period != "day":
+        return {}
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            WITH day_stats AS (
+                SELECT
+                    (date_trunc('day', snapshot_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
+                    MAX(total_value) AS day_high,
+                    MIN(total_value) AS day_low,
+                    (array_agg(total_value ORDER BY snapshot_at ASC))[1] AS day_open
+                FROM deployment_snapshots
+                WHERE deployment_id = $1
+                GROUP BY period_start
+            )
+            SELECT period_start, (day_high - day_open)::float8 AS max_profit,
+                   (day_low - day_open)::float8 AS max_loss
+            FROM day_stats
+            """,
+            deployment_id,
+        )
+    return {r["period_start"]: {"max_profit": r["max_profit"], "max_loss": r["max_loss"]} for r in rows}
+
+
+async def list_pnl_digest_for_deployment(
+    pool: asyncpg.Pool, deployment_id: UUID, mode: str, period: str = "day", limit: int = 400,
+) -> list[dict]:
+    """Same shape and philosophy as list_pnl_digest (see its own
+    docstring for the realized-only reasoning and the closes/fills
+    FULL OUTER JOIN), scoped to ONE deployment instead of the whole
+    portfolio — the P&L calendar heatmap's per-deployment source on
+    Detail's own tab, and (Step 100) the Stats "Recent Periods" trend
+    table's source for max_profit/max_loss. Both `positions` and
+    `position_lots` carry `deployment_id` directly (not just via
+    position_id -> positions), so this is a straight WHERE addition to
+    the same query shape, not a different join structure. `limit`
+    defaults higher than the portfolio digest's 30 (400 comfortably
+    covers a full year of daily buckets, ~371 for a GitHub-style
+    53-week grid) since a calendar heatmap wants a full year in view,
+    not a handful of recent periods. Deliberately NOT filtered by
+    include_in_reports, unlike its portfolio-wide sibling above — a
+    deployment's own P&L calendar on its own Detail page shows its own
+    history regardless of whether it's opted out of cross-deployment
+    reports (see the 0009 migration's own comment).
+
+    `mode` (Step 100) — this deployment's own `mode` column, passed in
+    by the caller (which already has the deployment row for its own
+    404 check) rather than re-fetched here — picks which of
+    get_intraday_mtm_range/get_positional_mtm_range supplies
+    max_profit/max_loss, merged onto each digest row by matching
+    `period_start` (both helpers compute it with the EXACT same
+    `date_trunc(..., ... AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE
+    'Asia/Kolkata'` round-trip this query already uses, so the values
+    compare equal as the same real timestamptz instant). Returns
+    `list[dict]`, not `list[asyncpg.Record]` like every other function
+    here — asyncpg.Record is immutable, and merging a second query's
+    columns onto rows from this one needs a mutable structure.
+    """
+    if period not in _DIGEST_PERIODS:
+        raise ValueError(f"period must be one of {_DIGEST_PERIODS}, got {period!r}")
+    async with pool.acquire() as conn:
+        digest_rows = await conn.fetch(
             """
             WITH closes AS (
                 SELECT
@@ -962,6 +1075,47 @@ async def list_pnl_digest_for_deployment(
             """,
             period, deployment_id, limit,
         )
+
+    mtm_map = await (get_positional_mtm_range(pool, deployment_id, period=period)
+                      if mode == "positional" else get_intraday_mtm_range(pool, deployment_id, period=period))
+    out = []
+    covered_periods = set()
+    for r in digest_rows:
+        d = dict(r)
+        mtm = mtm_map.get(r["period_start"])
+        d["max_profit"] = mtm["max_profit"] if mtm else None
+        d["max_loss"] = mtm["max_loss"] if mtm else None
+        out.append(d)
+        covered_periods.add(r["period_start"])
+
+    # A "positional" deployment can go a whole day with no fill and no
+    # close at all -- just quietly holding what it already has -- and
+    # the digest above (built from positions.closed_at/position_lots.
+    # executed_at) has NOTHING to say about a day like that, same as it
+    # never has for anything else. But that's exactly the day this
+    # feature exists for: a positional deployment's real day-to-day
+    # movement usually comes from its open position's price, not a
+    # fresh trade. Rather than silently dropping days mtm_map actually
+    # has data for, synthesize a zero-activity row for each one this
+    # digest missed (realized_pnl/positions_closed/wins/losses/fills
+    # all genuinely 0 -- nothing traded that day, which is true) so its
+    # max_profit/max_loss still surfaces. Intraday mode is never
+    # affected: an intraday deployment can't have a snapshot-only day
+    # with no closes, since it's flat by day's end whenever it traded
+    # at all, and get_intraday_mtm_range only ever produces an entry
+    # for a period this digest already has a close in anyway.
+    if mode == "positional":
+        for period_start, mtm in mtm_map.items():
+            if period_start in covered_periods:
+                continue
+            out.append({
+                "period_start": period_start, "realized_pnl": 0.0,
+                "positions_closed": 0, "wins": 0, "losses": 0, "fills": 0,
+                "max_profit": mtm["max_profit"], "max_loss": mtm["max_loss"],
+            })
+        out.sort(key=lambda d: d["period_start"], reverse=True)
+        out = out[:limit]
+    return out
 
 
 async def list_pnl_digest_for_range(

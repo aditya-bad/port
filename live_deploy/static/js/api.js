@@ -999,16 +999,27 @@ function scrollPnlHeatmapToEnd(containerId) {
 // way, only which digest endpoint fed it differs.
 // opts.periodLabel(iso): formats one row's period_start for the first
 // column — callers pass their own (day/week/month all read differently).
+// `row.max_profit`/`row.max_loss` (Step 100) only exist on a single
+// deployment's own digest (queries.list_pnl_digest_for_deployment,
+// GET /deployments/{id}/pnl-digest) -- the portfolio-wide one
+// (queries.list_pnl_digest, Reports' own use of this same shared
+// renderer) never carries them at all (see PnlDigestRow's own
+// docstring for why a portfolio-wide mark-to-market digest doesn't
+// exist), so the two extra columns only render when at least one row
+// actually has them -- Reports' table renders exactly as before.
 function renderPnlTrendTable(rows, opts = {}) {
   const periodLabel = opts.periodLabel || (iso => fmtDate(iso));
   if (!rows.length) {
     return emptyHtml('No closed positions recorded yet.');
   }
   const maxAbs = Math.max(...rows.map(r => Math.abs(r.realized_pnl)), 1);
+  const showMtm = rows.some(r => r.max_profit !== undefined && r.max_profit !== null);
   return `
     <div class="table-wrap">
     <table><thead><tr>
       <th>Period</th><th>Realized P&amp;L</th><th>Positions closed</th><th>Win rate</th><th>Fills</th>
+      ${showMtm ? '<th title="This period&#39;s own best mark-to-market standing, from its own start">M2M Best</th>' +
+                  '<th title="This period&#39;s own worst mark-to-market standing, from its own start">M2M Worst</th>' : ''}
     </tr></thead>
     <tbody>${rows.map(row => {
       const pct = (Math.abs(row.realized_pnl) / maxAbs) * 50;   // 50% = half the track, since the bar grows from a CENTER zero-line
@@ -1028,6 +1039,10 @@ function renderPnlTrendTable(rows, opts = {}) {
         <td>${row.positions_closed}</td>
         <td>${winRate}</td>
         <td>${row.fills}</td>
+        ${showMtm ? `
+          <td>${row.max_profit != null ? `<span class="${pnlClass(row.max_profit)}">${fmtSignedMoney(row.max_profit)}</span>` : '—'}</td>
+          <td>${row.max_loss != null ? `<span class="${pnlClass(row.max_loss)}">${fmtSignedMoney(row.max_loss)}</span>` : '—'}</td>
+        ` : ''}
       </tr>`;
     }).join('')}</tbody></table>
     </div>

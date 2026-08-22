@@ -21,7 +21,7 @@ from .aggregate import year_bounds
 from ..db import queries
 from ..deployments.schemas import (
     AdjustmentHistogramOut, DeploymentCreate, DeploymentOut, DeploymentUpdate,
-    EventOut, LotsPage, PnlDigestRow, PositionOut, ReportOut, SnapshotOut,
+    EventOut, LotsPage, PnlDigestRow, PnlDigestRowWithRange, PositionOut, ReportOut, SnapshotOut,
     StrategyStatusOut,
 )
 from ..strategies.registry import get_strategy_class, is_registered
@@ -333,7 +333,7 @@ async def get_snapshots(deployment_id: UUID, request: Request, limit: int = 1000
     return [dict(r) for r in rows]
 
 
-@router.get("/{deployment_id}/pnl-digest", response_model=list[PnlDigestRow])
+@router.get("/{deployment_id}/pnl-digest", response_model=list[PnlDigestRowWithRange])
 async def get_pnl_digest(
     deployment_id: UUID, request: Request, period: str = "day", limit: int = 400, year: int | None = None,
 ):
@@ -348,7 +348,16 @@ async def get_pnl_digest(
 
     year (Step 74): the Calendar heatmap's year-picker -- see the
     sibling portfolio endpoint's own comment; `limit` is ignored when
-    this is set.
+    this is set. The year-scoped range query doesn't compute
+    max_profit/max_loss at all (see list_pnl_digest_for_deployment_range
+    -- unchanged since Step 100, only the Stats trend table's own
+    smaller-limit query needed this) -- those two fields just come back
+    None for every row here, which the heatmap never reads anyway.
+
+    max_profit/max_loss (Step 100): only list_pnl_digest_for_deployment
+    (the non-year-scoped path, i.e. the Stats "Recent Periods" trend
+    table) computes these -- see that function's own docstring for the
+    mode-dependent (intraday vs positional) mechanism.
     """
     pool = request.app.state.db_pool
     dep = await queries.get_deployment(pool, deployment_id)
@@ -358,11 +367,13 @@ async def get_pnl_digest(
         if year is not None:
             start, end = year_bounds(year)
             rows = await queries.list_pnl_digest_for_deployment_range(pool, deployment_id, start, end, period=period)
+            return [dict(r) for r in rows]
         else:
-            rows = await queries.list_pnl_digest_for_deployment(pool, deployment_id, period=period, limit=limit)
+            return await queries.list_pnl_digest_for_deployment(
+                pool, deployment_id, mode=dep["mode"], period=period, limit=limit,
+            )
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return [dict(r) for r in rows]
 
 
 @router.get("/{deployment_id}/strategy-status", response_model=StrategyStatusOut)
