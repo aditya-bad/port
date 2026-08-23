@@ -7598,6 +7598,155 @@ button stays hidden on the Leaderboards tab and on the Compare tab
 before any data has loaded, appearing only once both conditions (Compare
 tab active AND rows loaded) are true.
 
+## What's here (Step 115: `weekly_ema_st_spread` — a new, genuinely different strategy)
+
+A brand new strategy — EMA(20) + SuperTrend on 1-HOUR NIFTY candles,
+sells a WEEKLY credit spread (a real bought hedge leg, never naked) on
+trend/EMA confluence, multi-day holding, no daily force-exit at all.
+Deliberately unrelated to the `pivot_supertrend*` family (different
+indicators, different timeframe, different holding period, a real
+spread instead of a naked ATM sell) — new file only,
+`pivot_supertrend.py`/`pivot_supertrend_options.py`/
+`pivot_supertrend_options_inverse.py` are byte-for-byte untouched; only
+`app/strategies/__init__.py` gained one import line to register it.
+
+Two source videos gave this strategy; most of it is well-evidenced (16
+weeks of real trades, explicit numbers) but two pieces are explicitly
+NOT formulas in the source material — flagged PROVISIONAL in the file's
+own module docstring, with the single worked example each is drawn
+from, rather than reverse-engineered into a "better" formula: SuperTrend
+period/multiplier (10/3 — inferred from "normal, nothing changed,"
+deliberately NOT `pivot_supertrend`'s own tuned 7/3, which was tuned for
+a different signal), and `hedge_width_points` (200 — one worked example;
+the source material is explicit there's no fixed formula, so this stays
+a plain points offset, never adaptive/volatility-scaled).
+
+**Entry**: SuperTrend red + close below EMA(20) sells a call spread;
+green + above sells a put spread. The sold leg reuses
+`OptionsResolver.get_leg_by_premium` exactly as-is (target premium 100,
+the one number repeated as an actual habit across both videos) rather
+than a bespoke "search near the SuperTrend line" resolver, per the
+source material's own explicit "don't rebuild it." Three gates before
+any entry: a signal detected at/after `entry_signal_cutoff_time`
+("14:15", PROVISIONAL) is deferred to tomorrow's open rather than acted
+on today — implemented as a pure per-candle time gate with no staged-
+signal state at all, since tomorrow's own candle naturally re-evaluates
+the (by-then-current) indicator state fresh; a fresh EMA touch/cross is
+required after every exit before the next entry is even considered
+(`touched_ema_since_exit`); and a post-exit "let the new weekly cycle
+settle" cooldown (`post_exit_gap_trading_days`, default 2) arms ONLY
+when a close lands on that position's own actually-RESOLVED expiry date
+— translating the source's Thursday-anchored example ("closes Thursday,
+skip Friday and Monday, resume Tuesday") into weekday-agnostic logic
+now that NIFTY's real expiry has itself moved to Tuesday, same
+never-hardcode-a-weekday lesson this whole project keeps re-learning.
+
+**Exit**: SuperTrend flip is the ONLY primary exit — EMA position alone
+never closes a position, matching the source's own "if SuperTrend is
+not green... the trade keeps running." Implemented as `current trend !=
+the trend recorded at this position's own entry`, not an edge-triggered
+"just flipped" check — equivalent when acting immediately, and what
+makes the identical last-candle-of-day deferral fall out for free for
+exits too (no separate staged-exit state needed). A secondary,
+PROVISIONAL early-close rule locks in a capture near expiry: once
+`early_close_capture_pct` (0.80) of the spread's own net entry credit is
+captured and `early_close_max_days_to_expiry` (1) or fewer days remain
+— NOT gated by the cutoff time, since deferring a 1-day-to-expiry
+capture-lock to "tomorrow" could mean deferring it past expiry entirely.
+No fixed rupee stop-loss exists at all — deliberate, per the source
+material's own acceptance that single-trade losses can run large.
+
+**Sizing**: `capital` defaults to Rs 1,00,000, not Rs 5,00,000 — the
+video's own quantity (300) divided by NIFTY's PRE-January-2026 lot size
+(60, not today's 65) is exactly 5 lots, meaning the real ratio
+demonstrated was Rs 1L of capital PER LOT, not Rs 5L for one lot;
+starting this build at 1 lot without also scaling capital down by the
+same factor would silently break the step-up threshold and margin ratio
+the video actually showed. Step-up (an explicit, flagged interpretation
+of "increase lot size once profit covers the margin for one more lot"):
+cumulative realized P&L since the last step-up crossing `capital_per_lot`
+(default: `capital` / the INITIAL lot count) bumps `lots_per_trade` by
+exactly 1 for the NEXT entry only, with the excess above the threshold
+carried forward rather than reset to zero.
+
+**SuperTrend/EMA seeding — the exact same discipline as
+`pivot_supertrend_options.py`, applied to a genuinely new indicator
+too, per explicit instruction**: `SuperTrendState` is imported and
+reused unmodified; a new `EMAState` (this codebase's first EMA — no
+existing strategy had one) mirrors its `update`/`ready`/`snapshot`/
+`from_snapshot` shape exactly, so it gets the identical treatment. Both
+get a fresh REST seed from Kite on every `on_start` (cold deploy,
+resume, or a mid-day restart), replayed together over the same 1H
+candle sequence, with the same fallback chain (live Kite seed ->
+persisted state -> cold start) and the same daily self-healing re-seed
+at `on_post_market_checkpoint`. A local `_fetch_hourly_seed_from_kite`
+covers the "60minute, no pivots" fetch this strategy needs, rather than
+generalizing the shared 5-min `fetch_seed_from_kite` (which would have
+meant touching `pivot_supertrend.py`). This strategy's own daily/step-up
+counters (`touched_ema_since_exit`, the post-exit-gap counters,
+`lots_per_trade`, `cum_pnl_since_stepup`) are restored unconditionally
+near the top of `on_start` — mirroring `pivot_supertrend_options.py`'s
+own `trades_today` restore — since there's no external Kite fetch that
+can re-derive them the way the indicators' own numeric state can.
+Resume-safety for the two spread legs uses `positions.side`
+("short"/"long"), not the CE/PE symbol suffix — unlike
+`intraday_dtt_simple`'s CE+PE straddle, both legs of a call spread here
+ARE both "CE" (and both "PE" for a put spread), so the suffix alone
+can't tell the sold leg from the hedge leg on a resume.
+
+**A real bug found and fixed before this ever reached a test log**: the
+market-open gate (`market_open_time`, an added-but-necessary config key
+— see below) initially compared a candle's own bucket START against
+"09:15", the exact pattern `pivot_supertrend.py` uses for its 5-min
+candles. On a 5-min grid the day's first post-open candle's bucket-start
+naturally IS 09:15. On this strategy's 60-min grid, `CandleAggregator`
+floors every bucket to the top of the hour, so the day's first candle
+ALWAYS floors to 09:00 regardless of when trading actually started
+inside it — the naive check would have permanently blocked any signal
+on the entire first hourly candle, every single day, forever. Fixed by
+comparing the candle's bucket END (start + interval) instead, which
+asks the actually-intended question regardless of granularity.
+
+**Two config keys exist beyond the literal handed-down schema, both
+flagged explicitly in the file's own module docstring as structural
+necessities, not scope creep**: `instrument_tokens` (the runner's own
+tick-routing needs this — with none, a deployment receives zero ticks,
+ever, permanently silent) and `market_open_time` (the same pre-market
+call-auction/futures-pre-open risk `pivot_supertrend.py`'s own module
+docstring documents at length, applying identically to any candle-close
+signal in this codebase, not something specific to the pivot family).
+`expiry_selector` is deliberately NOT a config key at all — "weekly
+expiry" is this strategy's own stated identity, not a per-deployment
+choice.
+
+Verified with a dedicated test harness (a fake runner + a fake,
+deterministic options resolver — no real DB or Kite session involved)
+driving the REAL, imported strategy class through its actual code path,
+covering every item the task's own "Test coverage" section asked for:
+both entry directions with real, computed EMA/SuperTrend confluence
+(not a mocked signal, including confirming the hedge leg lands exactly
+`hedge_width_points` away in the correct OTM direction for each side);
+the last-candle-of-day deferral, including a signal that reverses by
+next open correctly NOT entering (as distinct from a signal that
+persists, which does); the fresh-EMA-touch re-entry gate suppressing an
+otherwise-valid signal until a real touch/cross is observed; the
+post-exit gap correctly arming ONLY on a close that lands on the
+position's own actually-resolved expiry date (a Tuesday, not a
+hardcoded Thursday) and correctly NOT arming on an early close before
+expiry, with the exact trading-day countdown (2 skipped, resuming the
+3rd) verified day-by-day; step-up sizing crossing `capital_per_lot`
+exactly once, with the excess carried forward and the just-closed
+position's own qty confirmed to reflect the pre-step-up lot count, never
+retroactively resized; and full resume-safety — `touched_ema_since_exit`,
+the gap counters, `lots_per_trade`, and `cum_pnl_since_stepup` all
+reconstructing correctly from a persisted state blob, alongside the
+SuperTrend/EMA snapshots themselves. All 41 assertions pass. Also
+confirmed `app.strategies`' full registry still imports cleanly and
+`app.main` still boots with the new strategy registered, and that
+`pivot_supertrend.py`/`pivot_supertrend_options.py`/
+`pivot_supertrend_options_inverse.py` remain byte-for-byte unmodified
+(`git diff --stat` on all three is empty).
+
 ## Setup
 
 ```bash
