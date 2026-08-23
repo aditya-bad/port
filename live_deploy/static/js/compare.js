@@ -34,6 +34,19 @@
 // app's own semantic gain/loss/brass/info tokens (those ARE used here,
 // for the attention panel's accent borders — that IS the semantic case
 // those tokens carry fixed meaning for everywhere else in the app).
+//
+// Step 110 — the equity-curve overlay alone doesn't answer "what am I
+// actually comparing," per direct feedback and a concrete proposed fix:
+// checking rows should produce a TRANSPOSED head-to-head table (one
+// COLUMN per deployment, one ROW per metric — the opposite orientation
+// of the leaderboard below), with each row's own winner (or tie) called
+// out, plus one overall verdict tallying wins across every SCORED
+// metric. See HEAD_TO_HEAD_METRICS/_rowWinners/_overallWinners and
+// renderComparisonSection. The comparison section also now sits ABOVE
+// the leaderboard cards in the DOM (see index.html) — checking rows for
+// comparison visually pushes the individual cards down and puts the
+// actual comparison output first, exactly the "cards go to the bottom"
+// behavior asked for.
 
 const COMPARE_MAX = 6;   // matches the validated --chart-1..6 palette -- see index.html's :root comment
 const COMPARE_COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)', 'var(--chart-6)'];
@@ -55,7 +68,7 @@ const MIN_DAYS_FOR_JUDGMENT = 3;
 // Compare chart on screen at a time, so a single module-level variable
 // (rather than api.js's per-chartId registry, built for multiple
 // simultaneous instances) is the right amount of machinery here.
-let _compareChartSeries = [];   // [{deployment, points}] for whatever's currently checked
+let _compareChartSeries = [];   // [{deployment, points, color}] for whatever's currently checked and has enough history to draw
 
 // Same real-CSS-pixel-via-getBoundingClientRect approach as api.js's
 // _equityChartPointerAt — see that function's own comment for why. The
@@ -72,11 +85,11 @@ function _compareChartPointerAt(clientX, clientY, areaEl) {
   const crosshair = document.getElementById('compareChart-crosshair');
   if (crosshair) { crosshair.style.left = `${leftPx}px`; crosshair.style.display = 'block'; }
 
-  const rows = _compareChartSeries.map((r, i) => {
+  const rows = _compareChartSeries.map(r => {
     const n = r.points.length;
     const idx = Math.max(0, Math.min(n - 1, Math.round(xFrac * (n - 1))));
     const p = r.points[idx];
-    const swatch = `<span style="display:inline-block; width:8px; height:8px; border-radius:2px; background:${COMPARE_COLORS[i % COMPARE_COLORS.length]}; margin-right:5px;"></span>`;
+    const swatch = `<span style="display:inline-block; width:8px; height:8px; border-radius:2px; background:${r.color}; margin-right:5px;"></span>`;
     return `${swatch}${escapeHtml(r.deployment.deployment_name)}: <b>${p.pct >= 0 ? '+' : ''}${p.pct.toFixed(2)}%</b>`;
   }).join('<br>');
   ChartTooltip.show(clientX, clientY, rows);
@@ -148,6 +161,88 @@ function _sparklineSvg(points) {
   </svg>`;
 }
 
+// ── Head-to-head table (Step 110) ──────────────────────────────────────
+// One row per metric, transposed against the leaderboard's own
+// orientation on purpose — reading "which deployment wins THIS metric"
+// across a row is the actual comparison question; a table shaped like
+// the leaderboard (one row per deployment) makes you do that scan
+// yourself, column by column, which is the exact thing this section
+// exists to do instead.
+//
+// `better`: 'higher' or 'lower' for a metric that has a genuine winner
+// (Max drawdown is the one 'lower', everything else scored is
+// 'higher'); `null` for a metric shown purely for CONTEXT (Positions
+// closed/Days live/Current equity) — more trades or more days isn't
+// inherently "better," and current equity depends on each deployment's
+// own initial_capital so it isn't a fair head-to-head number the way
+// the indexed % return already is. Context rows never contribute to
+// the overall winner tally.
+const HEAD_TO_HEAD_METRICS = [
+  {
+    key: 'return', label: 'Return', better: 'higher',
+    value: r => { const p = _lastPoint(r.points); return p ? p.pct : null; },
+    format: r => { const p = _lastPoint(r.points); return p ? `${p.pct >= 0 ? '+' : ''}${p.pct.toFixed(2)}%` : '—'; },
+  },
+  {
+    key: 'drawdown', label: 'Max drawdown', better: 'lower',
+    value: r => r.drawdown ? r.drawdown.pct : null,
+    format: r => r.drawdown ? `${fmtMoney(r.drawdown.abs)} (${r.drawdown.pct.toFixed(2)}%)` : '—',
+  },
+  {
+    key: 'ratio', label: 'Return / Drawdown', better: 'higher',
+    value: r => r.returnToDrawdown == null ? null : (r.returnToDrawdown === Infinity ? Number.MAX_VALUE : r.returnToDrawdown),
+    format: r => { const lbl = _ratioLabel(r.returnToDrawdown); return `${_fmtRatio(r.returnToDrawdown)}${lbl ? ` (${lbl})` : ''}`; },
+  },
+  {
+    key: 'winrate', label: 'Win rate', better: 'higher',
+    value: r => r.stats.winRatePct,
+    format: r => r.stats.winRatePct == null ? '—' : fmtPct(r.stats.winRatePct),
+  },
+  {
+    key: 'profitfactor', label: 'Profit factor', better: 'higher',
+    value: r => r.stats.profitFactor == null ? null : (r.stats.profitFactor === Infinity ? Number.MAX_VALUE : r.stats.profitFactor),
+    format: r => _fmtRatio(r.stats.profitFactor),
+  },
+  { key: 'trades', label: 'Positions closed', better: null, value: r => r.stats.closedCount, format: r => String(r.stats.closedCount) },
+  { key: 'days', label: 'Days live', better: null, value: r => r.points.length, format: r => String(r.points.length) },
+  {
+    key: 'equity', label: 'Current equity', better: null,
+    value: r => { const p = _lastPoint(r.points); return p ? p.total_value : null; },
+    format: r => { const p = _lastPoint(r.points); return p ? fmtMoney(p.total_value) : '—'; },
+  },
+];
+
+// Which of `rows` (already filtered to the deployments being compared)
+// win a given metric's row. Rounds to 2 decimals before comparing so
+// two numbers that are equal for all practical purposes (float noise
+// from division) don't spuriously miss a tie. A value of `null` for a
+// given row is simply excluded from contention -- "no data" never
+// "wins" by default, but also never blocks another row's real value
+// from winning.
+function _rowWinners(metric, rows) {
+  const vals = rows.map(r => metric.value(r));
+  const real = vals.filter(v => v != null);
+  if (!metric.better || !real.length) return { winners: new Set(), tie: false, noData: !real.length };
+  const round = v => Math.round(v * 100) / 100;
+  const best = metric.better === 'higher' ? Math.max(...real.map(round)) : Math.min(...real.map(round));
+  const winners = new Set();
+  vals.forEach((v, i) => { if (v != null && round(v) === best) winners.add(i); });
+  return { winners, tie: winners.size > 1, noData: false };
+}
+
+// Tally each row-index's wins across every SCORED metric (context
+// metrics never contribute) and report whoever has the most -- possibly
+// more than one, an explicit overall tie, never silently broken.
+function _overallWinners(rows) {
+  const tally = rows.map(() => 0);
+  HEAD_TO_HEAD_METRICS.filter(m => m.better).forEach(m => {
+    _rowWinners(m, rows).winners.forEach(i => tally[i]++);
+  });
+  const maxScore = Math.max(...tally);
+  const winners = tally.map((_, i) => i).filter(i => tally[i] === maxScore);
+  return { tally, winners, maxScore, tie: winners.length > 1 };
+}
+
 // Sort key -> comparable value, always a real number/string (never
 // null/undefined) so sorting never has to special-case "no data yet" --
 // a deployment with nothing to show for a metric just sorts to one end,
@@ -177,7 +272,7 @@ const Compare = {
   async load() {
     document.getElementById('compareAttention').innerHTML = '';
     document.getElementById('compareLeaderboard').innerHTML = spinnerHtml();
-    document.getElementById('compareChartSection').innerHTML = '';
+    document.getElementById('compareComparisonSection').innerHTML = '';
     document.getElementById('compareExportBtn').style.display = 'none';
     this._rows = [];
     this._statusFilter = '';
@@ -353,8 +448,8 @@ const Compare = {
 
   render() {
     this.renderAttentionPanel();
+    this.renderComparisonSection();
     this.renderLeaderboard();
-    this.renderChartSection();
   },
 
   // Step 109 -- the direct answer to "still can't decide": one
@@ -429,13 +524,18 @@ const Compare = {
       const atCap = !isSelected && this._selected.size >= COMPARE_MAX;
       const last = _lastPoint(r.points);
       const ratioLabel = _ratioLabel(r.returnToDrawdown);
+      // A left-border accent in the SAME color as the head-to-head
+      // table/chart's own swatch for this row -- scrolling down from
+      // the comparison section to the leaderboard still visually ties
+      // a card back to which colored column/line it was up there.
+      const selColor = isSelected ? COMPARE_COLORS[selIdx % COMPARE_COLORS.length] : null;
       return `
-        <div class="card compare-card">
+        <div class="card compare-card${isSelected ? ' selected' : ''}" ${selColor ? `style="--card-accent:${selColor};"` : ''}>
           <div class="compare-card-head">
             <label class="compare-card-check" title="${atCap ? `Up to ${COMPARE_MAX} at a time for the chart below` : 'Add to the chart comparison below'}">
               <input type="checkbox" ${isSelected ? 'checked' : ''} ${atCap ? 'disabled' : ''}
                      onchange="Compare.toggleSelect('${r.deployment.id}', this.checked)">
-              ${isSelected ? `<span class="legend-swatch" style="background:${COMPARE_COLORS[selIdx % COMPARE_COLORS.length]}"></span>` : ''}
+              ${isSelected ? `<span class="legend-swatch" style="background:${selColor}"></span>` : ''}
             </label>
             <div style="flex:1; min-width:0;">
               <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
@@ -488,17 +588,88 @@ const Compare = {
     `;
   },
 
-  renderChartSection() {
-    const el = document.getElementById('compareChartSection');
+  // Renders BOTH the head-to-head table and the equity-curve overlay
+  // into #compareComparisonSection, which sits ABOVE the leaderboard
+  // cards in the DOM (index.html) -- checking 2+ rows makes this
+  // section appear and visually pushes the individual cards down,
+  // exactly the "cards go to the bottom" behavior asked for. Empty
+  // (both sections cleared) when fewer than 2 are checked.
+  renderComparisonSection() {
+    const el = document.getElementById('compareComparisonSection');
     const selOrder = Array.from(this._selected);
-    const withData = selOrder
-      .map(id => this._rows.find(r => r.deployment.id === id))
-      .filter(r => r && r.points.length >= 2);
+    const compared = selOrder.map(id => this._rows.find(r => r.deployment.id === id)).filter(Boolean);
 
     if (selOrder.length < 2) {
       el.innerHTML = '';
       return;
     }
+
+    el.innerHTML = `
+      <section style="margin-bottom:20px;">
+        <h2>Head-to-head</h2>
+        ${this._renderHeadToHead(compared)}
+      </section>
+      <div id="compareEquitySection"></div>
+    `;
+    this._renderEquityChart(compared);
+  },
+
+  // The actual answer to "what am I comparing": ONE ROW PER METRIC
+  // (Return, Max drawdown, Return/Drawdown, Win rate, Profit factor,
+  // then three context-only rows), one COLUMN per checked deployment --
+  // transposed against the leaderboard's own per-deployment-row shape
+  // on purpose, since "who wins this metric" is a ROW you read across,
+  // not a column you scan down. Every scored row calls out its own
+  // winner (🏆) or tie (🤝); a verdict banner above the table tallies
+  // wins across every scored row into one overall call, itself capable
+  // of being a tie.
+  _renderHeadToHead(rows) {
+    const overall = _overallWinners(rows);
+    const scoredCount = HEAD_TO_HEAD_METRICS.filter(m => m.better).length;
+    const verdict = overall.tie
+      ? `🤝 Tie — ${overall.winners.map(i => escapeHtml(rows[i].deployment.deployment_name)).join(' & ')} each win ${overall.maxScore} of ${scoredCount} scored metrics`
+      : `🏆 ${escapeHtml(rows[overall.winners[0]].deployment.deployment_name)} wins overall — ${overall.maxScore} of ${scoredCount} scored metrics`;
+
+    const headerCells = rows.map((r, i) =>
+      `<th><span class="legend-swatch" style="background:${COMPARE_COLORS[i % COMPARE_COLORS.length]}"></span> ${escapeHtml(r.deployment.deployment_name)}</th>`
+    ).join('');
+
+    const bodyRows = HEAD_TO_HEAD_METRICS.map(m => {
+      const { winners, tie, noData } = _rowWinners(m, rows);
+      const cells = rows.map((r, i) => {
+        const isWinner = m.better && !noData && winners.has(i);
+        const marker = isWinner ? (tie ? ' 🤝' : ' 🏆') : '';
+        return `<td class="${isWinner ? 'h2h-winner' : ''}">${m.format(r)}${marker}</td>`;
+      }).join('');
+      return `<tr class="${m.better ? '' : 'h2h-context'}"><td>${escapeHtml(m.label)}</td>${cells}</tr>`;
+    }).join('');
+
+    return `
+      <div class="h2h-verdict">${verdict}</div>
+      <div class="table-wrap">
+      <table class="deploy-table h2h-table"><thead><tr><th>Metric</th>${headerCells}</tr></thead>
+      <tbody>${bodyRows}</tbody></table>
+      </div>
+      <div class="table-note">
+        🏆 marks a row's winner, 🤝 a tie — among the 5 scored metrics above the divider (Return, Max
+        drawdown, Return/Drawdown, Win rate, Profit factor); lower is better for Max drawdown, higher for
+        the rest. Positions closed/Days live/Current equity are shown for context but don't count toward
+        the overall verdict above.
+      </div>
+    `;
+  },
+
+  _renderEquityChart(compared) {
+    const el = document.getElementById('compareEquitySection');
+    // A deployment with only 0-1 snapshots has nothing to draw a LINE
+    // with (the head-to-head table above still shows its real numbers
+    // -- or "—" -- regardless; only the chart itself needs 2+ points).
+    // Color index is looked up in the ORIGINAL `compared` order, not
+    // position within this filtered list -- otherwise a skipped
+    // deployment would shift every later one's color, breaking the
+    // link to the head-to-head table's own swatches for the same rows.
+    const withData = compared.filter(r => r.points.length >= 2);
+    const colorOf = r => COMPARE_COLORS[compared.indexOf(r) % COMPARE_COLORS.length];
     if (!withData.length) {
       el.innerHTML = emptyHtml(
         'None of the checked deployments have at least 2 days of equity history yet — one point ' +
@@ -524,30 +695,34 @@ const Compare = {
     // into each series' own nearest point by that same fraction, since
     // there's no shared index to look up directly across series of
     // different lengths.
-    const polylines = withData.map((r, i) => {
+    const polylines = withData.map(r => {
       const n = r.points.length;
       const points = r.points.map((p, j) => {
         const x = PAD + (n === 1 ? 0 : (j / (n - 1)) * (W - 2 * PAD));
         const y = H - PAD - ((p.pct - min) / range) * (H - 2 * PAD);
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       }).join(' ');
-      return `<polyline points="${points}" fill="none" stroke="${COMPARE_COLORS[i % COMPARE_COLORS.length]}" stroke-width="2" vector-effect="non-scaling-stroke" />`;
+      return `<polyline points="${points}" fill="none" stroke="${colorOf(r)}" stroke-width="2" vector-effect="non-scaling-stroke" />`;
     }).join('');
 
-    const legend = withData.map((r, i) => {
+    const legend = withData.map(r => {
       const last = r.points[r.points.length - 1].pct;
       return `
         <div class="legend-item">
-          <span class="legend-swatch" style="background:${COMPARE_COLORS[i % COMPARE_COLORS.length]}"></span>
+          <span class="legend-swatch" style="background:${colorOf(r)}"></span>
           <span class="legend-name">${escapeHtml(r.deployment.deployment_name)}</span>
           <span class="legend-value ${pnlClass(last)}">${last >= 0 ? '+' : ''}${last.toFixed(2)}%</span>
         </div>
       `;
     }).join('');
 
-    _compareChartSeries = withData;   // read by _compareChartPointerAt below
+    // _compareChartPointerAt (module-level, reused across renders)
+    // needs each series' own color for its tooltip -- carry `color`
+    // alongside so it doesn't have to re-derive the same compared-order
+    // index itself.
+    _compareChartSeries = withData.map(r => ({ ...r, color: colorOf(r) }));
 
-    const skipped = selOrder.length - withData.length;
+    const skipped = compared.length - withData.length;
     el.innerHTML = `
       <section style="margin-top:20px;">
         <h2>Equity curves</h2>

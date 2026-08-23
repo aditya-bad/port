@@ -868,6 +868,20 @@ tr.trade-detail-row td {
   font-size: 9px; color: var(--parchment); font-family: var(--font-sans, inherit);
   text-transform: uppercase; letter-spacing: 0.03em;
 }
+.compare-card.selected { border-left: 5px solid var(--card-accent, var(--line)); }
+
+/* Head-to-head table (Step 110) — transposed: one column per compared
+   deployment, one ROW per metric, not the other way around. */
+.h2h-verdict {
+  font-family: var(--font-display); font-size: 15px; font-weight: 700;
+  padding: 10px 14px; background: var(--sand); border: 2px solid var(--line); margin-bottom: 12px;
+}
+.h2h-table th, .h2h-table td { text-align: center; white-space: nowrap; }
+.h2h-table th:first-child, .h2h-table td:first-child { text-align: left; white-space: normal; }
+.h2h-table td:first-child { font-weight: 700; }
+.h2h-winner { background: var(--gain-soft); font-weight: 700; }
+.h2h-table tr.h2h-context td { color: var(--parchment); font-weight: 400; }
+.h2h-table tr.h2h-context td:first-child { font-weight: 400; }
 
 /* ── Reports page — period-bucketed P&L bar, NOT the Compare view's
    categorical --chart-N palette: here color encodes an actual
@@ -1367,8 +1381,8 @@ body.mobile-nav-open { overflow: hidden; }
       </div>
 
       <div id="compareAttention"></div>
+      <div id="compareComparisonSection"></div>
       <div id="compareLeaderboard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
-      <div id="compareChartSection"></div>
     </div>
 
     <!-- ═══ Reports ═══ -->

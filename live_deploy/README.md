@@ -7234,6 +7234,76 @@ carries a plain-language label, and a new deployment is correctly
 batched into the footnote rather than given its own line. `node --check`
 on api.js/detail.js/compare.js and a full `app.main` import both clean.
 
+## What's here (Step 110: Compare's overlay chart gets a transposed head-to-head table with row/overall winners)
+
+"when I hit compare and you give me just the curve what am I actually
+comparing." Concrete fix proposed directly: when 2+ rows are checked,
+push the leaderboard cards down and show the comparison itself first —
+not a chart alone, but a table shaped the OPPOSITE way from the
+leaderboard: strategies as column HEADERS, metrics as ROWS, with a
+winner (or tie) called out per row and an overall verdict. Built
+exactly that.
+
+**The head-to-head table is genuinely transposed** from the
+leaderboard's own shape — the leaderboard has one ROW per deployment;
+this has one COLUMN per deployment and one ROW per metric (Return, Max
+drawdown, Return/Drawdown, Win rate, Profit factor, then three
+context-only rows: Positions closed, Days live, Current equity).
+Reading "who wins this metric" is reading ACROSS a row, which is the
+actual comparison question — a table shaped like the leaderboard would
+make you do that scan yourself, column by column.
+
+**Every scored row calls out its own winner or tie.** `better: 'lower'`
+for Max drawdown (less capital permanently lost wins), `'higher'` for
+Return/Return-Drawdown/Win-rate/Profit-factor, `null` for the three
+context rows — more trades or more days isn't inherently "better," and
+Current equity depends on each deployment's own `initial_capital`, so
+none of the three count toward any verdict, scored or shown only for
+reference. A value is rounded to 2 decimals before comparing so
+float-division noise never manufactures a false near-tie; genuinely
+equal values get 🤝 on every tied cell instead of arbitrarily picking
+one winner. **One overall verdict banner** above the table tallies wins
+across the 5 scored rows and declares whoever has the most — itself
+capable of being an explicit tie between two or more deployments, never
+silently broken.
+
+**Cards genuinely move to the bottom**, not just conceptually: the new
+`#compareComparisonSection` container sits ABOVE `#compareLeaderboard`
+in the DOM (index.html), so checking 2+ rows makes the head-to-head
+table and chart appear right after the "What needs attention" panel,
+pushing the leaderboard cards down purely through normal document flow
+— no dynamic node-moving needed. A selected leaderboard card also picks
+up a left-border accent in the exact same color as its column/line
+above, so scrolling back down to the cards still visually ties a card
+to which one it was in the comparison.
+
+**A real color-consistency bug caught and fixed before shipping**: the
+equity chart's polylines/legend used to derive each series' color from
+its position in the FILTERED "has enough history to draw" list — a
+deployment skipped for having under 2 days of history would silently
+shift every later deployment's chart color, breaking the link to the
+head-to-head table's own swatches for the exact same rows (checked
+2nd/3rd/4th no longer meaning color-2/3/4 once one earlier row got
+filtered out). Fixed by deriving every color from each row's position
+in the ORIGINAL, unfiltered selection order instead, threaded through
+to the hover/touch tooltip too (`_compareChartSeries` now carries its
+own resolved `color` per series rather than recomputing an index that
+no longer matched).
+
+Verified against the REAL loaded files (Node's `vm` module) three ways:
+(1) a two-deployment scenario where one sweeps every scored metric —
+confirms each row and the overall verdict correctly name it the sole
+winner, 5 of 5; (2) a three-deployment scenario with two IDENTICAL
+equity curves (a deliberate exact tie) racing a clear loser — confirms
+🤝 fires on every scored row for the tied pair, the loser is correctly
+excluded from every winner set, and the overall verdict reports an
+explicit tie between the two, not an arbitrary pick; (3) a full render
+of `renderComparisonSection` against a stubbed DOM — confirms the verdict
+banner, table, and equity chart all render into their correct elements
+with real HTML, and that the section fully clears the moment selection
+drops back below 2. `node --check` on api.js/detail.js/compare.js and a
+full `app.main` import both clean.
+
 ## Setup
 
 ```bash
