@@ -325,6 +325,162 @@ function _overallWinners(rows) {
   return { tally, winners, maxScore, tie: winners.length > 1 };
 }
 
+// ── Month/Year/All-Time leaderboards (Step 113) ────────────────────────
+// "Who's winning this month" and "who's winning all-time" are genuinely
+// different, both useful, questions -- a strategy having a rough
+// quarter after a strong debut, or one that's just caught fire this
+// month, is invisible in an all-time-only ranking. All three scopes
+// reuse the exact same per-deployment `points`/`units` this page
+// already fetched ONCE on load (see Compare.load) -- no new DB table
+// and no new network call, just filtering/re-basing data already
+// sitting in memory, consistent with this page's whole "recompute,
+// don't cache" approach (and the user's own explicit sign-off: "if
+// there's no separate DB needed for this, then it's fine").
+//
+// Calendar buckets are IST, not the browser's local zone or UTC --
+// toLocaleDateString('en-CA', {timeZone:'Asia/Kolkata'}) reliably
+// produces a YYYY-MM-DD string in a given IANA zone without hand-rolled
+// UTC-offset math, the same trick list_snapshots leans on server-side
+// (Step 96) for "what IST calendar day was this."
+function _istDateKey(iso) {
+  return new Date(iso).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+}
+function _istMonthKey(iso) { return _istDateKey(iso).slice(0, 7); }   // "2026-08"
+function _istYearKey(iso) { return _istDateKey(iso).slice(0, 4); }    // "2026"
+function _istMonthLabel(monthKey) {
+  const [y, m] = monthKey.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
+}
+
+// The contiguous run of one deployment's `points` whose IST month/year
+// key matches `periodKey`, PLUS the one snapshot immediately before the
+// period ("baseline") when one exists. The baseline matters twice over:
+// it re-bases % return to "how did THIS period go" instead of "how has
+// this deployment gone since it started tracking," and it lets a
+// drawdown occurring on the very FIRST day of the period be seen at
+// all -- without a prior point to fall from, computeMaxDrawdown would
+// treat that first in-period point as the peak itself and miss the drop.
+function _periodSlice(row, keyFn, periodKey) {
+  const idxs = [];
+  row.points.forEach((p, i) => { if (keyFn(p.snapshot_at) === periodKey) idxs.push(i); });
+  if (!idxs.length) return null;
+  const first = idxs[0], last = idxs[idxs.length - 1];
+  const slice = row.points.slice(first, last + 1);
+  const baseline = first > 0 ? row.points[first - 1] : slice[0];
+  return { slice, baseline };
+}
+
+// One deployment's metrics recomputed for a single scope+period.
+// scope 'all' just reuses the row's own already-computed all-time
+// numbers (they mean the exact same thing already). 'month'/'year'
+// re-derive Return/Drawdown/Return-Drawdown from the period slice
+// above, and Win rate/Profit factor/Return on Capital/Positions closed
+// from whichever of the row's own episodes CLOSED within the period --
+// independent of whether the fetched snapshot set happens to have a day
+// boundary on either side of that close.
+function _computePeriodRow(row, scope, periodKey) {
+  if (scope === 'all') {
+    const p = _lastPoint(row.points);
+    return {
+      deployment: row.deployment,
+      returnPct: p ? p.pct : null,
+      rocPct: (p && row.deployment.initial_capital) ? (p.realized_pnl_cumulative / row.deployment.initial_capital) * 100 : null,
+      drawdownPct: row.drawdown ? row.drawdown.pct : null,
+      ratio: row.returnToDrawdown,
+      winRatePct: row.stats.winRatePct,
+      profitFactor: row.stats.profitFactor,
+      closedCount: row.stats.closedCount,
+    };
+  }
+
+  const keyFn = scope === 'month' ? _istMonthKey : _istYearKey;
+  const periodUnits = row.units.filter(u => u.status === 'closed' && u.closed_at && keyFn(u.closed_at) === periodKey);
+  const stats = computeUnitStats(periodUnits);
+
+  let returnPct = null, drawdownPct = null, ratio = null;
+  const ps = _periodSlice(row, keyFn, periodKey);
+  if (ps) {
+    const baseValue = ps.baseline.total_value;
+    const lastP = ps.slice[ps.slice.length - 1];
+    returnPct = baseValue ? ((lastP.total_value - baseValue) / baseValue) * 100 : 0;
+    const snapsForDrawdown = ps.baseline === ps.slice[0] ? ps.slice : [ps.baseline, ...ps.slice];
+    const dd = computeMaxDrawdown(snapsForDrawdown, row.deployment.initial_capital);
+    drawdownPct = dd ? dd.pct : null;
+    if (dd && dd.pct > 0) ratio = returnPct / dd.pct;
+    else if (dd && dd.pct === 0 && returnPct > 0) ratio = Infinity;
+  }
+
+  return {
+    deployment: row.deployment,
+    returnPct, drawdownPct, ratio,
+    rocPct: row.deployment.initial_capital ? (stats.totalRealizedPnl / row.deployment.initial_capital) * 100 : null,
+    winRatePct: stats.winRatePct,
+    profitFactor: stats.profitFactor,
+    closedCount: stats.closedCount,
+  };
+}
+
+// Seven ranking categories, per explicit request to "figure out how
+// many leaderboards, different type of rankings I can give" -- the
+// user's own two suggestions (max return %, highest win rate) plus five
+// more the same already-loaded data supports. `eligible` keeps a
+// deployment with nothing relevant to show from falsely topping a
+// category at 0/undefined -- e.g. no closed positions this period means
+// no Win Rate to rank, not a 0% one.
+const BOARD_CATEGORIES = [
+  {
+    key: 'return', label: 'Best Return', icon: '📈', better: 'higher',
+    eligible: pr => pr.returnPct != null,
+    value: pr => pr.returnPct,
+    format: pr => `${pr.returnPct >= 0 ? '+' : ''}${pr.returnPct.toFixed(2)}%`,
+  },
+  {
+    key: 'roc', label: 'Best Return on Capital', icon: '💰', better: 'higher',
+    eligible: pr => pr.rocPct != null && pr.closedCount > 0,
+    value: pr => pr.rocPct,
+    format: pr => `${pr.rocPct >= 0 ? '+' : ''}${pr.rocPct.toFixed(2)}%`,
+  },
+  {
+    key: 'drawdown', label: 'Lowest Drawdown', icon: '🛡️', better: 'lower',
+    eligible: pr => pr.drawdownPct != null,
+    value: pr => pr.drawdownPct,
+    format: pr => `${pr.drawdownPct.toFixed(2)}%`,
+  },
+  {
+    key: 'ratio', label: 'Best Return / Drawdown', icon: '⚖️', better: 'higher',
+    eligible: pr => pr.ratio != null,
+    value: pr => pr.ratio === Infinity ? Number.MAX_VALUE : pr.ratio,
+    format: pr => _fmtRatio(pr.ratio),
+  },
+  {
+    key: 'winrate', label: 'Best Win Rate', icon: '🎯', better: 'higher',
+    eligible: pr => pr.winRatePct != null && pr.closedCount > 0,
+    value: pr => pr.winRatePct,
+    format: pr => fmtPct(pr.winRatePct),
+  },
+  {
+    key: 'profitfactor', label: 'Best Profit Factor', icon: '🏭', better: 'higher',
+    eligible: pr => pr.profitFactor != null && pr.closedCount > 0,
+    value: pr => pr.profitFactor === Infinity ? Number.MAX_VALUE : pr.profitFactor,
+    format: pr => _fmtRatio(pr.profitFactor),
+  },
+  {
+    key: 'active', label: 'Most Active', icon: '⚡', better: 'higher',
+    eligible: pr => pr.closedCount > 0,
+    value: pr => pr.closedCount,
+    format: pr => `${pr.closedCount} closed`,
+  },
+];
+
+// Top 3 (or fewer, if fewer qualify) eligible rows for one category,
+// best first.
+function _topBoardRows(cat, periodRows, n = 3) {
+  return periodRows
+    .filter(pr => cat.eligible(pr))
+    .sort((a, b) => cat.better === 'higher' ? cat.value(b) - cat.value(a) : cat.value(a) - cat.value(b))
+    .slice(0, n);
+}
+
 // Sort key -> comparable value, always a real number/string (never
 // null/undefined) so sorting never has to special-case "no data yet" --
 // a deployment with nothing to show for a metric just sorts to one end,
@@ -350,9 +506,12 @@ const Compare = {
   _sortKey: 'ratio',
   _sortDir: 'desc',
   _selected: new Set(), // deployment ids currently checked for the overlay chart -- Set preserves insertion order, used for stable color assignment
+  _boardScope: 'month',  // 'month' | 'year' | 'all' -- Step 113's leaderboards
+  _boardPeriod: null,    // e.g. "2026-08" / "2026" / null for 'all' -- null also means "not yet picked," resolved to the latest available period the first time renderBoards runs
 
   async load() {
     document.getElementById('compareAttention').innerHTML = '';
+    document.getElementById('compareBoards').innerHTML = '';
     document.getElementById('compareLeaderboard').innerHTML = spinnerHtml();
     document.getElementById('compareComparisonSection').innerHTML = '';
     document.getElementById('compareExportBtn').style.display = 'none';
@@ -361,6 +520,8 @@ const Compare = {
     this._sortKey = 'ratio';
     this._sortDir = 'desc';
     this._selected = new Set();
+    this._boardScope = 'month';
+    this._boardPeriod = null;
 
     // Every deployment, not just active/paused (unlike Portfolio's
     // combined equity curve) -- "how did my old stopped strategy do
@@ -531,8 +692,101 @@ const Compare = {
 
   render() {
     this.renderAttentionPanel();
+    this.renderBoards();
     this.renderComparisonSection();
     this.renderLeaderboard();
+  },
+
+  // Every month/year key with AT LEAST ONE deployment snapshot in it,
+  // across the whole roster -- not blind calendar arithmetic from
+  // today's date, so Prev/Next only ever steps to periods that actually
+  // have something to show (a 3-week-old account has exactly one month
+  // to look at, not twelve empty ones). Plain string sort works
+  // correctly for both "YYYY-MM" and "YYYY" keys.
+  _availablePeriods(scope) {
+    if (scope === 'all') return ['all'];
+    const keyFn = scope === 'month' ? _istMonthKey : _istYearKey;
+    const keys = new Set();
+    this._rows.forEach(r => r.points.forEach(p => keys.add(keyFn(p.snapshot_at))));
+    return Array.from(keys).sort();
+  },
+
+  setBoardScope(scope) {
+    this._boardScope = scope;
+    this._boardPeriod = null;   // re-resolved to that scope's latest available period inside renderBoards
+    this.renderBoards();
+  },
+
+  stepBoardPeriod(delta) {
+    const periods = this._availablePeriods(this._boardScope);
+    const next = periods.indexOf(this._boardPeriod) + delta;
+    if (next < 0 || next >= periods.length) return;
+    this._boardPeriod = periods[next];
+    this.renderBoards();
+  },
+
+  // Step 113 -- three ranking scopes (Month/Year/All-Time), Prev/Next
+  // through whatever periods actually have data, one card per category
+  // with its own top 3 (🥇🥈🥉). Placed right after "What needs
+  // attention" and before the head-to-head/leaderboard cards -- "who's
+  // winning" is the natural next question once "what needs attention"
+  // has been read, ahead of drilling into any one deployment's numbers.
+  renderBoards() {
+    const el = document.getElementById('compareBoards');
+    if (!this._rows.length) { el.innerHTML = ''; return; }
+
+    const periods = this._availablePeriods(this._boardScope);
+    if (!periods.length) { el.innerHTML = ''; return; }
+    if (this._boardPeriod == null || !periods.includes(this._boardPeriod)) {
+      this._boardPeriod = periods[periods.length - 1];   // default to the most recent period with data
+    }
+    const idx = periods.indexOf(this._boardPeriod);
+    const periodRows = this._rows.map(r => _computePeriodRow(r, this._boardScope, this._boardPeriod));
+
+    const periodLabel = this._boardScope === 'all' ? 'All-Time'
+      : this._boardScope === 'month' ? _istMonthLabel(this._boardPeriod)
+      : this._boardPeriod;
+
+    const medals = ['🥇', '🥈', '🥉'];
+    const cards = BOARD_CATEGORIES.map(cat => {
+      const top = _topBoardRows(cat, periodRows);
+      const rowsHtml = top.length ? top.map((pr, i) => `
+        <div class="board-row">
+          <span class="board-medal">${medals[i]}</span>
+          <a href="#/deployments/${pr.deployment.id}" class="board-name">${escapeHtml(pr.deployment.deployment_name)}</a>
+          <b class="board-value">${cat.format(pr)}</b>
+        </div>
+      `).join('') : `<div class="board-row board-empty">Nobody qualifies yet</div>`;
+      return `
+        <div class="card board-card">
+          <div class="board-card-head">${cat.icon} ${cat.label}</div>
+          ${rowsHtml}
+        </div>
+      `;
+    }).join('');
+
+    const nav = this._boardScope === 'all'
+      ? `<div class="report-period-nav"><span class="report-period-label">${escapeHtml(periodLabel)}</span></div>`
+      : `
+        <div class="report-period-nav">
+          <button class="btn btn-sm" onclick="Compare.stepBoardPeriod(-1)" ${idx <= 0 ? 'disabled' : ''} title="Previous ${this._boardScope}">← Prev</button>
+          <span class="report-period-label">${escapeHtml(periodLabel)}</span>
+          <button class="btn btn-sm" onclick="Compare.stepBoardPeriod(1)" ${idx >= periods.length - 1 ? 'disabled' : ''} title="Next ${this._boardScope}">Next →</button>
+        </div>
+      `;
+
+    el.innerHTML = `
+      <section style="margin-bottom:22px;">
+        <h2>🏆 Leaderboards</h2>
+        <div class="tabs" id="compareBoardTabs">
+          <button class="${this._boardScope === 'month' ? 'active' : ''}" onclick="Compare.setBoardScope('month')">Monthly</button>
+          <button class="${this._boardScope === 'year' ? 'active' : ''}" onclick="Compare.setBoardScope('year')">Yearly</button>
+          <button class="${this._boardScope === 'all' ? 'active' : ''}" onclick="Compare.setBoardScope('all')">All-Time</button>
+        </div>
+        ${nav}
+        <div class="board-grid">${cards}</div>
+      </section>
+    `;
   },
 
   // Step 109 -- the direct answer to "still can't decide": one

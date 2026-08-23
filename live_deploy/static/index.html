@@ -883,6 +883,21 @@ tr.trade-detail-row td {
 .h2h-table tr.h2h-context td { color: var(--parchment); font-weight: 400; }
 .h2h-table tr.h2h-context td:first-child { font-weight: 400; }
 
+/* Month/Year/All-Time leaderboards (Step 113) -- one card per ranking
+   category, top 3 medalists each. Reuses .tabs (scope) and
+   .report-period-nav/.report-period-label (Prev/Next through whatever
+   periods actually have data) from Reports rather than inventing a
+   second period-navigation pattern for the same idea. */
+.board-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 14px; }
+.board-card { padding: 14px 16px; }
+.board-card-head { font-family: var(--font-display); font-weight: 700; font-size: 13px; margin-bottom: 10px; }
+.board-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12px; }
+.board-row + .board-row { border-top: 1px solid var(--line); }
+.board-medal { font-size: 15px; flex-shrink: 0; }
+.board-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.board-value { font-family: var(--font-mono); flex-shrink: 0; }
+.board-row.board-empty { color: var(--parchment); font-style: italic; justify-content: center; }
+
 /* ── Reports page — period-bucketed P&L bar, NOT the Compare view's
    categorical --chart-N palette: here color encodes an actual
    gain/loss POLARITY, exactly what --gain/--loss already mean
@@ -1381,6 +1396,7 @@ body.mobile-nav-open { overflow: hidden; }
       </div>
 
       <div id="compareAttention"></div>
+      <div id="compareBoards"></div>
       <div id="compareComparisonSection"></div>
       <div id="compareLeaderboard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
     </div>

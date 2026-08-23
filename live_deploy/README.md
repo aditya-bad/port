@@ -7473,6 +7473,97 @@ Ubuntu/AWS box — same "one seam genuinely not click-tested end to end"
 caveat Option 3 of this guide already carries for the Docker path in
 general, now extended to this feature specifically.
 
+## What's here (Step 113: Monthly/Yearly/All-Time leaderboards on Compare)
+
+"Can you add one more thing in the compare feature where there's a
+leaderboard... monthly leaderboard and one is yearly leaderboard, and
+the third one is all time leaderboard... figure out how many
+leaderboards, different type of rankings I can give... give the
+leaderboard top three." Three scope tabs (Monthly/Yearly/All-Time), each
+with Prev/Next to step back through real history, each showing seven
+ranking categories' own top 3 (🥇🥈🥉).
+
+**No new DB table** — explicitly offered as acceptable ("if there's no
+separate DB needed for this, then it's fine") and turned out to be
+unnecessary: Compare's `load()` already fetches every deployment's full
+snapshot + position history ONCE, up front (Step 107). Every number a
+period leaderboard needs is already sitting in that same `this._rows`
+array in memory — a month/year leaderboard is just a different way of
+slicing and re-basing data that's already there, not new data.
+
+- **IST calendar bucketing** (`_istDateKey`/`_istMonthKey`/`_istYearKey`)
+  — `toLocaleDateString('en-CA', {timeZone:'Asia/Kolkata'})` turns any
+  `snapshot_at`/`closed_at` timestamp into a reliable `YYYY-MM-DD`
+  string in IST without hand-rolled UTC-offset arithmetic, the same
+  trick `list_snapshots` already leans on server-side (Step 96) for "what
+  IST calendar day was this." `_istMonthKey`/`_istYearKey` just slice
+  that string; `_istMonthLabel` turns `"2026-08"` into `"August 2026"`
+  for display.
+- **`_periodSlice(row, keyFn, periodKey)`** — finds the contiguous run of
+  a deployment's own `points` whose IST key matches the target month/
+  year, PLUS the one snapshot immediately BEFORE the period (its
+  "baseline") when one exists. The baseline does two jobs: it re-bases
+  % return to "how did THIS period go" instead of "how has this
+  deployment gone since day one," and it lets a drawdown occurring on
+  the very FIRST day of the period actually be seen — without a prior
+  point to fall from, `computeMaxDrawdown`'s peak-tracking would treat
+  that first in-period point as the peak itself and miss the drop
+  entirely.
+- **`_computePeriodRow(row, scope, periodKey)`** — `scope: 'all'` just
+  reuses the row's own already-computed all-time Return/Drawdown/Win
+  rate/etc. (they mean the same thing already); `'month'`/`'year'`
+  re-derive Return/Drawdown/Return-Drawdown from the period slice above
+  (feeding it straight into the SAME shared `computeMaxDrawdown` Detail
+  and the rest of Compare already use — "drawdown" can't quietly mean
+  something different here), and Win rate/Profit factor/Return on
+  Capital/Positions-closed from whichever of the row's own episodes
+  (`r.units`, same episode grouping as everywhere else in this app)
+  CLOSED within the period — independent of whether the fetched
+  snapshot set happens to have a day boundary on either side of that
+  close, so a position closed with no other activity that period still
+  counts correctly.
+- **Seven ranking categories** (`BOARD_CATEGORIES`) — the user's own two
+  suggestions (max return %, highest win rate) plus five more the same
+  already-loaded data supports: Best Return, Best Return on Capital,
+  Lowest Drawdown, Best Return/Drawdown (risk-adjusted), Best Win Rate,
+  Best Profit Factor, Most Active (positions closed). Each has its own
+  `eligible()` check so a deployment with nothing relevant to show can't
+  falsely top a category — no closed positions this period means no Win
+  Rate to rank, not a misleading 0%.
+- **Prev/Next through REAL periods, not blind calendar math** —
+  `Compare._availablePeriods(scope)` collects every month/year key that
+  actually has at least one snapshot somewhere in the roster, so a
+  3-week-old account has exactly one month to look at, not twelve empty
+  ones; Prev/Next (`stepBoardPeriod`) just walks that array and disables
+  itself at either end, reusing Reports' own `.report-period-nav`/
+  `.report-period-label` CSS rather than inventing a second
+  period-navigation pattern for the same idea.
+- **`renderBoards()`** — new `#compareBoards` section, placed right
+  after "What needs attention" and before the head-to-head table/
+  leaderboard cards: "who's winning" is the natural next question once
+  "what needs attention" has been read, ahead of drilling into any one
+  deployment's own numbers. Three `.tabs` buttons for scope, the Prev/
+  Next nav (hidden for All-Time, which has no periods to step through),
+  and a `.board-grid` of cards — one per category, top 3 medalists each,
+  "Nobody qualifies yet" when nothing in the current period/scope meets
+  a category's `eligible()` bar.
+
+Verified against the REAL `compare.js` (loaded via Node's `vm`, not a
+reimplementation) with two synthetic deployments spanning two different
+IST months: confirmed `_availablePeriods` finds exactly `["2026-07",
+"2026-08"]`/`["2026"]`; confirmed a period's Return/Drawdown/ROC/Win
+rate against hand-derived numbers (including a drawdown that happens
+mid-period, and a month with real snapshot return but zero closed
+positions correctly showing `winRatePct: null` rather than 0%);
+confirmed `'all'` scope returns byte-identical numbers to the row's own
+precomputed all-time fields; confirmed top-3 ranking and truncation
+picks the right winner in both directions (higher-is-better and
+lower-is-better categories). Separately rendered the full `renderBoards()`
+output end-to-end against a fake DOM: correct default period (latest
+available), Prev/Next enabling and disabling at the real boundaries,
+all 7 category cards present, and correct behavior switching between
+Monthly/Yearly/All-Time scopes.
+
 ## Setup
 
 ```bash
