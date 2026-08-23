@@ -7796,6 +7796,75 @@ confirms exactly one file changed, 15 lines, purely additive; the
 `pivot_supertrend*` family remains untouched. `app.main` still boots
 cleanly.
 
+## What's here (Step 117: SuperTrend value/pivot point on every pivot-strategy entry; underlying ATM price on every straddle-family leg)
+
+Two validation gaps closed, per direct request — "for every position
+taken I need to record the supertrend value and the underlying price
+and pivot value"; "for all straddle variants... I need underlying atm
+price to be captured and shown in the UI as well." Both land in the
+existing generic trade-metadata renderer (`detail.js`'s `_tradeMetaHtml`
+— any key inside `trigger_values`/`target_basis` already gets its own
+labeled block automatically, ANY strategy, no frontend change needed)
+— so "captured" and "shown in the UI" turned out to be the same fix.
+
+**`pivot_supertrend_options.py`** (scoped to this file specifically —
+`pivot_supertrend_options_inverse.py` never uses pivots at all per its
+own module docstring, and its entry already records both full
+SuperTrend bands + the underlying close, so there was nothing missing
+there to add): every entry's `trigger_values` now also carries
+`supertrend_value` (the currently-ACTIVE band — `final_lower` while
+trending up, `final_upper` while trending down, same convention
+`supertrend_status_fields` already uses for the Detail page's Stats
+tab) and `pivot_point` (the pivot P itself), alongside the
+already-present underlying price (`close`). Both long and short entry
+branches updated identically.
+
+**`intraday_dtt_simple.py` / `intraday_dtt_adjusted.py` (and, via the
+shared, unmodified `_adjust`, `intraday_dtt_advanced.py`'s own
+roll-opens)**: the shared `resolve_atm_straddle_legs` helper now
+explicitly fetches the live spot ONCE and threads it into
+`get_atm_strike(spot_price=...)`, returning it as a 6th tuple element,
+instead of that call computing-and-discarding it internally —
+`intraday_dtt_simple.py`'s `_enter` (previously capturing nothing about
+the underlying at all) now records it as `entry_spot` (matching
+`intraday_dtt_adjusted.py`'s own already-established name for the
+identical concept) plus `underlying_price` inside `target_basis`, right
+alongside `selected_strike`, for a direct "was this genuinely ATM for
+this spot" check in the same UI block. A genuine, if minor, bug fixed
+along the way in `intraday_dtt_adjusted.py`: its `_enter` used to make
+TWO separate live spot reads a few `await`s apart (one buried inside
+`get_atm_strike`, one explicit right after) that could — rarely, but
+really — disagree by a tick; now there is exactly one, and the recorded
+`entry_spot` is provably the SAME number the strike was actually chosen
+from. `intraday_dtt_adjusted.py`'s `_adjust` (an entirely separate
+resolution path, `get_leg_by_premium`, not `get_atm_strike` — so not
+reachable through the same threading) gained its own explicit
+`get_spot_price` call and now records `underlying_price` in its own
+`target_basis` too, correctly reflecting the spot AT THAT ADJUSTMENT's
+own moment, not the stale original `entry_spot` (the whole reason an
+adjustment fires is that the book has moved since entry). Since
+`intraday_dtt_advanced.py` inherits `_enter`/`_adjust` from
+`intraday_dtt_adjusted.py` completely unmodified (only overrides
+`_handle_adjustment_trigger`), its roll-open legs get this for free —
+no separate change needed in that file at all.
+
+Verified against the real, imported classes/functions (fake resolvers/
+runners, no DB or Kite session): a real pivot-break entry (genuine
+SuperTrend warmup + real `compute_pivots` output, not a mocked signal)
+confirmed `trigger_values` carries the correct underlying price, a
+non-null `supertrend_value` matching the actually-active band for that
+trend direction, and the real `pivot_point`; `resolve_atm_straddle_legs`
+confirmed to return a 6-tuple whose spot is exactly what the returned
+ATM strike was computed from; `intraday_dtt_simple`'s entry confirmed to
+carry both `entry_spot` and `underlying_price` for each leg;
+`intraday_dtt_adjusted`'s entry confirmed to derive `self.entry_spot`
+from that SAME call (no double-fetch drift possible); and a simulated
+adjustment at a DIFFERENTLY-moved spot confirmed its own
+`underlying_price` reflects that new spot, not the stale entry-time
+one. 21/21 assertions pass. Re-ran the Step 115/116 weekly_ema_st_spread
+suite unchanged (41/41 still pass, confirming no cross-file regression)
+and `app.main` still boots cleanly.
+
 ## Setup
 
 ```bash

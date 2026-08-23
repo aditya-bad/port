@@ -151,11 +151,19 @@ async def resolve_atm_straddle_legs(
     That decision is made as early as possible, right after the first
     resolve_expiry() and before strike/leg resolution or pricing.
 
-    Returns `(ce_leg, pe_leg, expiry, strike, switched_to_next_week)` —
-    always a 5-tuple, never `None` (there is no skip case left).
+    Returns `(ce_leg, pe_leg, expiry, strike, switched_to_next_week, spot)`
+    — always a 6-tuple, never `None` (there is no skip case left).
     `switched_to_next_week` reflects what actually happened (true only
     when the NEXT_WEEK re-resolution above fired), for callers that want
-    to record it in trade metadata.
+    to record it in trade metadata. `spot` is the live underlying price
+    this call actually used to pick the ATM strike — fetched explicitly,
+    ONCE, here, and threaded into `get_atm_strike(spot_price=...)` rather
+    than left for that method to fetch (and immediately discard)
+    internally, so callers get the EXACT number "ATM" was computed from
+    for their own trade-metadata recording (letting a strike selection
+    be independently double-checked later — "was this genuinely the ATM
+    strike for the spot at that moment") instead of a second, separately-
+    timed spot read that could disagree with it by a few ticks.
 
     Does NOT catch NoKiteSession or any other exception — callers wrap
     this in their own try/except (both currently log and skip today's
@@ -180,10 +188,11 @@ async def resolve_atm_straddle_legs(
                 "same-day-expiry straddle as resolved.",
                 deployment_name, expiry_selector, expiry,
             )
-    strike = await resolver.get_atm_strike(options_underlying, expiry)
+    spot = await resolver.get_spot_price(options_underlying)
+    strike = await resolver.get_atm_strike(options_underlying, expiry, spot_price=spot)
     ce_leg = await resolver.get_leg(options_underlying, expiry, strike, "CE")
     pe_leg = await resolver.get_leg(options_underlying, expiry, strike, "PE")
-    return ce_leg, pe_leg, expiry, strike, switched_to_next_week
+    return ce_leg, pe_leg, expiry, strike, switched_to_next_week, spot
 
 
 @register_strategy(
@@ -404,7 +413,7 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                 self.resolver, self.options_underlying, self.expiry_selector,
                 ts, self.switch_to_next_week_on_expiry, runner.deployment_name,
             )
-            ce_leg, pe_leg, expiry, strike, switched_to_next_week = resolved
+            ce_leg, pe_leg, expiry, strike, switched_to_next_week, spot = resolved
             ce_price = await self.resolver.get_ltp(ce_leg)
             pe_price = await self.resolver.get_ltp(pe_leg)
         except NoKiteSession:
@@ -435,7 +444,13 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             "late_start_today": self._late_start_today,
             "switched_to_next_week": switched_to_next_week,
         }
-        common_meta = {"strike": strike, "expiry": expiry.isoformat()}
+        # entry_spot: the live underlying price resolve_atm_straddle_legs
+        # actually used to pick this strike -- same key name
+        # intraday_dtt_adjusted.py already established for the identical
+        # concept, plus "underlying_price" inside each target_basis below
+        # so it's visible in the SAME structured block "selected_strike"
+        # is, for a direct "was this really ATM for this spot" check.
+        common_meta = {"strike": strike, "expiry": expiry.isoformat(), "entry_spot": round(spot, 2)}
         await runner.sell(
             ce_leg.tradingsymbol, ce_leg.instrument_token, qty, ce_price, ts,
             reason="entry",
@@ -443,7 +458,8 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                 trigger="entry_time_reached", action="sell_open_CE",
                 trigger_values=trigger_values,
                 resulting_state={"CE": {"strike": strike, "entry_price": round(ce_price, 2)}},
-                target_basis={"selection_basis": "ATM", "selected_strike": strike, "fill_premium": ce_price},
+                target_basis={"selection_basis": "ATM", "selected_strike": strike,
+                            "underlying_price": round(spot, 2), "fill_premium": ce_price},
                 **common_meta, leg="CE", exchange=ce_leg.exchange,
             ),
         )
@@ -457,7 +473,8 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                     "CE": {"strike": strike, "entry_price": round(ce_price, 2)},
                     "PE": {"strike": strike, "entry_price": round(pe_price, 2)},
                 },
-                target_basis={"selection_basis": "ATM", "selected_strike": strike, "fill_premium": pe_price},
+                target_basis={"selection_basis": "ATM", "selected_strike": strike,
+                            "underlying_price": round(spot, 2), "fill_premium": pe_price},
                 **common_meta, leg="PE", exchange=pe_leg.exchange,
             ),
         )
@@ -477,9 +494,10 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         )
 
         logger.info(
-            "%s: sold straddle — CE %s@%.2f, PE %s@%.2f (combined=%.2f)",
+            "%s: sold straddle — CE %s@%.2f, PE %s@%.2f (combined=%.2f), "
+            "underlying=%.2f",
             runner.deployment_name, ce_leg.tradingsymbol, ce_price,
-            pe_leg.tradingsymbol, pe_price, ce_price + pe_price,
+            pe_leg.tradingsymbol, pe_price, ce_price + pe_price, spot,
         )
 
     # ── Exit ─────────────────────────────────────────────────────────────

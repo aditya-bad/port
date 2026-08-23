@@ -582,6 +582,18 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             # worth a log line every candle.
             at_daily_cap = self.max_trades_per_day is not None and self.trades_today >= self.max_trades_per_day
             close = candle["close"]
+            # The SuperTrend "value" itself -- whichever band is
+            # currently ACTIVE for prev_trend, same active-band
+            # convention supertrend_status_fields already uses for the
+            # Detail page's own Stats tab (final_lower while trending up
+            # -- support, a break below flips down; final_upper while
+            # trending down -- resistance, a break above flips up).
+            # Captured on every position taken, alongside the underlying
+            # price (`close`, already recorded) and the pivot point
+            # itself, so an entry can be independently re-checked later
+            # against what the indicators actually read at that instant.
+            st_value = self.st.final_lower if self.prev_trend == "up" else self.st.final_upper
+            pivot_point = self.pivots.get("P")
             if self.prev_trend == "up":
                 for k in R_KEYS:
                     level = self.pivots[k]
@@ -595,6 +607,8 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                             break
                         trigger_values = {
                             "close": round(close, 2), "trend": self.prev_trend,
+                            "supertrend_value": round(st_value, 2) if st_value is not None else None,
+                            "pivot_point": round(pivot_point, 2) if pivot_point is not None else None,
                             "broken_level_key": k, "broken_level": round(level, 2),
                             "r_levels": {rk: round(self.pivots[rk], 2) for rk in R_KEYS},
                         }
@@ -613,6 +627,8 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                             break
                         trigger_values = {
                             "close": round(close, 2), "trend": self.prev_trend,
+                            "supertrend_value": round(st_value, 2) if st_value is not None else None,
+                            "pivot_point": round(pivot_point, 2) if pivot_point is not None else None,
                             "broken_level_key": k, "broken_level": round(level, 2),
                             "s_levels": {sk: round(self.pivots[sk], 2) for sk in S_KEYS},
                         }

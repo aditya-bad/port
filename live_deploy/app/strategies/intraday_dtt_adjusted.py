@@ -630,10 +630,15 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                 self.resolver, self.options_underlying, self.expiry_selector,
                 ts, self.switch_to_next_week_on_expiry, runner.deployment_name,
             )
-            ce_leg, pe_leg, expiry, strike, switched_to_next_week = resolved
+            # entry_spot now comes straight from resolve_atm_straddle_legs
+            # itself -- the EXACT spot that call used to pick the ATM
+            # strike, not a second, separately-timed get_spot_price() call
+            # a few awaits later that could (rarely, but really) disagree
+            # with it by a tick or two. Also one fewer live REST/cache
+            # round-trip per entry.
+            ce_leg, pe_leg, expiry, strike, switched_to_next_week, entry_spot = resolved
             ce_price = await self.resolver.get_ltp(ce_leg)
             pe_price = await self.resolver.get_ltp(pe_leg)
-            entry_spot = await self.resolver.get_spot_price(self.options_underlying)
         except NoKiteSession:
             logger.warning(
                 "%s: entry_time reached but no Kite session yet — skipping "
@@ -682,7 +687,8 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             metadata=build_trade_meta(
                 trigger="entry_time_reached", action="sell_open_CE",
                 trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
-                target_basis={"selection_basis": "ATM", "selected_strike": strike, "fill_premium": ce_price},
+                target_basis={"selection_basis": "ATM", "selected_strike": strike,
+                            "underlying_price": round(entry_spot, 2), "fill_premium": ce_price},
                 **common_meta, leg="CE", exchange=ce_leg.exchange,
             ),
         )
@@ -698,7 +704,8 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             metadata=build_trade_meta(
                 trigger="entry_time_reached", action="sell_open_PE",
                 trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
-                target_basis={"selection_basis": "ATM", "selected_strike": strike, "fill_premium": pe_price},
+                target_basis={"selection_basis": "ATM", "selected_strike": strike,
+                            "underlying_price": round(entry_spot, 2), "fill_premium": pe_price},
                 **common_meta, leg="PE", exchange=pe_leg.exchange,
             ),
         )
@@ -830,6 +837,17 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                 strike_window=self.adjustment_strike_window, exclude_strikes=exclude,
             )
             price = await self.resolver.get_ltp(leg)
+            # Underlying spot AT this adjustment/roll leg's own resolution
+            # moment -- a genuinely different moment from the original
+            # entry's own entry_spot (the book has moved since then, which
+            # is WHY an adjustment is firing at all), so recorded under
+            # its own key rather than overloading entry_spot's meaning. A
+            # separate call (not threaded through get_leg_by_premium the
+            # way resolve_atm_straddle_legs now threads it into
+            # get_atm_strike) -- that would mean touching resolver.py's
+            # shared get_leg_by_premium, used by strategies well beyond
+            # this straddle family, out of scope here.
+            underlying_price = await self.resolver.get_spot_price(self.options_underlying)
         except NoKiteSession:
             logger.warning(
                 "%s: adjustment trigger fired but no Kite session yet — "
@@ -892,16 +910,17 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                 trigger=reason, action=f"sell_open_{side}",
                 trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
                 target_basis={
-                    "target_premium": round(target, 2), "selected_strike": leg.strike, "fill_premium": price,
+                    "target_premium": round(target, 2), "selected_strike": leg.strike,
+                    "underlying_price": round(underlying_price, 2), "fill_premium": price,
                 },
                 leg_role=role, leg=side, strike=leg.strike,
                 expiry=leg.expiry.isoformat(), exchange=leg.exchange,
             ),
         )
         logger.info(
-            "%s: %s #%d — sold %s %s@%.2f (target was %.2f) — %s "
-            "side now %d leg(s)", runner.deployment_name, reason, self.adjustments_used,
-            side, leg.tradingsymbol, price, target, side, len(self.legs[side]),
+            "%s: %s #%d — sold %s %s@%.2f (target was %.2f, underlying=%.2f) "
+            "— %s side now %d leg(s)", runner.deployment_name, reason, self.adjustments_used,
+            side, leg.tradingsymbol, price, target, underlying_price, side, len(self.legs[side]),
         )
         # An adjustment/roll-open is its own logical execution — a new
         # leg genuinely opened, distinct from the original entry.
