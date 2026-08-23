@@ -1,0 +1,33 @@
+; live_deploy — systemd unit for redeploy_watcher.sh (Step 112).
+;
+; This is a TEMPLATE — the two placeholders below (WorkingDirectory,
+; ExecStart, User) need real values for your box before this will work.
+; See RUN_GUIDE.md's "Redeploy from the UI" section for the full,
+; copy-pasteable one-time setup walkthrough.
+;
+; Install:
+;   sudo cp redeploy-watcher.service /etc/systemd/system/
+;   sudo systemctl daemon-reload
+;   sudo systemctl enable --now redeploy-watcher
+;   sudo systemctl status redeploy-watcher     # should say "active (running)"
+;
+; Watch it work:
+;   tail -f logs/redeploy_watcher.log
+
+[Unit]
+Description=live_deploy redeploy watcher (polls for the admin-UI redeploy trigger)
+After=network.target docker.service
+
+[Service]
+Type=simple
+; CHANGE THIS to the real absolute path of your live_deploy checkout:
+WorkingDirectory=/home/ubuntu/port/live_deploy
+ExecStart=/home/ubuntu/port/live_deploy/redeploy_watcher.sh
+; CHANGE THIS to whatever non-root user already runs redeploy.sh by hand
+; today (the one in your docker group) -- NOT root:
+User=ubuntu
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -58,6 +58,7 @@ from .db.pool import close_pool, create_pool
 from .deployments.manager import DeploymentManager
 from .dispatcher import LiveDataDispatcher
 from .notifications import is_push_configured
+from .routers import admin as admin_router
 from .routers import aggregate as aggregate_router
 from .routers import auth as auth_router
 from .routers import deployments as deployments_router
@@ -99,6 +100,7 @@ app.include_router(auth_router.router)
 app.include_router(aggregate_router.router)
 app.include_router(tags_router.router)
 app.include_router(notifications_router.router)
+app.include_router(admin_router.router)
 
 # Middleware order matters: add_middleware() makes the MOST RECENTLY
 # added one OUTERMOST (it runs first on the way in, last on the way

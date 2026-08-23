@@ -19,6 +19,12 @@
 # entry point). If you're instead binding straight to the tailnet
 # interface (the earlier, simpler setup, no Tailscale Serve), change
 # that one line to `-p $(tailscale ip -4):8000:8000`.
+#
+# This script is also what redeploy_watcher.sh calls when someone uses
+# the app's own Account -> Admin Options -> "Redeploy latest version"
+# button (Step 112) -- see that script's own header comment, and
+# app/routers/admin.py's REDEPLOY_TRIGGER_PATH comment, for the full
+# reasoning on why the running container can't just do this itself.
 
 set -euo pipefail
 
@@ -53,10 +59,19 @@ echo "==> Building image"
 docker build -t live-deploy .
 
 echo "==> Starting container"
+# control/ (read-write, NOT :ro) is Step 112's redeploy-from-the-UI
+# trigger handoff -- the running container writes control/redeploy.trigger
+# when someone uses Account -> Admin Options -> Redeploy, and
+# redeploy_watcher.sh (running on THIS host, not in any container --
+# see its own header comment for exactly why) notices the file and
+# re-runs this exact script. Created automatically by `docker run`'s
+# own bind-mount behavior if it doesn't exist yet.
+mkdir -p control
 docker run -d --name live-deploy --restart unless-stopped \
   -p 127.0.0.1:8000:8000 \
   -v "$(pwd)/config.json:/app/config.json:ro" \
   -v "$(pwd)/tokens.json:/app/tokens.json:ro" \
+  -v "$(pwd)/control:/app/control" \
   live-deploy
 
 echo "==> Done:"

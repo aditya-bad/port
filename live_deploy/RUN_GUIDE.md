@@ -345,6 +345,48 @@ this guide's security section) — change that one line to `-p
 $(tailscale ip -4):8000:8000` if you're instead binding straight to
 the tailnet interface without Tailscale Serve in front.
 
+**Redeploy from the UI (Step 112, optional one-time setup)**: Account →
+Admin Options has a "Redeploy latest version" button that does the
+same `git pull && rebuild && restart` as running `./redeploy.sh` by
+hand, without SSHing in — but it genuinely can't just run that script
+directly. The running container has no `git`/`docker` CLI and no
+access to the host's Docker daemon; and even granting both, the
+script's own `docker stop live-deploy` would tear down THIS container's
+entire process namespace — including the script itself, mid-execution
+— before it ever reached `docker build`/`docker run`. So instead: the
+button just writes a marker file to `control/` (a small directory
+bind-mounted read-write from the host — already wired into the
+`docker run` command above), and a tiny watcher running directly ON
+THE HOST (never in a container, so it's never at risk of being killed
+BY the redeploy it's performing) notices the file and runs
+`redeploy.sh` for real.
+
+One-time setup this needs, on the deployment box itself:
+
+```bash
+cd live_deploy
+sudo cp redeploy-watcher.service /etc/systemd/system/
+# Edit the copy: set WorkingDirectory/ExecStart to this checkout's real
+# absolute path, and User to whichever non-root user already runs
+# redeploy.sh by hand today (the one in the `docker` group).
+sudo systemctl daemon-reload
+sudo systemctl enable --now redeploy-watcher
+sudo systemctl status redeploy-watcher   # should say "active (running)"
+```
+
+Then redeploy once by hand (`./redeploy.sh`) so the running container
+actually picks up the new `-v $(pwd)/control:/app/control` mount —
+the button returns a clear 503 ("`control/` isn't mounted into this
+container yet") rather than silently doing nothing if you click it
+before this step. Every redeploy after that — from the button or by
+hand — keeps the mount, so this is genuinely once.
+
+Watch it work: `tail -f logs/redeploy_watcher.log` on the host while
+clicking the button. The browser tab itself polls `/health` after
+triggering and reloads automatically once the new version answers
+(typically 1–3 minutes, most of it `docker build`) — no need to babysit
+the terminal too.
+
 **Stateless, verified**: grepped the entire `app/` tree for any file
 read/write beyond `config.json`/`tokens.json` (both loaded once, at
 startup — `config.json` at import time, `tokens.json` inside the

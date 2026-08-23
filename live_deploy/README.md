@@ -7375,6 +7375,104 @@ full `renderComparisonSection` render against a stubbed DOM, confirming
 all 16 rows render with correct values and markers. `node --check` on
 api.js/detail.js/compare.js and a full `app.main` import both clean.
 
+## What's here (Step 112: redeploy the running app from the UI, not by SSHing in)
+
+"currently for deployment I am going to AWS and redeploying. can I have
+one admin option that when given password and confirm it will call
+that redeploy internally as a separate process and this redeploy new
+version." A password-gated "Redeploy" button is the easy 5% of this;
+the actual work was figuring out how it can possibly work at all, given
+how this app is already deployed (`redeploy.sh`, already committed in
+this repo): `git pull` → `docker build` → `docker stop live-deploy` →
+`docker run`, run BY HAND on the box, entirely OUTSIDE any container.
+
+**Why the obvious version (just have the app run `redeploy.sh` itself)
+is broken, not just risky** — traced through concretely before writing
+a line of the fix:
+
+1. The running container's own image (`Dockerfile`) has no `git`, no
+   `docker` CLI, and no access to the host's Docker daemon. Calling
+   `redeploy.sh` from inside the app process as-is fails immediately
+   with "command not found."
+2. Even granting all of that (installing git+docker-cli into the image,
+   mounting `/var/run/docker.sock`) doesn't fix the real problem:
+   `redeploy.sh`'s own `docker stop live-deploy` targets THIS EXACT
+   container. Stopping a container tears down its whole PID namespace
+   AT ONCE — every process inside it, not just PID 1 — so the very
+   shell script running that command gets killed mid-execution, before
+   it ever reaches `docker build`/`docker run`. A detached/backgrounded
+   child doesn't escape this either; it's still inside the same
+   container being torn down. This isn't a permissions problem to work
+   around, it's the container committing suicide before finishing the
+   sentence.
+3. Mounting the Docker socket into a background trading process at all
+   is a real security tradeoff (effectively root-equivalent host
+   access) worth avoiding regardless of point 2.
+
+**The fix**: separate "signal that a redeploy should happen" (safe,
+can live inside the container) from "actually do it" (must run
+somewhere that isn't about to be destroyed by the thing it's doing).
+
+- **`app/routers/admin.py`** (new router, `/admin` — deliberately NOT
+  added to `deployments.py`: this is about the SOFTWARE, not a
+  trading-strategy deployment, and "deployment" already means one very
+  specific thing in that file) — `POST /admin/redeploy`, gated behind
+  the exact same two checks Clear All already uses (re-enter the app
+  password, type a literal confirm phrase, `"REDEPLOY"` here vs
+  `"DELETE ALL"` there, both checked server-side). On success, writes
+  a plain marker file to `control/redeploy.trigger` and returns
+  immediately — it deliberately does NOT wait for the redeploy to
+  finish, because by the time it finishes, this exact process (running
+  inside the container about to be replaced) has already been killed
+  and can't report anything. Returns 503, not a silent no-op, if
+  `control/` isn't actually a mounted directory yet (the container
+  predates the new mount) — writing into the container's own ephemeral
+  filesystem instead would tell the admin "done" while the host-side
+  watcher below never sees it.
+- **`redeploy_watcher.sh`** (new, host-only) — a tiny poll loop
+  (`test -f control/redeploy.trigger`, every 3s) that runs directly ON
+  THE HOST, never in a container, so it's never at risk of being killed
+  BY the redeploy it's performing. Finds the trigger, removes it, runs
+  the real `redeploy.sh`, logs everything to `logs/redeploy_watcher.log`
+  (`set -uo pipefail`, deliberately NOT `-e` — one bad redeploy run
+  should log and keep watching, not kill the watcher itself).
+- **`redeploy-watcher.service`** (new) — a systemd unit template to run
+  the watcher as a real supervised service (survives reboots, restarts
+  itself if it crashes) rather than a `nohup` that dies with the
+  terminal it was started from.
+- **`redeploy.sh`** — one line added to its own `docker run`: `-v
+  "$(pwd)/control:/app/control"` (read-write, not `:ro` — the container
+  needs to WRITE the trigger file there), auto-created via `mkdir -p
+  control` right before. Needs running once by hand after pulling this
+  update before the button works (the currently-running container
+  predates the mount) — the endpoint's own 503 says exactly this if
+  clicked too early.
+- **Account → Admin Options** gets a new "Software" card (distinct from
+  the existing "Danger zone" — this is disruptive, briefly, not
+  destructive) with the "Redeploy latest version" button, modal, and
+  polling: since the triggering request can't report success, the
+  frontend waits ~6s (let the old container actually go down first),
+  then polls `/health` (same-origin, same session cookie, no extra
+  auth) every 3s for up to 5 minutes, and reloads the page automatically
+  the moment a NEW process answers — closing the loop the backend
+  response itself couldn't.
+
+Verified everything that's actually testable without a real AWS box:
+(1) `admin.trigger_redeploy` directly, with a fake `Request` — wrong
+password → 401, wrong confirm phrase → 400, `control/` missing → 503
+(not a silent success), `control/` present → trigger file written with
+the expected content; (2) `redeploy_watcher.sh`'s real loop, end to
+end, against a stubbed `redeploy.sh` — starts, detects a trigger file
+within one poll cycle, removes it, invokes the stub, logs its output
+and a success line; (3) `bash -n` on both shell scripts, `node --check`
+on api.js/account.js, and a full `app.main` import, all clean. What
+could NOT be verified from here, honestly: the real `redeploy.sh`
+(actual `git pull`/`docker build`/`docker stop`/`docker run` against a
+real Docker daemon) and the systemd unit actually running on a real
+Ubuntu/AWS box — same "one seam genuinely not click-tested end to end"
+caveat Option 3 of this guide already carries for the Docker path in
+general, now extended to this feature specifically.
+
 ## Setup
 
 ```bash

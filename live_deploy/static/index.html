@@ -1779,6 +1779,33 @@ body.mobile-nav-open { overflow: hidden; }
   </div>
 </div>
 
+<div class="modal-overlay" id="redeployModal">
+  <div class="modal">
+    <h2>Redeploy latest version</h2>
+    <div class="card-sub" style="margin-bottom:14px;">
+      Pulls the latest code, rebuilds, and restarts the whole app on the
+      server. Every deployment's own state is safe (it lives in
+      Postgres, not in this process) — but the app itself will go
+      unreachable for roughly 1–3 minutes while it rebuilds, then come
+      back on its own. This page will detect that and reload
+      automatically.
+    </div>
+    <div class="field">
+      <label>App password</label>
+      <input type="password" id="redeployPassword" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>Type <code>REDEPLOY</code> to confirm</label>
+      <input type="text" id="redeployConfirm" placeholder="REDEPLOY" autocomplete="off">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="closeRedeployModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="submitRedeploy()">Redeploy now</button>
+    </div>
+    <div class="modal-msg" id="redeployMsg"></div>
+  </div>
+</div>
+
 <script src="/js/api.js"></script>
 <script src="/js/dashboard.js"></script>
 <script src="/js/catalog.js"></script>

@@ -300,7 +300,18 @@ const Account = {
       `;
     }).join('') +
       `<div class="table-note">Disabling a strategy only hides it from Catalog's Browse tab and blocks NEW deployments — anything already deployed keeps running untouched.</div>` +
-      `<div class="card" style="border-top-color:var(--loss); margin-top:22px; max-width:520px;">
+      `<div class="card" style="border-top-color:var(--brass); margin-top:22px; max-width:520px;">
+        <div class="card-row">
+          <div>
+            <div class="card-title" style="color:var(--brass);">Software</div>
+            <div class="card-sub">Pull the latest code and restart the app on the server. Every deployment's own state is untouched (it lives in Postgres) — the app itself is just briefly unreachable while it rebuilds.</div>
+          </div>
+          <div class="card-actions">
+            <button class="btn btn-secondary btn-sm" onclick="Account.openRedeployModal()">Redeploy latest version</button>
+          </div>
+        </div>
+      </div>` +
+      `<div class="card" style="border-top-color:var(--loss); margin-top:14px; max-width:520px;">
         <div class="card-row">
           <div>
             <div class="card-title" style="color:var(--loss);">Danger zone</div>
@@ -330,6 +341,13 @@ const Account = {
     document.getElementById('clearAllConfirm').value = '';
     document.getElementById('clearAllMsg').textContent = '';
     document.getElementById('clearAllModal').classList.add('open');
+  },
+
+  openRedeployModal() {
+    document.getElementById('redeployPassword').value = '';
+    document.getElementById('redeployConfirm').value = '';
+    document.getElementById('redeployMsg').textContent = '';
+    document.getElementById('redeployModal').classList.add('open');
   },
 
   // ── Tags: the predefined catalog a deployment can be labeled from
@@ -563,4 +581,71 @@ function _urlBase64ToUint8Array(base64String) {
   const outputArray = new Uint8Array(rawData.length);
   for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
   return outputArray;
+}
+
+// ── Redeploy latest version (Step 112) ─────────────────────────────────
+// Plain global functions (not Account.* methods), matching the exact
+// same drift-from-convenience pattern Clear All's own closeClearAllModal/
+// submitClearAll already established (catalog.js) -- Account.* only for
+// the OPEN call each modal's trigger button uses, close/submit as bare
+// globals referenced straight from the modal's own onclick attributes.
+function closeRedeployModal() {
+  document.getElementById('redeployModal').classList.remove('open');
+}
+
+async function submitRedeploy() {
+  const msg = document.getElementById('redeployMsg');
+  const password = document.getElementById('redeployPassword').value;
+  const confirmText = document.getElementById('redeployConfirm').value.trim();
+  if (!password) {
+    msg.innerHTML = '<span style="color:var(--loss)">Password is required</span>';
+    return;
+  }
+  if (confirmText !== 'REDEPLOY') {
+    msg.innerHTML = '<span style="color:var(--loss)">Type REDEPLOY exactly to confirm</span>';
+    return;
+  }
+  msg.innerHTML = '<span class="spinner"></span> Triggering redeploy…';
+  const { ok, data } = await Api.triggerRedeploy(password, confirmText);
+  if (!ok) {
+    msg.innerHTML = `<span style="color:var(--loss)">${escapeHtml(data.detail || 'Failed')}</span>`;
+    return;
+  }
+  msg.innerHTML = '<span class="spinner"></span> Redeploy triggered — the server will rebuild and restart. ' +
+    'This usually takes 1–3 minutes; watching for it to come back…';
+  _pollForRedeployCompletion(msg);
+}
+
+// The request that triggered this can't itself report success — by the
+// time git-pull/docker-build/docker-stop/docker-run finish, the process
+// that answered THIS request has already been killed and replaced (see
+// app/routers/admin.py's own docstring). So instead: wait for the old
+// container to actually go away, then poll /health (same origin, same
+// session cookie, no extra auth needed) until a NEW process answers,
+// then reload the page to pick up the new frontend code too, not just
+// the new backend.
+async function _pollForRedeployCompletion(msg) {
+  // Give the watcher (polls every ~3s) and the old container time to
+  // actually go down before polling starts -- otherwise the first few
+  // checks would just hit the STILL-RUNNING old container and look
+  // like nothing happened yet.
+  await new Promise(resolve => setTimeout(resolve, 6000));
+
+  const deadline = Date.now() + 5 * 60 * 1000;   // give up after 5 minutes, not forever
+  while (Date.now() < deadline) {
+    try {
+      const r = await fetch('/health');
+      if (r.ok) {
+        msg.innerHTML = '<span style="color:var(--gain)">✓ New version is live — reloading…</span>';
+        setTimeout(() => location.reload(), 1200);
+        return;
+      }
+    } catch (e) {
+      // Connection refused while the old container is down / the new
+      // one is still building -- expected mid-redeploy, keep polling.
+    }
+    await new Promise(resolve => setTimeout(resolve, 3000));
+  }
+  msg.innerHTML = '<span style="color:var(--loss)">Redeploy is taking longer than 5 minutes — check ' +
+    'logs/redeploy_watcher.log and `docker ps` on the server, or just reload this page once it\'s back.</span>';
 }

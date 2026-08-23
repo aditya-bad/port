@@ -129,6 +129,19 @@ const Api = {
     const data = await r.json();
     return { ok: r.ok, data };
   },
+  // Step 112 -- see app/routers/admin.py's own docstring for why this
+  // only WRITES A TRIGGER FILE (host-side redeploy_watcher.sh does the
+  // actual git-pull/docker-build/restart) and never waits for a real
+  // result -- Account._pollForRedeploy handles confirming the new
+  // version actually came back up.
+  async triggerRedeploy(password, confirm) {
+    const r = await fetch('/admin/redeploy', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password, confirm }),
+    });
+    const data = await r.json();
+    return { ok: r.ok, data };
+  },
 
   // ── Per-deployment detail data ─────────────────────────────────
   // Each throws on a non-2xx response (rather than quietly returning
