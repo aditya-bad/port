@@ -7747,6 +7747,55 @@ confirmed `app.strategies`' full registry still imports cleanly and
 `pivot_supertrend_options_inverse.py` remain byte-for-byte unmodified
 (`git diff --stat` on all three is empty).
 
+## What's here (Step 116: `weekly_ema_st_spread` — pre-market ticks filtered at ingestion, not just at candle-close)
+
+A real gap, reported and verified before fixing: `on_tick` fed EVERY
+valid tick straight into `self.aggregator.add_tick(...)` with no
+time-based filtering at all. `market_open_time`'s existing `after_open`
+check (Step 115) only gates whether a fresh signal is DETECTED off an
+already-fully-formed candle — it can't retroactively un-bake a
+pre-market tick's price out of that candle's own open/high/low/close
+once `add_tick` has already folded it in. NSE genuinely computes and
+disseminates a live NIFTY 50 value during the 9:00-9:15 pre-open call
+auction; a tick from that window landing in the day's first hourly
+bucket would silently distort the candle both EMA and SuperTrend are
+computed from, invisible to the entry-time gate entirely.
+
+**Fix**: filter at the earliest possible point, in `on_tick` itself,
+before the tick ever reaches the aggregator — `if self.market_open_time
+is not None and ts.time() < self.market_open_time: return`, placed
+immediately after the existing `ts is None or price is None` guard,
+before day-rollover and before `add_tick`. Reuses `market_open_time`
+as-is (no second, separate cutoff); a clean `>=` boundary, so the first
+legitimate tick AT market open is still included, only strictly-earlier
+ticks are dropped. Purely additive — `after_open`'s own bucket-end
+comparison in `_on_candle_closed` (Step 115's own fix for the
+clock-hour-vs-market-open misalignment) is untouched, since that solves
+a genuinely different problem (which ALREADY-FORMED candle's signal is
+safe to act on) from this one (which ticks are safe to bake into a
+candle's OHLC at all). Deliberately scoped to this strategy's own
+`on_tick` only — not added to `is_stale_candle_close` or any shared
+`pivot_supertrend.py` function; whether the pivot family has the same
+gap is a separate, unbundled question.
+
+Verified: a tick timestamped before `market_open_time` never reaches
+the aggregator at all — confirmed directly against the aggregator's own
+internal `_bucket_start`/`_candle` state (not just "no entry fired"),
+including a second pre-market tick immediately after the first;
+confirmed a mixed sequence (wild pre-market prices, then real trading
+ticks, then a bucket rollover) produces a completed candle whose close
+reflects only the real ticks; confirmed a tick exactly AT
+`market_open_time` and one immediately after are both accepted and
+correctly extend the day's first candle (the intended `>=` boundary,
+not an off-by-one exclusion of the very first legitimate tick); and
+confirmed `market_open_time=None` (explicitly disabled) correctly lets
+a pre-market tick through, preserving that opt-out. Re-ran the existing
+Step 115/113 test suite unchanged (41/41 still pass) to confirm the
+`after_open` bucket-end logic itself was not altered. `git diff --stat`
+confirms exactly one file changed, 15 lines, purely additive; the
+`pivot_supertrend*` family remains untouched. `app.main` still boots
+cleanly.
+
 ## Setup
 
 ```bash

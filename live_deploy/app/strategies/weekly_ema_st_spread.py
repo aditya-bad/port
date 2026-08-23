@@ -753,6 +753,21 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
         if ts is None or price is None:
             return
 
+        # Filtered HERE, before the tick ever reaches the aggregator --
+        # not just gated later at candle-close time. NSE genuinely
+        # computes/disseminates a live NIFTY 50 value during the
+        # 9:00-9:15 pre-open call auction, distinct from continuous
+        # trading; `after_open` in _on_candle_closed only gates whether
+        # an already-FORMED candle's signal gets acted on, which can't
+        # un-bake a pre-market tick's price back out of that candle's
+        # own open/high/low/close once add_tick has already folded it
+        # in. Reuses market_open_time as-is (no second, separate
+        # cutoff) -- a clean `>=` boundary, so the first legitimate tick
+        # AT market_open_time is still included, only strictly-earlier
+        # ticks are dropped.
+        if self.market_open_time is not None and ts.time() < self.market_open_time:
+            return
+
         day = ts.date()
         if self.today is None:
             self.today = day
