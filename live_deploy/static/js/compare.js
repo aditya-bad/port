@@ -508,6 +508,7 @@ const Compare = {
   _selected: new Set(), // deployment ids currently checked for the overlay chart -- Set preserves insertion order, used for stable color assignment
   _boardScope: 'month',  // 'month' | 'year' | 'all' -- Step 113's leaderboards
   _boardPeriod: null,    // e.g. "2026-08" / "2026" / null for 'all' -- null also means "not yet picked," resolved to the latest available period the first time renderBoards runs
+  _activeTab: 'leaderboards',  // 'leaderboards' | 'compare' -- Step 114's top-level tab split
 
   async load() {
     document.getElementById('compareAttention').innerHTML = '';
@@ -522,6 +523,8 @@ const Compare = {
     this._selected = new Set();
     this._boardScope = 'month';
     this._boardPeriod = null;
+    this._activeTab = 'leaderboards';
+    this.setActiveTab('leaderboards');   // resets tab button/panel visibility on every fresh load, not just the first
 
     // Every deployment, not just active/paused (unlike Portfolio's
     // combined equity curve) -- "how did my old stopped strategy do
@@ -546,8 +549,34 @@ const Compare = {
 
     this._rows = deployments.map((d, i) => this._buildRow(d, snapshotLists[i], positionLists[i]));
     this._computeFlags();
-    document.getElementById('compareExportBtn').style.display = '';
+    this._updateExportBtnVisibility();
     this.render();
+  },
+
+  // The CSV export is the Compare tab's own leaderboard-cards export
+  // (see exportCsv below) -- showing it while the Leaderboards tab is
+  // active would offer a download that has nothing to do with what's on
+  // screen. Visible only once data has actually loaded AND the Compare
+  // tab is the one showing.
+  _updateExportBtnVisibility() {
+    document.getElementById('compareExportBtn').style.display =
+      (this._rows.length && this._activeTab === 'compare') ? '' : 'none';
+  },
+
+  // Step 114 -- Leaderboards ("who's winning") and Compare ("how does A
+  // stack up against B") are different questions with no reason to
+  // share a scroll; picking one hides the other entirely rather than
+  // stacking both, per explicit "I want this or that" feedback.
+  setActiveTab(tab) {
+    this._activeTab = tab;
+    document.querySelectorAll('#compareTopTabs button').forEach(b =>
+      b.classList.toggle('active', b.dataset.tab === tab));
+    document.getElementById('compareTabLeaderboards').style.display = tab === 'leaderboards' ? '' : 'none';
+    document.getElementById('compareTabCompare').style.display = tab === 'compare' ? '' : 'none';
+    document.getElementById('compareViewSub').textContent = tab === 'leaderboards'
+      ? 'Top 3 by Return, Drawdown, Win rate and more — Monthly, Yearly, or All-Time'
+      : 'What needs a decision, then every deployment\'s own card — check up to 6 to overlay their equity curves below';
+    this._updateExportBtnVisibility();
   },
 
   // % return, indexed to this deployment's OWN first snapshot -- not

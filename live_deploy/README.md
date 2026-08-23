@@ -7564,6 +7564,40 @@ available), Prev/Next enabling and disabling at the real boundaries,
 all 7 category cards present, and correct behavior switching between
 Monthly/Yearly/All-Time scopes.
 
+## What's here (Step 114: Leaderboards and Compare as two tabs, not one scroll)
+
+"Can we have the leaderboard and compare as two tabs like it is one
+after other. but i want this or that." Step 113 stacked the new
+Leaderboards section directly above the existing attention panel/head-
+to-head table/cards — one continuous scroll. This splits that same
+content into two `.tabs` panes on the Compare view (same tab pattern
+Reports' Daily/Weekly/Monthly already uses) so only one is ever showing
+at a time:
+
+- **🏆 Leaderboards** (`#compareTabLeaderboards`, default tab) — just
+  the Step 113 Monthly/Yearly/All-Time boards, nothing else competing
+  for space above or below it.
+- **📊 Compare** (`#compareTabCompare`) — "What needs attention," the
+  head-to-head table/equity chart, and the per-deployment card grid,
+  exactly as they were before Step 113 added the boards in between them.
+
+No new data or computation — `Compare.load()` still fetches and
+computes everything ONCE, for both tabs, up front; `setActiveTab()`
+purely toggles which of the two container `<div>`s is visible
+(`style.display`), so switching tabs back and forth is instant and
+never re-fetches or re-renders from scratch. The "⭳ Export CSV" button
+(the leaderboard CARDS' own export, not the boards') now also tracks
+the active tab — hidden on the Leaderboards tab even after data has
+loaded, since offering a download unrelated to what's on screen would
+be confusing.
+
+Verified against the real `compare.js` via Node `vm`: tab switching
+toggles both panels' visibility correctly, the correct tab button gets
+`.active`, the view-sub caption updates per tab, and the Export CSV
+button stays hidden on the Leaderboards tab and on the Compare tab
+before any data has loaded, appearing only once both conditions (Compare
+tab active AND rows loaded) are true.
+
 ## Setup
 
 ```bash

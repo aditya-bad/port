@@ -1388,17 +1388,32 @@ body.mobile-nav-open { overflow: hidden; }
       <div class="view-header">
         <div>
           <h1>Compare</h1>
-          <div class="view-sub">What needs a decision, then every deployment's own card — check up to 6 to overlay their equity curves below</div>
+          <div class="view-sub" id="compareViewSub">Who's winning by the numbers, or check up to 6 deployments to compare them head-to-head</div>
         </div>
         <div class="view-header-actions">
           <button class="btn btn-secondary btn-sm" id="compareExportBtn" onclick="Compare.exportCsv()" style="display:none;">⭳ Export CSV</button>
         </div>
       </div>
 
-      <div id="compareAttention"></div>
-      <div id="compareBoards"></div>
-      <div id="compareComparisonSection"></div>
-      <div id="compareLeaderboard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      <!-- Step 114 -- Leaderboards and the deployment-vs-deployment
+           Compare view are two different questions ("who's winning" vs
+           "how does A stack up against B specifically"), so they're two
+           tabs, not one long scroll -- "I want this or that," not both
+           at once. -->
+      <div class="tabs" id="compareTopTabs">
+        <button class="active" data-tab="leaderboards" onclick="Compare.setActiveTab('leaderboards')">🏆 Leaderboards</button>
+        <button data-tab="compare" onclick="Compare.setActiveTab('compare')">📊 Compare</button>
+      </div>
+
+      <div id="compareTabLeaderboards">
+        <div id="compareBoards"></div>
+      </div>
+
+      <div id="compareTabCompare" style="display:none;">
+        <div id="compareAttention"></div>
+        <div id="compareComparisonSection"></div>
+        <div id="compareLeaderboard"><div class="empty"><span class="spinner"></span> Loading…</div></div>
+      </div>
     </div>
 
     <!-- ═══ Reports ═══ -->
