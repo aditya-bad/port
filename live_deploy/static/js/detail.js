@@ -884,14 +884,8 @@ function renderJsonBlock(label, obj) {
   return `<div class="trade-json-block"><div class="label">${escapeHtml(label)}</div><div class="trade-json">${escapeHtml(JSON.stringify(obj, null, 2))}</div></div>`;
 }
 
-function fmtDuration(ms) {
-  if (ms == null) return '—';
-  const sec = Math.floor(ms / 1000);
-  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
-  if (d > 0) return `${d}d ${h}h`;
-  if (h > 0) return `${h}h ${m}m`;
-  return `${m}m`;
-}
+// fmtDuration() now lives in api.js (Step 111 -- shared with Compare's
+// head-to-head table's own "Avg Holding Period" row).
 
 // renderEquityChart() now lives in api.js (shared with the Portfolio
 // view's combined curve, Step 39) — see there for the implementation.

@@ -7304,6 +7304,77 @@ with real HTML, and that the section fully clears the moment selection
 drops back below 2. `node --check` on api.js/detail.js/compare.js and a
 full `app.main` import both clean.
 
+## What's here (Step 111: head-to-head table gets 8 more rows — capital, real rupees, efficiency, risk profile)
+
+"add more too. like capital vs returns and all other things too add
+more metrics for me to take a decision." The head-to-head table grew
+from 8 rows (5 scored + 3 context) to 16 (7 scored + 9 context):
+
+- **Initial Capital** (context) — now the FIRST row, so every return
+  number below it reads against the money actually committed.
+- **Return on Capital** (scored, new) — realized profit as a % of
+  `initial_capital`, sitting right next to the existing **Return (since
+  tracked)** (indexed to this deployment's own first snapshot) —
+  renamed for clarity now that there are two. These are genuinely
+  different numbers, not a relabeling: Return (since tracked) can
+  include a "positional" deployment's live, unrealized mark-to-market
+  on a position still open (Step 99 intentionally includes this),
+  while Return on Capital only counts money actually, permanently
+  realized. Verified with a worked scenario where they diverge by over
+  3 percentage points purely from an open position's unrealized gain —
+  confirms the two rows answer genuinely different questions ("how's
+  it doing right now" vs "how much of what I put in has it actually
+  paid back"), not the same number twice.
+- **Realized P&L** (context, new) — the actual rupee amount, pairing
+  directly with Initial Capital for the literal "capital vs returns"
+  side-by-side the user asked for, since raw rupees aren't the fair,
+  scoreable comparison the % numbers already are across differently-
+  sized deployments.
+- **Avg P&L per Position** (scored, new) — `total realized ÷ positions
+  closed` — a trade-efficiency read: is this strategy's edge a lot of
+  small wins or a few big ones.
+- **Positions / Day** (context, new) — activity level, how often each
+  deployment actually trades.
+- **Avg Holding Period** (context, new) — mean wall-clock span across
+  every CLOSED episode's own `opened_at`→`closed_at`, reusing the same
+  definition Detail's Stats tab already used for its own "Avg holding
+  period" stat — sourced from `r.units` (already computed per row for
+  win rate/profit factor), no second pass over raw positions needed.
+- **Largest Win** / **Largest Loss** (context, new) — risk-profile
+  numbers, deliberately NOT scored: a bigger largest-loss usually just
+  reflects bigger position sizing, not a worse edge, so it wouldn't be
+  a fair thing to rank deployments by.
+
+**`fmtDuration` moved from detail.js to api.js** — Compare's new "Avg
+Holding Period" row needed it, and `compare.js` loads BEFORE
+`detail.js` (see index.html's own `<script>` order); a genuinely shared
+formatter belongs in the shared file, not borrowed across two view
+files in a load-order-dependent way that happened to still work by
+accident (every script is fully loaded by the time anyone can click
+anything, but that's not something worth relying on going forward).
+
+No backend or schema changes — every new row is computed from data
+already flowing through `_buildRow` (snapshots already carried
+`realized_pnl_cumulative` internally for `computeMaxDrawdown`, just not
+out to `points` before now; positions/episodes were already fully
+available via `r.units`).
+
+Verified against the REAL loaded files (Node's `vm` module) four ways:
+(1) the full Step 110 winner/tie/overall test re-run unmodified —
+confirms the scored count correctly grew from 5 to 7 and every existing
+row still resolves under its new position in the table; (2) a dedicated
+Avg Holding Period / Largest Win / Largest Loss test with REAL ISO
+timestamps (not placeholder strings) — confirms the exact expected
+14-hour average across a 2-hour and a 26-hour episode, the correct
+largest win/loss, and `null` (never `NaN`) with zero closed history;
+(3) a dedicated Return-vs-Return-on-Capital test built specifically to
+diverge (a positional deployment's live unrealized gain inflating
+indexed Return well past what's actually been realized) — confirms the
+two rows report meaningfully different numbers, not duplicates; (4) a
+full `renderComparisonSection` render against a stubbed DOM, confirming
+all 16 rows render with correct values and markers. `node --check` on
+api.js/detail.js/compare.js and a full `app.main` import both clean.
+
 ## Setup
 
 ```bash

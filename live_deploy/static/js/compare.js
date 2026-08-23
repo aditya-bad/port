@@ -169,19 +169,54 @@ function _sparklineSvg(points) {
 // yourself, column by column, which is the exact thing this section
 // exists to do instead.
 //
-// `better`: 'higher' or 'lower' for a metric that has a genuine winner
-// (Max drawdown is the one 'lower', everything else scored is
-// 'higher'); `null` for a metric shown purely for CONTEXT (Positions
-// closed/Days live/Current equity) — more trades or more days isn't
-// inherently "better," and current equity depends on each deployment's
-// own initial_capital so it isn't a fair head-to-head number the way
-// the indexed % return already is. Context rows never contribute to
-// the overall winner tally.
+// `better`: 'higher' or 'lower' for a metric that has a genuine winner;
+// `null` for a metric shown purely for CONTEXT — Positions closed/Days
+// live/Current equity/Initial Capital/Realized P&L/Trades per Day/Avg
+// Holding Period/Largest Win/Largest Loss are all context: more trades
+// or more days isn't inherently "better," a bigger largest-win/-loss
+// often just reflects bigger position sizing rather than a better edge,
+// and neither Initial Capital, Realized P&L (an absolute rupee number),
+// nor Current equity are fairly comparable across deployments with
+// different capital sizes the way the indexed % numbers already are.
+// Context rows never contribute to the overall winner tally.
+//
+// Two returns, deliberately both shown (Step 111, "capital vs
+// returns"): "Return" is indexed to this deployment's OWN first
+// snapshot (unaffected by exactly when snapshotting started); "Return
+// on Capital" is realized profit as a % of the ORIGINAL initial_capital
+// committed to it. These can genuinely differ -- most visibly for a
+// "positional" deployment currently holding an open position: its
+// indexed Return reflects that position's live mark-to-market (Step 99
+// intentionally includes this for positional mode), while Return on
+// Capital only counts money actually, permanently realized. Seeing both
+// side by side answers "how is this doing right now" AND "how much of
+// what I put in has this actually paid back so far" as two distinct
+// questions, not one blended number.
 const HEAD_TO_HEAD_METRICS = [
   {
-    key: 'return', label: 'Return', better: 'higher',
+    key: 'capital', label: 'Initial Capital', better: null,
+    value: r => r.deployment.initial_capital,
+    format: r => fmtMoney(r.deployment.initial_capital),
+  },
+  {
+    key: 'return', label: 'Return (since tracked)', better: 'higher',
     value: r => { const p = _lastPoint(r.points); return p ? p.pct : null; },
     format: r => { const p = _lastPoint(r.points); return p ? `${p.pct >= 0 ? '+' : ''}${p.pct.toFixed(2)}%` : '—'; },
+  },
+  {
+    key: 'roc', label: 'Return on Capital', better: 'higher',
+    value: r => { const p = _lastPoint(r.points); return (p && r.deployment.initial_capital) ? (p.realized_pnl_cumulative / r.deployment.initial_capital) * 100 : null; },
+    format: r => {
+      const p = _lastPoint(r.points);
+      if (!p || !r.deployment.initial_capital) return '—';
+      const v = (p.realized_pnl_cumulative / r.deployment.initial_capital) * 100;
+      return `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
+    },
+  },
+  {
+    key: 'realizedpnl', label: 'Realized P&L', better: null,
+    value: r => { const p = _lastPoint(r.points); return p ? p.realized_pnl_cumulative : null; },
+    format: r => { const p = _lastPoint(r.points); return p != null ? fmtSignedMoney(p.realized_pnl_cumulative) : '—'; },
   },
   {
     key: 'drawdown', label: 'Max drawdown', better: 'lower',
@@ -203,14 +238,61 @@ const HEAD_TO_HEAD_METRICS = [
     value: r => r.stats.profitFactor == null ? null : (r.stats.profitFactor === Infinity ? Number.MAX_VALUE : r.stats.profitFactor),
     format: r => _fmtRatio(r.stats.profitFactor),
   },
+  {
+    key: 'avgpnl', label: 'Avg P&L per Position', better: 'higher',
+    value: r => r.stats.closedCount ? r.stats.totalRealizedPnl / r.stats.closedCount : null,
+    format: r => r.stats.closedCount ? fmtSignedMoney(r.stats.totalRealizedPnl / r.stats.closedCount) : '—',
+  },
   { key: 'trades', label: 'Positions closed', better: null, value: r => r.stats.closedCount, format: r => String(r.stats.closedCount) },
+  {
+    key: 'frequency', label: 'Positions / Day', better: null,
+    value: r => r.points.length ? r.stats.closedCount / r.points.length : null,
+    format: r => r.points.length ? (r.stats.closedCount / r.points.length).toFixed(2) : '—',
+  },
   { key: 'days', label: 'Days live', better: null, value: r => r.points.length, format: r => String(r.points.length) },
+  {
+    key: 'holdperiod', label: 'Avg Holding Period', better: null,
+    value: r => _avgHoldMs(r),
+    format: r => { const ms = _avgHoldMs(r); return ms != null ? fmtDuration(ms) : '—'; },
+  },
+  {
+    key: 'largestwin', label: 'Largest Win', better: null,
+    value: r => _extremePnl(r, 'max'),
+    format: r => { const v = _extremePnl(r, 'max'); return v != null ? fmtSignedMoney(v) : '—'; },
+  },
+  {
+    key: 'largestloss', label: 'Largest Loss', better: null,
+    value: r => _extremePnl(r, 'min'),
+    format: r => { const v = _extremePnl(r, 'min'); return v != null ? fmtSignedMoney(v) : '—'; },
+  },
   {
     key: 'equity', label: 'Current equity', better: null,
     value: r => { const p = _lastPoint(r.points); return p ? p.total_value : null; },
     format: r => { const p = _lastPoint(r.points); return p ? fmtMoney(p.total_value) : '—'; },
   },
 ];
+
+// Avg wall-clock holding period across a row's own CLOSED episodes
+// (Step 111) -- same "opened_at to closed_at, mean across closed units"
+// definition Detail's Stats tab already uses for its own Avg Holding
+// Period stat, just sourced from `r.units` (already computed per row
+// for win rate/profit factor) instead of a second pass over raw
+// positions.
+function _avgHoldMs(r) {
+  const durations = r.units
+    .filter(u => u.status === 'closed' && u.opened_at && u.closed_at)
+    .map(u => new Date(u.closed_at) - new Date(u.opened_at));
+  return durations.length ? durations.reduce((a, b) => a + b, 0) / durations.length : null;
+}
+
+// Largest single CLOSED episode's own realized_pnl in either direction
+// -- a risk-profile number, not a scored one (a bigger largest-loss
+// often just reflects bigger position sizing, not a worse edge).
+function _extremePnl(r, which) {
+  const pnls = r.units.filter(u => u.status === 'closed').map(u => u.realized_pnl);
+  if (!pnls.length) return null;
+  return which === 'max' ? Math.max(...pnls) : Math.min(...pnls);
+}
 
 // Which of `rows` (already filtered to the deployments being compared)
 // win a given metric's row. Rounds to 2 decimals before comparing so
@@ -319,6 +401,7 @@ const Compare = {
     const points = snaps.map(s => ({
       snapshot_at: s.snapshot_at,
       total_value: s.total_value,
+      realized_pnl_cumulative: s.realized_pnl_cumulative,
       pct: base ? ((s.total_value - base) / base) * 100 : 0,
     }));
     // computeMaxDrawdown wants the RAW snaps (with their own
@@ -548,6 +631,7 @@ const Compare = {
           </div>
           ${_sparklineSvg(r.points)}
           <div class="compare-card-metrics">
+            <div class="row"><span>Initial capital</span><b>${fmtMoney(r.deployment.initial_capital)}</b></div>
             <div class="row"><span>Return</span><b class="${last ? pnlClass(last.pct) : ''}">${last ? `${last.pct >= 0 ? '+' : ''}${last.pct.toFixed(2)}%` : '—'}</b></div>
             <div class="row"><span>Max drawdown</span><b class="${r.drawdown ? 'neg' : ''}">${r.drawdown ? `${fmtMoney(r.drawdown.abs)} (${r.drawdown.pct.toFixed(2)}%)` : '—'}</b></div>
             <div class="row"><span>Return / Drawdown</span><b>${_fmtRatio(r.returnToDrawdown)}${ratioLabel ? ` <span class="compare-ratio-label">${escapeHtml(ratioLabel)}</span>` : ''}</b></div>
@@ -651,10 +735,11 @@ const Compare = {
       <tbody>${bodyRows}</tbody></table>
       </div>
       <div class="table-note">
-        🏆 marks a row's winner, 🤝 a tie — among the 5 scored metrics above the divider (Return, Max
-        drawdown, Return/Drawdown, Win rate, Profit factor); lower is better for Max drawdown, higher for
-        the rest. Positions closed/Days live/Current equity are shown for context but don't count toward
-        the overall verdict above.
+        🏆 marks a row's winner, 🤝 a tie — lower is better for Max drawdown, higher for every other marked
+        row (Return, Return on Capital, Return/Drawdown, Win rate, Profit factor, Avg P&amp;L per Position).
+        Rows that never show a marker (Initial Capital, Realized P&amp;L, Positions closed, Positions/Day,
+        Days live, Avg Holding Period, Largest Win, Largest Loss, Current equity) are shown for context but
+        don't affect the verdict above.
       </div>
     `;
   },

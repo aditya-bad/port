@@ -319,6 +319,20 @@ function fmtPct(n, decimals = 2) {
   return Number(n).toFixed(decimals) + '%';
 }
 
+// Step 111 -- moved here from detail.js (originally Detail-only) since
+// Compare's head-to-head table's own "Avg Holding Period" row needs it
+// too, and compare.js loads BEFORE detail.js (see index.html's own
+// <script> order) -- a genuinely shared formatter belongs in api.js,
+// not borrowed across two view files in a load-order-dependent way.
+function fmtDuration(ms) {
+  if (ms == null) return '—';
+  const sec = Math.floor(ms / 1000);
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 // Both fmtDateTime and fmtDate pin an explicit timeZone: 'Asia/Kolkata'
 // (Step 95) -- toLocaleString/toLocaleDateString silently fall back to
 // the VIEWER's own device timezone whenever timeZone is omitted, which
