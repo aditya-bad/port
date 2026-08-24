@@ -171,9 +171,22 @@ const Detail = {
       return;
     }
     const startingTotal = rows.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
+    // `data-ux-col-key` on every th/td (including the header itself,
+    // not just numeric ones) -- one real <td> per column in the tfoot
+    // below, deliberately NOT a colspan-merged label cell: ux-v2's
+    // table-wide column drag/resize/hide reorders tfoot cells by this
+    // key, and a colspan cell can only ever "move" as one indivisible
+    // block covering a FIXED span of columns -- it can't stay correctly
+    // aligned once a single column inside that span gets dragged
+    // somewhere else on its own. One tagged cell per column sidesteps
+    // that entirely; "Total" itself just lives in the first column's
+    // (Symbol's) own cell rather than a dedicated spacer.
     body.innerHTML = `
       <div class="table-wrap">
-      <table><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Avg</th><th>Price</th><th>Unrealized</th></tr></thead>
+      <table><thead><tr>
+        <th data-ux-col-key="symbol">Symbol</th><th data-ux-col-key="side">Side</th><th data-ux-col-key="qty">Qty</th>
+        <th data-ux-col-key="avg">Avg</th><th data-ux-col-key="price">Price</th><th data-ux-col-key="unrealized">Unrealized</th>
+      </tr></thead>
       <tbody>${rows.map(p => `<tr data-position-id="${p.id}">
         <td>${escapeHtml(p.symbol)}</td><td>${p.side}</td><td>${fmtNum(p.qty)}</td>
         <td>${fmtNum(p.avg_entry_price)}</td>
@@ -181,9 +194,12 @@ const Detail = {
         <td class="live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
       </tr>`).join('')}</tbody>
       <tfoot><tr class="positions-total-row">
-        <td colspan="4"></td>
-        <td><b>Total</b></td>
-        <td class="live-pnl-total ${pnlClass(startingTotal)}">${fmtSignedMoney(startingTotal)}</td>
+        <td data-ux-col-key="symbol"><b>Total</b></td>
+        <td data-ux-col-key="side"></td>
+        <td data-ux-col-key="qty"></td>
+        <td data-ux-col-key="avg"></td>
+        <td data-ux-col-key="price"></td>
+        <td class="live-pnl-total ${pnlClass(startingTotal)}" data-ux-col-key="unrealized">${fmtSignedMoney(startingTotal)}</td>
       </tr></tfoot>
       </table>
       </div>

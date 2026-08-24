@@ -69,11 +69,24 @@ const DEPLOY_COLUMNS = [
     key: 'capital', label: 'Capital', numeric: true,
     sortValue: d => d.initial_capital || 0,
     render: d => fmtMoney(d.initial_capital),
+    // `total(ctx)` -- the totals-row (tfoot) cell for this column, given
+    // `{ reportRows, allRows }` (see the tfoot-building code below).
+    // Column-owned rather than a hardcoded lookup table so any NEW
+    // column added here -- or by a patch like ux-v2.js's own
+    // installDeploymentColumns, which pushes extra `numeric: true`
+    // entries into this same array -- automatically gets a real total
+    // instead of silently rendering an empty cell (Step: this is
+    // exactly the bug that made the whole totals row look blank the
+    // moment ux-v2's own decision-oriented default columns replaced
+    // these accounting ones -- the OLD hardcoded totalByKey object had
+    // no entry for ux-v2's new "Current P&L"/"Open" columns at all).
+    total: ({ reportRows }) => fmtMoney(reportRows.reduce((s, d) => s + (d.initial_capital || 0), 0)),
   },
   {
     key: 'cash', label: 'Cash', numeric: true,
     sortValue: d => d.current_cash || 0,
     render: d => fmtMoney(d.current_cash),
+    total: ({ reportRows }) => fmtMoney(reportRows.reduce((s, d) => s + (d.current_cash || 0), 0)),
   },
   {
     key: 'open_cost', label: 'Open Cost',
@@ -81,11 +94,19 @@ const DEPLOY_COLUMNS = [
     numeric: true,
     sortValue: d => d.open_cost_basis || 0,
     render: d => `<span class="${pnlClass(d.open_cost_basis)}" title="Cash = ${fmtMoney(d.initial_capital)} + ${fmtSignedMoney(d.realized_pnl)} + ${fmtSignedMoney(d.open_cost_basis)}">${fmtSignedMoney(d.open_cost_basis)}</span>`,
+    total: ({ reportRows }) => {
+      const t = reportRows.reduce((s, d) => s + (d.open_cost_basis || 0), 0);
+      return `<span class="${pnlClass(t)}">${fmtSignedMoney(t)}</span>`;
+    },
   },
   {
     key: 'realized', label: 'Realized', numeric: true,
     sortValue: d => d.realized_pnl || 0,
     render: d => `<span class="${pnlClass(d.realized_pnl)}">${fmtSignedMoney(d.realized_pnl)}</span>`,
+    total: ({ reportRows }) => {
+      const t = reportRows.reduce((s, d) => s + (d.realized_pnl || 0), 0);
+      return `<span class="${pnlClass(t)}">${fmtSignedMoney(t)}</span>`;
+    },
   },
   {
     key: 'unrealized', label: 'Unrealized', numeric: true,
@@ -95,6 +116,15 @@ const DEPLOY_COLUMNS = [
     // re-render.
     sortValue: d => d.unrealized_pnl || 0,
     render: d => `<span class="live-pnl ${pnlClass(d.unrealized_pnl)}">${fmtSignedMoney(d.unrealized_pnl)}</span>`,
+    total: ({ reportRows }) => {
+      // NOT live-ticked itself (a per-render snapshot, same as every
+      // other total here) -- unlike the individual `live-pnl` cells,
+      // there's no live-total tick handler wired to this footer cell.
+      // Accurate as of the last render/refresh, same staleness window
+      // the rest of this row's totals already have.
+      const t = reportRows.reduce((s, d) => s + (d.unrealized_pnl || 0), 0);
+      return `<span class="live-pnl-total ${pnlClass(t)}">${fmtSignedMoney(t)}</span>`;
+    },
   },
   {
     key: 'actions', label: 'Actions', always: true, sortable: false,
@@ -373,34 +403,35 @@ const Deployments = {
     // not always every deployment (see _filteredRows()'s own comment),
     // AND excluding include_in_reports=false same as before.
     const reportRows = rows.filter(d => d.include_in_reports);
-    const totalCapital = reportRows.reduce((s, d) => s + (d.initial_capital || 0), 0);
-    const totalCash = reportRows.reduce((s, d) => s + (d.current_cash || 0), 0);
-    const totalRealized = reportRows.reduce((s, d) => s + (d.realized_pnl || 0), 0);
-    const totalUnrealized = reportRows.reduce((s, d) => s + (d.unrealized_pnl || 0), 0);
-    const totalOpenCost = reportRows.reduce((s, d) => s + (d.open_cost_basis || 0), 0);
     const excludedCount = rows.length - reportRows.length;
     const totalLabel = excludedCount > 0
       ? `Total (${reportRows.length} of ${rows.length} shown — ${excludedCount} excluded)`
       : `Total (${rows.length} shown)`;
-    const totalByKey = {
-      capital: fmtMoney(totalCapital), cash: fmtMoney(totalCash),
-      open_cost: `<span class="${pnlClass(totalOpenCost)}">${fmtSignedMoney(totalOpenCost)}</span>`,
-      realized: `<span class="${pnlClass(totalRealized)}">${fmtSignedMoney(totalRealized)}</span>`,
-      unrealized: `<span class="live-pnl-total ${pnlClass(totalUnrealized)}">${fmtSignedMoney(totalUnrealized)}</span>`,
-    };
-    // The label spans every non-numeric, non-actions column so the
-    // total row's own numbers still line up under the right numeric
-    // columns regardless of which ones are currently visible/hidden.
-    const labelSpan = cols.filter(c => !c.numeric && c.key !== 'actions').length;
+    // Handed to each column's own total(ctx) -- see DEPLOY_COLUMNS'
+    // own comment on why this is column-owned rather than a hardcoded
+    // lookup keyed by column, and why reportRows (not the full,
+    // possibly analytics-excluded `rows`) is what the accounting
+    // columns (capital/cash/realized/...) total against, unchanged
+    // from before.
+    const totalCtx = { reportRows, allRows: rows };
+    // The "Total (...)" label lives in the FIRST non-numeric,
+    // non-actions column's own cell (in practice "Name" -- always:true,
+    // so always present) rather than a colspan-merged spacer covering
+    // several columns: ux-v2's table-wide column drag/resize/hide
+    // reorders tfoot cells by `data-ux-col-key`, one real cell per
+    // column below, and a colspan cell can only ever move as one
+    // indivisible block -- it can't stay correctly aligned once a
+    // single column inside its span gets dragged out on its own.
+    const labelCol = cols.find(c => !c.numeric && c.key !== 'actions' && c.key !== 'ux_select') || cols[0];
 
     el.innerHTML = `
       <div class="table-wrap">
       <table class="deploy-table"><thead><tr>
         ${cols.map(c => {
-          if (c.sortable === false) return `<th${c.numeric ? ' class="text-right"' : ''}>${escapeHtml(c.label)}</th>`;
+          if (c.sortable === false) return `<th${c.numeric ? ' class="text-right"' : ''} data-ux-col-key="${escapeHtml(c.key)}">${escapeHtml(c.label)}</th>`;
           const isSorted = this._sortKey === c.key;
           const arrow = isSorted ? (this._sortDir === 'asc' ? '▲' : '▼') : '▲';
-          return `<th class="sortable${c.numeric ? ' text-right' : ''}" onclick="Deployments.setSort('${c.key}')"
+          return `<th class="sortable${c.numeric ? ' text-right' : ''}" data-ux-col-key="${escapeHtml(c.key)}" onclick="Deployments.setSort('${c.key}')"
                       ${c.headerTitle ? `title="${escapeHtml(c.headerTitle)}"` : ''}
                       aria-sort="${isSorted ? (this._sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}">
                     ${escapeHtml(c.label)}<span class="sort-arrow${isSorted ? ' active' : ''}">${arrow}</span>
@@ -416,9 +447,12 @@ const Deployments = {
         </tr>
       `).join('')}</tbody>
       <tfoot><tr class="positions-total-row">
-        <td colspan="${labelSpan}"><b>${totalLabel}</b></td>
-        ${cols.filter(c => c.numeric).map(c => `<td class="text-right">${totalByKey[c.key] || ''}</td>`).join('')}
-        ${cols.some(c => c.key === 'actions') ? '<td></td>' : ''}
+        ${cols.map(c => {
+          if (c.key === 'actions') return '<td data-ux-col-key="actions"></td>';
+          if (c === labelCol) return `<td data-ux-col-key="${escapeHtml(c.key)}"><b>${totalLabel}</b></td>`;
+          if (c.numeric) return `<td class="text-right" data-ux-col-key="${escapeHtml(c.key)}">${c.total ? c.total(totalCtx) : ''}</td>`;
+          return `<td data-ux-col-key="${escapeHtml(c.key)}"></td>`;
+        }).join('')}
       </tr></tfoot>
       </table>
       </div>
