@@ -551,6 +551,17 @@ const Compare = {
     this._computeFlags();
     this._updateExportBtnVisibility();
     this.render();
+
+    // Deployments.compareSelection() hands off a pre-picked set of ids
+    // via sessionStorage rather than a URL param -- straight into the
+    // Compare tab, checkboxes already ticked.
+    const preselected = safeJsonParse(sessionStorage.getItem('uxCompareSelection') || '[]', []);
+    if (Array.isArray(preselected) && preselected.length >= 2) {
+      this._selected = new Set(preselected.filter(id => this._rows.some(r => r.deployment.id === id)).slice(0, 6));
+      this.setActiveTab('compare');
+      this.render();
+      sessionStorage.removeItem('uxCompareSelection');
+    }
   },
 
   // The CSV export is the Compare tab's own leaderboard-cards export
@@ -961,15 +972,25 @@ const Compare = {
   // section appear and visually pushes the individual cards down,
   // exactly the "cards go to the bottom" behavior asked for. Empty
   // (both sections cleared) when fewer than 2 are checked.
+  _comparePeriod: 'common',   // 'common' | '30d' | '90d' | 'ytd' | 'all' -- see comparePeriodToolbar below
+
   renderComparisonSection() {
     const el = document.getElementById('compareComparisonSection');
     const selOrder = Array.from(this._selected);
-    const compared = selOrder.map(id => this._rows.find(r => r.deployment.id === id)).filter(Boolean);
+    let compared = selOrder.map(id => this._rows.find(r => r.deployment.id === id)).filter(Boolean);
 
     if (selOrder.length < 2) {
       el.innerHTML = '';
       return;
     }
+
+    // Comparison period -- re-derive each selected row's own points/
+    // units/stats/drawdown from only the window this period covers
+    // (e.g. "last 30 days"), so two deployments with very different
+    // track record lengths compare on equal footing instead of one's
+    // whole history swamping the other's few weeks.
+    const start = this._compareStart(compared, this._comparePeriod);
+    if (start) compared = compared.map(r => this._deriveCompareRow(r, start));
 
     el.innerHTML = `
       <section style="margin-bottom:20px;">
@@ -979,6 +1000,93 @@ const Compare = {
       <div id="compareEquitySection"></div>
     `;
     this._renderEquityChart(compared);
+
+    if (el.innerHTML) {
+      el.insertAdjacentHTML('afterbegin', this._comparePeriodToolbar(start));
+      this._compactMetrics(el);
+    }
+  },
+
+  setPeriod(period) {
+    this._comparePeriod = period;
+    this.renderComparisonSection();
+  },
+
+  _comparePeriodToolbar(start) {
+    const startText = start ? `From ${fmtDate(start.toISOString())}` : 'Each deployment’s full available history';
+    return `<div class="ux-analytics-toolbar" style="margin-bottom:12px;">
+      <div><b>Comparison period</b><div class="card-sub">${escapeHtml(startText)}</div></div>
+      <select onchange="Compare.setPeriod(this.value)">
+        <option value="common" ${this._comparePeriod === 'common' ? 'selected' : ''}>Common history</option>
+        <option value="30d" ${this._comparePeriod === '30d' ? 'selected' : ''}>Last 30 days</option>
+        <option value="90d" ${this._comparePeriod === '90d' ? 'selected' : ''}>Last 90 days</option>
+        <option value="ytd" ${this._comparePeriod === 'ytd' ? 'selected' : ''}>Year to date</option>
+        <option value="all" ${this._comparePeriod === 'all' ? 'selected' : ''}>All available</option>
+      </select>
+    </div>`;
+  },
+
+  _compareStart(rows, period) {
+    if (!rows.length || period === 'all') return null;
+    const now = new Date();
+    if (period === '30d') return new Date(now.getTime() - 30 * 86_400_000);
+    if (period === '90d') return new Date(now.getTime() - 90 * 86_400_000);
+    if (period === 'ytd') return new Date(`${new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', year: 'numeric' }).format(now)}-01-01T00:00:00+05:30`);
+    // common history: latest first snapshot among selected deployments.
+    const starts = rows.map(r => r.points?.[0]?.snapshot_at).filter(Boolean).map(x => new Date(x));
+    return starts.length ? new Date(Math.max(...starts.map(d => d.getTime()))) : null;
+  },
+
+  _deriveCompareRow(row, start) {
+    const pointsRaw = row.points.filter(p => new Date(p.snapshot_at) >= start);
+    if (!pointsRaw.length) return { ...row, points: [], units: [], stats: computeUnitStats([]), drawdown: null, returnToDrawdown: null };
+    const base = Number(pointsRaw[0].total_value || 0);
+    const points = pointsRaw.map(p => ({ ...p, pct: base ? (Number(p.total_value) - base) / base * 100 : 0 }));
+    const units = row.units.filter(u => u.status === 'closed' && u.closed_at && new Date(u.closed_at) >= start);
+    const stats = computeUnitStats(units);
+    const drawdown = computeMaxDrawdown(pointsRaw, row.deployment.initial_capital);
+    const last = points[points.length - 1];
+    let ratio = null;
+    if (last && drawdown?.pct > 0) ratio = last.pct / drawdown.pct;
+    else if (last?.pct > 0 && drawdown?.pct === 0) ratio = Infinity;
+    return { ...row, points, units, stats, drawdown, returnToDrawdown: ratio };
+  },
+
+  // The head-to-head table above holds ~10 metric rows; the first 7
+  // (Return/Return on Capital/Max drawdown/Return-Drawdown/Win rate/
+  // Profit factor/Avg P&L per Position) are the ones a decision
+  // actually turns on, so they lead -- the rest (context-only rows like
+  // deployment age) collapse behind a "Show all metrics" toggle rather
+  // than pushing the decision rows below the fold.
+  _compactMetrics(root) {
+    const tables = [...root.querySelectorAll('table')];
+    const table = tables.find(t => [...(t.tBodies?.[0]?.rows || [])].some(r => /max drawdown/i.test(r.cells[0]?.textContent || '')));
+    if (!table || table.dataset.uxCompareCompact) return;
+    table.dataset.uxCompareCompact = '1';
+    const tbody = table.tBodies[0];
+    const rows = [...tbody.rows];
+    const primaryOrder = [
+      'Return (since tracked)', 'Return on Capital', 'Max drawdown', 'Return / Drawdown',
+      'Win rate', 'Profit factor', 'Avg P&L per Position',
+    ];
+    const norm = x => String(x || '').trim().toLowerCase();
+    const primary = [];
+    primaryOrder.forEach(label => {
+      const row = rows.find(r => norm(r.cells[0]?.textContent) === norm(label));
+      if (row) primary.push(row);
+    });
+    const secondary = rows.filter(r => !primary.includes(r));
+    primary.forEach(r => tbody.appendChild(r));
+    secondary.forEach(r => { r.classList.add('ux-compare-secondary'); tbody.appendChild(r); });
+    if (!secondary.length) return;
+    const toolbar = document.createElement('div');
+    toolbar.className = 'ux-compare-metric-toggle';
+    toolbar.innerHTML = `<button class="btn btn-secondary btn-sm">Show all metrics · ${rows.length}</button><span class="card-sub">Decision metrics first; context stays one click away.</span>`;
+    toolbar.querySelector('button').addEventListener('click', e => {
+      const expanded = table.classList.toggle('ux-compare-expanded');
+      e.currentTarget.textContent = expanded ? 'Show decision metrics only' : `Show all metrics · ${rows.length}`;
+    });
+    table.closest('.table-wrap')?.insertAdjacentElement('beforebegin', toolbar);
   },
 
   // The actual answer to "what am I comparing": ONE ROW PER METRIC

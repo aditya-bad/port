@@ -1,38 +1,55 @@
 // live_deploy — Strategy Detail view: the deep-dive for one deployment.
-// Header + 5 tabs (Config / Positions / Trades / Stats / Activity) --
-// Stats also carries the Equity Curve, Recent Periods trend table, and
-// P&L Calendar (the last two folded in from a separate Calendar tab,
-// Step 86). Trades is the tab the trade-reason logging retrofit was
-// actually FOR — keeps the table scannable (time/action/symbol/price/
-// reason + a trigger-type badge) and reveals the full trigger_values/
-// target_basis/resulting_state on click, rather than cramming
-// structured metadata into visible columns or dumping raw JSON into
-// every row by default.
+// Header + 4 tabs (Overview / Analytics / History / Configuration).
+// Overview is the operational "what's happening right now" landing tab
+// (current position/cycle, live strategy state, a performance snapshot,
+// recent activity). Analytics is the deep performance dive — the
+// original per-trade/per-position stat cards and trigger-reason
+// breakdown, PLUS a yearly Monthly Performance matrix, a P&L
+// distribution histogram, a P&L-by-exit-reason chart, and an
+// equity/drawdown curve with a range picker. History is every
+// position/cycle, execution, and event ever recorded for this
+// deployment, filterable by clicking a month/year in the Analytics
+// matrix. Configuration is the read-only (while running) strategy
+// config, editable only while paused — see DeploymentUpdate's own
+// docstring (app/deployments/schemas.py) for why paused specifically is
+// what makes editing safe at all.
 
 const Detail = {
   _id: null,
-  _tab: 'positions',   // most immediately useful thing to see on arrival
-  _trades: [],
-  _openTradeRows: new Set(),
-  _calendarRange: 'recent',   // Stats tab's P&L Calendar range state (Step 74) -- reset per deployment below, persists across switching away from/back to Stats for the SAME deployment
-  _statsTrendPeriod: 'day',   // Stats tab's Recent Periods bucketing (Step 86) -- same persistence rule as _calendarRange above
+  _dep: null,
+  _tab: 'overview',
+  _calendarRange: 'recent',   // Analytics tab's P&L Calendar range state (Step 74) -- reset per deployment below, persists across switching away from/back to Analytics for the SAME deployment
+  _statsTrendPeriod: 'day',   // Analytics tab's Recent Periods bucketing (Step 86) -- same persistence rule as _calendarRange above
   _statsGranularity: 'position',   // Step 103 -- "per position" (episodes, every overlapping leg/adjustment/roll combined) vs "per trade" (raw positions rows); defaults to "position" per explicit user request
+
+  _tabLabel: { overview: 'Overview', analytics: 'Analytics', history: 'History', configuration: 'Configuration' },
+
+  // Reads the tab straight from the URL hash (#/deployments/{id}/{tab})
+  // rather than tracking it purely as in-memory state -- switchTab()
+  // below navigates by changing the hash, so a reload/back-button/
+  // shared link all land on the right tab for free.
+  _route() {
+    const clean = (window.location.hash || '').replace(/^#\/?/, '');
+    const parts = clean.split('/');
+    if (parts[0] !== 'deployments' || !parts[1]) return { id: null, section: 'overview' };
+    const section = ['overview', 'analytics', 'history', 'configuration'].includes(parts[2]) ? parts[2] : 'overview';
+    return { id: parts[1], section };
+  },
 
   async load(id) {
     this._stopLivePositionUpdates();   // leaving whatever deployment/tab was showing before
     this._id = id;
-    this._trades = [];
-    this._openTradeRows = new Set();
     this._calendarRange = 'recent';
     this._statsTrendPeriod = 'day';
     this._statsGranularity = 'position';
+    const route = this._route();
+    this._tab = route.section;
     document.getElementById('detailHeader').innerHTML = spinnerHtml();
     document.getElementById('detailTabs').innerHTML = '';
     document.getElementById('detailBody').innerHTML = spinnerHtml();
 
-    let dep;
     try {
-      dep = await Api.getDeployment(id);
+      this._dep = await Api.getDeployment(id);
     } catch (e) {
       document.getElementById('detailHeader').innerHTML =
         emptyHtml(`No such deployment (it may have been removed). <a href="#/deployments">Back to Deployed Strategies</a>`);
@@ -40,72 +57,67 @@ const Detail = {
       document.getElementById('detailBody').innerHTML = '';
       return;
     }
-    this._dep = dep;
-    this.renderHeader(dep);
+    this.renderHeader(this._dep);
     this.renderTabs();
     await this.renderBody();
   },
 
   renderHeader(dep) {
+    const actions = [];
+    if (dep.status === 'active') actions.push(`<button class="btn btn-primary btn-sm" onclick="Detail.pause()">Pause</button>`);
+    if (dep.status === 'paused') actions.push(`<button class="btn btn-primary btn-sm" onclick="Detail.resume()">Resume</button>`);
+    actions.push(`<button class="btn btn-secondary btn-sm" onclick="Detail.toggleMenu(event)">⋯ More</button>`);
     document.getElementById('detailHeader').innerHTML = `
-      <div class="detail-header">
+      <div class="ux-detail-header">
         <div>
-          <h1>${escapeHtml(dep.deployment_name)} <span class="tag tag-${dep.status}">${dep.status}</span></h1>
-          ${deploymentTagsHtml(dep)}
-          <div class="card-sub">${escapeHtml(dep.strategy_name)} · ${dep.mode}</div>
-          <div class="card-meta" style="margin-top:10px;">
-            <span>Capital: <b>${fmtMoney(dep.initial_capital)}</b></span>
-            <span>Cash: <b>${fmtMoney(dep.current_cash)}</b></span>
-            ${dep.open_cost_basis ? `<span title="Entry-price value of currently open positions -- a credit for a sold option's premium (not yet Realized until it's bought back), a debit for a bought one. Cash always equals Capital + Realized + this.">Open Cost ⓘ: <b class="${pnlClass(dep.open_cost_basis)}">${fmtSignedMoney(dep.open_cost_basis)}</b></span>` : ''}
-            <span>Realized: <b class="${pnlClass(dep.realized_pnl)}">${fmtSignedMoney(dep.realized_pnl)}</b></span>
-          </div>
-          <!-- Unrealized deliberately NOT shown here any more -- it lived
-               here as a frozen snapshot from page load with nothing to
-               keep it current between reloads (same class of gap the
-               Positions table itself had before Step 61's live wiring).
-               Moved to that table's own live-updating Total row instead
-               (see renderPositions() below) -- one live number, not two
-               places that could show two different values depending on
-               how stale each one happened to be, Zerodha-style. -->
-          ${dep.notes ? `<div class="card-sub" style="margin-top:8px; white-space:pre-wrap;">📝 ${escapeHtml(dep.notes)}</div>` : ''}
+          <div class="ux-detail-title-row"><h1>${escapeHtml(dep.deployment_name)}</h1><span class="tag tag-${dep.status}">${dep.status}</span><span class="tag tag-info">${escapeHtml(dep.mode)}</span></div>
+          <div class="ux-detail-sub">${escapeHtml(dep.strategy_name)}${dep.created_at ? ` · deployed ${humanAgo(dep.created_at)}` : ''}</div>
+          <div style="margin-top:7px;">${deploymentTagsHtml(dep)}</div>
+          ${dep.notes ? `<div class="card-sub" style="margin-top:7px;max-width:760px;">📝 ${escapeHtml(dep.notes)}</div>` : ''}
         </div>
-        <div class="card-actions">
-          <button class="btn btn-secondary btn-sm" onclick="Detail.openEditModal()">Edit</button>
-          ${dep.status === 'active' ? `<button class="btn btn-secondary btn-sm" onclick="Detail.pause()">Pause</button>` : ''}
-          ${dep.status === 'paused' ? `<button class="btn btn-secondary btn-sm" onclick="Detail.resume()">Resume</button>` : ''}
-          ${dep.status !== 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Detail.stop()">Stop</button>` : ''}
-          ${dep.status === 'stopped' ? `<button class="btn btn-danger btn-sm" onclick="Detail.deleteDeployment()">Delete</button>` : ''}
-        </div>
-      </div>
-    `;
+        <div class="ux-detail-actions">${actions.join('')}</div>
+      </div>`;
+  },
+
+  toggleMenu(event) {
+    event.stopPropagation();
+    const dep = this._dep;
+    UIKit.openPopover(event.currentTarget, `
+      <button class="ux-menu-item" onclick="UIKit.closePopover(); Detail.openEditModal()">Edit details</button>
+      ${dep.status === 'paused' ? '<button class="ux-menu-item" onclick="UIKit.closePopover(); Detail.openEditConfigModal()">Edit configuration</button>' : ''}
+      <button class="ux-menu-item" onclick="UIKit.closePopover(); location.hash='#/deployments/${dep.id}/configuration'">View configuration</button>
+      <div class="ux-menu-sep"></div>
+      ${dep.status !== 'stopped' ? `<button class="ux-menu-item" style="color:var(--loss)" onclick="UIKit.closePopover(); UIKit.openStopDialog('${dep.id}', ${JSON.stringify(dep.deployment_name)})">Stop deployment</button>` : ''}
+      ${dep.status === 'stopped' ? `<button class="ux-menu-item" style="color:var(--loss)" onclick="UIKit.closePopover(); Detail.deleteDeployment()">Delete deployment</button>` : ''}`);
   },
 
   renderTabs() {
-    const tabs = [['config', 'Config'], ['positions', 'Positions'], ['trades', 'Trades'], ['stats', 'Stats'], ['events', 'Activity']];
-    document.getElementById('detailTabs').innerHTML = tabs.map(([key, label]) =>
-      `<button class="${this._tab === key ? 'active' : ''}" onclick="Detail.switchTab('${key}')">${label}</button>`
-    ).join('');
+    const tabs = ['overview', 'analytics', 'history', 'configuration'];
+    const route = this._route();
+    this._tab = route.section;
+    const el = document.getElementById('detailTabs');
+    el.className = 'tabs ux-detail-nav';
+    el.innerHTML = tabs.map(t => `<button class="${route.section === t ? 'active' : ''}" onclick="Detail.switchTab('${t}')">${this._tabLabel[t]}</button>`).join('');
   },
 
-  async switchTab(tab) {
-    if (tab !== 'positions') this._stopLivePositionUpdates();   // leaving the positions tab
-    this._tab = tab;
-    this.renderTabs();
-    document.getElementById('detailBody').innerHTML = spinnerHtml();
-    await this.renderBody();
+  switchTab(tab) {
+    this._stopLivePositionUpdates();
+    window.location.hash = `#/deployments/${this._id}/${tab}`;
   },
 
   async renderBody() {
+    const route = this._route();
+    this._tab = route.section;
+    document.getElementById('detailBody').classList.remove('ux-analytics');
     // A tab's own fetch can fail for real reasons (the deployment was
     // stopped/removed mid-session, a transient network/DB hiccup) — an
     // uncaught rejection here would otherwise leave the tab stuck on
     // its loading spinner forever with no visible explanation.
     try {
-      if (this._tab === 'config') return this.renderConfig();
-      if (this._tab === 'positions') return await this.renderPositions();
-      if (this._tab === 'trades') return await this.renderTrades();
-      if (this._tab === 'stats') return await this.renderStats();
-      if (this._tab === 'events') return await this.renderEvents();
+      if (this._tab === 'overview') return await this.renderOverview();
+      if (this._tab === 'analytics') return await this.renderAnalytics();
+      if (this._tab === 'history') return await this.renderHistory();
+      if (this._tab === 'configuration') return this.renderConfiguration();
     } catch (e) {
       console.error('Detail tab render failed:', e);
       document.getElementById('detailBody').innerHTML =
@@ -113,48 +125,11 @@ const Detail = {
     }
   },
 
-  // ── Config ──────────────────────────────────────────────────────
-  // Editable, but ONLY while paused (see DeploymentUpdate's own
-  // docstring, app/deployments/schemas.py, for the full reasoning) —
-  // the button only ever renders in that state; every other status
-  // gets an explanatory note instead of a disabled/confusing button.
-  renderConfig() {
-    const cfg = this._dep.config || {};
-    const keys = Object.keys(cfg).sort();
-    const body = document.getElementById('detailBody');
-    const paused = this._dep.status === 'paused';
-    const editRow = `
-      <div class="table-note" style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-        <span>${paused
-          ? 'This deployment is paused — safe to edit config now, applies on next Resume.'
-          : `Pause this deployment to edit its config${this._dep.status === 'stopped' ? ' (a stopped deployment can\'t be resumed, so editing here would never take effect)' : ''}.`}</span>
-        ${paused ? `<button class="btn btn-secondary btn-sm" onclick="Detail.openEditConfigModal()">Edit config</button>` : ''}
-      </div>
-    `;
-    if (!keys.length) {
-      body.innerHTML = editRow + emptyHtml('No config stored for this deployment.');
-      return;
-    }
-    body.innerHTML = editRow + `
-      <div class="table-wrap"><table class="kv-table"><tbody>
-        ${keys.map(k => `<tr><td>${escapeHtml(k)}</td><td>${formatConfigValue(cfg[k])}</td></tr>`).join('')}
-      </tbody></table></div>
-    `;
-  },
-
-  // ── Positions ───────────────────────────────────────────────────
-  // Price/P&L cells (plus the Total row's own combined figure) update
-  // LIVE off the same /sse/ticks stream the ticker bar uses, via
-  // window.LivePnl (index.html) — previously this table was a one-time
-  // snapshot from page load with no live update at all (no polling, no
-  // live wiring), so it went stale the instant you stopped reloading
-  // the whole page. Only these specific cells are touched per tick —
-  // everything else about the table (rows, sort order, other tabs) is
-  // untouched, so this can't disrupt anything the way a full re-render
-  // would. The header's own former "Unrealized" stat (see
-  // renderHeader() above) now lives ONLY here, as the Total row below —
-  // one live number instead of two places that could each show a
-  // different, differently-stale value.
+  // ── Overview — current position/cycle, live strategy state, a
+  // performance snapshot, and recent activity. Price/P&L cells (plus
+  // the positions table's own Total row) update LIVE off the same
+  // /sse/ticks stream the ticker bar uses, via window.LivePnl
+  // (index.html). ─────────────────────────────────────────────────────
   _livePnlHandler: null,
 
   _stopLivePositionUpdates() {
@@ -162,144 +137,156 @@ const Detail = {
     this._livePnlHandler = null;
   },
 
-  async renderPositions() {
+  async renderOverview() {
     this._stopLivePositionUpdates();   // never stack trackers across re-renders/tab switches
-    const rows = await Api.getPositions(this._id, 'open');
+    const dep = this._dep;
     const body = document.getElementById('detailBody');
-    if (!rows.length) {
-      body.innerHTML = emptyHtml('No open positions');
-      return;
+    body.innerHTML = spinnerHtml();
+    try {
+      const [summary, openPositions, allPositions, status, snapshots, tradesPage] = await Promise.all([
+        Api.getActiveSummary(dep, true),
+        Api.getPositions(dep.id, 'open'),
+        Api.getPositions(dep.id, 'all'),
+        Api.getStrategyStatus(dep.id).catch(() => null),
+        Api.getSnapshots(dep.id).catch(() => []),
+        Api.getTrades(dep.id, 8).catch(() => ({ lots: [] })),
+      ]);
+      dep._uxActive = summary;
+      const totalPnl = Number(dep.realized_pnl || 0) + Number(dep.unrealized_pnl || 0);
+      const totalReturn = dep.initial_capital ? (totalPnl / dep.initial_capital) * 100 : null;
+      const units = groupPositionsIntoUnits(allPositions, 'position');
+      const closed = units.filter(u => u.status === 'closed');
+      const pnls = closed.map(u => Number(u.realized_pnl || 0));
+      const wins = pnls.filter(v => v > 0);
+      const losses = pnls.filter(v => v <= 0);
+      const winRate = pnls.length ? wins.length / pnls.length * 100 : null;
+      const grossWin = wins.reduce((a, b) => a + b, 0);
+      const grossLoss = losses.filter(v => v < 0).reduce((a, b) => a + b, 0);
+      const profitFactor = grossLoss < 0 ? grossWin / Math.abs(grossLoss) : grossWin > 0 ? Infinity : null;
+      const avgPosition = pnls.length ? pnls.reduce((a, b) => a + b, 0) / pnls.length : null;
+      const dd = computeMaxDrawdown(snapshots, dep.initial_capital);
+
+      body.innerHTML = `
+        <div class="ux-detail-summary-grid">
+          <div class="ux-detail-summary-card">
+            <div class="label">${dep.mode === 'positional' ? 'Current cycle' : "Today's P&L"}</div>
+            <div class="value ${pnlClass(summary.total_pnl)}" id="uxDetailActivePnl">${dep.mode === 'positional' && !summary.active ? 'Flat' : fmtSignedMoney(summary.total_pnl)}</div>
+            ${dep.mode === 'positional' && !summary.active
+              ? `<div class="row"><span>Last cycle</span><b class="${pnlClass(summary.last_cycle_pnl)}">${summary.last_cycle_pnl == null ? '—' : fmtSignedMoney(summary.last_cycle_pnl)}</b></div>`
+              : `<div class="row"><span>Realized</span><b class="${pnlClass(summary.realized_pnl)}">${fmtSignedMoney(summary.realized_pnl)}</b></div><div class="row"><span>Open</span><b class="${pnlClass(summary.unrealized_pnl)}" id="uxDetailOpenPnl">${fmtSignedMoney(summary.unrealized_pnl)}</b></div>`}
+            <div class="row"><span>${summary.started_at ? `Started ${humanAgo(summary.started_at)}` : 'Open positions'}</span><b>${summary.open_positions}</b></div>
+          </div>
+          <div class="ux-detail-summary-card">
+            <div class="label">Total return</div>
+            <div class="value ${pnlClass(totalPnl)}">${fmtSignedMoney(totalPnl)}</div>
+            <div class="row"><span>Return</span><b class="${pnlClass(totalReturn)}">${totalReturn == null ? '—' : `${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`}</b></div>
+            <div class="row"><span>Realized all-time</span><b class="${pnlClass(dep.realized_pnl)}">${fmtSignedMoney(dep.realized_pnl)}</b></div>
+            <div class="row"><span>Initial capital</span><b>${fmtMoney(dep.initial_capital)}</b></div>
+          </div>
+          <div class="ux-detail-summary-card">
+            <div class="label">Open positions</div>
+            <div class="value">${openPositions.length}</div>
+            <div class="row"><span>Live unrealized</span><b class="${pnlClass(summary.unrealized_pnl)}">${fmtSignedMoney(summary.unrealized_pnl)}</b></div>
+            <div class="row"><span>Cash</span><b>${fmtMoney(dep.current_cash)}</b></div>
+            <div class="row"><span>Analytics</span><b>${dep.include_in_reports ? 'Included' : 'Excluded'}</b></div>
+          </div>
+        </div>
+
+        ${openPositions.length ? `<section class="ux-section">
+          <div class="ux-section-head"><h2>${dep.mode === 'positional' ? 'Current position / cycle' : "Today's open positions"}</h2><span class="card-sub">Live from existing tick SSE</span></div>
+          ${this.positionsTable(openPositions)}
+        </section>` : `<section class="ux-section"><div class="ux-section-head"><h2>Current position</h2></div><div class="empty">Flat right now${summary.last_cycle_pnl != null ? ` · last cycle ${fmtSignedMoney(summary.last_cycle_pnl)}` : ''}</div></section>`}
+
+        ${status?.fields?.length ? `<section class="ux-section">
+          <div class="ux-section-head"><h2>Live strategy state</h2>${status.source === 'persisted' ? '<span class="tag tag-warn">as of last checkpoint</span>' : '<span class="tag tag-active">live</span>'}</div>
+          <div class="ux-live-state-grid">${status.fields.map(f => `<div class="ux-live-state-item"><div class="k">${escapeHtml(f.label)}</div><div class="v">${escapeHtml(String(f.value))}</div></div>`).join('')}</div>
+        </section>` : ''}
+
+        <section class="ux-section">
+          <div class="ux-section-head"><h2>Performance snapshot</h2><a href="#/deployments/${dep.id}/analytics">Full analytics →</a></div>
+          <div class="stat-grid">
+            <div class="stat-card"><div class="stat-label">Win rate</div><div class="stat-value">${winRate == null ? '—' : `${winRate.toFixed(1)}%`}</div><div class="stat-sub">${closed.length} closed strategic position${closed.length === 1 ? '' : 's'}</div></div>
+            <div class="stat-card"><div class="stat-label">Profit factor</div><div class="stat-value">${profitFactor == null ? '—' : profitFactor === Infinity ? '∞' : profitFactor.toFixed(2)}</div><div class="stat-sub">Gross wins ÷ gross losses</div></div>
+            <div class="stat-card"><div class="stat-label">Max drawdown</div><div class="stat-value ${dd ? 'neg' : ''}">${dd ? `${dd.pct.toFixed(2)}%` : '—'}</div><div class="stat-sub">${dd ? fmtMoney(dd.abs) : 'Not enough history'}</div></div>
+            <div class="stat-card"><div class="stat-label">Avg position P&amp;L</div><div class="stat-value ${avgPosition == null ? '' : pnlClass(avgPosition)}">${avgPosition == null ? '—' : fmtSignedMoney(avgPosition)}</div><div class="stat-sub">Whole strategic cycles, not individual legs</div></div>
+          </div>
+        </section>
+
+        <section class="ux-section">
+          <div class="ux-section-head"><h2>Recent activity</h2><a href="#/deployments/${dep.id}/history">View full history →</a></div>
+          ${tradesPage.lots?.length ? `<div class="ux-recent-list">${tradesPage.lots.slice(0, 6).map((t, i) => `<div class="ux-recent-item" onclick="Detail.openOverviewTrade(${i})" style="cursor:pointer;"><span class="ux-recent-time">${fmtDateTime(t.executed_at)}</span><b>${escapeHtml(t.action)}</b><span>${escapeHtml(t.symbol)} · ${escapeHtml(t.reason || 'execution')}</span><span>${fmtNum(t.price)}</span></div>`).join('')}</div>` : '<div class="empty">No fills recorded yet.</div>'}
+        </section>`;
+
+      this._overviewTrades = tradesPage.lots || [];
+      if (window.LivePnl && openPositions.length) {
+        this._livePnlHandler = window.LivePnl.track(openPositions, ({ pnlFor, priceFor, totalPnl }) => {
+          if (this._tab !== 'overview') return;
+          const open = totalPnl();
+          if (open != null) {
+            UIKit.setLiveMoney('uxDetailOpenPnl', open);
+            UIKit.setLiveMoney('uxDetailActivePnl', Number(summary.realized_pnl || 0) + open);
+            // Same combined total the two KPI cards above just used --
+            // keeps the positions table's own totals row live-ticking
+            // in step with them, not frozen at whatever it showed on
+            // the last full render.
+            const footCell = body.querySelector('.live-pnl-total');
+            if (footCell) { footCell.textContent = fmtSignedMoney(open); footCell.className = `live-pnl-total ${pnlClass(open)}`; }
+          }
+          openPositions.forEach(p => {
+            const row = body.querySelector(`tr[data-ux-position-id="${p.id}"]`);
+            if (!row) return;
+            const px = priceFor(p.instrument_token);
+            const pp = pnlFor(p.id);
+            if (px != null) row.querySelector('.ux-live-price').textContent = fmtNum(px);
+            if (pp != null) {
+              const cell = row.querySelector('.ux-live-pnl');
+              cell.textContent = fmtSignedMoney(pp); cell.className = `ux-live-pnl ${pnlClass(pp)}`;
+            }
+          });
+        });
+      }
+      UIKit.enhanceTablesSoon();
+    } catch (e) {
+      body.innerHTML = emptyHtml(`Could not load the deployment overview — ${escapeHtml(e.message || String(e))}`);
     }
-    const startingTotal = rows.reduce((s, p) => s + (p.unrealized_pnl || 0), 0);
-    // `data-ux-col-key` on every th/td (including the header itself,
-    // not just numeric ones) -- one real <td> per column in the tfoot
-    // below, deliberately NOT a colspan-merged label cell: ux-v2's
-    // table-wide column drag/resize/hide reorders tfoot cells by this
-    // key, and a colspan cell can only ever "move" as one indivisible
-    // block covering a FIXED span of columns -- it can't stay correctly
-    // aligned once a single column inside that span gets dragged
-    // somewhere else on its own. One tagged cell per column sidesteps
-    // that entirely; "Total" itself just lives in the first column's
-    // (Symbol's) own cell rather than a dedicated spacer.
-    body.innerHTML = `
-      <div class="table-wrap">
-      <table><thead><tr>
-        <th data-ux-col-key="symbol">Symbol</th><th data-ux-col-key="side">Side</th><th data-ux-col-key="qty">Qty</th>
-        <th data-ux-col-key="avg">Avg</th><th data-ux-col-key="price">Price</th><th data-ux-col-key="unrealized">Unrealized</th>
-      </tr></thead>
-      <tbody>${rows.map(p => `<tr data-position-id="${p.id}">
-        <td>${escapeHtml(p.symbol)}</td><td>${p.side}</td><td>${fmtNum(p.qty)}</td>
-        <td>${fmtNum(p.avg_entry_price)}</td>
-        <td class="live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
-        <td class="live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
-      </tr>`).join('')}</tbody>
+  },
+
+  // `data-ux-col-key` on every header/footer cell (see UIKit.tfootCellsByKey's
+  // own comment) -- one real <td> per column in the tfoot, no colspan,
+  // so this table's own column drag/resize/hide (enhanceTable, wired
+  // generically to every table in #detailBody) can never misalign the
+  // total the way a colspan spacer would once a column gets reordered.
+  positionsTable(rows) {
+    const cols = ['symbol', 'side', 'qty', 'avg', 'price', 'unrealized', 'opened'];
+    const labels = { symbol: 'Symbol', side: 'Side', qty: 'Qty', avg: 'Avg', price: 'Price', unrealized: 'Unrealized', opened: 'Opened' };
+    // Live-tick-worthy only while a live price actually exists for
+    // EVERY leg -- otherwise "total unrealized" would silently claim a
+    // number for legs it has no live price for at all (see the same
+    // convention Dashboard's own Open Risk card and deployments.js's
+    // Unrealized column total both already follow: never fabricate a
+    // 0 for "no data", show — instead).
+    const known = rows.filter(p => p.unrealized_pnl != null);
+    const total = known.length ? known.reduce((s, p) => s + (p.unrealized_pnl || 0), 0) : null;
+    return `<div class="table-wrap"><table>
+      <thead><tr>${cols.map(k => `<th data-ux-col-key="${k}">${labels[k]}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(p => `<tr data-ux-position-id="${p.id}"><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td class="ux-live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td><td class="ux-live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td><td>${fmtDateTime(p.opened_at)}</td></tr>`).join('')}</tbody>
       <tfoot><tr class="positions-total-row">
         <td data-ux-col-key="symbol"><b>Total</b></td>
         <td data-ux-col-key="side"></td>
         <td data-ux-col-key="qty"></td>
         <td data-ux-col-key="avg"></td>
         <td data-ux-col-key="price"></td>
-        <td class="live-pnl-total ${pnlClass(startingTotal)}" data-ux-col-key="unrealized">${fmtSignedMoney(startingTotal)}</td>
+        <td class="live-pnl-total${total != null ? ' ' + pnlClass(total) : ''}" data-ux-col-key="unrealized">${total != null ? fmtSignedMoney(total) : '—'}</td>
+        <td data-ux-col-key="opened"></td>
       </tr></tfoot>
-      </table>
-      </div>
-    `;
-
-    this._livePnlHandler = window.LivePnl.track(rows, ({ pnlFor, priceFor, totalPnl }) => {
-      // Cheap guard against a stale tracker outliving its tab/page —
-      // switchTab()/load() both untrack, but a tick already in flight
-      // when that happened could still land here microseconds later.
-      if (this._tab !== 'positions') return;
-      for (const p of rows) {
-        const price = priceFor(p.instrument_token);
-        if (price == null) continue;
-        const row = body.querySelector(`tr[data-position-id="${p.id}"]`);
-        if (!row) continue;
-        const pnl = pnlFor(p.id);
-        row.querySelector('.live-price').textContent = fmtNum(price);
-        const pnlCell = row.querySelector('.live-pnl');
-        if (pnl != null) {
-          pnlCell.textContent = fmtSignedMoney(pnl);
-          pnlCell.className = `live-pnl ${pnlClass(pnl)}`;
-        }
-      }
-      const combined = totalPnl();
-      const totalCell = body.querySelector('.live-pnl-total');
-      if (totalCell && combined != null) {
-        totalCell.textContent = fmtSignedMoney(combined);
-        totalCell.className = `live-pnl-total ${pnlClass(combined)}`;
-      }
-    });
+    </table></div>`;
   },
 
-  // ── Trades — expandable rows + trigger badges ──────────────────
-  async renderTrades() {
-    const data = await Api.getTrades(this._id, 200);
-    this._trades = data.lots;
-    const body = document.getElementById('detailBody');
-    if (!this._trades.length) {
-      body.innerHTML = emptyHtml('No trades yet');
-      return;
-    }
-    body.innerHTML = `
-      <div class="table-note" style="display:flex; justify-content:flex-end; margin-bottom:8px;">
-        <button class="btn btn-secondary btn-sm" onclick="Detail.exportTradesCsv()">⭳ Export CSV</button>
-      </div>
-      <div class="table-wrap">
-      <table><thead><tr><th>Time</th><th>Action</th><th>Symbol</th><th>Price</th><th>Reason</th></tr></thead>
-      <tbody>${this._trades.map((l, i) => this._tradeRowHtml(l, i)).join('')}</tbody></table>
-      </div>
-      <div class="table-note">${data.total} total${data.total > this._trades.length ? ` (showing latest ${this._trades.length})` : ''} — click a row for the full trigger metadata</div>
-    `;
-  },
-
-  // Exports the FULL trade history, not just the (possibly truncated
-  // to 200) rows currently rendered on screen — a records/backup export
-  // should never silently leave out older fills just because the table
-  // view caps what it displays. Purely client-side: no backend endpoint,
-  // this is a records convenience, not a data interchange format
-  // anything else in this app reads back (see toCsv/downloadCsv in
-  // api.js).
-  async exportTradesCsv() {
-    const data = await Api.getTrades(this._id, 100000);
-    if (!data.lots.length) { alert('No trades to export yet.'); return; }
-    const csv = toCsv(data.lots, [
-      { label: 'Time', key: r => fmtDateTime(r.executed_at) },
-      { label: 'Action', key: 'action' },
-      { label: 'Symbol', key: 'symbol' },
-      { label: 'Quantity', key: 'qty' },
-      { label: 'Price', key: 'price' },
-      { label: 'Reason', key: r => r.reason || '' },
-      { label: 'Metadata', key: r => (r.metadata && Object.keys(r.metadata).length) ? r.metadata : '' },
-    ]);
-    const safeName = (this._dep.deployment_name || this._id).replace(/[^a-z0-9_-]+/gi, '_');
-    downloadCsv(`${safeName}_trades.csv`, csv);
-  },
-
-  _tradeRowHtml(lot, i) {
-    const open = this._openTradeRows.has(i);
-    return `
-      <tr class="trade-row ${open ? 'open' : ''}" onclick="Detail.toggleTradeRow(${i})">
-        <td>${fmtDateTime(lot.executed_at)}</td>
-        <td>${lot.action}</td>
-        <td>${escapeHtml(lot.symbol)}</td>
-        <td>${fmtNum(lot.price)}</td>
-        <td>${escapeHtml(lot.reason || '')}${triggerBadgeHtml(lot.reason)}</td>
-      </tr>
-      <tr class="trade-detail-row" id="trade-detail-${i}" style="display:${open ? 'table-row' : 'none'}">
-        <td colspan="5">${this._tradeMetaHtml(lot)}</td>
-      </tr>
-    `;
-  },
-
-  toggleTradeRow(i) {
-    const row = document.getElementById(`trade-detail-${i}`);
-    const isOpen = this._openTradeRows.has(i);
-    if (isOpen) { this._openTradeRows.delete(i); row.style.display = 'none'; }
-    else { this._openTradeRows.add(i); row.style.display = 'table-row'; }
-    // Toggle the arrow indicator on the trigger row above it without a
-    // full re-render (row content itself doesn't change).
-    row.previousElementSibling.classList.toggle('open', !isOpen);
+  openOverviewTrade(index) {
+    const lot = this._overviewTrades?.[index];
+    if (!lot) return;
+    UIKit.openDrawer(`${lot.action || 'Execution'} · ${lot.symbol}`, this._tradeMetaHtml(lot),
+      `${fmtDateTime(lot.executed_at)} · ${lot.reason || 'No reason recorded'}`);
   },
 
   // Renders the EXACT metadata stored for this fill -- trigger_values/
@@ -323,85 +310,10 @@ const Detail = {
     return html;
   },
 
-  // ── Activity (deployment_events) — the audit trail behind pause/
-  // resume/create and every fill, PLUS strategy_error: a strategy's own
-  // on_tick raising an exception (a bad resolver call, a transient
-  // NoKiteSession, anything) is caught at the runner level and recorded
-  // here rather than crashing the deployment — which means a silently
-  // failing strategy (still "active", never trading) was previously
-  // invisible anywhere in the UI. This tab is that visibility. ─────────
-  _openEventRows: new Set(),
-
-  async renderEvents() {
-    this._events = await Api.getEvents(this._id, 200);
-    this._openEventRows = new Set();
-    const body = document.getElementById('detailBody');
-    if (!this._events.length) {
-      body.innerHTML = emptyHtml('No activity recorded yet.');
-      return;
-    }
-    const errorCount = this._events.filter(e => e.event_type === 'strategy_error').length;
-    body.innerHTML = `
-      ${errorCount > 0 ? `<div class="table-note" style="color:var(--loss); margin-bottom:10px;">
-        ⚠ ${errorCount} strategy error${errorCount === 1 ? '' : 's'} recorded — click a
-        <span class="tag tag-error" style="margin:0 2px;">strategy_error</span> row below for details.
-      </div>` : ''}
-      <div class="table-wrap">
-      <table><thead><tr><th>Time</th><th>Event</th><th>Message</th></tr></thead>
-      <tbody>${this._events.map((e, i) => this._eventRowHtml(e, i)).join('')}</tbody></table>
-      </div>
-    `;
-  },
-
-  _eventTagClass(eventType) {
-    if (eventType === 'strategy_error') return 'tag-error';
-    if (eventType === 'paused') return 'tag-paused';
-    if (eventType === 'resumed' || eventType === 'created') return 'tag-active';
-    if (eventType.startsWith('fill_')) return 'tag-info';
-    return 'tag-warn';
-  },
-
-  _eventRowHtml(event, i) {
-    const open = this._openEventRows.has(i);
-    const hasMeta = event.metadata && Object.keys(event.metadata).length > 0;
-    return `
-      <tr class="trade-row ${open ? 'open' : ''}" ${hasMeta ? `onclick="Detail.toggleEventRow(${i})"` : ''}>
-        <td>${fmtDateTime(event.created_at)}</td>
-        <td><span class="tag ${this._eventTagClass(event.event_type)}">${escapeHtml(event.event_type)}</span></td>
-        <td>${escapeHtml(event.message || '')}</td>
-      </tr>
-      ${hasMeta ? `<tr class="trade-detail-row" id="event-detail-${i}" style="display:${open ? 'table-row' : 'none'}">
-        <td colspan="3">${renderJsonBlock('metadata', event.metadata)}</td>
-      </tr>` : ''}
-    `;
-  },
-
-  toggleEventRow(i) {
-    const row = document.getElementById(`event-detail-${i}`);
-    const isOpen = this._openEventRows.has(i);
-    if (isOpen) { this._openEventRows.delete(i); row.style.display = 'none'; }
-    else { this._openEventRows.add(i); row.style.display = 'table-row'; }
-  },
-
-  // ── Stats ───────────────────────────────────────────────────────
-  // Also owns the "Recent Periods" trend table and the P&L Calendar
-  // (Step 86) -- both used to be a separate Calendar tab, folded in
-  // here on request so everything about this deployment's performance
-  // lives on one tab instead of being split across two. Each still
-  // fetches independently and refreshes into its OWN sub-container
-  // (#detailStatsTrend / #detailStatsCalendar) when its own period/year
-  // control changes, rather than re-running this whole method — no
-  // reason to re-fetch trades/positions/snapshots just because someone
-  // switched the calendar's year.
-  // Step 103 -- one "unit" per row the Performance stat-grid/P&L-by-
-  // Exit-Reason table should treat as a single win/loss, shaped
-  // identically regardless of granularity so everything downstream
-  // (win rate, avg win/loss, profit factor, largest win/loss, avg
-  // holding period, closed/open counts) is ONE code path, not two.
-  // Step 106: the actual grouping is now the shared
-  // groupPositionsIntoUnits (api.js) so Compare can use the exact same
-  // logic without duplicating it -- this is a thin wrapper binding
-  // Detail's own `this._statsGranularity` toggle to it.
+  // ── Analytics — the per-trade/per-position stat cards and trigger-
+  // reason breakdown, plus a yearly Monthly Performance matrix, a P&L
+  // distribution histogram, a P&L-by-exit-reason chart, and an
+  // equity/drawdown curve with its own range picker. ──────────────────
   _buildStatUnits(allPositions) {
     return groupPositionsIntoUnits(allPositions, this._statsGranularity);
   },
@@ -423,11 +335,11 @@ const Detail = {
   // Stat-grid + P&L by Exit Reason -- everything that depends on the
   // "per trade"/"per position" toggle, factored out so
   // changeStatsGranularity can redraw just this much on toggle instead
-  // of refetching the whole Stats tab. Reads the data renderStats
-  // already cached on `this` (_statsAllPositions/_statsLotsByPosition/
-  // _statsAllTradeLots) rather than taking parameters, same "cached on
-  // `this`, not threaded through call args" pattern _trades already
-  // uses for the Trades tab.
+  // of refetching the whole Analytics tab. Reads the data
+  // _renderAnalyticsBody already cached on `this` (_statsAllPositions/
+  // _statsLotsByPosition/_statsAllTradeLots) rather than taking
+  // parameters, same "cached on `this`, not threaded through call
+  // args" pattern _overviewTrades already uses for the Overview tab.
   _renderStatCardsAndReasonTable() {
     const allPositions = this._statsAllPositions;
     const lotsByPosition = this._statsLotsByPosition;
@@ -563,7 +475,12 @@ const Detail = {
     `;
   },
 
-  async renderStats() {
+  // The original per-trade/per-position stat cards, trigger breakdown,
+  // adjustment histogram, equity curve, Recent Periods trend table, and
+  // P&L Calendar -- the foundation renderAnalytics() below augments
+  // with the Monthly Performance matrix / P&L distribution / P&L-by-
+  // exit-reason / enhanced equity curve.
+  async _renderAnalyticsBody() {
     const [allTrades, allPositions, snapshots, trendRows, calendarRows, strategyStatus, adjustmentHistogram] = await Promise.all([
       Api.getTrades(this._id, 2000),
       Api.getPositions(this._id, 'all'),
@@ -651,21 +568,55 @@ const Detail = {
     scrollPnlHeatmapToEnd('detailStatsCalendar');
   },
 
+  async renderAnalytics() {
+    const body = document.getElementById('detailBody');
+    body.classList.add('ux-analytics');
+    await this._renderAnalyticsBody();
+    try {
+      const [monthly, snaps] = await Promise.all([
+        Api.getPnlDigestForDeployment(this._id, 'month', 180),
+        Api.getSnapshots(this._id),
+      ]);
+      this._matrixRows = monthly;
+      this._matrixSnapshots = snaps;
+      this._matrixMode = this._matrixMode || 'absolute';
+      this._equitySnapshots = snaps;
+      this._equityMode = this._equityMode || 'absolute';
+      this._equityRange = this._equityRange || 'all';
+      const perf = document.getElementById('detailStatsPerf');
+      const matrix = document.createElement('section');
+      matrix.className = 'ux-section';
+      matrix.innerHTML = '<div id="uxMonthlyPerformance"></div>';
+      perf?.insertAdjacentElement('afterend', matrix);
+      this.renderPerformanceMatrix(document.getElementById('uxMonthlyPerformance'), monthly, snaps, this._dep, this._matrixMode);
+
+      const units = groupPositionsIntoUnits(this._statsAllPositions || [], 'position');
+      const distributionHtml = this.renderPnlDistribution(units);
+      if (distributionHtml) matrix.insertAdjacentHTML('afterend', distributionHtml);
+      const exitHtml = this.renderExitReasonBars();
+      const distribution = matrix.nextElementSibling;
+      if (exitHtml) (distribution || matrix).insertAdjacentHTML('afterend', exitHtml);
+
+      // Replace only the old Equity Curve section's presentation; the
+      // snapshots/data and all downstream sections stay untouched.
+      const equitySection = [...body.querySelectorAll('section')].find(sec => sec.querySelector('h2')?.textContent.trim() === 'Equity Curve');
+      if (equitySection) {
+        equitySection.innerHTML = '<div id="uxEnhancedEquity"></div>';
+        this.renderEnhancedEquity(document.getElementById('uxEnhancedEquity'));
+      }
+      UIKit.enhanceTablesSoon();
+    } catch (e) {
+      console.warn('Monthly performance enhancement failed', e);
+    }
+  },
+
   // ── Strategy-specific data (Step 87) — GET /deployments/{id}/
   // strategy-status and .../adjustment-histogram, both opt-in per
   // strategy (see StrategyBase.get_status_fields/ADJUSTMENT_GROUP_BY's
   // own docstrings). Neither renders anything at all for a strategy
   // that doesn't override its half of the contract — no empty section,
   // no "not available" placeholder cluttering every other strategy's
-  // Stats tab. ─────────────────────────────────────────────────────
-
-  // Live indicator values (e.g. pivot_supertrend*'s current trend/
-  // value + pivot levels) -- a flex-wrap row of label/value pairs,
-  // same visual language as the "Deployed X ago / Last activity" line
-  // right above it. `source` distinguishes freshest-possible ("live",
-  // this deployment is currently running) from "as of its last
-  // pause/stop/daily checkpoint" ("persisted") so a paused deployment's
-  // numbers aren't mistaken for real-time.
+  // Analytics tab. ─────────────────────────────────────────────────────
   _strategyIndicatorsHtml(status) {
     if (!status || !status.fields || !status.fields.length) return '';
     const staleness = status.source === 'persisted'
@@ -717,9 +668,7 @@ const Detail = {
   // This deployment's own daily P&L as a GitHub-style heatmap (see
   // renderPnlHeatmap, api.js), backed by GET /deployments/{id}/pnl-digest
   // (deployment-scoped twin of the Reports page's portfolio-wide
-  // GET /portfolio/pnl-digest). Used to be its own Calendar tab; folded
-  // into Stats (Step 86) on request -- these two helpers now only ever
-  // refresh their own sub-container, not the whole Stats tab.
+  // GET /portfolio/pnl-digest).
   _fetchStatsCalendarRows() {
     const year = this._calendarRange === 'recent' ? null : this._calendarRange;
     return year
@@ -756,6 +705,415 @@ const Detail = {
       renderPnlTrendTable(rows, { periodLabel: iso => this._statsPeriodLabel(iso) });
   },
 
+  // Keeps the platform's existing drawdown definition: permanent/settled
+  // capital decline, not a temporary paper dip on a still-open positional
+  // leg. Mirrors api.js's computeMaxDrawdown exactly, but also keeps
+  // the peak/trough dates needed by the yearly matrix below.
+  computeDrawdownDetails(points, initialCapital) {
+    const sorted = points.slice().sort((a, b) => new Date(a.snapshot_at) - new Date(b.snapshot_at));
+    if (sorted.length < 2) return null;
+    const equity = p => Number(initialCapital || 0) + Number(p.realized_pnl_cumulative || 0);
+    let peak = sorted[0];
+    let peakValue = equity(peak);
+    let best = { abs: 0, pct: 0, peak_at: peak.snapshot_at, trough_at: peak.snapshot_at, days: 0 };
+    for (const p of sorted) {
+      const value = equity(p);
+      if (value > peakValue) { peak = p; peakValue = value; }
+      const abs = peakValue - value;
+      const pct = peakValue ? abs / peakValue * 100 : 0;
+      if (abs > best.abs) {
+        best = {
+          abs, pct, peak_at: peak.snapshot_at, trough_at: p.snapshot_at,
+          days: Math.max(0, Math.round((new Date(p.snapshot_at) - new Date(peak.snapshot_at)) / 86_400_000)),
+        };
+      }
+    }
+    return best;
+  },
+
+  renderPerformanceMatrix(container, monthlyRows, snapshots, dep, mode = 'absolute') {
+    if (!container) return;
+    const rowsByYear = new Map();
+    monthlyRows.forEach(r => {
+      const d = new Date(r.period_start);
+      const year = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', year: 'numeric' }).format(d));
+      const month = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', month: 'numeric' }).format(d)) - 1;
+      if (!rowsByYear.has(year)) rowsByYear.set(year, Array(12).fill(null));
+      rowsByYear.get(year)[month] = r;
+    });
+    const years = [...rowsByYear.keys()].sort((a, b) => a - b);
+    if (!years.length) {
+      container.innerHTML = '<div class="empty">Monthly performance appears once this deployment has settled history.</div>';
+      return;
+    }
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const currentMonth = istMonthKey(new Date());
+    const nowYear = Number(currentMonth.slice(0, 4));
+    const nowMonth = Number(currentMonth.slice(5, 7)) - 1;
+
+    const formatValue = value => mode === 'percent'
+      ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
+      : fmtSignedMoney(value);
+
+    const bodyRows = years.map(year => {
+      const monthRows = rowsByYear.get(year);
+      const totalPnl = monthRows.reduce((s, r) => s + Number(r?.realized_pnl || 0), 0);
+      const totalPct = dep.initial_capital ? totalPnl / dep.initial_capital * 100 : 0;
+      const yearPoints = snapshots.filter(s => Number(istDateKey(s.snapshot_at).slice(0, 4)) === year);
+      const dd = this.computeDrawdownDetails(yearPoints, dep.initial_capital);
+      const ratio = dd?.pct > 0 ? totalPct / dd.pct : (totalPct > 0 && dd ? Infinity : null);
+      const cells = monthRows.map((r, monthIndex) => {
+        if (!r) {
+          const future = year > nowYear || (year === nowYear && monthIndex > nowMonth);
+          return `<td class="${future ? 'future' : 'zero'}">—</td>`;
+        }
+        const pnl = Number(r.realized_pnl || 0);
+        const pct = dep.initial_capital ? pnl / dep.initial_capital * 100 : 0;
+        const value = mode === 'percent' ? pct : pnl;
+        const cls = value > 0 ? 'pos' : value < 0 ? 'neg' : 'zero';
+        const current = year === nowYear && monthIndex === nowMonth ? ' ux-matrix-current-month' : '';
+        const tooltip = `${months[monthIndex]} ${year}\nRealized: ${fmtSignedMoney(pnl)}\nReturn: ${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%\nPositions closed: ${r.positions_closed || 0}\nWins/Losses: ${r.wins || 0}/${r.losses || 0}`;
+        return `<td class="ux-month-cell ${cls}${current}" title="${escapeHtml(tooltip)}" onclick="Detail.openMatrixMonth(${year},${monthIndex})">${formatValue(value)}</td>`;
+      }).join('');
+      const totalValue = mode === 'percent' ? totalPct : totalPnl;
+      return `<tr>
+        <td>${year}</td>${cells}
+        <td class="total ${pnlClass(totalValue)}" onclick="Detail.openMatrixYear(${year})" style="cursor:pointer;">${formatValue(totalValue)}</td>
+        <td class="${dd?.abs ? 'neg' : ''}" title="${dd ? `${fmtDateTime(dd.peak_at)} → ${fmtDateTime(dd.trough_at)}` : ''}">${dd ? `${mode === 'percent' ? `-${dd.pct.toFixed(2)}%` : fmtMoney(-dd.abs)}` : '—'}</td>
+        <td>${dd ? dd.days : '—'}</td>
+        <td>${ratio == null ? '—' : ratio === Infinity ? '∞' : ratio.toFixed(2)}</td>
+      </tr>`;
+    }).join('');
+
+    container.innerHTML = `
+      <div class="ux-analytics-toolbar">
+        <div><b>Monthly Performance</b><div class="card-sub">Settled monthly P&amp;L. Click any month to inspect the underlying history.</div></div>
+        <div class="ux-segmented">
+          <button class="${mode === 'absolute' ? 'active' : ''}" onclick="Detail.setMatrixMode('absolute')">₹ Absolute</button>
+          <button class="${mode === 'percent' ? 'active' : ''}" onclick="Detail.setMatrixMode('percent')">% Return</button>
+        </div>
+      </div>
+      <div class="ux-performance-matrix-wrap"><table class="ux-performance-matrix ux-no-enhance"><thead><tr><th>Year</th>${months.map(m => `<th>${m}</th>`).join('')}<th>Total</th><th>Max DD</th><th>MDD Days</th><th>Return / DD</th></tr></thead><tbody>${bodyRows}</tbody></table></div>
+      <div class="ux-matrix-caption">Percentage view uses the deployment's fixed initial capital, matching the platform's existing total-return convention. Max drawdown uses settled/realized equity, matching the platform's permanent-capital-loss definition.</div>`;
+  },
+
+  setMatrixMode(mode) {
+    this._matrixMode = mode;
+    this.renderPerformanceMatrix(document.getElementById('uxMonthlyPerformance'), this._matrixRows || [], this._matrixSnapshots || [], this._dep, mode);
+  },
+
+  openMatrixMonth(year, monthIndex) {
+    this._historyRange = {
+      start: _startOfMonthIso(year, monthIndex),
+      end: _endOfMonthIso(year, monthIndex),
+      label: `${new Date(Date.UTC(year, monthIndex, 1)).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' })}`,
+    };
+    this._historyMode = 'positions';
+    window.location.hash = `#/deployments/${this._id}/history`;
+  },
+
+  openMatrixYear(year) {
+    this._historyRange = { start: `${year}-01-01T00:00:00+05:30`, end: `${year}-12-31T23:59:59+05:30`, label: String(year) };
+    this._historyMode = 'positions';
+    window.location.hash = `#/deployments/${this._id}/history`;
+  },
+
+  renderPnlDistribution(units) {
+    const vals = units.filter(u => u.status === 'closed').map(u => Number(u.realized_pnl || 0));
+    if (vals.length < 2) return '';
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const bins = Math.min(9, Math.max(5, Math.ceil(Math.sqrt(vals.length))));
+    const span = (max - min) || 1;
+    const width = span / bins;
+    const buckets = Array.from({ length: bins }, (_, i) => ({ lo: min + i * width, hi: i === bins - 1 ? max : min + (i + 1) * width, count: 0 }));
+    vals.forEach(v => {
+      const idx = Math.min(bins - 1, Math.floor((v - min) / width));
+      buckets[Math.max(0, idx)].count++;
+    });
+    const maxCount = Math.max(...buckets.map(b => b.count), 1);
+    const sorted = vals.slice().sort((a, b) => a - b);
+    const median = sorted.length % 2 ? sorted[(sorted.length - 1) / 2] : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+    const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+    return `<section class="ux-section">
+      <div class="ux-section-head"><h2>P&amp;L distribution</h2><span class="card-sub">Per strategic position / cycle</span></div>
+      <div class="ux-bar-list">${buckets.map(b => `<div class="ux-bar-row"><span>${fmtMoney(b.lo)} → ${fmtMoney(b.hi)}</span><div class="ux-bar-track"><div class="ux-bar-fill ${b.hi <= 0 ? 'neg' : ''}" style="width:${b.count / maxCount * 100}%"></div></div><b>${b.count}</b></div>`).join('')}</div>
+      <div class="card-meta" style="margin-top:10px;"><span>Median <b class="${pnlClass(median)}">${fmtSignedMoney(median)}</b></span><span>Average <b class="${pnlClass(avg)}">${fmtSignedMoney(avg)}</b></span><span>Best <b class="pos">${fmtSignedMoney(max)}</b></span><span>Worst <b class="neg">${fmtSignedMoney(min)}</b></span></div>
+    </section>`;
+  },
+
+  filterEquitySnapshots(snapshots, range) {
+    if (!snapshots?.length || range === 'all') return snapshots || [];
+    const sorted = snapshots.slice().sort((a, b) => new Date(a.snapshot_at) - new Date(b.snapshot_at));
+    const end = new Date(sorted[sorted.length - 1].snapshot_at);
+    let start;
+    if (range === 'ytd') {
+      const year = Number(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Kolkata', year: 'numeric' }).format(end));
+      start = new Date(`${year}-01-01T00:00:00+05:30`);
+    } else {
+      const days = range === '1m' ? 31 : range === '3m' ? 93 : range === '6m' ? 186 : 365;
+      start = new Date(end.getTime() - days * 86_400_000);
+    }
+    const filtered = sorted.filter(p => new Date(p.snapshot_at) >= start);
+    // A chart with a single visible point is less useful than including the
+    // immediately preceding baseline; preserve it when available.
+    if (filtered.length && filtered[0] !== sorted[0]) {
+      const idx = sorted.indexOf(filtered[0]);
+      return [sorted[Math.max(0, idx - 1)], ...filtered];
+    }
+    return filtered;
+  },
+
+  renderEnhancedEquity(container) {
+    if (!container) return;
+    const snapshots = this.filterEquitySnapshots(this._equitySnapshots || [], this._equityRange || 'all');
+    if (snapshots.length < 2) {
+      container.innerHTML = emptyHtml('Not enough equity history in this range yet.');
+      return;
+    }
+    const mode = this._equityMode || 'absolute';
+    const base = Number(snapshots[0].total_value || 0);
+    const points = snapshots.map(s => ({
+      ...s,
+      plot: mode === 'percent' ? (base ? (Number(s.total_value) - base) / base * 100 : 0) : Number(s.total_value),
+      pct: base ? (Number(s.total_value) - base) / base * 100 : 0,
+    }));
+    const values = points.map(p => p.plot);
+    const min = Math.min(...values), max = Math.max(...values);
+    const span = (max - min) || 1;
+    const W = 1000, H = 230, PAD = 14;
+    const coords = points.map((p, i) => {
+      const x = PAD + i / Math.max(1, points.length - 1) * (W - 2 * PAD);
+      const y = H - PAD - (p.plot - min) / span * (H - 2 * PAD);
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    }).join(' ');
+    const lineClass = values[values.length - 1] >= values[0] ? 'gain' : 'loss';
+
+    // Settled drawdown series: deliberately based on initial capital +
+    // realized cumulative, matching computeMaxDrawdown and the matrix.
+    let peak = Number(this._dep.initial_capital || 0) + Number(points[0].realized_pnl_cumulative || 0);
+    const dd = points.map(p => {
+      const v = Number(this._dep.initial_capital || 0) + Number(p.realized_pnl_cumulative || 0);
+      peak = Math.max(peak, v);
+      return peak ? -((peak - v) / peak) * 100 : 0;
+    });
+    const ddMin = Math.min(...dd, 0), ddSpan = Math.abs(ddMin) || 1;
+    const ddCoords = dd.map((v, i) => {
+      const x = PAD + i / Math.max(1, dd.length - 1) * (W - 2 * PAD);
+      const y = 8 + (Math.abs(v) / ddSpan) * 54;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    }).join(' ');
+
+    const fmtAxis = v => mode === 'percent' ? `${v >= 0 ? '+' : ''}${v.toFixed(2)}%` : fmtMoney(v);
+    container.innerHTML = `
+      <div class="ux-analytics-toolbar">
+        <div><b>Equity &amp; drawdown</b><div class="card-sub">Hover/touch for exact values. Drawdown is settled capital loss, not open-position noise.</div></div>
+        <div class="ux-equity-controls">
+          <div class="ux-segmented">${['1m','3m','6m','ytd','1y','all'].map(r => `<button class="${(this._equityRange || 'all') === r ? 'active' : ''}" onclick="Detail.setEquityRange('${r}')">${r === 'all' ? 'ALL' : r.toUpperCase()}</button>`).join('')}</div>
+          <div class="ux-segmented"><button class="${mode === 'absolute' ? 'active' : ''}" onclick="Detail.setEquityMode('absolute')">₹</button><button class="${mode === 'percent' ? 'active' : ''}" onclick="Detail.setEquityMode('percent')">%</button></div>
+        </div>
+      </div>
+      <div class="ux-equity-shell">
+        <div class="ux-equity-y"><span>${fmtAxis(max)}</span><span>${fmtAxis((max + min) / 2)}</span><span>${fmtAxis(min)}</span></div>
+        <div class="ux-equity-main" id="uxEquityPointerArea">
+          <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="Equity curve"><polyline class="ux-equity-line ${lineClass}" points="${coords}" vector-effect="non-scaling-stroke"></polyline></svg>
+          <div class="ux-equity-crosshair" id="uxEquityCrosshair"></div>
+        </div>
+      </div>
+      <div class="ux-equity-x"><span>${fmtDate(points[0].snapshot_at)}</span><span>${fmtDate(points[points.length - 1].snapshot_at)}</span></div>
+      <div class="ux-drawdown-strip"><div class="ux-drawdown-label"><b>Drawdown</b><span>${ddMin.toFixed(2)}%</span></div><div class="ux-drawdown-area"><svg viewBox="0 0 ${W} 70" preserveAspectRatio="none"><polyline points="${ddCoords}" vector-effect="non-scaling-stroke"></polyline></svg></div></div>`;
+
+    const area = container.querySelector('#uxEquityPointerArea');
+    const cross = container.querySelector('#uxEquityCrosshair');
+    if (area) {
+      const show = (clientX, clientY) => {
+        const rect = area.getBoundingClientRect();
+        const frac = Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+        const idx = Math.max(0, Math.min(points.length - 1, Math.round(frac * (points.length - 1))));
+        const p = points[idx];
+        if (cross) { cross.style.display = 'block'; cross.style.left = `${frac * 100}%`; }
+        if (typeof ChartTooltip !== 'undefined') {
+          ChartTooltip.show(clientX, clientY, `<b>${fmtDate(p.snapshot_at)}</b><br>Equity ${fmtMoney(p.total_value)}<br>Range return ${p.pct >= 0 ? '+' : ''}${p.pct.toFixed(2)}%<br>Settled P&amp;L ${fmtSignedMoney(p.realized_pnl_cumulative)}<br>Drawdown ${dd[idx].toFixed(2)}%`);
+        }
+      };
+      area.addEventListener('pointermove', e => show(e.clientX, e.clientY));
+      area.addEventListener('pointerleave', () => { if (cross) cross.style.display = 'none'; if (typeof ChartTooltip !== 'undefined') ChartTooltip.hide(); });
+      area.addEventListener('touchmove', e => { const t = e.touches?.[0]; if (t) show(t.clientX, t.clientY); }, { passive: true });
+    }
+  },
+
+  setEquityMode(mode) {
+    this._equityMode = mode;
+    this.renderEnhancedEquity(document.getElementById('uxEnhancedEquity'));
+  },
+  setEquityRange(range) {
+    this._equityRange = range;
+    this.renderEnhancedEquity(document.getElementById('uxEnhancedEquity'));
+  },
+
+  renderExitReasonBars() {
+    const units = groupPositionsIntoUnits(this._statsAllPositions || [], 'position');
+    const lotsByPosition = this._statsLotsByPosition || {};
+    const byReason = {};
+    units.filter(u => u.status === 'closed').forEach(u => {
+      const lots = u.position_ids.flatMap(id => lotsByPosition[id] || []).slice().sort((a, b) => new Date(a.executed_at) - new Date(b.executed_at));
+      const reason = lots[lots.length - 1]?.reason || '(no reason recorded)';
+      const entry = byReason[reason] ||= { pnl: 0, count: 0 };
+      entry.pnl += Number(u.realized_pnl || 0); entry.count++;
+    });
+    const rows = Object.entries(byReason).sort((a, b) => Math.abs(b[1].pnl) - Math.abs(a[1].pnl));
+    if (!rows.length) return '';
+    const maxAbs = Math.max(...rows.map(([, v]) => Math.abs(v.pnl)), 1);
+    return `<section class="ux-section"><div class="ux-section-head"><div><h2>P&amp;L contribution by exit</h2><div class="card-sub">Which exit trigger actually contributes or destroys P&amp;L. The detailed table remains below.</div></div></div><div class="ux-bar-list ux-exit-bars">${rows.map(([reason, v]) => `<div class="ux-bar-row"><span title="${escapeHtml(reason)}">${escapeHtml(reason)}</span><div class="ux-bar-track"><div class="ux-bar-fill ${v.pnl < 0 ? 'neg' : ''}" style="width:${Math.abs(v.pnl) / maxAbs * 100}%"></div></div><b class="${pnlClass(v.pnl)}">${fmtSignedMoney(v.pnl)} <small>· ${v.count}</small></b></div>`).join('')}</div></section>`;
+  },
+
+  // ── History — every position/cycle, execution, and event ever
+  // recorded, filterable by clicking a month/year in the Analytics
+  // matrix (openMatrixMonth/openMatrixYear above set _historyRange and
+  // navigate here). ────────────────────────────────────────────────────
+  _historyMode: 'positions',
+  _historyRange: null,
+  _historyTrades: [],
+  _historyEvents: [],
+  _historyPositions: [],
+
+  async renderHistory() {
+    this._stopLivePositionUpdates();
+    const body = document.getElementById('detailBody');
+    body.innerHTML = spinnerHtml();
+    try {
+      const [positions, trades, events] = await Promise.all([
+        Api.getPositions(this._id, 'all'), Api.getTrades(this._id, 2000), Api.getEvents(this._id, 1000),
+      ]);
+      this._historyTrades = trades.lots || [];
+      this._historyEvents = events || [];
+      this._historyPositions = positions || [];
+      this.paintHistory();
+    } catch (e) {
+      body.innerHTML = emptyHtml(`Could not load history — ${escapeHtml(e.message || String(e))}`);
+    }
+  },
+
+  paintHistory() {
+    const body = document.getElementById('detailBody');
+    const range = this._historyRange;
+    body.innerHTML = `
+      <div class="ux-history-toolbar">
+        <div class="ux-segmented">
+          <button class="${this._historyMode === 'positions' ? 'active' : ''}" onclick="Detail.setHistoryMode('positions')">Positions / Cycles</button>
+          <button class="${this._historyMode === 'executions' ? 'active' : ''}" onclick="Detail.setHistoryMode('executions')">Executions</button>
+          <button class="${this._historyMode === 'events' ? 'active' : ''}" onclick="Detail.setHistoryMode('events')">Events</button>
+        </div>
+        <div>${range ? `<span class="ux-history-filter-chip">${escapeHtml(range.label)} <button class="btn btn-secondary btn-sm" style="padding:1px 5px;" onclick="Detail.clearHistoryRange()">✕</button></span>` : '<span class="card-sub">All history</span>'}</div>
+      </div>
+      <div id="uxHistoryContent"></div>`;
+    const content = document.getElementById('uxHistoryContent');
+    if (this._historyMode === 'executions') this.paintHistoryExecutions(content);
+    else if (this._historyMode === 'events') this.paintHistoryEvents(content);
+    else this.paintHistoryPositions(content);
+    UIKit.enhanceTablesSoon();
+  },
+
+  setHistoryMode(mode) {
+    this._historyMode = mode;
+    this.paintHistory();
+  },
+  clearHistoryRange() { this._historyRange = null; this.paintHistory(); },
+
+  paintHistoryPositions(content) {
+    let units = groupPositionsIntoUnits(this._historyPositions || [], 'position');
+    units = units.filter(u => {
+      if (!this._historyRange) return true;
+      const rangeStart = new Date(this._historyRange.start).getTime();
+      const rangeEnd = new Date(this._historyRange.end).getTime();
+      const opened = new Date(u.opened_at).getTime();
+      const closed = u.closed_at ? new Date(u.closed_at).getTime() : Date.now();
+      // A cycle belongs to the selected period whenever its lifetime
+      // overlaps the period, even if it opened before the first day.
+      return opened <= rangeEnd && closed >= rangeStart;
+    }).slice().sort((a, b) => new Date(b.closed_at || b.opened_at) - new Date(a.closed_at || a.opened_at));
+    if (!units.length) { content.innerHTML = emptyHtml('No positions/cycles in this period.'); return; }
+    const byId = new Map((this._historyPositions || []).map(p => [p.id, p]));
+    content.innerHTML = units.map((u, i) => {
+      const ps = (u.position_ids || []).map(id => byId.get(id)).filter(Boolean);
+      const unrealized = ps.filter(p => p.status === 'open').reduce((s, p) => s + Number(p.unrealized_pnl || 0), 0);
+      const total = Number(u.realized_pnl || 0) + unrealized;
+      return `<div class="ux-cycle-card" id="uxCycle-${i}">
+        <div class="ux-cycle-head" onclick="document.getElementById('uxCycle-${i}').classList.toggle('open')">
+          <div><b>${this._dep.mode === 'positional' ? 'Cycle' : 'Position'} · ${fmtDateTime(u.opened_at)}</b><div class="card-sub">${u.status === 'open' ? 'Open' : `Closed ${fmtDateTime(u.closed_at)}`} · ${ps.length} leg${ps.length === 1 ? '' : 's'}</div></div>
+          <span class="tag tag-${u.status === 'open' ? 'active' : 'stopped'}">${u.status}</span>
+          <b class="${pnlClass(total)}">${fmtSignedMoney(total)}</b>
+        </div>
+        <div class="ux-cycle-body"><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Realized</th><th>Status</th></tr></thead><tbody>${ps.map(p => `<tr><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td class="${pnlClass(p.realized_pnl)}">${fmtSignedMoney(p.realized_pnl)}</td><td>${escapeHtml(p.status)}</td></tr>`).join('')}</tbody></table></div></div>
+      </div>`;
+    }).join('');
+  },
+
+  paintHistoryExecutions(content) {
+    const rows = this._historyTrades.filter(t => dateRangeContains(t.executed_at, this._historyRange));
+    if (!rows.length) { content.innerHTML = emptyHtml('No executions in this period.'); return; }
+    content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Action</th><th>Symbol</th><th>Qty</th><th>Price</th><th>Reason</th></tr></thead><tbody>${rows.slice(0, 1000).map((t, i) => `<tr class="ux-row-navigate" onclick="Detail.openHistoryExecution(${this._historyTrades.indexOf(t)})"><td>${fmtDateTime(t.executed_at)}</td><td>${escapeHtml(t.action)}</td><td>${escapeHtml(t.symbol)}</td><td>${fmtNum(t.qty)}</td><td>${fmtNum(t.price)}</td><td>${escapeHtml(t.reason || '')}${triggerBadgeHtml(t.reason)}</td></tr>`).join('')}</tbody></table></div>`;
+  },
+
+  paintHistoryEvents(content) {
+    const rows = this._historyEvents.filter(e => dateRangeContains(e.created_at, this._historyRange));
+    if (!rows.length) { content.innerHTML = emptyHtml('No events in this period.'); return; }
+    content.innerHTML = `<div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Message</th></tr></thead><tbody>${rows.slice(0, 1000).map((e, i) => `<tr class="${e.metadata && Object.keys(e.metadata).length ? 'ux-row-navigate' : ''}" ${e.metadata && Object.keys(e.metadata).length ? `onclick="Detail.openHistoryEvent(${this._historyEvents.indexOf(e)})"` : ''}><td>${fmtDateTime(e.created_at)}</td><td><span class="tag ${e.event_type === 'strategy_error' ? 'tag-error' : 'tag-info'}">${escapeHtml(e.event_type)}</span></td><td>${escapeHtml(e.message || '')}</td></tr>`).join('')}</tbody></table></div>`;
+  },
+
+  openHistoryExecution(index) {
+    const lot = this._historyTrades[index];
+    if (!lot) return;
+    UIKit.openDrawer(`${lot.action} · ${lot.symbol}`, this._tradeMetaHtml(lot), `${fmtDateTime(lot.executed_at)} · ${lot.reason || 'No reason recorded'}`);
+  },
+  openHistoryEvent(index) {
+    const ev = this._historyEvents[index];
+    if (!ev) return;
+    UIKit.openDrawer(ev.event_type.replace(/_/g, ' '), renderJsonBlock('metadata', ev.metadata || {}), `${fmtDateTime(ev.created_at)} · ${ev.message || ''}`);
+  },
+
+  // ── Configuration — read-only strategy config, grouped by topic
+  // (UIKit.configGroup), editable only while paused. ────────────────────
+  renderConfiguration() {
+    const dep = this._dep;
+    const body = document.getElementById('detailBody');
+    const cfg = dep.config || {};
+    const groups = {};
+    Object.keys(cfg).sort().forEach(k => { (groups[UIKit.configGroup(k)] ||= []).push([k, cfg[k]]); });
+    body.innerHTML = `
+      <section class="ux-section">
+        <div class="ux-section-head"><h2>Deployment details</h2><button class="btn btn-secondary btn-sm" onclick="Detail.openEditModal()">Edit details</button></div>
+        <div class="ux-config-grid">
+          <div class="ux-config-group"><h3>Identity</h3><div class="ux-config-kv">
+            <div class="ux-config-key">Name</div><div class="ux-config-value">${escapeHtml(dep.deployment_name)}</div>
+            <div class="ux-config-key">Strategy</div><div class="ux-config-value">${escapeHtml(dep.strategy_name)}</div>
+            <div class="ux-config-key">Mode</div><div class="ux-config-value">${escapeHtml(dep.mode)}</div>
+            <div class="ux-config-key">Initial capital</div><div class="ux-config-value">${fmtMoney(dep.initial_capital)}</div>
+          </div></div>
+          <div class="ux-config-group"><h3>Behavior</h3><div class="ux-config-kv">
+            <div class="ux-config-key">Analytics</div><div class="ux-config-value">${dep.include_in_reports ? 'Included' : 'Excluded'}</div>
+            <div class="ux-config-key">Notifications</div><div class="ux-config-value">${dep.notifications_enabled ? 'On' : 'Off'}</div>
+            <div class="ux-config-key">Tags</div><div class="ux-config-value">${(dep.tags || []).map(escapeHtml).join(', ') || '—'}</div>
+            <div class="ux-config-key">Status</div><div class="ux-config-value">${escapeHtml(dep.status)}</div>
+          </div></div>
+        </div>
+      </section>
+      <section class="ux-section">
+        <div class="ux-section-head"><div><h2>Strategy parameters</h2><div class="card-sub">Read-only while running. Pause first so the next Resume reconstructs the strategy with the new config.</div></div>
+          ${dep.status === 'paused' ? '<button class="btn btn-primary btn-sm" onclick="Detail.openEditConfigModal()">Edit configuration</button>' : dep.status === 'active' ? '<button class="btn btn-secondary btn-sm" onclick="Detail.pauseAndEditConfig()">Pause & edit</button>' : ''}
+        </div>
+        <div class="ux-config-grid">${Object.entries(groups).map(([name, entries]) => `<div class="ux-config-group"><h3>${escapeHtml(name)}</h3><div class="ux-config-kv">${entries.map(([k, v]) => `<div class="ux-config-key">${escapeHtml(k)}</div><div class="ux-config-value">${formatConfigValue(v)}</div>`).join('')}</div></div>`).join('')}</div>
+      </section>
+      <details class="ux-section"><summary style="cursor:pointer;font-weight:800;">Advanced · raw JSON</summary><div style="margin-top:10px;">${renderJsonBlock('config', cfg)}</div></details>`;
+  },
+
+  async pauseAndEditConfig() {
+    if (!confirm(`Pause "${this._dep.deployment_name}" so its configuration can be edited? Open positions remain open while paused.`)) return;
+    const r = await Api.pauseDeployment(this._id);
+    if (!r.ok) { alert('Could not pause deployment.'); return; }
+    await this.load(this._id);
+    this.openEditConfigModal();
+  },
+
   // ── Header actions ──────────────────────────────────────────────
   async openEditModal() {
     document.getElementById('editDeploymentName').value = this._dep.deployment_name;
@@ -764,6 +1122,7 @@ const Detail = {
     document.getElementById('editDeploymentNotificationsEnabled').checked = this._dep.notifications_enabled;
     document.getElementById('editDeploymentMsg').textContent = '';
     document.getElementById('editDeploymentModal').classList.add('open');
+    requestAnimationFrame(() => UIKit.renameAnalyticsSemantics(document.getElementById('editDeploymentModal') || document));
 
     // Built fresh on every open (not cached across modal sessions) --
     // the catalog itself can grow from Settings -> Tags between two
@@ -790,13 +1149,13 @@ const Detail = {
         `).join('');
   },
 
-  // ── Edit config (Step 51) — only ever opened from renderConfig's own
-  // paused-only button, but the paused check is enforced server-side
-  // too (see the PATCH handler), not just gated by hiding the button.
-  // Reuses the exact same field-widget machinery as the Deploy modal
-  // (configFieldHtml family, api.js) with its own idPrefix/container
-  // ids and its own _editConfigBase, entirely independent of Catalog's
-  // own deploy-time state. ─────────────────────────────────────────────
+  // ── Edit config (Step 51) — only ever opened from the Configuration
+  // tab's own paused-only button, but the paused check is enforced
+  // server-side too (see the PATCH handler), not just gated by hiding
+  // the button. Reuses the exact same field-widget machinery as the
+  // Deploy modal (configFieldHtml family, api.js) with its own idPrefix/
+  // container ids and its own _editConfigBase, entirely independent of
+  // Catalog's own deploy-time state. ─────────────────────────────────────
   _editConfigBase: {},
 
   openEditConfigModal() {
@@ -812,6 +1171,7 @@ const Detail = {
   _renderEditConfigFields(config) {
     this._editConfigBase = { ...config };
     document.getElementById('editConfigFields').innerHTML = configFieldsContainerHtml(config, 'editCfgField_');
+    requestAnimationFrame(() => UIKit.groupConfigFields(document.getElementById('editConfigFields')));
   },
 
   toggleEditConfigAdvanced() {
@@ -848,23 +1208,15 @@ const Detail = {
     const r = await Api.resumeDeployment(this._id);
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
-      alert(data.detail || 'Could not resume — check its config on the Config tab.');
+      alert(data.detail || 'Could not resume — check its config on the Configuration tab.');
     }
     this.load(this._id);
   },
   async stop() {
-    const forceClose = confirm(
-      'Stop this deployment.\n\nOK = force-close any open position at the last known price.\nCancel = only stop if already flat.'
-    );
-    const r = await Api.stopDeployment(this._id, forceClose);
-    if (!r.ok) {
-      const data = await r.json();
-      alert(data.detail || 'Could not stop — it may have open positions. Try again and confirm force-close.');
-    }
-    this.load(this._id);
+    return UIKit.openStopDialog(this._id, this._dep?.deployment_name);
   },
   async deleteDeployment() {
-    // Only ever offered while stopped (see the header's own status
+    // Only ever offered while stopped (see the header menu's own status
     // check) — the backend enforces the same restriction independently
     // either way. Permanent: every position/trade/event/snapshot under
     // this deployment goes with it, via ON DELETE CASCADE.
@@ -898,6 +1250,19 @@ function renderJsonBlock(label, obj) {
   if (obj === undefined || obj === null) return '';
   if (typeof obj === 'object' && Object.keys(obj).length === 0) return '';
   return `<div class="trade-json-block"><div class="label">${escapeHtml(label)}</div><div class="trade-json">${escapeHtml(JSON.stringify(obj, null, 2))}</div></div>`;
+}
+
+// Used only by the Analytics tab's Monthly Performance matrix
+// (openMatrixMonth above) to turn a clicked (year, monthIndex) cell
+// into an IST month boundary for the History tab's own range filter.
+function _startOfMonthIso(year, monthIndex) {
+  return `${year}-${String(monthIndex + 1).padStart(2, '0')}-01T00:00:00+05:30`;
+}
+function _endOfMonthIso(year, monthIndex) {
+  const nextYear = monthIndex === 11 ? year + 1 : year;
+  const nextMonth = monthIndex === 11 ? 0 : monthIndex + 1;
+  const next = new Date(`${nextYear}-${String(nextMonth + 1).padStart(2, '0')}-01T00:00:00+05:30`);
+  return new Date(next.getTime() - 1).toISOString();
 }
 
 // fmtDuration() now lives in api.js (Step 111 -- shared with Compare's

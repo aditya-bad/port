@@ -55,6 +55,30 @@ const Reports = {
     this._trendRows = trend;
     this.renderTrend(trend);
     this.renderCalendar(calendarRows);
+
+    // The reorderable sections below the period nav use their own
+    // drag-handle layout, on top of the arrow-button SectionOrder
+    // restore above -- see moveSection()'s own comment for why the
+    // arrow buttons stay as a keyboard/accessibility fallback.
+    UIKit.applySavedLayout('reportsSections', 'reports');
+    UIKit.setupSortableSections('reportsSections', 'reports');
+    await this._renderContributionChart();
+    UIKit.enhanceTablesSoon();
+  },
+
+  // Lead with a visual contribution read, keep the detailed table
+  // immediately below for exact values/export-minded scanning.
+  async _renderContributionChart() {
+    const target = document.getElementById('reportsByStrategy');
+    if (!target) return;
+    try {
+      const report = await Api.getPnlReport(this._period, this._offset);
+      const rows = (report.by_strategy || []).slice().sort((a, b) => Math.abs(Number(b.realized_pnl || 0)) - Math.abs(Number(a.realized_pnl || 0)));
+      if (!rows.length) return;
+      const maxAbs = Math.max(...rows.map(r => Math.abs(Number(r.realized_pnl || 0))), 1);
+      const visual = `<div class="ux-report-contrib"><div class="ux-card-head"><strong>P&amp;L contribution</strong><span class="card-sub">Visual first; exact table below</span></div><div class="ux-bar-list">${rows.map(r => `<div class="ux-bar-row"><span>${escapeHtml(r.strategy_name)}</span><div class="ux-bar-track"><div class="ux-bar-fill ${Number(r.realized_pnl || 0) < 0 ? 'neg' : ''}" style="width:${Math.abs(Number(r.realized_pnl || 0)) / maxAbs * 100}%"></div></div><b class="${pnlClass(r.realized_pnl)}">${fmtSignedMoney(r.realized_pnl)}</b></div>`).join('')}</div></div>`;
+      target.insertAdjacentHTML('afterbegin', visual);
+    } catch (e) { console.warn('Report contribution chart failed', e); }
   },
 
   // ── Calendar heatmap range (Step 74) -- see dashboard.js's identical
@@ -80,10 +104,23 @@ const Reports = {
     this.renderCalendar(rows);
   },
 
+  // Keyboard/accessibility fallback -- the visible arrow buttons this
+  // used to drive are hidden by CSS now that the section header has a
+  // real drag handle (UIKit.setupSortableSections), but this stays
+  // callable (Alt+↑/↓ on the handle wires to the same drag-handle
+  // layout key, see UIKit.setupSortableSections' own keydown handler)
+  // and writes to that SAME layout key rather than SectionOrder's.
   moveSection(id, delta) {
-    const order = SectionOrder.move('reports', this._sectionIds, id, delta);
-    SectionOrder.apply(document.getElementById('reportsSections'), order);
-    SectionOrder.syncButtons(order);
+    const container = document.getElementById('reportsSections');
+    const item = document.getElementById(id);
+    if (!container || !item) return;
+    const children = [...container.children];
+    const index = children.indexOf(item);
+    const target = index + delta;
+    if (target < 0 || target >= children.length) return;
+    if (delta < 0) container.insertBefore(item, children[target]);
+    else container.insertBefore(children[target], item);
+    localStorage.setItem(UIKit.layoutKey('reports'), JSON.stringify([...container.children].map(x => x.id)));
   },
 
   switchPeriod(period) {

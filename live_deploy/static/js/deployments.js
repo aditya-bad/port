@@ -23,6 +23,11 @@
 // `csvValue(d)`: plain value for CSV export (defaults to sortValue).
 const DEPLOY_COLUMNS = [
   {
+    key: 'ux_select', label: '', always: true, sortable: false,
+    render: d => `<span class="ux-select-cell"><input type="checkbox" aria-label="Select ${escapeHtml(d.deployment_name)} for comparison" ${Deployments._selectedIds.has(d.id) ? 'checked' : ''} onclick="event.stopPropagation()" onchange="Deployments.toggleSelection('${d.id}', this.checked)"></span>`,
+    csvValue: () => '', sortValue: () => '',
+  },
+  {
     key: 'name', label: 'Name', always: true,
     sortValue: d => (d.deployment_name || '').toLowerCase(),
     // "unregistered"/"excluded from reports"/custom tags all moved to
@@ -50,6 +55,49 @@ const DEPLOY_COLUMNS = [
     render: d => escapeHtml(d.mode),
   },
   {
+    key: 'ux_current_pnl', label: 'Current P&L', numeric: true,
+    headerTitle: 'Intraday = Today. Positional = currently active strategic cycle.',
+    sortValue: d => d._uxActive?.total_pnl ?? -Infinity,
+    render: d => {
+      const a = d._uxActive;
+      if (!a) return '<span class="card-sub">calculating…</span>';
+      if (d.mode === 'positional' && !a.active) {
+        return `<span class="ux-current-pnl"><span>—</span><span class="ux-pnl-period">Flat${a.last_cycle_pnl != null ? ` · last ${fmtSignedMoney(a.last_cycle_pnl)}` : ''}</span></span>`;
+      }
+      return `<span class="ux-current-pnl ${pnlClass(a.total_pnl)}">${fmtSignedMoney(a.total_pnl)}<span class="ux-pnl-period">${escapeHtml(a.period_label)}</span></span>`;
+    },
+    csvValue: d => d._uxActive?.total_pnl ?? '',
+    // total(ctx) -- see the tfoot-building comment below on why every
+    // numeric column owns its own total function. Deliberately sums
+    // over ctx.allRows, not ctx.reportRows -- unlike the legacy
+    // accounting columns below (Capital/Cash/Realized/...), which stay
+    // scoped to include_in_reports=true rows for historical-performance
+    // consistency, Current P&L is the SAME operational-truth number
+    // Dashboard's own "Right now" zone shows (Active P&L, "includes
+    // every live deployment, even if excluded from analytics") --
+    // scoping it to reportRows here would silently disagree with that.
+    total: ({ allRows }) => {
+      const ready = allRows.filter(d => d._uxActive);
+      if (!ready.length) return '';
+      const t = ready.reduce((s, d) => s + (d._uxActive.total_pnl || 0), 0);
+      return `<span class="ux-current-pnl ${pnlClass(t)}">${fmtSignedMoney(t)}</span>`;
+    },
+  },
+  {
+    key: 'ux_open_positions', label: 'Open', numeric: true,
+    sortValue: d => d._uxActive?.open_positions ?? 0,
+    render: d => String(d._uxActive?.open_positions ?? 0),
+    total: ({ allRows }) => String(allRows.reduce((s, d) => s + (d._uxActive?.open_positions || 0), 0)),
+  },
+  {
+    key: 'ux_last_action', label: 'Last action',
+    sortValue: d => d._uxActive?.last_action_at ? new Date(d._uxActive.last_action_at).getTime() : 0,
+    render: d => d._uxActive?.last_action_at
+      ? `<span title="${escapeHtml(d._uxActive.last_action || '')}">${humanAgo(d._uxActive.last_action_at)}</span>`
+      : '<span class="card-sub">—</span>',
+    csvValue: d => d._uxActive?.last_action_at || '',
+  },
+  {
     key: 'tags', label: 'Tags',
     // Moved out of the Name cell into its own column (Step 93, on
     // request) -- "excluded from reports" + every custom tag, same
@@ -72,14 +120,13 @@ const DEPLOY_COLUMNS = [
     // `total(ctx)` -- the totals-row (tfoot) cell for this column, given
     // `{ reportRows, allRows }` (see the tfoot-building code below).
     // Column-owned rather than a hardcoded lookup table so any NEW
-    // column added here -- or by a patch like ux-v2.js's own
-    // installDeploymentColumns, which pushes extra `numeric: true`
-    // entries into this same array -- automatically gets a real total
-    // instead of silently rendering an empty cell (Step: this is
-    // exactly the bug that made the whole totals row look blank the
-    // moment ux-v2's own decision-oriented default columns replaced
-    // these accounting ones -- the OLD hardcoded totalByKey object had
-    // no entry for ux-v2's new "Current P&L"/"Open" columns at all).
+    // column added to this array (like ux_current_pnl/ux_open_positions
+    // above) automatically gets a real total instead of silently
+    // rendering an empty cell (Step: this is exactly the bug that made
+    // the whole totals row look blank the moment those decision-
+    // oriented columns replaced these accounting ones as the default
+    // set -- the OLD hardcoded totalByKey object had no entry for them
+    // at all).
     total: ({ reportRows }) => fmtMoney(reportRows.reduce((s, d) => s + (d.initial_capital || 0), 0)),
   },
   {
@@ -149,6 +196,7 @@ const Deployments = {
   _sortDir: 'asc',   // 'asc' | 'desc'
   _visibleCols: null,   // Set<key> -- populated in load() from localStorage/defaults
   _openRowMenuId: null,
+  _selectedIds: new Set(),   // checked via the ux_select column, feeds Compare (see compareSelection)
 
   // quiet=true: event-driven background refresh -- see Dashboard.load()'s
   // own comment for why the spinner reset is skipped in that case.
@@ -156,6 +204,7 @@ const Deployments = {
     window.LivePnl.untrack(this._livePnlHandler);   // never stack trackers across reloads
     this._livePnlHandler = null;
     this._loadColumnPrefs();
+    this.ensureSelectionTray();
 
     const el = document.getElementById('deploymentsTable');
     if (!quiet) el.innerHTML = spinnerHtml();
@@ -171,8 +220,13 @@ const Deployments = {
       Api.getAllPositions('open'),
     ]);
     this._all = all;
+    await Api.enrichDeployments(this._all, positions);
     this._populateStrategyFilter();
     this.render();
+    this.restoreListState();
+    this.ensureQuickFilters();
+    this.updateSelectionTray();
+    UIKit.enhanceTablesSoon();
     markUpdated('deploymentsUpdatedLabel');
 
     this._livePnlHandler = window.LivePnl.track(positions, ({ totalPnl }) => {
@@ -303,7 +357,11 @@ const Deployments = {
         if (c.always) this._visibleCols.add(c.key);
       });
     } else {
-      this._visibleCols = new Set(DEPLOY_COLUMNS.map(c => c.key));   // default: everything visible
+      // Default view: decision-oriented columns first, not the full
+      // accounting set -- Capital/Cash/Open Cost/Realized/Unrealized
+      // are still there, just opt-in via the column selector.
+      const defaults = ['ux_select', 'name', 'strategy', 'status', 'mode', 'ux_current_pnl', 'ux_open_positions', 'ux_last_action', 'actions'];
+      this._visibleCols = new Set(defaults.filter(k => DEPLOY_COLUMNS.some(c => c.key === k)));
     }
   },
   _saveColumnPrefs() {
@@ -417,8 +475,9 @@ const Deployments = {
     // The "Total (...)" label lives in the FIRST non-numeric,
     // non-actions column's own cell (in practice "Name" -- always:true,
     // so always present) rather than a colspan-merged spacer covering
-    // several columns: ux-v2's table-wide column drag/resize/hide
-    // reorders tfoot cells by `data-ux-col-key`, one real cell per
+    // several columns: the generic table framework's column drag/
+    // resize/hide (UIKit.enhanceTable) reorders tfoot cells by
+    // `data-ux-col-key`, one real cell per
     // column below, and a colspan cell can only ever move as one
     // indivisible block -- it can't stay correctly aligned once a
     // single column inside its span gets dragged out on its own.
@@ -457,6 +516,11 @@ const Deployments = {
       </table>
       </div>
     `;
+    requestAnimationFrame(() => {
+      this.ensureQuickFilters();
+      UIKit.renameAnalyticsSemantics(document.getElementById('view-deployments') || document);
+      UIKit.enhanceTablesSoon();
+    });
   },
 
   async pause(id) {
@@ -476,15 +540,8 @@ const Deployments = {
     this.load();
   },
   async stop(id) {
-    const forceClose = confirm(
-      'Stop this deployment.\n\nOK = force-close any open position at the last known price.\nCancel = only stop if already flat.'
-    );
-    const r = await Api.stopDeployment(id, forceClose);
-    if (!r.ok) {
-      const data = await r.json();
-      alert(data.detail || 'Could not stop — it may have open positions. Try again and confirm force-close.');
-    }
-    this.load();
+    const dep = this._all.find(d => d.id === id);
+    return UIKit.openStopDialog(id, dep?.deployment_name);
   },
   async deleteDeployment(id) {
     // Only ever offered while stopped (see the row's own status check)
@@ -532,6 +589,124 @@ const Deployments = {
     }
     alert(msg);
     this.load();
+  },
+
+  // ── Compare-selection tray (Step: ux_select column) — check up to 6
+  // rows here, then "Compare" hands them straight to the Compare view
+  // pre-selected instead of re-picking them one by one over there. ────
+  toggleSelection(id, checked) {
+    if (checked) {
+      if (this._selectedIds.size >= 6) {
+        alert('Compare supports up to 6 deployments at a time.');
+        this.render();
+        return;
+      }
+      this._selectedIds.add(id);
+    } else this._selectedIds.delete(id);
+    this.updateSelectionTray();
+  },
+
+  ensureSelectionTray() {
+    let tray = document.getElementById('uxSelectionTray');
+    if (!tray) {
+      tray = document.createElement('div');
+      tray.id = 'uxSelectionTray';
+      tray.className = 'ux-selection-tray';
+      tray.innerHTML = `<strong id="uxSelectionCount">0 selected</strong><div style="display:flex;gap:7px;"><button class="btn btn-secondary btn-sm" onclick="Deployments.clearSelection()">Clear</button><button class="btn btn-primary btn-sm" onclick="Deployments.compareSelection()">Compare</button></div>`;
+      document.body.appendChild(tray);
+    }
+    return tray;
+  },
+
+  updateSelectionTray() {
+    const tray = this.ensureSelectionTray();
+    tray.classList.toggle('open', this._selectedIds.size >= 1);
+    document.getElementById('uxSelectionCount').textContent = `${this._selectedIds.size} selected`;
+    tray.querySelector('.btn-primary').disabled = this._selectedIds.size < 2;
+  },
+
+  clearSelection() {
+    this._selectedIds.clear();
+    this.updateSelectionTray();
+    this.render();
+  },
+
+  compareSelection() {
+    if (this._selectedIds.size < 2) return;
+    sessionStorage.setItem('uxCompareSelection', JSON.stringify([...this._selectedIds]));
+    window.location.hash = '#/compare';
+  },
+
+  // ── Quick status-filter chips + the "Table ▾" settings button, both
+  // inserted above the existing filter row rather than replacing it. ──
+  ensureQuickFilters() {
+    const view = document.getElementById('view-deployments');
+    const filters = view?.querySelector('.filters');
+    if (!view || !filters) return;
+    let chips = document.getElementById('uxDeploymentStatusChips');
+    if (!chips) {
+      chips = document.createElement('div');
+      chips.id = 'uxDeploymentStatusChips';
+      chips.className = 'ux-status-chips';
+      filters.parentNode.insertBefore(chips, filters);
+    }
+    const counts = { '': this._all.length, active: 0, paused: 0, stopped: 0 };
+    this._all.forEach(d => { counts[d.status] = (counts[d.status] || 0) + 1; });
+    const current = document.getElementById('filterStatus')?.value || '';
+    chips.innerHTML = [
+      ['', 'All'], ['active', 'Active'], ['paused', 'Paused'], ['stopped', 'Stopped'],
+    ].map(([value, label]) => `<button class="ux-filter-chip ${current === value ? 'active' : ''}" onclick="Deployments.setStatusFilter('${value}')">${label} ${counts[value] || 0}</button>`).join('');
+
+    if (!document.getElementById('uxDeploymentTableSettings')) {
+      const colWrap = document.getElementById('colSelectorWrap');
+      if (colWrap) {
+        const btn = document.createElement('button');
+        btn.id = 'uxDeploymentTableSettings';
+        btn.className = 'btn btn-secondary btn-sm';
+        btn.textContent = 'Table ▾';
+        btn.onclick = e => UIKit.openTableSettings(e, 'deploymentsTable');
+        colWrap.parentNode.insertBefore(btn, colWrap.nextSibling);
+      }
+    }
+  },
+
+  setStatusFilter(value) {
+    const select = document.getElementById('filterStatus');
+    if (select) select.value = value;
+    this.render();
+    this.ensureQuickFilters();
+  },
+
+  // ── List state (filter/sort/scroll) — captured when navigating AWAY
+  // to a deployment's own Detail page, restored on the next load() so
+  // "back" lands where you left off instead of a reset list. Captured
+  // from index.html's own hashchange listener (deployments -> detail
+  // is a cross-page transition, not something either page's own code
+  // sees on its own). ──────────────────────────────────────────────────
+  saveListState() {
+    sessionStorage.setItem('uxDeploymentListState', JSON.stringify({
+      status: document.getElementById('filterStatus')?.value || '',
+      strategy: document.getElementById('filterStrategy')?.value || '',
+      search: document.getElementById('deploymentsSearch')?.value || '',
+      sortKey: this._sortKey,
+      sortDir: this._sortDir,
+      scrollY: window.scrollY,
+    }));
+  },
+
+  restoreListState() {
+    const state = safeJsonParse(sessionStorage.getItem('uxDeploymentListState') || 'null', null);
+    if (!state) return;
+    const status = document.getElementById('filterStatus');
+    const strategy = document.getElementById('filterStrategy');
+    const search = document.getElementById('deploymentsSearch');
+    if (status) status.value = state.status || '';
+    if (strategy && [...strategy.options].some(o => o.value === state.strategy)) strategy.value = state.strategy || '';
+    if (search) search.value = state.search || '';
+    if (state.sortKey) this._sortKey = state.sortKey;
+    if (state.sortDir) this._sortDir = state.sortDir;
+    this.render();
+    requestAnimationFrame(() => window.scrollTo(0, Number(state.scrollY || 0)));
   },
 };
 

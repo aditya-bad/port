@@ -37,6 +37,20 @@ const Portfolio = {
     this.renderExposure(positions);
     this.renderLeaderboard(leaderboard);
     markUpdated('portfolioUpdatedLabel');
+
+    // Capital and exposure are operational risk and MUST include live
+    // deployments excluded from performance analytics -- re-render just
+    // those two with EVERY live deployment treated as included, on top
+    // of the analytics-scoped render above (renderLeaderboard/
+    // renderEquity stay analytics-scoped; capital/exposure don't).
+    try {
+      const operationalDeps = deployments.map(d => ({ ...d, include_in_reports: true }));
+      this.renderCapital(operationalDeps);
+      this.renderExposure(allPositions);
+      const heading = document.querySelector('#view-portfolio #portfolioExposure')?.closest('section')?.querySelector('h2');
+      if (heading) heading.innerHTML = 'Exposure by Symbol <span class="tag tag-info" title="Includes every live deployment, even if excluded from performance analytics.">all live risk</span>';
+      UIKit.enhanceTablesSoon();
+    } catch (e) { console.warn('Operational portfolio refresh failed', e); }
   },
 
   renderEquity(curve) {

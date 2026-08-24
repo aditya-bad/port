@@ -144,6 +144,12 @@ const Dashboard = {
         rowEl.className = pnlClass(pnl);
       }
     });
+
+    // The fixed "Right now" operational zone above the reorderable
+    // widgets below -- see renderOperational()'s own header comment.
+    UIKit.applySavedLayout('dashboardSections', 'dashboard');
+    UIKit.setupSortableSections('dashboardSections', 'dashboard');
+    await this.renderOperational();
   },
 
   // ── Calendar heatmap range (Step 74) ──────────────────────────────
@@ -316,6 +322,333 @@ const Dashboard = {
         <td>${i.static ? 'tokens.json' : 'dynamic'}</td>
       </tr>`).join('')}
     </tbody></table></div>`;
+  },
+
+  // ── "Right now" operational zone — a fixed block above the
+  // reorderable widgets below, deliberately NOT customizable/movable
+  // like they are (see renderOperational() below): the KPI cards,
+  // the "needs attention" list, and the live open-positions table are
+  // operational truth, on every screen, always in the same place.
+  // Unlike renderStats()/renderPositions() above (which exclude
+  // anything toggled include_in_reports=false, matching the rest of
+  // this cross-deployment view), this zone includes EVERY live
+  // deployment regardless of that analytics opt-out — live risk should
+  // never disappear from view just because a deployment is excluded
+  // from performance reporting.
+  _operationalLiveHandler: null,
+
+  ensureOperationalZone() {
+    const view = document.getElementById('view-dashboard');
+    const sections = document.getElementById('dashboardSections');
+    if (!view || !sections) return null;
+    let zone = document.getElementById('uxOperationalZone');
+    if (!zone) {
+      zone = document.createElement('div');
+      zone.id = 'uxOperationalZone';
+      zone.className = 'ux-operational-zone';
+      sections.parentNode.insertBefore(zone, sections);
+    }
+    return zone;
+  },
+
+  async renderOperational() {
+    const zone = this.ensureOperationalZone();
+    if (!zone) return;
+    zone.innerHTML = '<div class="empty"><span class="spinner"></span> Building live operational view…</div>';
+
+    window.LivePnl?.untrack(this._operationalLiveHandler);
+    this._operationalLiveHandler = null;
+
+    try {
+      const [deployments, openPositions, recentTrades] = await Promise.all([
+        Api.listDeployments(),
+        Api.getAllPositions('open'),
+        Api.getRecentTrades(20),
+      ]);
+      await Api.enrichDeployments(deployments, openPositions);
+      this._operationalDeployments = deployments;
+      const byId = new Map(deployments.map(d => [d.id, d]));
+      const live = deployments.filter(d => d.status !== 'stopped');
+      const activeSummaries = live.map(d => d._uxActive).filter(Boolean);
+
+      const activePnl = activeSummaries.reduce((s, a) => s + Number(a.total_pnl || 0), 0);
+      const todayRealized = deployments.reduce((s, d) => s + Number(d._uxActive?.today_realized_pnl || 0), 0);
+      // How many deployments actually CONTRIBUTED to that total -- not
+      // simply every deployment that exists, which would read as "N
+      // deployments realized this today" when most of them may have
+      // closed nothing at all today.
+      const todayRealizedDepCount = deployments.filter(d => Number(d._uxActive?.today_realized_pnl || 0) !== 0).length;
+      const openUnrealized = openPositions.reduce((s, p) => s + Number(p.unrealized_pnl || 0), 0);
+      const totalCapital = live.reduce((s, d) => s + Number(d.initial_capital || 0), 0);
+      // "Capital at work" = the value actually tied up in currently
+      // OPEN positions -- exactly what deployments.js's own "Open Cost"
+      // column already shows per deployment (Math.abs since a bought/
+      // long leg's own open_cost_basis is a DEBIT, i.e. negative, while
+      // a sold/short leg's is a credit/positive -- "at work" cares
+      // about the MAGNITUDE of exposure, not which side of the trade
+      // it's on).
+      //
+      // NOT `initial_capital - current_cash`: current_cash is its own
+      // running ledger, current_cash = initial_capital + realized_pnl +
+      // open_cost_basis (see deployments.js's own "Open Cost" header
+      // tooltip) -- so initial_capital - current_cash algebraically
+      // reduces to `-(realized_pnl + open_cost_basis)`, a mixed
+      // quantity that has nothing to do with "how much capital is
+      // currently deployed."
+      const capitalAtWork = live.reduce((s, d) => s + Math.abs(Number(d.open_cost_basis || 0)), 0);
+      const capitalPct = totalCapital ? (capitalAtWork / totalCapital) * 100 : 0;
+      const activeIntraday = activeSummaries.filter(a => a.mode !== 'positional').reduce((s, a) => s + Number(a.total_pnl || 0), 0);
+      const activeCycles = activeSummaries.filter(a => a.mode === 'positional' && a.active).reduce((s, a) => s + Number(a.total_pnl || 0), 0);
+
+      const positionsByDep = {};
+      openPositions.forEach(p => { (positionsByDep[p.deployment_id] ||= []).push(p); });
+      const attention = [];
+      deployments.forEach(d => {
+        const count = (positionsByDep[d.id] || []).length;
+        if (count && d.status === 'paused') attention.push({ cls: '', d, text: `Paused with ${count} open position${count === 1 ? '' : 's'}`, detail: 'The strategy is not making new decisions while market risk remains open.' });
+        if (count && d.status === 'stopped') attention.push({ cls: 'bad', d, text: `Stopped with ${count} open position${count === 1 ? '' : 's'}`, detail: 'Review immediately: the deployment is stopped but exposure remains.' });
+      });
+      // Strategy errors already arrive through the existing /sse/events
+      // stream. Surface the latest per deployment as persistent
+      // dashboard attention instead of relying on an 8-second toast alone.
+      const seenErrorDeps = new Set();
+      (UIKit.notifications || []).filter(n => n.event_type === 'strategy_error').forEach(n => {
+        if (!n.deployment_id || seenErrorDeps.has(n.deployment_id)) return;
+        seenErrorDeps.add(n.deployment_id);
+        const dep = deployments.find(d => String(d.id) === String(n.deployment_id));
+        attention.unshift({ cls: 'bad', d: dep || null, text: 'Strategy error', detail: n.message || `Recorded ${humanAgo(n.at)}` });
+      });
+      const statusRaw = document.getElementById('statusBar')?.textContent || '';
+      if (/not connected|disconnected|unreachable|login required/i.test(statusRaw)) {
+        attention.unshift({ cls: 'bad', d: null, text: 'Kite is disconnected', detail: 'Live prices and strategy execution may be affected.' });
+      }
+
+      zone.innerHTML = `
+        <div class="ux-zone-heading">
+          <div><h2>Right now</h2><div class="ux-live-caption">Operational truth — includes every live deployment, even if excluded from analytics.</div></div>
+          <span class="updated-label">Live prices update from the existing SSE stream</span>
+        </div>
+        <div class="ux-kpi-grid">
+          <div class="ux-kpi ux-kpi-clickable" onclick="Dashboard.openActivePnlBreakdown()">
+            <div class="ux-kpi-label">Active P&amp;L ⓘ</div>
+            <div class="ux-kpi-value ${pnlClass(activePnl)}" id="uxActivePnlValue">${fmtSignedMoney(activePnl)}</div>
+            <div class="ux-kpi-sub">
+              <div class="ux-kpi-sub-row"><span>Intraday · Today</span><b class="${pnlClass(activeIntraday)}" id="uxIntradayPnl">${fmtSignedMoney(activeIntraday)}</b></div>
+              <div class="ux-kpi-sub-row"><span>Positional · active cycles</span><b class="${pnlClass(activeCycles)}" id="uxCyclesPnl">${fmtSignedMoney(activeCycles)}</b></div>
+            </div>
+          </div>
+          <div class="ux-kpi">
+            <div class="ux-kpi-label">Today realized</div>
+            <div class="ux-kpi-value ${pnlClass(todayRealized)}">${fmtSignedMoney(todayRealized)}</div>
+            <div class="ux-kpi-sub"><div class="ux-kpi-sub-row"><span>Deployments with activity today</span><b>${todayRealizedDepCount}</b></div></div>
+          </div>
+          <div class="ux-kpi">
+            <div class="ux-kpi-label">Open risk</div>
+            <div class="ux-kpi-value ${pnlClass(openUnrealized)}" id="uxOpenRiskPnl">${fmtSignedMoney(openUnrealized)}</div>
+            <div class="ux-kpi-sub">
+              <div class="ux-kpi-sub-row"><span>Open positions</span><b>${openPositions.length}</b></div>
+              <div class="ux-kpi-sub-row"><span>Deployments exposed</span><b>${Object.keys(positionsByDep).length}</b></div>
+            </div>
+          </div>
+          <div class="ux-kpi">
+            <div class="ux-kpi-label">Capital at work</div>
+            <div class="ux-kpi-value">${fmtMoney(capitalAtWork)}</div>
+            <div class="ux-kpi-sub">
+              <div class="ux-kpi-sub-row"><span>Total live capital</span><b>${fmtMoney(totalCapital)}</b></div>
+              <div class="ux-kpi-sub-row"><span>Utilization</span><b>${capitalPct.toFixed(1)}%</b></div>
+            </div>
+          </div>
+        </div>
+        <div class="ux-attention">
+          <div class="ux-attention-head"><span>Needs attention${attention.length ? ` · ${attention.length}` : ''}</span>${attention.length ? '' : '<span class="ux-attention-empty">✓ All running deployments look operationally healthy</span>'}</div>
+          ${attention.map(a => `
+            <div class="ux-attention-item ${a.cls}">
+              <span class="ux-attention-dot"></span>
+              <div><b>${a.d ? escapeHtml(a.d.deployment_name) : 'Connection'}</b> — ${escapeHtml(a.text)}<div class="ux-attention-detail">${escapeHtml(a.detail)}</div></div>
+              ${a.d ? `<a href="#/deployments/${a.d.id}/overview">View</a>` : `<button class="btn btn-secondary btn-sm" onclick="loginWithKite()">Reconnect</button>`}
+            </div>`).join('')}
+        </div>
+        <div class="ux-operational-positions">
+          <div class="ux-card-head"><strong>Open positions · all live exposure</strong><span class="card-sub">Analytics exclusions never hide risk here.</span></div>
+          ${this._operationalPositionsTable(openPositions, byId)}
+        </div>`;
+
+      // Recent Activity is operational, like open risk. Do not let a
+      // performance-analytics opt-out hide live executions from it.
+      this.renderActivity(recentTrades || []);
+      document.getElementById('dashSectionPositions')?.classList.add('dash-section-superseded');
+      this.applyWidgetDefaults();
+      this.setupCustomize();
+
+      if (window.LivePnl && openPositions.length) {
+        const realizedByDep = new Map(activeSummaries.map(s => [s.deployment_id, Number(s.realized_pnl || 0)]));
+        const activePositional = new Set(activeSummaries.filter(s => s.mode === 'positional' && s.active).map(s => s.deployment_id));
+        const intradayIds = new Set(activeSummaries.filter(s => s.mode !== 'positional').map(s => s.deployment_id));
+        this._operationalLiveHandler = window.LivePnl.track(openPositions, ({ pnlFor, priceFor, totalPnl }) => {
+          let activeLive = 0;
+          let intradayLive = 0;
+          let cycleLive = 0;
+          deployments.forEach(d => {
+            const open = totalPnl(d.id);
+            const realized = realizedByDep.get(d.id) || 0;
+            if (intradayIds.has(d.id)) {
+              const v = realized + (open == null ? Number(d._uxActive?.unrealized_pnl || 0) : open);
+              activeLive += v; intradayLive += v;
+            } else if (activePositional.has(d.id)) {
+              const v = realized + (open == null ? Number(d._uxActive?.unrealized_pnl || 0) : open);
+              activeLive += v; cycleLive += v;
+            }
+          });
+          const totalOpen = totalPnl();
+          UIKit.setLiveMoney('uxActivePnlValue', activeLive);
+          UIKit.setLiveMoney('uxIntradayPnl', intradayLive);
+          UIKit.setLiveMoney('uxCyclesPnl', cycleLive);
+          if (totalOpen != null) UIKit.setLiveMoney('uxOpenRiskPnl', totalOpen);
+          openPositions.forEach(p => {
+            const row = zone.querySelector(`tr[data-ux-position-id="${p.id}"]`);
+            if (!row) return;
+            const px = priceFor(p.instrument_token);
+            const pp = pnlFor(p.id);
+            if (px != null) row.querySelector('.ux-live-price').textContent = fmtNum(px);
+            if (pp != null) {
+              const cell = row.querySelector('.ux-live-pnl');
+              cell.textContent = fmtSignedMoney(pp);
+              cell.className = `ux-live-pnl ${pnlClass(pp)}`;
+            }
+          });
+        });
+      }
+      UIKit.enhanceTablesSoon();
+    } catch (e) {
+      console.error('Dashboard operational render failed', e);
+      zone.innerHTML = `<div class="empty">Could not build the live operational summary — ${escapeHtml(e.message || String(e))}</div>`;
+    }
+  },
+
+  _operationalPositionsTable(positions, byId) {
+    if (!positions.length) return '<div class="empty" style="padding:18px;">No open positions across any deployment.</div>';
+    return `<div class="table-wrap"><table><thead><tr>
+      <th>Symbol</th><th>Deployment</th><th>Strategy</th><th>Side</th><th>Qty</th><th>Avg</th><th>Price</th><th>Unrealized</th>
+    </tr></thead><tbody>${positions.map(p => {
+      const d = byId.get(p.deployment_id);
+      return `<tr data-ux-position-id="${p.id}">
+        <td>${escapeHtml(p.symbol)}</td>
+        <td><a href="#/deployments/${p.deployment_id}/overview">${escapeHtml(p.deployment_name || d?.deployment_name || '')}</a>${d && !d.include_in_reports ? ' <span class="tag tag-warn" title="Still shown here because live risk is operational truth.">analytics excluded</span>' : ''}</td>
+        <td>${escapeHtml(p.strategy_name || d?.strategy_name || '')}</td>
+        <td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td>
+        <td class="ux-live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
+        <td class="ux-live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
+      </tr>`;
+    }).join('')}</tbody></table></div>`;
+  },
+
+  openActivePnlBreakdown() {
+    const source = (typeof Deployments !== 'undefined' && Deployments._all?.length) ? Deployments._all : (this._operationalDeployments || []);
+    if (!source.length) { window.location.hash = '#/deployments'; return; }
+    const rows = source.filter(d => d.status !== 'stopped').map(d => ({ d, s: d._uxActive })).filter(x => x.s);
+    UIKit.openDrawer('Active P&L', `
+      <div class="table-note" style="margin-bottom:10px;">Intraday deployments reset at the IST trading date. Positional deployments use the currently-open strategic cycle and reset only after the whole cycle is flat.</div>
+      <div class="table-wrap"><table><thead><tr><th>Deployment</th><th>Period</th><th>Realized</th><th>Open</th><th>Total</th></tr></thead><tbody>
+      ${rows.map(({ d, s }) => `<tr class="ux-row-navigate" onclick="location.hash='#/deployments/${d.id}/overview'; UIKit.closeDrawer();">
+        <td>${escapeHtml(d.deployment_name)}</td><td>${escapeHtml(s.period_label)}</td>
+        <td class="${pnlClass(s.realized_pnl)}">${fmtSignedMoney(s.realized_pnl)}</td>
+        <td class="${pnlClass(s.unrealized_pnl)}">${fmtSignedMoney(s.unrealized_pnl)}</td>
+        <td class="${pnlClass(s.total_pnl)}"><b>${fmtSignedMoney(s.total_pnl)}</b></td>
+      </tr>`).join('')}</tbody></table></div>`);
+    UIKit.enhanceTablesSoon();
+  },
+
+  // ── Widget drag/drop and customize mode — the reorderable section
+  // container below the fixed "Right now" zone above.
+  applyWidgetDefaults() {
+    const key = UIKit.visibilityKey('dashboard');
+    let visible = safeJsonParse(localStorage.getItem(key) || 'null', null);
+    if (!visible) {
+      visible = {
+        dashSectionStats: false,
+        dashSectionPositions: false,
+        dashSectionCalendar: true,
+        dashSectionActivity: true,
+        dashSectionInstruments: true,
+      };
+      localStorage.setItem(key, JSON.stringify(visible));
+    }
+    Object.entries(visible).forEach(([id, isVisible]) => {
+      const el = document.getElementById(id);
+      if (el && !el.classList.contains('dash-section-superseded')) el.style.display = isVisible === false ? 'none' : '';
+    });
+    const sizes = safeJsonParse(localStorage.getItem(UIKit.sizeKey('dashboard')) || '{}', {});
+    if (Object.values(sizes).some(v => v === 'half')) document.getElementById('dashboardSections')?.classList.add('ux-widget-grid');
+  },
+
+  setupCustomize() {
+    const view = document.getElementById('view-dashboard');
+    const actions = view?.querySelector('.view-header-actions');
+    if (!view || !actions) return;
+    if (!document.getElementById('uxCustomizeDashboardBtn')) {
+      const btn = document.createElement('button');
+      btn.id = 'uxCustomizeDashboardBtn';
+      btn.className = 'btn btn-secondary btn-sm ux-customize-toggle';
+      btn.textContent = 'Customize';
+      btn.onclick = () => this.toggleCustomize();
+      actions.appendChild(btn);
+    }
+    if (!document.getElementById('uxDashboardCustomizePanel')) {
+      const panel = document.createElement('div');
+      panel.id = 'uxDashboardCustomizePanel';
+      panel.className = 'ux-customize-panel';
+      document.getElementById('dashboardSections')?.parentNode.insertBefore(panel, document.getElementById('dashboardSections'));
+    }
+  },
+
+  toggleCustomize() {
+    const panel = document.getElementById('uxDashboardCustomizePanel');
+    if (!panel) return;
+    const opening = !panel.classList.contains('open');
+    panel.classList.toggle('open', opening);
+    document.getElementById('uxCustomizeDashboardBtn').textContent = opening ? 'Done' : 'Customize';
+    if (!opening) return;
+    const ids = ['dashSectionStats', 'dashSectionCalendar', 'dashSectionActivity', 'dashSectionInstruments'];
+    const labels = {
+      dashSectionStats: 'Legacy aggregate overview', dashSectionCalendar: 'Daily P&L Calendar',
+      dashSectionActivity: 'Recent Activity', dashSectionInstruments: 'Subscribed Instruments',
+    };
+    const visible = safeJsonParse(localStorage.getItem(UIKit.visibilityKey('dashboard')) || '{}', {});
+    const sizes = safeJsonParse(localStorage.getItem(UIKit.sizeKey('dashboard')) || '{}', {});
+    panel.innerHTML = `<div class="table-note" style="margin-bottom:7px;">Drag widgets by the ⠿ handle on the page itself. The fixed "Right now" summary above is deliberately not customizable.</div>` + ids.map(id => `
+      <div class="ux-customize-row">
+        <label><input type="checkbox" style="width:auto;" ${visible[id] !== false ? 'checked' : ''} onchange="Dashboard.setWidgetVisible('${id}', this.checked)"> ${labels[id]}</label>
+        <select onchange="Dashboard.setWidgetSize('${id}', this.value)"><option value="full" ${(sizes[id] || 'full') === 'full' ? 'selected' : ''}>Full width</option><option value="half" ${sizes[id] === 'half' ? 'selected' : ''}>Half width</option></select>
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('${id}').scrollIntoView({behavior:'smooth',block:'center'})">Locate</button>
+      </div>`).join('') + `<div style="display:flex;justify-content:flex-end;margin-top:8px;"><button class="btn btn-secondary btn-sm" onclick="Dashboard.resetLayout()">Reset layout</button></div>`;
+  },
+
+  setWidgetVisible(id, visible) {
+    const key = UIKit.visibilityKey('dashboard');
+    const prefs = safeJsonParse(localStorage.getItem(key) || '{}', {});
+    prefs[id] = visible;
+    localStorage.setItem(key, JSON.stringify(prefs));
+    const el = document.getElementById(id);
+    if (el) el.style.display = visible ? '' : 'none';
+  },
+
+  setWidgetSize(id, size) {
+    const key = UIKit.sizeKey('dashboard');
+    const prefs = safeJsonParse(localStorage.getItem(key) || '{}', {});
+    prefs[id] = size;
+    localStorage.setItem(key, JSON.stringify(prefs));
+    const el = document.getElementById(id);
+    if (el) el.dataset.uxSize = size;
+    document.getElementById('dashboardSections')?.classList.add('ux-widget-grid');
+  },
+
+  resetLayout() {
+    localStorage.removeItem(UIKit.layoutKey('dashboard'));
+    localStorage.removeItem(UIKit.visibilityKey('dashboard'));
+    localStorage.removeItem(UIKit.sizeKey('dashboard'));
+    this.applyWidgetDefaults();
+    this.toggleCustomize();
+    this.toggleCustomize();
   },
 };
 

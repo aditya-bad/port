@@ -306,6 +306,161 @@ const Api = {
   },
 };
 
+// ── Portfolio-wide "active period" aggregation, plus the derived
+// per-deployment view several pages need (Dashboard, Deployments,
+// Detail) — what's currently active RIGHT NOW (today's intraday P&L,
+// or the currently-open positional cycle), not the deployment's
+// lifetime totals DeploymentOut already carries. GET
+// /portfolio/active-periods (app/routers/ux_summary.py) does this in
+// one batched read; getActiveSummary below is the single-deployment
+// fallback enrichDeployments uses only for a row the batched read
+// somehow missed (e.g. a just-created deployment racing the query).
+Api.getActivePeriods = async function getActivePeriods() {
+  const r = await fetch('/portfolio/active-periods');
+  if (!r.ok) throw new Error(`Could not load active-period summaries (${r.status})`);
+  return r.json();
+};
+
+Api._activeSummaryCache = new Map();
+
+Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
+  const cached = this._activeSummaryCache.get(dep.id);
+  if (!force && cached && Date.now() - cached.ts < 10_000) return cached.value;
+
+  const blank = {
+    deployment_id: dep.id,
+    mode: dep.mode,
+    period_kind: dep.mode === 'positional' ? 'positional_cycle' : 'intraday_day',
+    period_label: dep.mode === 'positional' ? 'Current cycle' : 'Today',
+    active: dep.mode !== 'positional',
+    started_at: null,
+    realized_pnl: 0,
+    today_realized_pnl: 0,
+    unrealized_pnl: 0,
+    total_pnl: 0,
+    return_pct: dep.initial_capital ? 0 : null,
+    open_positions: 0,
+    last_action_at: null,
+    last_action: null,
+    last_cycle_pnl: null,
+    last_cycle_opened_at: null,
+    last_cycle_closed_at: null,
+  };
+
+  try {
+    const [positionsRaw, dayDigest, tradesPage] = await Promise.all([
+      Api.getPositions(dep.id, dep.mode === 'positional' ? 'all' : 'open'),
+      Api.getPnlDigestForDeployment(dep.id, 'day', 4),
+      Api.getTrades(dep.id, 1),
+    ]);
+    const positions = Array.isArray(positionsRaw) ? positionsRaw : [];
+    const openPositions = positions.filter(p => p.status === 'open');
+    const today = dayDigest.find(r => istDateKey(r.period_start) === nowIstDateKey());
+    blank.today_realized_pnl = today ? Number(today.realized_pnl || 0) : 0;
+    blank.unrealized_pnl = openPositions.reduce((s, p) => s + Number(p.unrealized_pnl || 0), 0);
+    blank.open_positions = openPositions.length;
+    const latestLot = tradesPage && tradesPage.lots && tradesPage.lots[0];
+    if (latestLot) {
+      blank.last_action_at = latestLot.executed_at;
+      blank.last_action = `${latestLot.action || ''} ${latestLot.symbol || ''}`.trim();
+    }
+
+    if (dep.mode !== 'positional') {
+      blank.active = true;
+      blank.realized_pnl = blank.today_realized_pnl;
+      blank.total_pnl = blank.realized_pnl + blank.unrealized_pnl;
+      blank.started_at = `${nowIstDateKey()}T00:00:00+05:30`;
+    } else {
+      const units = groupPositionsIntoUnits(positions, 'position');
+      const openUnits = units.filter(u => u.status === 'open');
+      const closedUnits = units.filter(u => u.status === 'closed')
+        .slice().sort((a, b) => new Date(a.closed_at || a.opened_at) - new Date(b.closed_at || b.opened_at));
+
+      if (openUnits.length) {
+        blank.active = true;
+        blank.period_label = openUnits.length > 1 ? `${openUnits.length} active cycles` : 'Current cycle';
+        blank.realized_pnl = openUnits.reduce((s, u) => s + Number(u.realized_pnl || 0), 0);
+        blank.started_at = openUnits.map(u => u.opened_at).filter(Boolean)
+          .sort((a, b) => new Date(a) - new Date(b))[0] || null;
+        blank.total_pnl = blank.realized_pnl + blank.unrealized_pnl;
+      } else {
+        blank.active = false;
+        blank.realized_pnl = 0;
+        blank.unrealized_pnl = 0;
+        blank.total_pnl = 0;
+        const last = closedUnits[closedUnits.length - 1];
+        if (last) {
+          blank.last_cycle_pnl = Number(last.realized_pnl || 0);
+          blank.last_cycle_opened_at = last.opened_at || null;
+          blank.last_cycle_closed_at = last.closed_at || null;
+        }
+      }
+    }
+    blank.return_pct = dep.initial_capital ? (blank.total_pnl / dep.initial_capital) * 100 : null;
+  } catch (e) {
+    console.warn('Active summary failed for', dep.deployment_name, e);
+    // Fallback to data already present in DeploymentOut so the UI never
+    // disappears just because one supplemental endpoint failed.
+    blank.unrealized_pnl = Number(dep.unrealized_pnl || 0);
+    blank.total_pnl = dep.mode === 'positional'
+      ? blank.unrealized_pnl
+      : Number(dep.unrealized_pnl || 0);
+  }
+
+  this._activeSummaryCache.set(dep.id, { ts: Date.now(), value: blank });
+  return blank;
+};
+
+Api.enrichDeployments = async function enrichDeployments(deployments, openPositions = null) {
+  // Preferred path: one active-period request + one existing aggregate
+  // open-positions request, independent of deployment count -- keeps
+  // this from turning into an N+1 client as the roster grows.
+  try {
+    const [serverRows, positions] = await Promise.all([
+      Api.getActivePeriods(),
+      openPositions ? Promise.resolve(openPositions) : Api.getAllPositions('open'),
+    ]);
+    const byServer = new Map((serverRows || []).map(r => [String(r.deployment_id), r]));
+    const openByDep = new Map();
+    (positions || []).forEach(p => {
+      const key = String(p.deployment_id);
+      const current = openByDep.get(key) || { pnl: 0, count: 0 };
+      current.pnl += Number(p.unrealized_pnl || 0);
+      current.count += 1;
+      openByDep.set(key, current);
+    });
+    deployments.forEach(dep => {
+      const key = String(dep.id);
+      const row = byServer.get(key);
+      if (!row) return;
+      const open = openByDep.get(key) || { pnl: 0, count: 0 };
+      const summary = {
+        ...row,
+        deployment_id: dep.id,
+        unrealized_pnl: open.pnl,
+        open_positions: open.count,
+        total_pnl: Number(row.realized_pnl || 0) + open.pnl,
+      };
+      summary.return_pct = dep.initial_capital ? (summary.total_pnl / dep.initial_capital) * 100 : null;
+      dep._uxActive = summary;
+      this._activeSummaryCache.set(dep.id, { ts: Date.now(), value: summary });
+    });
+    // A just-created row can theoretically race the aggregate query;
+    // fill only those rare misses through the safe individual fallback.
+    const missing = deployments.filter(d => !d._uxActive);
+    if (missing.length) {
+      const fallbacks = await Promise.all(missing.map(d => this.getActiveSummary(d)));
+      fallbacks.forEach((summary, i) => { missing[i]._uxActive = summary; });
+    }
+    return deployments;
+  } catch (e) {
+    console.warn('Batched active-period endpoint unavailable; using per-deployment fallback.', e);
+    const results = await Promise.all(deployments.map(d => this.getActiveSummary(d)));
+    results.forEach((summary, i) => { deployments[i]._uxActive = summary; });
+    return deployments;
+  }
+};
+
 // ── Formatting helpers, shared by every view ───────────────────────
 // Money/pnl/date formatting lives here ONCE so Dashboard, Catalog,
 // Deployments, and Detail can never drift into slightly different
@@ -927,6 +1082,52 @@ const SectionOrder = {
 // spread relative to the other's.
 function _isoDateIST(date) {
   return date.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });   // en-CA => YYYY-MM-DD
+}
+
+// istDateKey/nowIstDateKey/istMonthKey -- same IST-day-key idea as
+// _isoDateIST above, just accepting any date-ish value (a Date, or an
+// ISO string) rather than requiring a Date already in hand; used by
+// Api.getActiveSummary and Detail's own monthly performance matrix.
+function istDateKey(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  return _isoDateIST(d);
+}
+function nowIstDateKey() { return istDateKey(new Date()); }
+function istMonthKey(value) { return istDateKey(value).slice(0, 7); }
+
+// A lightweight debounce -- used wherever a burst of DOM events (a
+// resize, a MutationObserver firing on every child added) should
+// collapse into one trailing call instead of running once per event.
+function debounce(fn, ms) {
+  let timer = null;
+  return function (...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), ms);
+  };
+}
+
+// "3m ago" / "2h ago" / ... -- used by the notification centre and the
+// Deployments list's own "Last action" column.
+function humanAgo(iso) {
+  if (!iso) return '—';
+  const delta = Math.max(0, Date.now() - new Date(iso).getTime());
+  if (!Number.isFinite(delta)) return '—';
+  if (delta < 60_000) return `${Math.max(1, Math.floor(delta / 1000))}s ago`;
+  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
+  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
+  return `${Math.floor(delta / 86_400_000)}d ago`;
+}
+
+// Whether an ISO timestamp falls inside a {start, end} range (both
+// ISO), or true when no range is given at all -- used by Detail's
+// History tab to filter executions/events to a month/year picked from
+// the Analytics tab's own performance matrix.
+function dateRangeContains(iso, range) {
+  if (!range) return true;
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return false;
+  return t >= new Date(range.start).getTime() && t <= new Date(range.end).getTime();
 }
 function _addDaysToIsoDate(isoDate, n) {
   const d = new Date(isoDate + 'T00:00:00Z');

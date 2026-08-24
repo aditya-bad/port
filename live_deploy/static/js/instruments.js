@@ -93,6 +93,40 @@ const Instruments = {
       </div>
       <div class="table-note">${data.results.length} result(s)${data.results.length >= 30 ? ' (capped — refine your search)' : ''}</div>
     `;
+    this._enhanceResults();
+    UIKit.enhanceTablesSoon();
+  },
+
+  // Instant client-side facets over the already-returned rows -- the
+  // backend search itself stays exactly as-is.
+  _enhanceResults() {
+    const root = document.getElementById('instSearchResults');
+    const table = root?.querySelector('table');
+    if (!root || !table || root.querySelector('.ux-instrument-filters')) return;
+    const rows = [...(table.tBodies?.[0]?.rows || [])];
+    if (!rows.length) return;
+    const exchanges = [...new Set(rows.map(r => (r.cells[2]?.textContent || '').split('·')[0].trim()).filter(Boolean))].sort();
+    const types = [...new Set(rows.map(r => (r.cells[3]?.textContent || '').trim()).filter(Boolean))].sort();
+    const bar = document.createElement('div');
+    bar.className = 'ux-instrument-filters';
+    bar.innerHTML = `<select id="uxInstExchange"><option value="">All exchanges</option>${exchanges.map(x => `<option>${escapeHtml(x)}</option>`).join('')}</select><select id="uxInstType"><option value="">All types</option>${types.map(x => `<option>${escapeHtml(x)}</option>`).join('')}</select><label class="checkbox-row" style="margin:0;"><input type="checkbox" id="uxInstAvailable" style="width:auto;"> Available only</label><span class="card-sub" id="uxInstCount"></span>`;
+    table.closest('.table-wrap')?.insertAdjacentElement('beforebegin', bar);
+    const apply = () => {
+      const ex = document.getElementById('uxInstExchange')?.value || '';
+      const type = document.getElementById('uxInstType')?.value || '';
+      const available = document.getElementById('uxInstAvailable')?.checked;
+      let shown = 0;
+      rows.forEach(r => {
+        const rowEx = (r.cells[2]?.textContent || '').split('·')[0].trim();
+        const rowType = (r.cells[3]?.textContent || '').trim();
+        const subscribed = /subscribed/i.test(r.cells[r.cells.length - 1]?.textContent || '');
+        const show = (!ex || rowEx === ex) && (!type || rowType === type) && (!available || !subscribed);
+        r.style.display = show ? '' : 'none'; if (show) shown++;
+      });
+      const count = document.getElementById('uxInstCount'); if (count) count.textContent = `${shown} shown`;
+    };
+    bar.querySelectorAll('select,input').forEach(el => el.addEventListener('change', apply));
+    apply();
   },
 
   _resultRowHtml(r) {

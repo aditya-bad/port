@@ -1161,6 +1161,1431 @@ tr.trade-detail-row td {
    desktop width (nothing there ever sets it), so it doesn't need its
    own width guard. */
 body.mobile-nav-open { overflow: hidden; }
+
+/* ------------------------------------------------------------------
+   Sidebar grouping, the topbar, the Dashboard "Right now" operational
+   zone, reorderable widgets/sections, the generic table framework
+   (resize/reorder/hide columns + a persisted totals row), drawers/
+   dialogs/the notification centre, and the Deployment Detail page's
+   Overview/Analytics/History/Configuration tabs -- all driven by
+   ui-kit.js plus each page's own static/js/*.js file. Reuses the
+   existing design tokens (--paper/--panel/--line/--accent/... defined
+   in :root above) rather than introducing a second visual language.
+   ------------------------------------------------------------------ */
+
+:root {
+  --ux-radius: 2px;
+  --ux-hairline: 1px solid color-mix(in srgb, var(--line) 32%, transparent);
+  --ux-soft-line: color-mix(in srgb, var(--line) 22%, transparent);
+  --ux-focus-ring: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* ------------------------------------------------------------------
+   Fix: .sidebar's position:sticky (base index.html) was inert under
+   v2 -- confirmed live (Playwright: scrolling 1200px moved the
+   sidebar's own top by -1200px in lockstep with the page, instead of
+   pinning it at 0).
+
+   Root cause: base index.html's `html, body { overflow-x: hidden; }`
+   (there to stop mobile pages panning sideways during a touch drag on
+   an inner scrollable widget) hits a real CSS spec rule -- when
+   overflow-x is set to something other than `visible` and overflow-y
+   is left at its default `visible`, the `visible` axis COMPUTES to
+   `auto` instead. That happens on BOTH html and body here, which
+   makes BOTH of them register as scroll containers for sticky's own
+   "nearest scrolling ancestor" search -- even though only <html> is
+   actually the one the browser ever scrolls (confirmed: body's own
+   scrollTop stayed 0 the whole time; its box just naturally grows to
+   fit all its content, nothing overflows it). .sidebar sits inside
+   body, so its sticky positioning anchors to BODY's dead scroll
+   container (max scroll offset always 0, since body never actually
+   needs to scroll) instead of html's real one -- which behaves
+   exactly like position:static, no matter how far the real page
+   scrolls.
+
+   v2's own taller pages (grouped nav, the new "Right now" KPI zone,
+   etc.) are what first push page height past one viewport often
+   enough for this to actually matter -- on a base-app page short
+   enough to never scroll, a dead sticky context and a working one
+   look identical.
+
+   Fix: give body an UNMIXED overflow (visible/visible, matching, no
+   coercion) so it stops registering as a scroll container at all;
+   <html> keeps carrying overflow-x: hidden alone, letting IT coerce to
+   overflow-y: auto on itself -- which is exactly the real, correct
+   scroller already confirmed above, made explicit and intentional
+   instead of an accidental side effect. The horizontal-pan-blocking
+   intent of the original rule is preserved because <html> is the
+   actual scrolling viewport either way -- body's own overflow-x was
+   never what stopped that panning. Same specificity as the base rule,
+   this rule sits later in the same stylesheet, so it wins in the cascade without
+   needing !important. */
+body { overflow: visible; }
+html { overflow-x: hidden; overflow-y: auto; }
+
+/* ------------------------------------------------------------------
+   App shell hierarchy
+   ------------------------------------------------------------------ */
+.sidebar-nav-group .ux-nav-section-label {
+  margin: 18px 10px 6px;
+  color: var(--parchment);
+  font-size: 8.5px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  opacity: .78;
+}
+.sidebar-nav-group .ux-nav-section-label:first-child { margin-top: 6px; }
+.sidebar-nav-group .nav-item.ux-nav-child {
+  padding-left: 20px;
+  position: relative;
+}
+.sidebar-nav-group .nav-item.ux-nav-child::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  width: 5px;
+  height: 1px;
+  background: var(--parchment);
+  opacity: .65;
+}
+
+/* Keep the sidebar footer quieter; connection state is moved into the
+   compact top status strip by ui-kit.js's own ensureTopbar(). Logout remains discoverable. */
+.sidebar-footer #statusBar,
+.sidebar-footer #themeToggleBtn { display: none !important; }
+.sidebar-footer { gap: 7px !important; }
+
+.ux-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  background: color-mix(in srgb, var(--paper) 86%, var(--panel));
+  border: 2px solid var(--line);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--line) 14%, transparent);
+  position: sticky;
+  top: 0;
+  z-index: 35;
+}
+.ux-topbar-left,
+.ux-topbar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ux-topbar-title {
+  font-weight: 800;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .045em;
+  color: var(--parchment);
+  white-space: nowrap;
+}
+.ux-status-btn,
+.ux-icon-btn {
+  appearance: none;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  min-height: 28px;
+  padding: 5px 9px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ux-status-btn:hover,
+.ux-icon-btn:hover { background: var(--sand); }
+.ux-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brass); }
+.ux-status-dot.ok { background: var(--gain); }
+.ux-status-dot.bad { background: var(--loss); }
+.ux-icon-btn { width: 30px; justify-content: center; padding: 0; position: relative; }
+.ux-unread-badge {
+  position: absolute;
+  right: -6px;
+  top: -7px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 10px;
+  background: var(--loss);
+  color: #fff;
+  border: 1px solid var(--line);
+  font-size: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ------------------------------------------------------------------
+   Operational dashboard: fixed, never draggable
+   ------------------------------------------------------------------ */
+.ux-operational-zone { margin: 0 0 28px; }
+.ux-operational-zone .ux-zone-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.ux-operational-zone .ux-zone-heading h2 { margin: 0; }
+.ux-live-caption { color: var(--parchment); font-size: 10px; }
+
+.ux-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.ux-kpi {
+  background: var(--paper);
+  border: 2px solid var(--line);
+  padding: 13px 14px;
+  min-width: 0;
+  position: relative;
+}
+.ux-kpi-label {
+  color: var(--parchment);
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  font-size: 8.5px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+.ux-kpi-value {
+  font-family: var(--font-mono);
+  font-size: clamp(17px, 1.6vw, 24px);
+  line-height: 1.1;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ux-kpi-sub {
+  display: grid;
+  gap: 4px;
+  margin-top: 9px;
+  color: var(--parchment);
+  font-size: 10.5px;
+}
+.ux-kpi-sub-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ux-kpi-sub-row b { color: var(--ink); font-family: var(--font-mono); font-weight: 600; }
+.ux-kpi-clickable { cursor: pointer; }
+.ux-kpi-clickable:hover { background: var(--sand); }
+
+.ux-attention {
+  margin: 10px 0 12px;
+  border: 1px solid var(--ux-soft-line);
+  background: color-mix(in srgb, var(--paper) 92%, var(--brass-soft));
+}
+.ux-attention-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 11px;
+  border-bottom: 1px solid var(--ux-soft-line);
+  font-size: 10px;
+  font-weight: 800;
+}
+.ux-attention-empty { color: var(--gain); }
+.ux-attention-item {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--ux-soft-line);
+  font-size: 11px;
+}
+.ux-attention-item:last-child { border-bottom: none; }
+.ux-attention-item .ux-attention-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--brass); }
+.ux-attention-item.bad .ux-attention-dot { background: var(--loss); }
+.ux-attention-item .ux-attention-detail { color: var(--parchment); margin-top: 2px; font-size: 10px; }
+
+.ux-operational-positions {
+  background: var(--paper);
+  border: 2px solid var(--line);
+  margin-top: 10px;
+}
+.ux-operational-positions > .ux-card-head,
+.ux-card-head {
+  padding: 9px 11px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--ux-soft-line);
+}
+.ux-card-head strong { font-size: 11px; }
+
+/* Existing legacy positions widget becomes redundant once the fixed
+   operational table above is active. */
+#dashSectionPositions.dash-section-superseded { display: none !important; }
+
+/* ------------------------------------------------------------------
+   Reorderable dashboard/report sections
+   ------------------------------------------------------------------ */
+.reorder-controls .reorder-btn { display: none !important; }
+.ux-drag-handle {
+  border: 0;
+  background: transparent;
+  color: var(--parchment);
+  cursor: grab;
+  padding: 3px 6px;
+  margin-left: -6px;
+  line-height: 1;
+  font-size: 14px;
+  touch-action: none;
+  user-select: none;
+}
+.ux-drag-handle:hover { color: var(--ink); }
+.ux-drag-handle:active { cursor: grabbing; }
+.ux-sortable-item.ux-dragging { opacity: .62; }
+.ux-sortable-item.ux-drop-before { box-shadow: inset 0 3px 0 var(--accent); }
+.ux-sortable-item.ux-drop-after { box-shadow: inset 0 -3px 0 var(--accent); }
+
+.ux-customize-toggle { margin-left: auto; }
+.ux-customize-panel {
+  display: none;
+  background: var(--paper);
+  border: 2px solid var(--line);
+  padding: 10px;
+  margin: 8px 0 14px;
+}
+.ux-customize-panel.open { display: block; }
+.ux-customize-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  border-bottom: 1px solid var(--ux-soft-line);
+  font-size: 11px;
+}
+.ux-customize-row:last-child { border-bottom: 0; }
+
+/* ------------------------------------------------------------------
+   Professional table behavior
+   ------------------------------------------------------------------ */
+.table-wrap table.ux-table { table-layout: fixed; min-width: 100%; width: max-content; }
+.ux-table th { position: relative; user-select: none; }
+.ux-table th.ux-col-draggable { cursor: grab; }
+.ux-table th.ux-col-dragging { opacity: .55; }
+.ux-table th.ux-col-drop-target { box-shadow: inset 3px 0 0 var(--accent); }
+.ux-col-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+  touch-action: none;
+}
+.ux-col-resizer::after {
+  content: '';
+  position: absolute;
+  top: 18%;
+  bottom: 18%;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+}
+.ux-col-resizer:hover::after,
+body.ux-resizing .ux-col-resizer::after { background: var(--accent); }
+body.ux-resizing { cursor: col-resize !important; user-select: none !important; }
+
+.ux-table-density-compact td,
+.ux-table-density-compact th { padding-top: 5px !important; padding-bottom: 5px !important; }
+
+.ux-row-navigate { cursor: pointer; }
+.ux-row-navigate:hover > td { background: var(--sand); }
+.ux-row-selected > td { background: color-mix(in srgb, var(--info-soft) 70%, var(--paper)); }
+
+.ux-table-settings-menu,
+.ux-popover {
+  position: fixed;
+  z-index: 180;
+  min-width: 210px;
+  max-width: min(360px, calc(100vw - 24px));
+  background: var(--paper);
+  color: var(--ink);
+  border: 2px solid var(--line);
+  box-shadow: var(--shadow-sm);
+  padding: 6px;
+}
+.ux-menu-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  padding: 8px 9px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ux-menu-item:hover { background: var(--sand); }
+.ux-menu-sep { border-top: 1px solid var(--ux-soft-line); margin: 5px 0; }
+
+/* ------------------------------------------------------------------
+   Deployment list improvements
+   ------------------------------------------------------------------ */
+.ux-status-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ux-filter-chip {
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 5px 9px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+.ux-filter-chip.active { background: var(--accent); color: #fff; }
+.ux-current-pnl .ux-pnl-period { display: block; color: var(--parchment); font-size: 8.5px; margin-top: 2px; font-family: var(--font-body); }
+.ux-current-pnl { font-family: var(--font-mono); font-weight: 700; }
+.ux-select-cell { width: 34px; text-align: center; }
+.ux-select-cell input { width: auto; }
+
+.ux-selection-tray {
+  position: fixed;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%) translateY(120%);
+  z-index: 95;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 10px 9px 13px;
+  border: 2px solid var(--line);
+  background: var(--paper);
+  box-shadow: var(--shadow);
+  transition: transform .18s ease;
+}
+.ux-selection-tray.open { transform: translateX(-50%) translateY(0); }
+.ux-selection-tray strong { font-size: 11px; }
+
+/* ------------------------------------------------------------------
+   Deployment detail: purpose-oriented IA
+   ------------------------------------------------------------------ */
+#view-detail .back-link { margin-bottom: 8px; display: inline-block; }
+.ux-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: start;
+  padding: 0 0 13px;
+  border-bottom: 2px solid var(--line);
+}
+.ux-detail-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ux-detail-title-row h1 { margin: 0; }
+.ux-detail-sub { color: var(--parchment); font-size: 11px; margin-top: 4px; }
+.ux-detail-actions { display: flex; align-items: center; gap: 7px; position: relative; }
+.ux-detail-nav {
+  display: flex;
+  gap: 0;
+  margin: 0 0 18px !important;
+  border-bottom: 2px solid var(--line);
+  overflow-x: auto;
+}
+.ux-detail-nav button {
+  border: 0 !important;
+  border-bottom: 3px solid transparent !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  padding: 10px 14px !important;
+  margin-bottom: -2px;
+  white-space: nowrap;
+  color: var(--parchment) !important;
+}
+.ux-detail-nav button.active {
+  color: var(--ink) !important;
+  border-bottom-color: var(--accent) !important;
+}
+
+.ux-detail-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 2px 0 18px;
+}
+.ux-detail-summary-card {
+  border: 2px solid var(--line);
+  background: var(--paper);
+  padding: 14px;
+}
+.ux-detail-summary-card .value {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 22px;
+  margin: 5px 0 9px;
+}
+.ux-detail-summary-card .label { color: var(--parchment); font-size: 9px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; }
+.ux-detail-summary-card .row { display: flex; justify-content: space-between; gap: 10px; font-size: 10.5px; margin-top: 4px; }
+.ux-detail-summary-card .row span:first-child { color: var(--parchment); }
+
+.ux-section {
+  margin: 18px 0 24px;
+}
+.ux-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--ux-soft-line);
+  padding-bottom: 7px;
+  margin-bottom: 10px;
+}
+.ux-section-head h2 { margin: 0; }
+
+.ux-live-state-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 8px;
+}
+.ux-live-state-item {
+  border: 1px solid var(--ux-soft-line);
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--paper) 92%, var(--info-soft));
+}
+.ux-live-state-item .k { color: var(--parchment); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.ux-live-state-item .v { font-family: var(--font-mono); font-size: 12px; font-weight: 700; margin-top: 4px; }
+
+.ux-recent-list { border: 1px solid var(--ux-soft-line); }
+.ux-recent-item {
+  display: grid;
+  grid-template-columns: 92px 74px minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: center;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--ux-soft-line);
+  font-size: 10.5px;
+}
+.ux-recent-item:last-child { border-bottom: 0; }
+.ux-recent-time { color: var(--parchment); font-family: var(--font-mono); }
+
+/* ------------------------------------------------------------------
+   Analytics / monthly performance matrix
+   ------------------------------------------------------------------ */
+.ux-analytics-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.ux-segmented {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+.ux-segmented button {
+  border: 0;
+  border-right: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  padding: 6px 9px;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ux-segmented button:last-child { border-right: 0; }
+.ux-segmented button.active { background: var(--line); color: var(--paper); }
+
+.ux-performance-matrix-wrap {
+  overflow: auto;
+  border: 1px solid var(--ux-soft-line);
+  background: var(--paper);
+}
+.ux-performance-matrix {
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+  min-width: 1120px;
+  width: 100%;
+  font-size: 9.5px;
+}
+.ux-performance-matrix th,
+.ux-performance-matrix td {
+  border-right: 1px solid var(--ux-soft-line) !important;
+  border-bottom: 1px solid var(--ux-soft-line) !important;
+  padding: 8px 8px !important;
+  text-align: right;
+  white-space: nowrap;
+  background: var(--paper);
+}
+.ux-performance-matrix th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  color: var(--parchment);
+  text-align: center;
+  background: var(--panel);
+  font-size: 8.5px;
+}
+.ux-performance-matrix th:first-child,
+.ux-performance-matrix td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  text-align: left;
+  font-weight: 800;
+  background: var(--panel);
+}
+.ux-performance-matrix td.ux-month-cell { cursor: pointer; font-family: var(--font-mono); }
+.ux-performance-matrix td.ux-month-cell:hover { outline: 1px solid var(--accent); outline-offset: -1px; }
+.ux-performance-matrix td.pos { background: color-mix(in srgb, var(--gain-soft) 45%, var(--paper)); }
+.ux-performance-matrix td.neg { background: color-mix(in srgb, var(--loss-soft) 46%, var(--paper)); }
+.ux-performance-matrix td.zero { color: var(--parchment); }
+.ux-performance-matrix td.future { color: var(--parchment); opacity: .5; }
+.ux-performance-matrix td.total { font-weight: 800; }
+.ux-matrix-current-month::after { content: ' •'; color: var(--accent); }
+.ux-matrix-caption { color: var(--parchment); font-size: 9.5px; margin-top: 7px; }
+
+.ux-bar-list { display: grid; gap: 8px; }
+.ux-bar-row {
+  display: grid;
+  grid-template-columns: minmax(120px, .8fr) minmax(180px, 2fr) auto;
+  gap: 10px;
+  align-items: center;
+  font-size: 10.5px;
+}
+.ux-bar-track { height: 9px; background: var(--stone); border: 1px solid var(--ux-soft-line); position: relative; }
+.ux-bar-fill { height: 100%; background: var(--gain); }
+.ux-bar-fill.neg { background: var(--loss); float: right; }
+
+/* ------------------------------------------------------------------
+   History: one purpose, local content switches
+   ------------------------------------------------------------------ */
+.ux-history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.ux-history-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--info-soft);
+  border: 1px solid var(--line);
+  padding: 5px 8px;
+  font-size: 10px;
+}
+.ux-cycle-card {
+  background: var(--paper);
+  border: 1px solid var(--ux-soft-line);
+  margin-bottom: 8px;
+}
+.ux-cycle-head {
+  padding: 9px 11px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  cursor: pointer;
+}
+.ux-cycle-head:hover { background: var(--sand); }
+.ux-cycle-body { display: none; padding: 0 11px 10px; border-top: 1px solid var(--ux-soft-line); }
+.ux-cycle-card.open .ux-cycle-body { display: block; }
+
+/* ------------------------------------------------------------------
+   Configuration: scanable groups; raw JSON secondary
+   ------------------------------------------------------------------ */
+.ux-config-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.ux-config-group {
+  border: 1px solid var(--ux-soft-line);
+  background: var(--paper);
+}
+.ux-config-group h3 {
+  font-size: 10px;
+  padding: 8px 10px;
+  margin: 0;
+  border-bottom: 1px solid var(--ux-soft-line);
+  background: color-mix(in srgb, var(--panel) 56%, var(--paper));
+}
+.ux-config-kv { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(0, 1.2fr); }
+.ux-config-kv > div { padding: 7px 10px; border-bottom: 1px solid var(--ux-soft-line); font-size: 10.5px; }
+.ux-config-kv > div:nth-last-child(-n+2) { border-bottom: 0; }
+.ux-config-key { color: var(--parchment); }
+.ux-config-value { font-family: var(--font-mono); overflow-wrap: anywhere; }
+
+/* Grouping inserted into existing Deploy/Edit config form containers. */
+.ux-form-group {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--ux-soft-line);
+  padding-top: 10px;
+  margin-top: 2px;
+}
+.ux-form-group-title {
+  font-size: 9px;
+  color: var(--parchment);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+.ux-form-group-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 0 14px;
+}
+.ux-preset-dirty { color: var(--brass); font-size: 9px; margin-left: 6px; }
+
+/* Deploy modal becomes a work surface rather than a narrow popup. */
+@media (min-width: 761px) {
+  #deployModal .modal-deploy {
+    max-width: 1040px !important;
+    width: min(96vw, 1040px) !important;
+  }
+}
+
+/* ------------------------------------------------------------------
+   Drawers / dialogs / notification centre
+   ------------------------------------------------------------------ */
+.ux-drawer-backdrop,
+.ux-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 210;
+  background: rgba(27, 17, 48, .42);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .16s ease;
+}
+.ux-drawer-backdrop.open,
+.ux-dialog-backdrop.open { opacity: 1; pointer-events: auto; }
+.ux-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  z-index: 220;
+  width: min(520px, 92vw);
+  height: 100vh;
+  transform: translateX(105%);
+  transition: transform .18s ease;
+  background: var(--paper);
+  border-left: 3px solid var(--line);
+  box-shadow: -12px 0 0 color-mix(in srgb, var(--line) 12%, transparent);
+  display: flex;
+  flex-direction: column;
+}
+.ux-drawer.open { transform: translateX(0); }
+.ux-drawer-head {
+  padding: 13px 15px;
+  border-bottom: 2px solid var(--line);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.ux-drawer-head h2 { margin: 0; font-size: 17px; }
+.ux-drawer-body { padding: 15px; overflow: auto; flex: 1; }
+.ux-drawer .trade-json { max-width: none; }
+
+.ux-dialog {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 230;
+  transform: translate(-50%, -48%) scale(.98);
+  opacity: 0;
+  pointer-events: none;
+  width: min(560px, calc(100vw - 30px));
+  max-height: 86vh;
+  overflow: auto;
+  background: var(--paper);
+  border: 3px solid var(--line);
+  box-shadow: var(--shadow-lg);
+  padding: 20px;
+  transition: opacity .15s ease, transform .15s ease;
+}
+.ux-dialog.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+.ux-dialog h2 { margin-bottom: 7px; }
+.ux-dialog-options { display: grid; gap: 8px; margin: 15px 0; }
+.ux-dialog-option {
+  border: 1px solid var(--ux-soft-line);
+  padding: 10px;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: start;
+}
+.ux-dialog-option:hover { background: var(--sand); }
+.ux-dialog-option input { width: auto; margin-top: 2px; }
+
+.ux-notification-panel {
+  position: fixed;
+  right: 18px;
+  top: 52px;
+  z-index: 190;
+  width: min(400px, calc(100vw - 36px));
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--paper);
+  border: 2px solid var(--line);
+  box-shadow: var(--shadow);
+  display: none;
+}
+.ux-notification-panel.open { display: block; }
+.ux-notification-head { padding: 10px 12px; border-bottom: 1px solid var(--ux-soft-line); display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.ux-notification-item { padding: 10px 12px; border-bottom: 1px solid var(--ux-soft-line); cursor: pointer; }
+.ux-notification-item:hover { background: var(--sand); }
+.ux-notification-title { font-weight: 800; font-size: 10.5px; }
+.ux-notification-msg { color: var(--parchment); font-size: 10px; margin-top: 3px; line-height: 1.4; }
+.ux-notification-time { color: var(--parchment); font-size: 8.5px; margin-top: 4px; }
+
+/* ------------------------------------------------------------------
+   Settings navigation
+   ------------------------------------------------------------------ */
+#view-account .view-header h1::after { content: ''; }
+.ux-settings-shell { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 22px; }
+.ux-settings-nav {
+  border-right: 1px solid var(--ux-soft-line);
+  padding-right: 12px;
+}
+.ux-settings-label { color: var(--parchment); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; margin: 14px 7px 5px; }
+.ux-settings-nav button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  padding: 7px 8px;
+  font: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.ux-settings-nav button.active { background: var(--sand); font-weight: 800; }
+
+/* Less visual noise inside data-heavy pages: major containers retain
+   the original identity; nested surfaces use hairlines instead of a
+   repeated stack of 3px borders and offset shadows. */
+#view-detail .stat-card,
+#view-reports .stat-card,
+#view-portfolio .stat-card,
+#view-compare .compare-card {
+  box-shadow: none !important;
+  border-width: 1px !important;
+}
+
+/* ------------------------------------------------------------------
+   Responsive
+   ------------------------------------------------------------------ */
+@media (max-width: 1050px) {
+  .ux-kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ux-detail-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .ux-topbar { position: static; margin-top: -6px; }
+  .ux-topbar-title { display: none; }
+  .ux-kpi-grid { grid-template-columns: 1fr 1fr; }
+  .ux-detail-summary-grid { grid-template-columns: 1fr; }
+  .ux-detail-header { grid-template-columns: 1fr; }
+  .ux-detail-actions { justify-content: flex-start; }
+  .ux-config-grid { grid-template-columns: 1fr; }
+  .ux-settings-shell { grid-template-columns: 1fr; }
+  .ux-settings-nav { border-right: 0; border-bottom: 1px solid var(--ux-soft-line); padding: 0 0 10px; display: flex; gap: 4px; overflow-x: auto; }
+  .ux-settings-label { display: none; }
+  .ux-settings-nav button { width: auto; white-space: nowrap; border: 1px solid var(--ux-soft-line); }
+  .ux-recent-item { grid-template-columns: 80px 60px minmax(0, 1fr); }
+  .ux-recent-item > :last-child { display: none; }
+  .ux-bar-row { grid-template-columns: 110px minmax(100px, 1fr) auto; }
+  .ux-selection-tray { width: calc(100vw - 24px); justify-content: space-between; }
+}
+@media (max-width: 520px) {
+  .ux-kpi-grid { grid-template-columns: 1fr; }
+  .ux-kpi-value { font-size: 21px; }
+  .ux-operational-zone .ux-zone-heading { align-items: flex-start; flex-direction: column; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ux-drawer,
+  .ux-drawer-backdrop,
+  .ux-dialog,
+  .ux-dialog-backdrop,
+  .ux-selection-tray { transition: none !important; }
+}
+
+/* Optional widget sizing in Customize mode. Full width is the default. */
+#dashboardSections.ux-widget-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+#dashboardSections.ux-widget-grid > section { min-width: 0; margin-bottom: 0; }
+#dashboardSections.ux-widget-grid > section[data-ux-size="full"] { grid-column: 1 / -1; }
+#dashboardSections.ux-widget-grid > section[data-ux-size="half"] { grid-column: span 1; }
+@media (max-width: 900px) {
+  #dashboardSections.ux-widget-grid { grid-template-columns: 1fr; }
+  #dashboardSections.ux-widget-grid > section[data-ux-size="half"] { grid-column: 1; }
+}
+
+/* ------------------------------------------------------------------
+   Analytics v2: equity/drawdown and visual contribution reads
+   ------------------------------------------------------------------ */
+.ux-equity-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
+.ux-equity-shell { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 9px; align-items: stretch; margin-top: 12px; }
+.ux-equity-y { display: flex; flex-direction: column; justify-content: space-between; color: var(--parchment); font: 9px/1.1 var(--font-mono); text-align: right; padding: 2px 0; }
+.ux-equity-main { height: 230px; min-width: 0; position: relative; border-left: 1px solid var(--ux-soft-line); border-bottom: 1px solid var(--ux-soft-line); cursor: crosshair; touch-action: pan-y; background: linear-gradient(to bottom, transparent 49.8%, var(--ux-soft-line) 50%, transparent 50.2%); }
+.ux-equity-main svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.ux-equity-line { fill: none; stroke-width: 2; }
+.ux-equity-line.gain { stroke: var(--gain); }
+.ux-equity-line.loss { stroke: var(--loss); }
+.ux-equity-crosshair { display: none; position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line); pointer-events: none; opacity: .55; }
+.ux-equity-x { display: flex; justify-content: space-between; margin: 5px 0 0 70px; color: var(--parchment); font-size: 9px; }
+.ux-drawdown-strip { display: grid; grid-template-columns: 66px minmax(0, 1fr); gap: 9px; align-items: stretch; margin-top: 12px; }
+.ux-drawdown-label { font-size: 9px; color: var(--parchment); display: flex; flex-direction: column; gap: 4px; justify-content: center; }
+.ux-drawdown-label b { color: var(--ink); }
+.ux-drawdown-area { height: 70px; border-left: 1px solid var(--ux-soft-line); border-top: 1px solid var(--ux-soft-line); }
+.ux-drawdown-area svg { width: 100%; height: 100%; display: block; }
+.ux-drawdown-area polyline { fill: none; stroke: var(--loss); stroke-width: 1.5; }
+.ux-exit-bars small { color: var(--parchment); font-weight: 500; }
+.ux-report-contrib { border-bottom: 1px solid var(--ux-soft-line); padding-bottom: 16px; margin-bottom: 14px; }
+.ux-instrument-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 10px 0; }
+.ux-instrument-filters select { width: auto; min-width: 130px; }
+
+@media (max-width: 760px) {
+  .ux-equity-controls { justify-content: flex-start; }
+  .ux-equity-main { height: 190px; }
+  .ux-equity-y { font-size: 8px; }
+  .ux-equity-x { margin-left: 58px; }
+}
+
+/* Generic table settings appear only when the user approaches a table,
+   keeping everyday scanning calm while still making layout power obvious. */
+.table-wrap { position: relative; }
+.ux-table-floating-settings {
+  position: sticky;
+  left: 100%;
+  top: 2px;
+  z-index: 6;
+  display: block;
+  width: max-content;
+  margin: 0 3px -27px auto;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  background: var(--paper);
+  color: var(--parchment);
+  font: 700 9px/1 var(--font-body);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .12s ease;
+}
+.table-wrap:hover > .ux-table-floating-settings,
+.table-wrap:focus-within > .ux-table-floating-settings { opacity: 1; pointer-events: auto; }
+#deploymentsTable .ux-table-floating-settings { display: none; }
+.ux-menu-title { padding: 5px 8px; color: var(--parchment); font-size: 8.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.ux-table-column-list { max-height: 240px; overflow: auto; padding: 2px 7px 6px; display: grid; gap: 5px; }
+.ux-table-column-list label { display: flex; gap: 6px; align-items: center; font-size: 10px; cursor: pointer; }
+.ux-table-column-list input { width: auto; }
+
+.ux-compare-metric-toggle { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin: 8px 0; }
+table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
+
+/* ==================================================================
+   Ledger-consistent surface styling
+   ------------------------------------------------------------------
+   Makes every surface above speak the SAME visual language as the
+   rest of the application: blocky 3px frames for major surfaces,
+   2px KPI frames, stamped offset shadows, marigold active states,
+   uppercase micro-labels, and the existing paper/panel/stone tokens.
+   No separate "new UI" visual dialect remains.
+   ================================================================== */
+
+:root {
+  --ux-hairline: 2px solid var(--row-line);
+  --ux-soft-line: var(--row-line);
+  --ux-focus-ring: none;
+}
+
+/* Shell / top status — same treatment as the existing ticker bar. */
+.ux-topbar {
+  padding: 10px 16px;
+  margin-bottom: 22px;
+  background: var(--paper);
+  border: 3px solid var(--line);
+  box-shadow: var(--shadow-sm);
+}
+.ux-topbar-title {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: .06em;
+}
+.ux-status-btn,
+.ux-icon-btn {
+  border: 3px solid var(--line);
+  background: var(--paper);
+  min-height: 34px;
+  padding: 7px 10px;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.ux-status-btn:hover,
+.ux-icon-btn:hover { background: var(--stone); }
+.ux-icon-btn { width: 36px; padding: 0; }
+.ux-unread-badge { border: 2px solid var(--line); }
+
+/* Dashboard KPIs — literally follow the app's stat-card treatment. */
+.ux-kpi {
+  background: var(--panel);
+  border: 2px solid var(--line);
+  padding: 14px 16px;
+}
+.ux-kpi-label {
+  font-size: 9px;
+  letter-spacing: .07em;
+  margin-bottom: 8px;
+}
+.ux-kpi-value {
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -.03em;
+}
+.ux-kpi-sub {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.7;
+  font-family: var(--font-mono);
+}
+.ux-kpi-clickable:hover { background: var(--stone); }
+
+/* Attention is a framed ledger block, not a translucent new-style card. */
+.ux-attention {
+  border: 3px solid var(--line);
+  background: var(--paper);
+  box-shadow: var(--shadow-sm);
+}
+.ux-attention-head {
+  padding: 10px 14px;
+  border-bottom: 3px solid var(--line);
+  background: var(--panel);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.ux-attention-item {
+  grid-template-columns: 8px minmax(0, 1fr) auto;
+  padding: 10px 14px;
+  border-bottom: 2px solid var(--row-line);
+  font-size: 11.5px;
+}
+.ux-attention-item:last-child { border-bottom: 0; }
+
+/* New table/card containers use the same frame as .table-wrap/.card. */
+.ux-operational-positions,
+.ux-customize-panel,
+.ux-recent-list,
+.ux-performance-matrix-wrap,
+.ux-cycle-card,
+.ux-config-group,
+.ux-notification-panel {
+  background: var(--paper);
+  border: 3px solid var(--line);
+  box-shadow: var(--shadow-sm);
+}
+.ux-operational-positions > .ux-card-head,
+.ux-card-head {
+  padding: 10px 14px;
+  border-bottom: 3px solid var(--line);
+  background: var(--panel);
+}
+.ux-card-head strong {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  font-weight: 800;
+}
+
+/* Drag/drop stays subtle, but its handle now looks native to this UI. */
+.ux-drag-handle {
+  color: var(--parchment);
+  padding: 4px 7px;
+  font-size: 15px;
+  font-weight: 800;
+}
+.ux-drag-handle:hover { background: var(--stone); color: var(--ink); }
+.ux-sortable-item.ux-drop-before { box-shadow: inset 0 4px 0 var(--accent); }
+.ux-sortable-item.ux-drop-after { box-shadow: inset 0 -4px 0 var(--accent); }
+.ux-customize-panel { padding: 12px 14px; }
+.ux-customize-row {
+  min-height: 38px;
+  border-bottom: 2px solid var(--row-line);
+}
+
+/* Table tooling — use existing ledger border weights and menu language. */
+.ux-table th.ux-col-drop-target { box-shadow: inset 4px 0 0 var(--accent); }
+.ux-col-resizer::after { width: 2px; }
+.ux-table-density-compact td,
+.ux-table-density-compact th { padding-top: 6px !important; padding-bottom: 6px !important; }
+.ux-row-selected > td { background: var(--info-soft); }
+.ux-table-settings-menu,
+.ux-popover {
+  background: var(--paper);
+  border: 3px solid var(--line);
+  box-shadow: var(--shadow-sm);
+  padding: 7px;
+}
+.ux-menu-item {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 9px 10px;
+}
+.ux-menu-item:hover { background: var(--stone); }
+.ux-menu-sep { border-top: 2px solid var(--row-line); margin: 6px 0; }
+.ux-menu-title {
+  color: var(--parchment);
+  font-size: 9px;
+  letter-spacing: .07em;
+}
+
+/* Deployment filters — same blocky control treatment as .btn/.filters. */
+.ux-filter-chip {
+  border: 3px solid var(--line);
+  background: var(--paper);
+  padding: 7px 11px;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.ux-filter-chip:hover { background: var(--stone); }
+.ux-filter-chip.active,
+.ux-filter-chip.active:hover { background: var(--accent); color: #fff; }
+.ux-selection-tray {
+  padding: 10px 12px 10px 14px;
+  border: 3px solid var(--line);
+  background: var(--paper);
+  box-shadow: var(--shadow-sm);
+}
+
+/* Detail IA keeps Overview/Analytics/History/Configuration, but the
+   tabs now look exactly like the application's existing .tabs. */
+.ux-detail-header {
+  padding-bottom: 16px;
+  border-bottom: 3px solid var(--line);
+}
+.ux-detail-nav {
+  display: flex;
+  gap: 8px;
+  margin: 20px 0 16px !important;
+  border-bottom: 0;
+  overflow-x: auto;
+  flex-wrap: nowrap;
+}
+.ux-detail-nav button {
+  padding: 9px 13px !important;
+  margin-bottom: 0;
+  border: 3px solid var(--line) !important;
+  background: var(--paper) !important;
+  color: var(--ink) !important;
+  font-family: var(--font-body);
+  font-size: 10.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.ux-detail-nav button:hover { background: var(--stone) !important; }
+.ux-detail-nav button.active,
+.ux-detail-nav button.active:hover {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border-color: var(--line) !important;
+}
+
+/* Detail headline summaries use the same visual hierarchy as stat-card. */
+.ux-detail-summary-card {
+  border: 2px solid var(--line);
+  background: var(--panel);
+  padding: 14px 16px;
+}
+.ux-detail-summary-card .value {
+  font-family: var(--font-display);
+  font-size: 26px;
+  letter-spacing: -.03em;
+}
+.ux-detail-summary-card .label {
+  font-size: 9px;
+  letter-spacing: .07em;
+}
+.ux-section { margin: 24px 0 28px; }
+.ux-section-head {
+  border-bottom: 0;
+  padding-bottom: 0;
+  margin-bottom: 12px;
+}
+.ux-section-head h2 {
+  font-family: var(--font-body);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  font-weight: 800;
+  color: var(--parchment);
+}
+.ux-live-state-item {
+  border: 2px solid var(--line);
+  padding: 10px 12px;
+  background: var(--panel);
+}
+.ux-live-state-item:nth-child(even) { background: var(--sand); }
+.ux-live-state-item .k { font-size: 9px; letter-spacing: .06em; font-weight: 800; }
+.ux-live-state-item .v { font-size: 12px; }
+.ux-recent-item {
+  padding: 9px 10px;
+  border-bottom: 2px solid var(--row-line);
+  font-size: 11px;
+}
+
+/* Segmented controls follow the same .tabs treatment rather than a
+   thin modern segmented-control pattern. */
+.ux-segmented {
+  gap: 8px;
+  border: 0;
+  background: transparent;
+}
+.ux-segmented button {
+  border: 3px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 7px 11px;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.ux-segmented button:last-child { border-right: 3px solid var(--line); }
+.ux-segmented button:hover { background: var(--stone); }
+.ux-segmented button.active,
+.ux-segmented button.active:hover { background: var(--accent); color: #fff; }
+
+/* Performance matrix = a ledger table, including the thick header rule. */
+.ux-performance-matrix-wrap { overflow: auto; }
+.ux-performance-matrix { font-size: 10px; }
+.ux-performance-matrix th,
+.ux-performance-matrix td {
+  border-right: 2px solid var(--row-line) !important;
+  border-bottom: 2px solid var(--row-line) !important;
+  padding: 9px 10px !important;
+}
+.ux-performance-matrix th {
+  color: var(--parchment);
+  background: var(--panel);
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  border-bottom: 3px solid var(--line) !important;
+}
+.ux-performance-matrix th:first-child,
+.ux-performance-matrix td:first-child { background: var(--panel); }
+.ux-performance-matrix td.pos { background: var(--gain-soft); }
+.ux-performance-matrix td.neg { background: var(--loss-soft); }
+.ux-performance-matrix td.ux-month-cell:hover {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+.ux-bar-track {
+  height: 12px;
+  background: var(--stone);
+  border: 1px solid var(--line);
+}
+
+/* History / configuration blocks. */
+.ux-history-filter-chip {
+  background: var(--info-soft);
+  border: 2px solid var(--line);
+  padding: 5px 8px;
+  font-weight: 700;
+}
+.ux-cycle-head { padding: 10px 14px; }
+.ux-cycle-head:hover { background: var(--stone); }
+.ux-cycle-body {
+  padding: 12px 14px;
+  border-top: 3px solid var(--line);
+}
+.ux-config-group h3 {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  padding: 10px 12px;
+  border-bottom: 3px solid var(--line);
+  background: var(--panel);
+}
+.ux-config-kv > div {
+  padding: 8px 10px;
+  border-bottom: 2px solid var(--row-line);
+  font-size: 10.5px;
+}
+.ux-form-group {
+  border-top: 3px solid var(--line);
+  padding-top: 12px;
+}
+.ux-form-group-title {
+  font-size: 9px;
+  letter-spacing: .09em;
+}
+
+/* Drawers/dialogs are modal relatives, so use the existing modal frame
+   weight and stamped shadows instead of soft/sliding-app styling. */
+.ux-drawer-backdrop,
+.ux-dialog-backdrop { background: rgba(27, 17, 48, .48); }
+.ux-drawer {
+  background: var(--paper);
+  border-left: 3px solid var(--line);
+  box-shadow: -12px 0 0 rgba(27, 17, 48, .14);
+}
+:root[data-theme="dark"] .ux-drawer { box-shadow: -12px 0 0 rgba(0, 0, 0, .55); }
+.ux-drawer-head {
+  padding: 14px 16px;
+  border-bottom: 3px solid var(--line);
+  background: var(--panel);
+}
+.ux-dialog {
+  background: var(--paper);
+  border: 3px solid var(--line);
+  box-shadow: var(--shadow-lg);
+  padding: 20px;
+}
+.ux-dialog-option {
+  border: 2px solid var(--line);
+  padding: 10px 12px;
+}
+.ux-dialog-option:hover { background: var(--stone); }
+.ux-notification-head {
+  padding: 10px 12px;
+  border-bottom: 3px solid var(--line);
+  background: var(--panel);
+}
+.ux-notification-item {
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--row-line);
+}
+.ux-notification-item:hover { background: var(--stone); }
+
+/* Settings uses the same block navigation language as the main nav. */
+.ux-settings-nav {
+  border-right: 3px solid var(--line);
+  padding-right: 14px;
+}
+.ux-settings-label {
+  font-size: 9px;
+  letter-spacing: .09em;
+  margin: 16px 0 7px;
+}
+.ux-settings-nav button {
+  margin-bottom: 7px;
+  border: 3px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  padding: 9px 11px;
+  font-size: 9.5px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.ux-settings-nav button:hover { background: var(--stone); }
+.ux-settings-nav button.active,
+.ux-settings-nav button.active:hover { background: var(--accent); color: #fff; }
+
+/* IMPORTANT: don't visually downgrade existing legacy components inside
+   redesigned views. They must keep their original 2/3px weights. */
+#view-detail .stat-card,
+#view-reports .stat-card,
+#view-portfolio .stat-card {
+  box-shadow: none !important;
+  border-width: 2px !important;
+  background: var(--panel) !important;
+}
+#view-compare .compare-card {
+  border-width: 3px !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+/* Analytics chart frame now matches the app's existing equity-wrap. */
+.ux-equity-shell {
+  background: var(--paper);
+  border: 3px solid var(--line);
+  box-shadow: var(--shadow-sm);
+  padding: 16px 18px;
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+.ux-equity-main {
+  border-left: 2px solid var(--row-line);
+  border-bottom: 2px solid var(--row-line);
+  background: linear-gradient(to bottom, transparent 49.5%, var(--row-line) 50%, transparent 50.5%);
+}
+.ux-drawdown-strip {
+  background: var(--paper);
+  border: 3px solid var(--line);
+  box-shadow: var(--shadow-sm);
+  padding: 12px 14px;
+}
+.ux-drawdown-area {
+  border-left: 2px solid var(--row-line);
+  border-top: 2px solid var(--row-line);
+}
+.ux-report-contrib { border-bottom: 2px solid var(--row-line); }
+
+/* Floating table settings are a small real button, not a faint overlay
+   from another design system. Still only appears on table approach. */
+.ux-table-floating-settings {
+  margin: 0 3px -31px auto;
+  padding: 6px 9px;
+  border: 3px solid var(--line);
+  background: var(--paper);
+  color: var(--ink);
+  font: 800 9px/1 var(--font-body);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.ux-table-floating-settings:hover { background: var(--stone); }
+.ux-table-column-list { gap: 7px; padding: 4px 8px 8px; }
+
+/* Responsive settings tabs remain blocky even when they become a
+   horizontal scroller on mobile. */
+@media (max-width: 760px) {
+  .ux-topbar { margin-top: -6px; }
+  .ux-settings-nav {
+    border-right: 0;
+    border-bottom: 3px solid var(--line);
+    padding: 0 0 12px;
+    gap: 7px;
+  }
+  .ux-settings-nav button {
+    width: auto;
+    white-space: nowrap;
+    border: 3px solid var(--line);
+    margin-bottom: 0;
+  }
+}
 </style>
 </head>
 <body>
@@ -1704,9 +3129,9 @@ body.mobile-nav-open { overflow: hidden; }
   </div>
 </div>
 
-<!-- Edit config — Detail's Config tab, PAUSED deployments only (see
-     Detail.renderConfig's own comment for why the button is only ever
-     shown then, and DeploymentUpdate's docstring for why paused
+<!-- Edit config — Detail's Configuration tab, PAUSED deployments only
+     (see Detail.renderConfiguration's own comment for why the button is
+     only ever shown then, and DeploymentUpdate's docstring for why paused
      specifically is what makes this safe at all: pause() already tears
      the live strategy instance down, resume() already reconstructs it
      fresh from the DB row, config included — editing the row while
@@ -1838,6 +3263,7 @@ body.mobile-nav-open { overflow: hidden; }
 </div>
 
 <script src="/js/api.js"></script>
+<script src="/js/ui-kit.js"></script>
 <script src="/js/dashboard.js"></script>
 <script src="/js/catalog.js"></script>
 <script src="/js/deployments.js"></script>
@@ -1847,8 +3273,6 @@ body.mobile-nav-open { overflow: hidden; }
 <script src="/js/detail.js"></script>
 <script src="/js/instruments.js"></script>
 <script src="/js/account.js"></script>
-<!-- UX v2: progressive enhancement of the existing app, not a replacement. -->
-<script src="/js/ux-v2.js"></script>
 <script>
 // ── App shell: auth status polling + hash-based view routing ─────────
 // Deliberately no frontend framework — same vanilla-JS style as the
@@ -2279,6 +3703,10 @@ function showToast(ev) {
   // (Web Push via a service worker, see static/js/account.js +
   // static/sw.js + app/notifications.py) -- not fired from here. This
   // in-app toast is purely the foreground, tab-open experience.
+
+  // Also feeds the notification centre (the 🔔 icon in the top bar) --
+  // same event, a second, longer-lived surface for it.
+  UIKit.captureNotification(ev);
 }
 
 // ── Router ────────────────────────────────────────────────────────────
@@ -2368,8 +3796,21 @@ function registerServiceWorker() {
   navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
 
+// Deployments' own list state (filter/sort/scroll) is captured only on
+// a genuine "leaving the list FOR one specific deployment's own page"
+// transition -- a cross-page concern the router/hashchange handling
+// here is the natural place for, not something either page's own code
+// can see on its own.
+window.addEventListener('hashchange', e => {
+  const oldUrl = String(e.oldURL || '');
+  const newUrl = String(e.newURL || '');
+  if (/#[/]?deployments(?:$|(?=\?))/.test(oldUrl) && /#\/?deployments\/[^/]+/.test(newUrl)) Deployments.saveListState();
+  if (!newUrl.includes('#/deployments')) Deployments.updateSelectionTray();
+});
+
 window.addEventListener('hashchange', router);
 window.addEventListener('DOMContentLoaded', () => {
+  UIKit.init();
   _applyThemeButtonLabel();
   pollHealth();
   router();

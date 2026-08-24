@@ -19,6 +19,7 @@ const Account = {
   _tags: [],         // Tags tab's own source of truth
 
   async load() {
+    UIKit.setupSettings();
     const body = document.getElementById('accountBody');
     body.innerHTML = spinnerHtml();
     try {

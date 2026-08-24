@@ -154,6 +154,7 @@ const Catalog = {
     });
     document.getElementById('deployModal').classList.remove('open');
     this._renderMinimizedDock();
+    this._persistDrafts();
   },
 
   restoreDraft(id) {
@@ -162,6 +163,7 @@ const Catalog = {
     const draft = this._minimizedDrafts[idx];
     this._minimizedDrafts.splice(idx, 1);
     this._renderMinimizedDock();
+    this._persistDrafts();
 
     this._currentDeploy = { strategyName: draft.strategyName, defaultConfig: draft.defaultConfig };
     document.getElementById('deployModalTitle').textContent = `Deploy: ${draft.strategyName}`;
@@ -199,6 +201,15 @@ const Catalog = {
     if (!confirm(`Discard the minimized draft "${label}"? This can't be undone.`)) return;
     this._minimizedDrafts.splice(idx, 1);
     this._renderMinimizedDock();
+    this._persistDrafts();
+  },
+
+  // Minimized drafts survive navigating between views (the dock/modal
+  // live outside the router's view containers) but NOT a full page
+  // reload by default -- persisting them to sessionStorage extends that
+  // to survive a reload too, for as long as the tab stays open.
+  _persistDrafts() {
+    sessionStorage.setItem('uxDeployDrafts', JSON.stringify(this._minimizedDrafts || []));
   },
 
   _renderMinimizedDock() {
@@ -292,6 +303,7 @@ const Catalog = {
   _renderConfigFields(config) {
     this._configBase = { ...config };
     document.getElementById('deployConfigFields').innerHTML = configFieldsContainerHtml(config, 'cfgField_');
+    requestAnimationFrame(() => UIKit.groupConfigFields(document.getElementById('deployConfigFields')));
   },
 
   // Reads the CURRENT form back into a config object. Starts from
@@ -370,9 +382,22 @@ async function submitDeploy() {
     msg.innerHTML = `<span style="color:var(--loss)">${data.detail || 'Failed'}</span>`;
     return;
   }
-  msg.innerHTML = `<span style="color:var(--gain)">✓ Deployed "${escapeHtml(data.deployment_name)}"</span>`;
-  setTimeout(() => { closeDeployModal(); Catalog.load(); }, 800);
+  Api._activeSummaryCache.delete(data.id);
+  msg.innerHTML = `<span style="color:var(--gain)">✓ Deployed "${escapeHtml(data.deployment_name)}"</span> ${data.id ? `<button class="btn btn-primary btn-sm" style="margin-left:8px;" onclick="closeDeployModal(); location.hash='#/deployments/${data.id}/overview'">View deployment</button>` : ''}`;
+  Catalog.load(true);
 }
+
+// Minimized drafts (see Catalog.minimizeDeploy's own comment) --
+// restored once, here, rather than at every Catalog.load(): they're
+// in-memory dock state, not something a background refresh should
+// re-read from sessionStorage and clobber mid-edit.
+(function _restoreMinimizedDrafts() {
+  const saved = (() => { try { return JSON.parse(sessionStorage.getItem('uxDeployDrafts') || '[]'); } catch (_) { return []; } })();
+  if (Array.isArray(saved) && saved.length) {
+    Catalog._minimizedDrafts = saved;
+    requestAnimationFrame(() => Catalog._renderMinimizedDock());
+  }
+})();
 
 // ── Clear All Deployments — destructive, irreversible. Gated behind
 // re-entering the app password AND typing the confirmation phrase,
