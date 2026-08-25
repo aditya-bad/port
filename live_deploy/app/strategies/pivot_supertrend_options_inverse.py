@@ -24,6 +24,12 @@ RULES — deliberately the mirror image of pivot_supertrend_options:
   entry, then exit. A `force_exit_time` safety net (default 15:00, same
   as the rest of this strategy family) still applies in case a late-day
   flip's hold period would otherwise run past market close.
+  NEVER skips an entry, including on the resolved contract's OWN expiry
+  day (config: `switch_to_next_week_on_expiry`, default False — same
+  option/meaning as pivot_supertrend_options'/intraday_dtt_simple's
+  identical flag): false buys the same-day-expiry contract as resolved
+  (the old behavior); true re-resolves NEXT_WEEK instead, just for that
+  one entry. See CONFIG below and `_enter`.
 
   NO fresh entry before `market_open_time` (config, default 09:15) —
   see pivot_supertrend.py's own module docstring for the full reasoning
@@ -92,6 +98,13 @@ CONFIG:
       "NIFTY" — NOT the spot tradingsymbol "NIFTY 50".
   "expiry_selector": "THIS_WEEK" (default) — any selector OptionsResolver
       accepts.
+  "switch_to_next_week_on_expiry": false (default) — same option, same
+      meaning, as pivot_supertrend_options'/intraday_dtt_simple's
+      identical flag: when the resolved `expiry_selector` contract
+      expires TODAY, false buys it anyway (same-day gamma, opted into);
+      true re-resolves "NEXT_WEEK" instead, just for that one entry —
+      `expiry_selector` itself is never mutated. Checked in `_enter` on
+      every fresh entry, against the ACTUAL resolved expiry date.
   "atr_smoothing": wilder (default) | sma | ema.
   "hold_candles": 1 (default) — see "HOLD-CANDLES TIMING" above. Must be
       >= 1.
@@ -158,6 +171,7 @@ logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options_inve
         "symbol": "NIFTY 50",
         "options_underlying": "NIFTY",
         "expiry_selector": "THIS_WEEK",
+        "switch_to_next_week_on_expiry": False,
         "atr_smoothing": "wilder",
         "hold_candles": 1,
         "force_exit_time": "15:00",
@@ -190,6 +204,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                 "tradingsymbol \"NIFTY 50\")"
             )
         self.expiry_selector = cfg.get("expiry_selector", "THIS_WEEK")
+        self.switch_to_next_week_on_expiry = bool(cfg.get("switch_to_next_week_on_expiry", False))
         self.atr_method = cfg.get("atr_smoothing", "wilder")
 
         self.hold_candles = int(cfg.get("hold_candles") or 1)
@@ -577,9 +592,31 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
 
     async def _enter(self, runner, candle: dict, option_type: str, trigger_values: dict) -> None:
         try:
-            leg = await self.resolver.get_atm_leg(
-                self.options_underlying, self.expiry_selector, option_type,
-            )
+            # Resolve the expiry FIRST, on its own, rather than handing
+            # expiry_selector straight to get_atm_leg -- switch_to_next_
+            # week_on_expiry (see module docstring) needs the chance to
+            # override it with "NEXT_WEEK" before strike/leg resolution
+            # ever happens, same shape as pivot_supertrend_options'
+            # identical check in its own _enter.
+            expiry = await self.resolver.resolve_expiry(self.options_underlying, self.expiry_selector)
+            if expiry == candle["date"].date():
+                if self.switch_to_next_week_on_expiry:
+                    logger.info(
+                        "%s: resolved %s contract expires today (%s) — "
+                        "switch_to_next_week_on_expiry=true, re-resolving "
+                        "NEXT_WEEK for this entry instead.",
+                        runner.deployment_name, self.expiry_selector, expiry,
+                    )
+                    expiry = await self.resolver.resolve_expiry(self.options_underlying, "NEXT_WEEK")
+                    trigger_values = {**trigger_values, "switched_to_next_week": True}
+                else:
+                    logger.info(
+                        "%s: resolved %s contract expires today (%s) — "
+                        "switch_to_next_week_on_expiry=false, buying the "
+                        "same-day-expiry leg as resolved.",
+                        runner.deployment_name, self.expiry_selector, expiry,
+                    )
+            leg = await self.resolver.get_atm_leg(self.options_underlying, expiry, option_type)
             price = await self.resolver.get_ltp(leg)
         except NoKiteSession:
             logger.warning(

@@ -18,6 +18,15 @@ different execution:
   Only 1 open option position at a time, matching the original's "one
   lot in, one lot out" — a fresh entry can fire immediately after an
   exit closes the previous leg.
+  NEVER skips an entry, including on the resolved contract's OWN expiry
+  day (config: `switch_to_next_week_on_expiry`, default False, same
+  option/meaning as intraday_dtt_simple's identical flag) — selling an
+  option that expires that same afternoon is a fast-decay, sharp-gamma
+  scenario, so this decides which contract gets sold, not whether to
+  trade at all: false sells the same-day-expiry contract as resolved
+  (the old behavior); true re-resolves NEXT_WEEK instead, just for that
+  one entry (`expiry_selector` itself stays untouched for every other
+  day). See CONFIG below and `_enter`.
 
   EXECUTION TIMING (Step 94 fix): both entry and exit fire IMMEDIATELY
   off the same candle-close event that confirms the signal — no more
@@ -87,6 +96,16 @@ module's docstring):
       "NIFTY"). See app/options/resolver.py's INDEX_SPOT_SYMBOL mapping.
   "expiry_selector": "THIS_WEEK" (default) — any selector OptionsResolver
       accepts (THIS_WEEK/NEXT_WEEK/THIS_MONTH/NEXT_MONTH/int/date).
+  "switch_to_next_week_on_expiry": false (default) — same option, same
+      meaning, as intraday_dtt_simple/intraday_dtt_adjusted's identical
+      flag: when the resolved `expiry_selector` contract expires TODAY,
+      false sells it anyway (same-day gamma, opted into); true
+      re-resolves "NEXT_WEEK" instead, just for that one entry —
+      `expiry_selector` itself is never mutated, so every other day
+      still resolves however it's configured to. Checked on every fresh
+      entry in `_enter` (this strategy re-resolves an ATM leg per
+      entry, unlike a fixed-instrument strategy), against the ACTUAL
+      resolved expiry date, not a hardcoded weekday.
   "lots_per_trade": 1 (default) — options only trade in whole lots;
       each entry sells exactly this many lots of whatever the current
       lot size is for options_underlying.
@@ -157,6 +176,7 @@ logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options")
         "symbol": "NIFTY 50",
         "options_underlying": "NIFTY",
         "expiry_selector": "THIS_WEEK",
+        "switch_to_next_week_on_expiry": False,
         "lots_per_trade": 1,
         "pivot_type": "classic",
         "atr_smoothing": "wilder",
@@ -190,6 +210,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 "spot tradingsymbol \"NIFTY 50\")"
             )
         self.expiry_selector = cfg.get("expiry_selector", "THIS_WEEK")
+        self.switch_to_next_week_on_expiry = bool(cfg.get("switch_to_next_week_on_expiry", False))
         self.lots_per_trade = int(cfg.get("lots_per_trade") or 1)
         if self.lots_per_trade < 1:
             raise ValueError(f"lots_per_trade must be >= 1, got {self.lots_per_trade}")
@@ -640,9 +661,33 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
     async def _enter(self, runner, candle: dict, side: str, trigger_values: dict) -> None:
         option_type = "PE" if side == "long" else "CE"   # bullish -> sell puts, bearish -> sell calls
         try:
-            leg = await self.resolver.get_atm_leg(
-                self.options_underlying, self.expiry_selector, option_type,
-            )
+            # Resolve the expiry FIRST, on its own, rather than handing
+            # expiry_selector straight to get_atm_leg -- switch_to_next_
+            # week_on_expiry (see module docstring) needs the chance to
+            # override it with "NEXT_WEEK" before strike/leg resolution
+            # ever happens, same two-step shape as intraday_dtt_simple's
+            # resolve_atm_straddle_legs. Every entry re-resolves fresh
+            # (unlike a fixed-instrument strategy), so this check runs
+            # here, per entry, rather than once at on_start.
+            expiry = await self.resolver.resolve_expiry(self.options_underlying, self.expiry_selector)
+            if expiry == candle["date"].date():
+                if self.switch_to_next_week_on_expiry:
+                    logger.info(
+                        "%s: resolved %s contract expires today (%s) — "
+                        "switch_to_next_week_on_expiry=true, re-resolving "
+                        "NEXT_WEEK for this entry instead.",
+                        runner.deployment_name, self.expiry_selector, expiry,
+                    )
+                    expiry = await self.resolver.resolve_expiry(self.options_underlying, "NEXT_WEEK")
+                    trigger_values = {**trigger_values, "switched_to_next_week": True}
+                else:
+                    logger.info(
+                        "%s: resolved %s contract expires today (%s) — "
+                        "switch_to_next_week_on_expiry=false, selling the "
+                        "same-day-expiry leg as resolved.",
+                        runner.deployment_name, self.expiry_selector, expiry,
+                    )
+            leg = await self.resolver.get_atm_leg(self.options_underlying, expiry, option_type)
             price = await self.resolver.get_ltp(leg)
         except NoKiteSession:
             logger.warning(
