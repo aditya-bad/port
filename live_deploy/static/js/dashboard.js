@@ -267,7 +267,7 @@ const Dashboard = {
       <div class="table-wrap">
       <table><thead><tr>
         <th>Symbol</th><th>Deployment</th><th>Strategy</th><th>Side</th>
-        <th>Qty</th><th>Avg</th><th>Price</th><th>Unrealized</th>
+        <th>Open Qty</th><th>Entry Price</th><th>Exit Price</th><th>Total Qty</th><th>Price</th><th>Unrealized</th>
       </tr></thead>
       <tbody>${positions.map(p => `<tr data-position-id="${p.id}">
         <td>${escapeHtml(p.symbol)}</td>
@@ -276,6 +276,8 @@ const Dashboard = {
         <td>${p.side}</td>
         <td>${fmtNum(p.qty)}</td>
         <td>${fmtNum(p.avg_entry_price)}</td>
+        <td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td>
+        <td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td>
         <td class="live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
         <td class="live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
       </tr>`).join('')}</tbody></table>
@@ -528,7 +530,7 @@ const Dashboard = {
   _operationalPositionsTable(positions, byId) {
     if (!positions.length) return '<div class="empty" style="padding:18px;">No open positions across any deployment.</div>';
     return `<div class="table-wrap"><table><thead><tr>
-      <th>Symbol</th><th>Deployment</th><th>Strategy</th><th>Side</th><th>Qty</th><th>Avg</th><th>Price</th><th>Unrealized</th>
+      <th>Symbol</th><th>Deployment</th><th>Strategy</th><th>Side</th><th>Open Qty</th><th>Entry Price</th><th>Exit Price</th><th>Total Qty</th><th>Price</th><th>Unrealized</th>
     </tr></thead><tbody>${positions.map(p => {
       const d = byId.get(p.deployment_id);
       return `<tr data-ux-position-id="${p.id}">
@@ -536,6 +538,8 @@ const Dashboard = {
         <td><a href="#/deployments/${p.deployment_id}/overview">${escapeHtml(p.deployment_name || d?.deployment_name || '')}</a>${d && !d.include_in_reports ? ' <span class="tag tag-warn" title="Still shown here because live risk is operational truth.">analytics excluded</span>' : ''}</td>
         <td>${escapeHtml(p.strategy_name || d?.strategy_name || '')}</td>
         <td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td>
+        <td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td>
+        <td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td>
         <td class="ux-live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
         <td class="ux-live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
       </tr>`;

@@ -226,21 +226,64 @@ async def clear_all_deployments(pool: asyncpg.Pool) -> int:
 # POSITIONS
 # ═════════════════════════════════════════════════════════════════════
 
+# Every `positions` list query below joins this in to expose total_qty/
+# exit_price (see PositionOut's own comment for why these can't just be
+# columns on `positions` itself -- that table only ever tracks the
+# CURRENT open qty, zeroed on close). Requires the query's FROM clause
+# to alias positions as `p` -- a LATERAL join so `p.id`/`p.side` are
+# visible inside it.
+#
+# Every fill in this codebase is either a same-direction add or a FULL
+# close (record_fill requires a closing qty to exactly match the open
+# qty -- no partial exits), so a position has at most one exit-direction
+# lot. total_qty is therefore just the sum of the entry-direction lots;
+# exit_price is that single closing lot's price (a qty-weighted AVG
+# here purely as a defensive generalization, never actually averaging
+# more than one row in practice).
+_POSITION_LOT_AGG_JOIN = """
+LEFT JOIN LATERAL (
+    SELECT
+        COALESCE(SUM(pl.qty) FILTER (
+            WHERE (p.side = 'long' AND pl.action = 'buy') OR (p.side = 'short' AND pl.action = 'sell')
+        ), p.qty) AS total_qty,
+        CASE WHEN SUM(pl.qty) FILTER (
+            WHERE (p.side = 'long' AND pl.action = 'sell') OR (p.side = 'short' AND pl.action = 'buy')
+        ) > 0
+        THEN SUM(pl.qty * pl.price) FILTER (
+            WHERE (p.side = 'long' AND pl.action = 'sell') OR (p.side = 'short' AND pl.action = 'buy')
+        ) / SUM(pl.qty) FILTER (
+            WHERE (p.side = 'long' AND pl.action = 'sell') OR (p.side = 'short' AND pl.action = 'buy')
+        )
+        ELSE NULL END AS exit_price
+    FROM position_lots pl
+    WHERE pl.position_id = p.id
+) lot_agg ON true
+"""
+
+
 async def list_positions(
     pool: asyncpg.Pool, deployment_id: UUID, status: Optional[str] = None,
 ) -> list[asyncpg.Record]:
     async with pool.acquire() as conn:
         if status:
             return await conn.fetch(
-                """
-                SELECT * FROM positions
-                WHERE deployment_id = $1 AND status = $2
-                ORDER BY opened_at DESC
+                f"""
+                SELECT p.*, lot_agg.total_qty, lot_agg.exit_price
+                FROM positions p
+                {_POSITION_LOT_AGG_JOIN}
+                WHERE p.deployment_id = $1 AND p.status = $2
+                ORDER BY p.opened_at DESC
                 """,
                 deployment_id, status,
             )
         return await conn.fetch(
-            "SELECT * FROM positions WHERE deployment_id = $1 ORDER BY opened_at DESC",
+            f"""
+            SELECT p.*, lot_agg.total_qty, lot_agg.exit_price
+            FROM positions p
+            {_POSITION_LOT_AGG_JOIN}
+            WHERE p.deployment_id = $1
+            ORDER BY p.opened_at DESC
+            """,
             deployment_id,
         )
 
@@ -281,7 +324,13 @@ async def list_positions_with_episode(
     """
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT * FROM positions WHERE deployment_id = $1 ORDER BY opened_at ASC",
+            f"""
+            SELECT p.*, lot_agg.total_qty, lot_agg.exit_price
+            FROM positions p
+            {_POSITION_LOT_AGG_JOIN}
+            WHERE p.deployment_id = $1
+            ORDER BY p.opened_at ASC
+            """,
             deployment_id,
         )
     if not rows:
@@ -402,20 +451,22 @@ async def list_all_positions(
     async with pool.acquire() as conn:
         if status:
             return await conn.fetch(
-                """
-                SELECT p.*, d.deployment_name, d.strategy_name
+                f"""
+                SELECT p.*, d.deployment_name, d.strategy_name, lot_agg.total_qty, lot_agg.exit_price
                 FROM positions p
                 JOIN deployments d ON d.id = p.deployment_id
+                {_POSITION_LOT_AGG_JOIN}
                 WHERE p.status = $1
                 ORDER BY p.opened_at DESC
                 """,
                 status,
             )
         return await conn.fetch(
-            """
-            SELECT p.*, d.deployment_name, d.strategy_name
+            f"""
+            SELECT p.*, d.deployment_name, d.strategy_name, lot_agg.total_qty, lot_agg.exit_price
             FROM positions p
             JOIN deployments d ON d.id = p.deployment_id
+            {_POSITION_LOT_AGG_JOIN}
             ORDER BY p.opened_at DESC
             """
         )

@@ -257,8 +257,11 @@ const Detail = {
   // generically to every table in #detailBody) can never misalign the
   // total the way a colspan spacer would once a column gets reordered.
   positionsTable(rows) {
-    const cols = ['symbol', 'side', 'qty', 'avg', 'price', 'unrealized', 'opened'];
-    const labels = { symbol: 'Symbol', side: 'Side', qty: 'Qty', avg: 'Avg', price: 'Price', unrealized: 'Unrealized', opened: 'Opened' };
+    const cols = ['symbol', 'side', 'open_qty', 'entry', 'exit', 'total_qty', 'price', 'unrealized', 'opened'];
+    const labels = {
+      symbol: 'Symbol', side: 'Side', open_qty: 'Open Qty', entry: 'Entry Price',
+      exit: 'Exit Price', total_qty: 'Total Qty', price: 'Price', unrealized: 'Unrealized', opened: 'Opened',
+    };
     // Live-tick-worthy only while a live price actually exists for
     // EVERY leg -- otherwise "total unrealized" would silently claim a
     // number for legs it has no live price for at all (see the same
@@ -269,12 +272,14 @@ const Detail = {
     const total = known.length ? known.reduce((s, p) => s + (p.unrealized_pnl || 0), 0) : null;
     return `<div class="table-wrap"><table>
       <thead><tr>${cols.map(k => `<th data-ux-col-key="${k}">${labels[k]}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map(p => `<tr data-ux-position-id="${p.id}"><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td class="ux-live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td><td class="ux-live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td><td>${fmtDateTime(p.opened_at)}</td></tr>`).join('')}</tbody>
+      <tbody>${rows.map(p => `<tr data-ux-position-id="${p.id}"><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td><td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td><td class="ux-live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td><td class="ux-live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td><td>${fmtDateTime(p.opened_at)}</td></tr>`).join('')}</tbody>
       <tfoot><tr class="positions-total-row">
         <td data-ux-col-key="symbol"><b>Total</b></td>
         <td data-ux-col-key="side"></td>
-        <td data-ux-col-key="qty"></td>
-        <td data-ux-col-key="avg"></td>
+        <td data-ux-col-key="open_qty"></td>
+        <td data-ux-col-key="entry"></td>
+        <td data-ux-col-key="exit"></td>
+        <td data-ux-col-key="total_qty"></td>
         <td data-ux-col-key="price"></td>
         <td class="live-pnl-total${total != null ? ' ' + pnlClass(total) : ''}" data-ux-col-key="unrealized">${total != null ? fmtSignedMoney(total) : '—'}</td>
         <td data-ux-col-key="opened"></td>
@@ -1043,7 +1048,7 @@ const Detail = {
           <span class="tag tag-${u.status === 'open' ? 'active' : 'stopped'}">${u.status}</span>
           <b class="${pnlClass(total)}">${fmtSignedMoney(total)}</b>
         </div>
-        <div class="ux-cycle-body"><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Qty</th><th>Entry</th><th>Realized</th><th>Status</th></tr></thead><tbody>${ps.map(p => `<tr><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td class="${pnlClass(p.realized_pnl)}">${fmtSignedMoney(p.realized_pnl)}</td><td>${escapeHtml(p.status)}</td></tr>`).join('')}</tbody></table></div></div>
+        <div class="ux-cycle-body"><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Open Qty</th><th>Entry Price</th><th>Exit Price</th><th>Total Qty</th><th>Realized</th><th>Status</th></tr></thead><tbody>${ps.map(p => `<tr><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td><td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td><td class="${pnlClass(p.realized_pnl)}">${fmtSignedMoney(p.realized_pnl)}</td><td>${escapeHtml(p.status)}</td></tr>`).join('')}</tbody></table></div></div>
       </div>`;
     }).join('');
   },

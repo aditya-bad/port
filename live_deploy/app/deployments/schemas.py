@@ -152,8 +152,20 @@ class PositionOut(BaseModel):
     instrument_token: int
     side: str
     status: str
-    qty: float
-    avg_entry_price: float
+    qty: float                              # currently OPEN qty -- 0 once closed. Rendered as "Open Qty".
+    avg_entry_price: float                  # rendered as "Entry Price"
+    # Both derived from position_lots (see queries._POSITION_LOT_AGG_JOIN),
+    # not columns on `positions` itself -- that table only ever tracks
+    # the CURRENT open qty (zeroed on close), not what was originally
+    # entered or exited at. Every fill in this codebase is a full close
+    # or a same-direction add (no partial exits -- record_fill requires
+    # a closing qty to exactly match the open qty), so each position has
+    # at most one exit-direction lot: total_qty is the sum of its
+    # entry-direction lots' qty (== qty at the moment just before close,
+    # for a closed position), exit_price is that single closing lot's
+    # price (None while still open).
+    total_qty: float = 0.0                  # qty ever entered -- open + already-closed portion, both.
+    exit_price: Optional[float] = None      # None while status == "open"
     realized_pnl: float
     opened_at: datetime
     closed_at: Optional[datetime] = None
