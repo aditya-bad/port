@@ -5,9 +5,12 @@ Live paper-trading only — no backtested version exists for this one.
 
 RULES:
   Entry (once per day, at `entry_time`, default 10:00): resolve THIS_WEEK
-      (configurable) ATM strike from the live spot price, SELL the ATM CE
-      and SELL the ATM PE at that SAME strike — a classic short straddle,
-      same lot count both legs.
+      (configurable) contract's BALANCED strike — the strike whose CE and
+      PE premiums are closest to each other, NOT simply whichever strike
+      is nearest live spot (see resolve_atm_straddle_legs' own docstring
+      for why those two differ, and OptionsResolver.get_balanced_straddle_strike
+      for the mechanics) — SELL the CE and SELL the PE at that SAME
+      strike, same lot count both legs.
   Exit — checked continuously once both legs are open, in this priority
       order:
     1. Stop loss: EITHER leg's own premium has risen `per_leg_stop_loss_pct`
@@ -151,6 +154,21 @@ async def resolve_atm_straddle_legs(
     That decision is made as early as possible, right after the first
     resolve_expiry() and before strike/leg resolution or pricing.
 
+    Strike itself comes from OptionsResolver.get_balanced_straddle_strike
+    (the strike where CE and PE premiums are closest to each other, i.e.
+    the forward-implied "fair" strike), NOT the plain spot-rounded ATM
+    strike — see that method's own docstring for why the two differ and
+    by how much (growing with time to expiry, ~0 right at expiry). A
+    same-strike straddle built on the spot-rounded strike alone can
+    start with a real premium skew between its two legs (one leg
+    meaningfully pricier than the other from the moment it's sold) —
+    which matters a lot for intraday_dtt_adjusted's adjustment trigger
+    specifically: `smaller_side <= adjustment_trigger_ratio *
+    bigger_side` compares the two sides' CURRENT premiums against each
+    other, with no allowance for however skewed they already were at
+    entry, so a skewed start leaves less real headroom before that
+    trigger fires than the strategy's own rule intends.
+
     Returns `(ce_leg, pe_leg, expiry, strike, switched_to_next_week, spot)`
     — always a 6-tuple, never `None` (there is no skip case left).
     `switched_to_next_week` reflects what actually happened (true only
@@ -189,7 +207,7 @@ async def resolve_atm_straddle_legs(
                 deployment_name, expiry_selector, expiry,
             )
     spot = await resolver.get_spot_price(options_underlying)
-    strike = await resolver.get_atm_strike(options_underlying, expiry, spot_price=spot)
+    strike = await resolver.get_balanced_straddle_strike(options_underlying, expiry)
     ce_leg = await resolver.get_leg(options_underlying, expiry, strike, "CE")
     pe_leg = await resolver.get_leg(options_underlying, expiry, strike, "PE")
     return ce_leg, pe_leg, expiry, strike, switched_to_next_week, spot
@@ -444,12 +462,13 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             "late_start_today": self._late_start_today,
             "switched_to_next_week": switched_to_next_week,
         }
-        # entry_spot: the live underlying price resolve_atm_straddle_legs
-        # actually used to pick this strike -- same key name
+        # entry_spot: the live underlying price at entry -- same key name
         # intraday_dtt_adjusted.py already established for the identical
         # concept, plus "underlying_price" inside each target_basis below
         # so it's visible in the SAME structured block "selected_strike"
-        # is, for a direct "was this really ATM for this spot" check.
+        # is, for a direct "how far was the balanced strike from spot"
+        # check (see resolve_atm_straddle_legs -- the two can legitimately
+        # differ by a few strike-steps now, that's the whole point).
         common_meta = {"strike": strike, "expiry": expiry.isoformat(), "entry_spot": round(spot, 2)}
         await runner.sell(
             ce_leg.tradingsymbol, ce_leg.instrument_token, qty, ce_price, ts,

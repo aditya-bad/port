@@ -43,8 +43,16 @@ RULES:
 
 1. ENTRY — see intraday_dtt_simple's docstring; behavior is identical
    here (`entry_time`, `switch_to_next_week_on_expiry`, `catch_up_late_entry`,
-   ATM strike from spot, sell CE+PE, once per day, no same-day
-   re-entry). Additionally records `entry_spot` (the live spot price at
+   the BALANCED strike — see resolve_atm_straddle_legs/
+   OptionsResolver.get_balanced_straddle_strike, not simply whichever
+   strike is nearest spot — sell CE+PE, once per day, no same-day
+   re-entry). This matters more here than in intraday_dtt_simple: a
+   skewed entry (one leg's premium meaningfully higher than the other's
+   from the moment it's sold) eats directly into the real headroom
+   Section 2's `smaller_side <= adjustment_trigger_ratio * bigger_side`
+   check assumes, since that check compares the two CURRENT premiums
+   against each other with no allowance for however skewed they already
+   were at entry. Additionally records `entry_spot` (the live spot price at
    entry) and `combined_entry_premium` (CE + PE entry price, the
    ORIGINAL 2-leg premium only — never includes adjustment legs' premium,
    see "PROFIT TARGET" and "BREAK-EVEN" below) — both fixed for the day.
