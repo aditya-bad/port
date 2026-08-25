@@ -32,6 +32,10 @@ Full method list:
     list_strikes(underlying, expiry, option_type=None)  -> [float, ...]
     get_strike_step(underlying, expiry)                 -> float
     get_atm_strike(underlying, expiry)                  -> float
+        -- spot_price, if passed, is authoritative. Otherwise centered on
+           get_reference_price() (future, real or synthetic; see
+           atm_reference_mode constructor arg, default "auto").
+    get_reference_price(underlying, expiry)              -> float
   Legs:
     get_leg(underlying, expiry_selector, strike, option_type)
     get_atm_leg(underlying, expiry_selector, option_type)
@@ -134,9 +138,14 @@ def _month_after(year: int, month: int) -> tuple[int, int]:
 
 
 class OptionsResolver:
-    def __init__(self, dispatcher, exchange: str = "NFO"):
+    def __init__(self, dispatcher, exchange: str = "NFO", atm_reference_mode: str = "auto"):
         self.dispatcher = dispatcher
         self.exchange = exchange
+        if atm_reference_mode not in ("auto", "spot"):
+            raise ValueError(
+                f"Unknown atm_reference_mode: {atm_reference_mode!r} (expected 'auto' or 'spot')"
+            )
+        self.atm_reference_mode = atm_reference_mode
 
     def _ex(self, exchange: Optional[str]) -> str:
         return exchange or self.exchange
@@ -295,13 +304,112 @@ class OptionsResolver:
         self, underlying: str, expiry: date, exchange: Optional[str] = None,
         spot_price: Optional[float] = None,
     ) -> float:
-        spot = spot_price if spot_price is not None else await self.get_spot_price(underlying)
+        # spot_price, if passed, is ALWAYS authoritative -- no mode-dependent
+        # exceptions. Only when the caller doesn't supply one do we derive
+        # our own reference price, per self.atm_reference_mode (see
+        # get_reference_price's docstring for why that's the future, real
+        # or synthetic, rather than spot, by default).
+        ref = spot_price if spot_price is not None else await self.get_reference_price(underlying, expiry, exchange)
         step = await self.get_strike_step(underlying, expiry, exchange)
-        raw_atm = round(spot / step) * step
+        raw_atm = round(ref / step) * step
         strikes = await self.list_strikes(underlying, expiry, exchange=exchange)
         # Snap to an actually-listed strike — handles float rounding and
         # any irregular spacing (e.g. tighter strikes right around spot).
         return min(strikes, key=lambda s: abs(s - raw_atm))
+
+    async def get_reference_price(
+        self, underlying: str, expiry: date, exchange: Optional[str] = None,
+    ) -> float:
+        """
+        The price ATM strike selection is centered on, when the caller
+        hasn't supplied its own spot_price. Spot alone skews CE/PE
+        premiums the farther out from expiry you look (cost-of-carry) --
+        this is what actually drives that skew out.
+
+        self.atm_reference_mode == "spot": old behavior, unconditionally.
+        self.atm_reference_mode == "auto" (default):
+          1. If a futures contract expiring exactly on `expiry` is listed,
+             use its live LTP directly -- most reliable, no derivation.
+             NIFTY futures are monthly while options are weekly, so this
+             only matches on the one week a month that's month-end expiry;
+             every other week falls through to (2).
+          2. Otherwise, derive a synthetic future from put-call parity
+             (CE - PE = Future - Strike, at any strike) as the MEDIAN of
+             that estimate computed independently at up to 3 nearby listed
+             strikes (the spot-rounded strike and its immediate
+             neighbors) -- redundant against one stale/wide quote pair
+             skewing the whole estimate. Falls back further to spot if
+             no CE/PE quotes are available near ATM at all (e.g. an
+             illiquid/newly-listed chain), logged as a warning since that
+             degrades silently back to the old, skew-prone behavior.
+        """
+        if self.atm_reference_mode == "spot":
+            return await self.get_spot_price(underlying)
+
+        rows = await self._underlying_rows(underlying, exchange)
+        fut_expiries = {r["expiry"] for r in rows if r["instrument_type"] == "FUT"}
+        if expiry in fut_expiries:
+            return await self.get_futures_price(underlying, expiry_selector=expiry, exchange=exchange)
+
+        try:
+            return await self._synthetic_reference_price(underlying, expiry, exchange)
+        except ValueError as exc:
+            logger.warning(
+                "%s %s: synthetic reference price unavailable (%s) -- "
+                "falling back to spot for this ATM resolution.",
+                underlying, expiry, exc,
+            )
+            return await self.get_spot_price(underlying)
+
+    async def _synthetic_reference_price(
+        self, underlying: str, expiry: date, exchange: Optional[str] = None,
+    ) -> float:
+        spot = await self.get_spot_price(underlying)
+        step = await self.get_strike_step(underlying, expiry, exchange)
+        strikes = await self.list_strikes(underlying, expiry, exchange=exchange)
+        strikes_set = {round(s, 2) for s in strikes}
+        k0 = min(strikes, key=lambda s: abs(s - round(spot / step) * step))
+
+        # Only strikes that are actually listed -- k0's immediate
+        # neighbors can be missing at the very edge of a chain.
+        candidate_strikes = [k for k in (k0 - step, k0, k0 + step) if round(k, 2) in strikes_set]
+
+        legs: dict[float, tuple[OptionLeg, OptionLeg]] = {}
+        for k in candidate_strikes:
+            try:
+                ce = await self.get_leg(underlying, expiry, k, "CE", exchange)
+                pe = await self.get_leg(underlying, expiry, k, "PE", exchange)
+            except ValueError:
+                continue
+            legs[k] = (ce, pe)
+        if not legs:
+            raise ValueError(f"No CE+PE pair listed near ATM for {underlying} {expiry}")
+
+        # One batched .ltp() call for every leg involved, not one round
+        # trip per strike.
+        keys = [leg.key for pair in legs.values() for leg in pair]
+        kite = self._kite()
+        quotes = await asyncio.to_thread(kite.ltp, keys)
+
+        estimates = []
+        for k, (ce, pe) in legs.items():
+            ce_ltp = quotes.get(ce.key, {}).get("last_price")
+            pe_ltp = quotes.get(pe.key, {}).get("last_price")
+            if ce_ltp is None or pe_ltp is None:
+                continue
+            # Put-call parity: CE - PE = Future - Strike, at ANY strike.
+            estimates.append(k + (ce_ltp - pe_ltp))
+        if not estimates:
+            raise ValueError(f"No live CE/PE quotes near ATM for {underlying} {expiry}")
+
+        estimates.sort()
+        n = len(estimates)
+        median = estimates[n // 2] if n % 2 else (estimates[n // 2 - 1] + estimates[n // 2]) / 2
+        logger.info(
+            "%s %s: synthetic reference price %.2f from %d strike(s) %s (spot was %.2f)",
+            underlying, expiry, median, n, sorted(legs.keys()), spot,
+        )
+        return median
 
     # ── Leg resolution ───────────────────────────────────────────────────
 

@@ -156,14 +156,14 @@ async def resolve_atm_straddle_legs(
     `switched_to_next_week` reflects what actually happened (true only
     when the NEXT_WEEK re-resolution above fired), for callers that want
     to record it in trade metadata. `spot` is the live underlying price
-    this call actually used to pick the ATM strike — fetched explicitly,
-    ONCE, here, and threaded into `get_atm_strike(spot_price=...)` rather
-    than left for that method to fetch (and immediately discard)
-    internally, so callers get the EXACT number "ATM" was computed from
-    for their own trade-metadata recording (letting a strike selection
-    be independently double-checked later — "was this genuinely the ATM
-    strike for the spot at that moment") instead of a second, separately-
-    timed spot read that could disagree with it by a few ticks.
+    at the moment of this entry — fetched explicitly, ONCE, here. It is
+    NOT what `get_atm_strike` picks the strike from — that's
+    `resolver.get_reference_price()` (the future, real or synthetic;
+    see `OptionsResolver.atm_reference_mode`), on purpose, since spot
+    alone skews CE/PE premiums the farther out from expiry an entry is.
+    `spot` is still returned/recorded here as its own fact — "spot at
+    entry" — for trade metadata, independent of what the strike was
+    actually centered on; do NOT delete this as unused-looking cruft.
 
     Does NOT catch NoKiteSession or any other exception — callers wrap
     this in their own try/except (both currently log and skip today's
@@ -189,7 +189,7 @@ async def resolve_atm_straddle_legs(
                 deployment_name, expiry_selector, expiry,
             )
     spot = await resolver.get_spot_price(options_underlying)
-    strike = await resolver.get_atm_strike(options_underlying, expiry, spot_price=spot)
+    strike = await resolver.get_atm_strike(options_underlying, expiry)
     ce_leg = await resolver.get_leg(options_underlying, expiry, strike, "CE")
     pe_leg = await resolver.get_leg(options_underlying, expiry, strike, "PE")
     return ce_leg, pe_leg, expiry, strike, switched_to_next_week, spot
@@ -213,6 +213,7 @@ async def resolve_atm_straddle_legs(
         "lots_per_trade": 1,
         "catch_up_late_entry": True,
         "switch_to_next_week_on_expiry": False,
+        "atm_reference_mode": "auto",
     },
 )
 class IntradayDTTSimpleStrategy(StrategyBase):
@@ -277,7 +278,10 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         # entry with "No option expiries found for 'SENSEX' on NFO" —
         # the same bug pivot_supertrend_options.py had (see main
         # README's Step 78).
-        self.resolver = OptionsResolver(runner.dispatcher, exchange=options_exchange_for(self.options_underlying))
+        self.resolver = OptionsResolver(
+            runner.dispatcher, exchange=options_exchange_for(self.options_underlying),
+            atm_reference_mode=cfg.get("atm_reference_mode", "auto"),
+        )
 
         self.today: Optional[date] = None
         self.entered_today = False

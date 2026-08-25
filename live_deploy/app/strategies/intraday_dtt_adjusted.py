@@ -301,6 +301,7 @@ def _legs_snapshot(legs: dict) -> dict:
         "lots_per_trade": 1,
         "catch_up_late_entry": True,
         "switch_to_next_week_on_expiry": False,
+        "atm_reference_mode": "auto",
     },
 )
 class IntradayDTTAdjustedStrategy(StrategyBase):
@@ -396,7 +397,10 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         # README's Step 78). intraday_dtt_advanced.py inherits this
         # unchanged (it subclasses this class and never overrides
         # on_start's resolver construction).
-        self.resolver = OptionsResolver(runner.dispatcher, exchange=options_exchange_for(self.options_underlying))
+        self.resolver = OptionsResolver(
+            runner.dispatcher, exchange=options_exchange_for(self.options_underlying),
+            atm_reference_mode=cfg.get("atm_reference_mode", "auto"),
+        )
 
         self.today: Optional[date] = None
         self.entered_today = False

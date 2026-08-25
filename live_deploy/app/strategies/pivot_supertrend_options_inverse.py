@@ -172,6 +172,7 @@ logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options_inve
         "options_underlying": "NIFTY",
         "expiry_selector": "THIS_WEEK",
         "switch_to_next_week_on_expiry": False,
+        "atm_reference_mode": "auto",
         "atr_smoothing": "wilder",
         "hold_candles": 1,
         "force_exit_time": "15:00",
@@ -236,7 +237,10 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         # was silently failing with "No option expiries found for
         # 'SENSEX' on NFO", identical to pivot_supertrend_options.py's
         # own copy of this same bug).
-        self.resolver = OptionsResolver(runner.dispatcher, exchange=options_exchange_for(self.options_underlying))
+        self.resolver = OptionsResolver(
+            runner.dispatcher, exchange=options_exchange_for(self.options_underlying),
+            atm_reference_mode=cfg.get("atm_reference_mode", "auto"),
+        )
 
         self.active_leg_token: Optional[int] = None
         self.active_leg_symbol: Optional[str] = None

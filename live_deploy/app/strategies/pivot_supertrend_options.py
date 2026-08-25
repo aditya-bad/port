@@ -177,6 +177,7 @@ logger = logging.getLogger("live_deploy.strategies.pivot_supertrend_options")
         "options_underlying": "NIFTY",
         "expiry_selector": "THIS_WEEK",
         "switch_to_next_week_on_expiry": False,
+        "atm_reference_mode": "auto",
         "lots_per_trade": 1,
         "pivot_type": "classic",
         "atr_smoothing": "wilder",
@@ -269,7 +270,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         # a real bug: every SENSEX entry attempt was silently failing
         # with "No option expiries found for 'SENSEX' on NFO" — see
         # options_exchange_for's own docstring in app/options/resolver.py.
-        self.resolver = OptionsResolver(runner.dispatcher, exchange=options_exchange_for(self.options_underlying))
+        self.resolver = OptionsResolver(
+            runner.dispatcher, exchange=options_exchange_for(self.options_underlying),
+            atm_reference_mode=cfg.get("atm_reference_mode", "auto"),
+        )
 
         # Which option leg (if any) is currently open. Unlike
         # pivot_supertrend, the traded instrument_token isn't fixed — a

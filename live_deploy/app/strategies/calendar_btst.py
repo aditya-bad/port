@@ -9,12 +9,13 @@ STRUCTURE (4 legs, one entry, resolved together):
   SHORT a THIS_WEEK ATM straddle  (sell ATM CE, sell ATM PE)
   LONG  a NEXT_WEEK ATM straddle  (buy  ATM CE, buy  ATM PE)
   All four legs share the SAME strike — resolved ONCE from a single
-  spot-price read (`OptionsResolver.get_atm_strike`) against
-  THIS_WEEK's strike ladder, then reused for NEXT_WEEK's leg lookups
-  too, rather than independently re-deriving "ATM" per expiry (which
-  could theoretically drift by one strike step between two separate
-  spot-price reads a few calls apart). Same lot count on all 4 legs
-  (`lots_per_trade`).
+  reference-price read (`OptionsResolver.get_atm_strike`, centered on
+  the future — real or synthetic, see `atm_reference_mode` — not spot)
+  against THIS_WEEK's strike ladder, then reused for NEXT_WEEK's leg
+  lookups too, rather than independently re-deriving "ATM" per expiry
+  (which could theoretically drift by one strike step between two
+  separate reference-price reads a few calls apart). Same lot count on
+  all 4 legs (`lots_per_trade`).
 
   The trade this approximates: collect THIS_WEEK's faster theta decay
   overnight while the NEXT_WEEK long leg's slower decay gives some
@@ -157,6 +158,7 @@ logger = logging.getLogger("live_deploy.strategies.calendar_btst")
         "lots_per_trade": 1,
         "catch_up_late_entry": True,
         "switch_to_next_week_on_expiry": False,
+        "atm_reference_mode": "auto",
     },
 )
 class CalendarBTSTStrategy(StrategyBase):
@@ -203,7 +205,10 @@ class CalendarBTSTStrategy(StrategyBase):
         # entry with "No option expiries found for 'SENSEX' on NFO" —
         # the same bug pivot_supertrend_options.py had (see main
         # README's Step 78).
-        self.resolver = OptionsResolver(runner.dispatcher, exchange=options_exchange_for(self.options_underlying))
+        self.resolver = OptionsResolver(
+            runner.dispatcher, exchange=options_exchange_for(self.options_underlying),
+            atm_reference_mode=cfg.get("atm_reference_mode", "auto"),
+        )
 
         self.today: Optional[date] = None
         self.entered_today = False
@@ -368,8 +373,7 @@ class CalendarBTSTStrategy(StrategyBase):
                 short_expiry = this_week_expiry
                 long_expiry = await self.resolver.resolve_expiry(self.options_underlying, "NEXT_WEEK")
 
-            spot = await self.resolver.get_spot_price(self.options_underlying)
-            strike = await self.resolver.get_atm_strike(self.options_underlying, short_expiry, spot_price=spot)
+            strike = await self.resolver.get_atm_strike(self.options_underlying, short_expiry)
 
             short_ce = await self.resolver.get_leg(self.options_underlying, short_expiry, strike, "CE")
             short_pe = await self.resolver.get_leg(self.options_underlying, short_expiry, strike, "PE")
