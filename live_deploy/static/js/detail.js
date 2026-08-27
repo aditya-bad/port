@@ -87,6 +87,7 @@ const Detail = {
       ${dep.status === 'paused' ? '<button class="ux-menu-item" onclick="UIKit.closePopover(); Detail.openEditConfigModal()">Edit configuration</button>' : ''}
       <button class="ux-menu-item" onclick="UIKit.closePopover(); location.hash='#/deployments/${dep.id}/configuration'">View configuration</button>
       <div class="ux-menu-sep"></div>
+      ${dep.status !== 'stopped' ? `<button class="ux-menu-item" onclick="UIKit.closePopover(); Detail.flatten()">Close open positions (don't stop)</button>` : ''}
       ${dep.status !== 'stopped' ? `<button class="ux-menu-item" style="color:var(--loss)" onclick="UIKit.closePopover(); UIKit.openStopDialog('${dep.id}', ${JSON.stringify(dep.deployment_name)})">Stop deployment</button>` : ''}
       ${dep.status === 'stopped' ? `<button class="ux-menu-item" style="color:var(--loss)" onclick="UIKit.closePopover(); Detail.deleteDeployment()">Delete deployment</button>` : ''}`);
   },
@@ -1117,6 +1118,18 @@ const Detail = {
     if (!r.ok) { alert('Could not pause deployment.'); return; }
     await this.load(this._id);
     this.openEditConfigModal();
+  },
+
+  // Closes every currently open position for THIS deployment at the
+  // last known price, without stopping it -- see manager.flatten's own
+  // docstring: pauses (or stays paused) so it can just be Resumed later
+  // with nothing left open, rather than needing force_close + recreate.
+  async flatten() {
+    if (!confirm(`Close every open position for "${this._dep.deployment_name}" right now, at the last known price? The deployment itself will be paused, not stopped -- you can Resume it once you're ready.`)) return;
+    const { ok, data } = await Api.flattenDeployment(this._id);
+    if (!ok) { alert(data.detail || 'Could not flatten this deployment.'); return; }
+    alert(`Closed ${data.positions_closed} position(s).`);
+    await this.load(this._id);
   },
 
   // ── Header actions ──────────────────────────────────────────────

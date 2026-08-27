@@ -518,6 +518,33 @@ async def stop_deployment(deployment_id: UUID, request: Request, force_close: bo
     return {"status": "stopped"}
 
 
+@router.post("/{deployment_id}/flatten")
+async def flatten_deployment(deployment_id: UUID, request: Request):
+    """
+    Close every open position for THIS ONE deployment, right now, at
+    the last known price -- WITHOUT stopping it (see manager.flatten's
+    own docstring: pauses if it was active, leaves it paused if it
+    already was, so it can just be Resumed later with nothing left
+    open, rather than having to be recreated). The single-deployment
+    counterpart to /flatten-all below, which does the same thing but
+    indiscriminately to every non-stopped deployment -- this exists so
+    "get this one out of a stuck position without touching anything
+    else" doesn't require reaching for the global panic button.
+    """
+    manager = request.app.state.deployment_manager
+    try:
+        closed = await manager.flatten(deployment_id)
+    except KeyError:
+        raise HTTPException(404, "No such deployment")
+    cache = request.app.state.cache
+    await asyncio.gather(
+        cache.refresh_now("deployments"),
+        cache.refresh_now("positions_open"),
+        cache.refresh_now("trades_recent"),
+    )
+    return {"positions_closed": closed}
+
+
 @router.post("/{deployment_id}/delete")
 async def delete_deployment(deployment_id: UUID, request: Request):
     """

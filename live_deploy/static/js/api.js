@@ -113,6 +113,11 @@ const Api = {
   async stopDeployment(id, forceClose) {
     return fetch(`/deployments/${id}/stop?force_close=${forceClose}`, { method: 'POST' });
   },
+  async flattenDeployment(id) {
+    const r = await fetch(`/deployments/${id}/flatten`, { method: 'POST' });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, data };
+  },
   async deleteDeployment(id) {
     return fetch(`/deployments/${id}/delete`, { method: 'POST' });
   },
