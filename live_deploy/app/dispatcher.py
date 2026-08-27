@@ -160,15 +160,57 @@ class LiveDataDispatcher:
         restarting the FastAPI process. Safe to call whether or not a
         connection currently exists (first-ever login, or a same-day
         re-login after a token got revoked).
+
+        THE BUG THIS FIXES: `_connect_with` -> `KiteTicker.connect()`
+        calls Twisted's `connectWS()` directly, on whatever thread calls
+        it. For the very FIRST connection this process ever makes
+        (`old_kws is None`, e.g. from bind_loop() at startup), that's
+        fine — Twisted's reactor isn't running yet, so nothing else is
+        touching it concurrently; connect() is what bootstraps the
+        reactor's own background thread. But on every call AFTER that,
+        the reactor is already alive and running on that background
+        thread from the PREVIOUS connection — calling connectWS() again
+        directly from THIS (the FastAPI/asyncio) thread races the
+        reactor thread over Twisted's own internal state, exactly the
+        class of bug this module's own docstring already warns about
+        for subscribe/unsubscribe/close (every one of which correctly
+        goes through _schedule_on_ticker_thread) — this call was simply
+        missed. The race doesn't reliably crash; it just as often leaves
+        the new connection silently stuck mid-handshake forever
+        (`on_connect` never fires, `self.connected` never flips back to
+        True) — matching exactly the reported symptom: a re-login (or
+        any login after the first) leaves the banner stuck on
+        "disconnected" indefinitely, only ever cleared by a full process
+        restart (a fresh, not-yet-running reactor).
+
+        Fix: for every reconnect except the very first, do the
+        close-old-then-connect-new sequence as ONE callback scheduled
+        onto the reactor thread via _schedule_on_ticker_thread, instead
+        of calling connect() directly from here. Bundled as one callback
+        (not two separately-scheduled ones) so close and connect can't
+        be reordered or race each other either.
         """
         old_kws = self._kws
-        if old_kws is not None:
-            try:
-                self._schedule_on_ticker_thread(old_kws.close)
-            except Exception:
-                logger.exception("Error closing previous Kite WebSocket during reconnect")
         self.connected = False
-        self._connect_with(access_token)
+
+        if old_kws is None:
+            # First-ever connection this process -- the reactor hasn't
+            # started yet, so there's no concurrent thread to race with.
+            # Mirrors bind_loop()'s own direct call for this exact case.
+            self._connect_with(access_token)
+        else:
+            def _do_reconnect():
+                try:
+                    old_kws.close()
+                except Exception:
+                    logger.exception("Error closing previous Kite WebSocket during reconnect")
+                self._connect_with(access_token)
+
+            try:
+                self._schedule_on_ticker_thread(_do_reconnect)
+            except Exception:
+                logger.exception("Error scheduling Kite reconnect on ticker thread")
+
         logger.info("Reconnected to Kite with a fresh access_token")
 
     def stop(self) -> None:
