@@ -641,8 +641,14 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             # with it by a tick or two. Also one fewer live REST/cache
             # round-trip per entry.
             ce_leg, pe_leg, expiry, strike, switched_to_next_week, entry_spot = resolved
-            ce_price = await self.resolver.get_ltp(ce_leg)
-            pe_price = await self.resolver.get_ltp(pe_leg)
+            # ONE batched Kite REST call for both legs, not two separate
+            # ones -- several straddle strategies share the same
+            # entry_time, and pricing N legs as N separate calls each is
+            # exactly what was tripping Kite's own rate limit ("Too many
+            # requests") when enough of them landed in the same second.
+            prices = await self.resolver.get_ltp_many([ce_leg, pe_leg])
+            ce_price = prices[ce_leg.key]
+            pe_price = prices[pe_leg.key]
         except NoKiteSession:
             logger.warning(
                 "%s: entry_time reached but no Kite session yet — skipping "

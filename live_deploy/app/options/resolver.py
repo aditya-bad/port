@@ -51,6 +51,7 @@ Full method list:
     get_futures_price(underlying, expiry_selector="THIS_MONTH")
   Pricing:
     get_ltp(leg_or_key)
+    get_ltp_many(legs_or_keys)      -> {key: last_price}, ONE REST call
     get_quote(leg_or_key)
     get_spot_price(underlying)      -- live tick cache first, REST fallback
   Misc:
@@ -70,6 +71,8 @@ import logging
 from dataclasses import replace
 from datetime import date, datetime
 from typing import Iterable, Optional, Union
+
+from kiteconnect.exceptions import KiteException
 
 from .client import get_kite_connect
 from .models import OptionLeg
@@ -389,7 +392,7 @@ class OptionsResolver:
         # trip per strike.
         keys = [leg.key for pair in legs.values() for leg in pair]
         kite = self._kite()
-        quotes = await asyncio.to_thread(kite.ltp, keys)
+        quotes = await self._kite_call(kite.ltp, keys)
 
         estimates = []
         for k, (ce, pe) in legs.items():
@@ -639,16 +642,72 @@ class OptionsResolver:
 
     # ── Live pricing ─────────────────────────────────────────────────────
 
+    # Kite's own per-second REST rate limit -- confirmed in production
+    # logs as `NetworkException: Too many requests` (KiteException.code
+    # == 429). It trips not because any one strategy calls Kite too
+    # often, but because several straddle/spread strategies sharing the
+    # same entry_time each price 2-4 legs of their own, and enough of
+    # those land in the same second across every deployment at once.
+    # A 429 is transient by nature -- worth one bounded retry before
+    # giving up and skipping the entry outright, same as this file's
+    # own daily instrument-master fetch already tolerates a slow network
+    # without failing every caller waiting on it.
+    _KITE_RETRY_ATTEMPTS = 3
+    _KITE_RETRY_BASE_DELAY = 0.6   # seconds; doubles each retry
+
+    async def _kite_call(self, fn, *args):
+        """
+        asyncio.to_thread(fn, *args), with automatic retry-with-backoff
+        SPECIFICALLY for a 429 rate-limit response. Any other
+        KiteException (bad token, invalid instrument, ...) is NOT
+        transient and is NOT retried here -- raised straight through,
+        same as before this helper existed.
+        """
+        last_exc = None
+        for attempt in range(self._KITE_RETRY_ATTEMPTS):
+            try:
+                return await asyncio.to_thread(fn, *args)
+            except KiteException as exc:
+                if getattr(exc, "code", None) != 429:
+                    raise
+                last_exc = exc
+                if attempt < self._KITE_RETRY_ATTEMPTS - 1:
+                    delay = self._KITE_RETRY_BASE_DELAY * (2 ** attempt)
+                    logger.warning(
+                        "Kite rate limit (429, %r) -- retrying in %.1fs (attempt %d/%d)",
+                        str(exc), delay, attempt + 1, self._KITE_RETRY_ATTEMPTS,
+                    )
+                    await asyncio.sleep(delay)
+        raise last_exc
+
     async def get_ltp(self, leg_or_key: Union[OptionLeg, str]) -> float:
         key = leg_or_key.key if isinstance(leg_or_key, OptionLeg) else leg_or_key
         kite = self._kite()
-        resp = await asyncio.to_thread(kite.ltp, key)
+        resp = await self._kite_call(kite.ltp, key)
         return resp[key]["last_price"]
+
+    async def get_ltp_many(self, legs_or_keys: Iterable[Union[OptionLeg, str]]) -> dict[str, float]:
+        """
+        Batched get_ltp -- ONE Kite REST round trip for every leg passed
+        in, instead of one call per leg. Returns {key: last_price},
+        keyed by each leg's own `.key` (or the raw string, if one was
+        passed directly), so a caller pricing multiple legs (a
+        straddle's CE+PE, a calendar spread's 4 legs) makes exactly one
+        request no matter how many legs it needs priced -- directly
+        cutting the simultaneous REST volume that trips the 429 above
+        in the first place, not just retrying after the fact.
+        """
+        keys = [lk.key if isinstance(lk, OptionLeg) else lk for lk in legs_or_keys]
+        if not keys:
+            return {}
+        kite = self._kite()
+        resp = await self._kite_call(kite.ltp, keys)
+        return {k: resp[k]["last_price"] for k in keys}
 
     async def get_quote(self, leg_or_key: Union[OptionLeg, str]) -> dict:
         key = leg_or_key.key if isinstance(leg_or_key, OptionLeg) else leg_or_key
         kite = self._kite()
-        resp = await asyncio.to_thread(kite.quote, key)
+        resp = await self._kite_call(kite.quote, key)
         return resp[key]
 
     async def get_spot_price(self, underlying: str) -> float:
@@ -669,7 +728,7 @@ class OptionsResolver:
 
         key = f"{exchange}:{symbol}"
         kite = self._kite()
-        resp = await asyncio.to_thread(kite.ltp, key)
+        resp = await self._kite_call(kite.ltp, key)
         return resp[key]["last_price"]
 
     # ── Misc ─────────────────────────────────────────────────────────────

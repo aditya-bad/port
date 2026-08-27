@@ -381,11 +381,17 @@ class CalendarBTSTStrategy(StrategyBase):
             long_pe = await self.resolver.get_leg(self.options_underlying, long_expiry, strike, "PE")
 
             # Price all 4 BEFORE any fill -- a pricing failure here never
-            # leaves a partial entry.
-            short_ce_price = await self.resolver.get_ltp(short_ce)
-            short_pe_price = await self.resolver.get_ltp(short_pe)
-            long_ce_price = await self.resolver.get_ltp(long_ce)
-            long_pe_price = await self.resolver.get_ltp(long_pe)
+            # leaves a partial entry. ONE batched Kite REST call for all
+            # 4 legs, not four separate ones -- several straddle/spread
+            # strategies share the same entry_time, and pricing N legs
+            # as N separate calls each is exactly what was tripping
+            # Kite's own rate limit ("Too many requests") when enough of
+            # them landed in the same second.
+            prices = await self.resolver.get_ltp_many([short_ce, short_pe, long_ce, long_pe])
+            short_ce_price = prices[short_ce.key]
+            short_pe_price = prices[short_pe.key]
+            long_ce_price = prices[long_ce.key]
+            long_pe_price = prices[long_pe.key]
         except NoKiteSession:
             logger.warning(
                 "%s: entry_time reached but no Kite session yet — skipping "
