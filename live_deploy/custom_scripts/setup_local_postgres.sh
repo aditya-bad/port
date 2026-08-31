@@ -113,6 +113,15 @@ if docker container inspect "$DB_CONTAINER" >/dev/null 2>&1; then
   docker start "$DB_CONTAINER" >/dev/null
 else
   echo "-- creating container '$DB_CONTAINER' (image $DB_IMAGE, volume $DB_VOLUME)"
+  # Mount at /var/lib/postgresql (the WHOLE thing), not the older
+  # convention of /var/lib/postgresql/data -- CONFIRMED NECESSARY BY
+  # ACTUALLY HITTING THIS, not assumed: postgres:18's official image
+  # changed its expected layout (pg_ctlcluster-style, major-version-
+  # specific subdirectories under /var/lib/postgresql) and refuses to
+  # start at all against the old-style mount point, printing exactly
+  # this advice itself. Every version this script might reasonably use
+  # (17, 18, ...) accepts this newer mount point fine, so there's no
+  # reason to keep the old one around just for backwards compatibility.
   docker run -d \
     --name "$DB_CONTAINER" \
     --network "$DB_NETWORK" \
@@ -120,7 +129,7 @@ else
     -e POSTGRES_USER="$DB_USER" \
     -e POSTGRES_PASSWORD="$DB_PASSWORD" \
     -e POSTGRES_DB="$DB_NAME" \
-    -v "$DB_VOLUME":/var/lib/postgresql/data \
+    -v "$DB_VOLUME":/var/lib/postgresql \
     "$DB_IMAGE" >/dev/null
 fi
 
