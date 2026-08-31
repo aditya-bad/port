@@ -49,19 +49,6 @@ if [ ! -f "$CONFIG_PATH" ]; then
   exit 1
 fi
 
-# Same password used for BOTH the new Postgres container (step 1) and
-# the config.json entry written at the end — generated ONCE, here, up
-# front, rather than letting setup_local_postgres.sh generate its own
-# independently (which this script would then have no way to recover
-# for the final config.json write without parsing its output).
-if [ -z "${DB_PASSWORD:-}" ]; then
-  DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-  GENERATED_PASSWORD=1
-else
-  GENERATED_PASSWORD=0
-fi
-export DB_PASSWORD
-
 REMOTE_DATABASE_URL="$(python3 -c "
 import json
 with open('$CONFIG_PATH') as f:
@@ -72,20 +59,35 @@ if [ -z "$REMOTE_DATABASE_URL" ]; then
   exit 1
 fi
 
-LOCAL_DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_CONTAINER}:5432/${DB_NAME}"
-
 echo "================================================================"
 echo " live_deploy: fully automated local-DB migration"
 echo "================================================================"
 echo "  config file          : $CONFIG_PATH"
 echo "  migrating FROM       : ${REMOTE_DATABASE_URL%%@*}@*** (current config.json)"
-echo "  migrating TO         : ${LOCAL_DATABASE_URL%%@*}@*** ($DB_CONTAINER on $DB_NETWORK)"
+echo "  migrating TO         : $DB_CONTAINER on $DB_NETWORK"
 echo "================================================================"
 echo
 
 echo ">>> Step 1/4 — setting up local Postgres container"
 "$SCRIPT_DIR/setup_local_postgres.sh"
 echo
+
+# The password is decided/persisted BY setup_local_postgres.sh itself
+# (into PASSWORD_FILE — same file, same value, whether this is the
+# first run ever or a repeat) — read it back here rather than this
+# script generating its own independently. CONFIRMED NECESSARY BY
+# ACTUALLY HITTING THIS, not assumed: a password generated fresh here
+# on every run would mismatch whatever the container's data volume was
+# ACTUALLY initialized with on a previous run (Postgres only applies
+# POSTGRES_PASSWORD on true first-time init, not on every container
+# start) — InvalidPasswordError on every run after the first.
+PASSWORD_FILE="${PASSWORD_FILE:-.local_db_password}"
+if [ ! -f "$PASSWORD_FILE" ]; then
+  echo "ERROR: $PASSWORD_FILE not found after setup_local_postgres.sh ran — something went wrong in step 1." >&2
+  exit 1
+fi
+DB_PASSWORD="$(cat "$PASSWORD_FILE")"
+LOCAL_DATABASE_URL="postgresql://${DB_USER}:${DB_PASSWORD}@${DB_CONTAINER}:5432/${DB_NAME}"
 
 echo ">>> Step 2/4 — building schema on the local database"
 # Run this INSIDE the already-running app container, not as plain
@@ -149,12 +151,11 @@ echo "================================================================"
 echo " Migration complete."
 echo "================================================================"
 echo "  Local database_url: $LOCAL_DATABASE_URL"
-if [ "$GENERATED_PASSWORD" -eq 1 ]; then
-  echo
-  echo "  (password was auto-generated — save it somewhere else too,"
-  echo "   e.g. a password manager; it is only stored in config.json"
-  echo "   and this terminal's own scrollback from here on)"
-fi
+echo
+echo "  Its password is saved in two places: $CONFIG_PATH (just written)"
+echo "  and $PASSWORD_FILE (used to reconnect if you ever re-run this"
+echo "  script — chmod 600'd, but consider it a real credential and add"
+echo "  it to .gitignore if it isn't already covered)."
 echo
 echo "  RESTART THE APP CONTAINER to actually pick this up —"
 echo "  config.json is bind-mounted read-only, so editing the host"

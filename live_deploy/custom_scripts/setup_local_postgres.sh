@@ -36,14 +36,36 @@ DB_USER="${DB_USER:-liveuser}"
 DB_NAME="${DB_NAME:-live_deploy}"
 DB_IMAGE="${DB_IMAGE:-postgres:16}"
 
-# DB_PASSWORD: use whatever's given, or generate one and print it ONCE
-# -- never hardcoded in this script, never written anywhere but stdout,
-# your own responsibility to save it (into the LOCAL_DATABASE_URL you
-# set on the app container in step 3 above).
+# DB_PASSWORD: use whatever's given, or reuse/generate one PERSISTED to
+# PASSWORD_FILE. CONFIRMED NECESSARY BY ACTUALLY HITTING THIS, not
+# assumed: Postgres only applies POSTGRES_PASSWORD on a container's
+# TRUE first-time initialization of an empty data volume -- the
+# idempotent "already exists, just start it" path below does NOT
+# re-apply it. A password generated fresh on every run (the original
+# design here) works for the very first run, then permanently breaks
+# every run after it: a NEW random password gets built into
+# LOCAL_DATABASE_URL while the actual container still only knows the
+# OLD one from whenever its volume was actually initialized --
+# InvalidPasswordError. Persisting it here is what makes every run
+# (first AND repeat) agree on the same actual password.
+PASSWORD_FILE="${PASSWORD_FILE:-.local_db_password}"
 if [ -z "${DB_PASSWORD:-}" ]; then
-  DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-  GENERATED_PASSWORD=1
+  if [ -f "$PASSWORD_FILE" ]; then
+    DB_PASSWORD="$(cat "$PASSWORD_FILE")"
+    GENERATED_PASSWORD=0
+    echo "-- reusing existing local DB password from $PASSWORD_FILE"
+  else
+    DB_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+    echo "$DB_PASSWORD" > "$PASSWORD_FILE"
+    chmod 600 "$PASSWORD_FILE"
+    GENERATED_PASSWORD=1
+  fi
 else
+  # Explicitly given -- still persist it, so a LATER run that doesn't
+  # set DB_PASSWORD explicitly reuses THIS one instead of generating a
+  # fresh, mismatched one.
+  echo "$DB_PASSWORD" > "$PASSWORD_FILE"
+  chmod 600 "$PASSWORD_FILE"
   GENERATED_PASSWORD=0
 fi
 

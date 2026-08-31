@@ -1,5 +1,7 @@
 # Credentials — never commit these
 config.json
+config.json.bak.*
+.local_db_password
 
 # custom_scripts/ output -- real market-data seed dumps
 # (register_supertrend_options_strategies.py's own JSON output), not
