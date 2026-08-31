@@ -63,10 +63,16 @@ echo
 echo "This copies DATA ONLY — the local database's tables must already"
 echo "exist (run create_local_schema.py first if you haven't)."
 echo
-read -r -p "Continue? [y/N] " confirm
-if [ "${confirm,,}" != "y" ]; then
-  echo "Aborted."
-  exit 1
+
+# AUTO_CONFIRM=1 skips the interactive prompt -- set by
+# migrate_to_local_db.sh when running this as one step of the full
+# automated pipeline; direct/manual invocation still prompts by default.
+if [ "${AUTO_CONFIRM:-}" != "1" ]; then
+  read -r -p "Continue? [y/N] " confirm
+  if [ "${confirm,,}" != "y" ]; then
+    echo "Aborted."
+    exit 1
+  fi
 fi
 
 echo "-- running pg_dump (remote, data-only) piped into psql (local)..."

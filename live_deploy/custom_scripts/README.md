@@ -129,10 +129,36 @@ zero writes.
 
 ### Moving off a remote-hosted database onto a local one
 
-Three scripts, a different shape from everything above (two are Docker
-orchestration shell scripts, not standalone Python against `queries.py`)
-— run in this exact order, once, to move this app from a remote-hosted
-Postgres (Neon, etc.) onto one running alongside its own server:
+**`migrate_to_local_db.sh`** — the one-shot version. Run this, from the
+host (same machine your `docker run`/redeploy script runs from, since
+it needs to edit the host's own `config.json` — see its own header):
+
+```bash
+cd live_deploy
+./custom_scripts/migrate_to_local_db.sh
+```
+
+It reads the CURRENT `database_url` straight out of `config.json` (you
+don't re-type it), then runs all four steps below non-interactively:
+spins up a local Postgres container, builds its schema, copies every
+existing row across, and rewrites `config.json`'s own `database_url` to
+point at the new local database (backing up the previous `config.json`
+first, timestamped, alongside it). Prints the new connection string
+(and the auto-generated password, if it generated one) at the end — the
+one and only place that's shown, so save it somewhere. The very last
+thing it tells you is to restart the app container — `config.json` is
+bind-mounted read-only into it (see the Dockerfile's own header), so
+editing the host's copy alone isn't picked up until the container
+actually restarts.
+
+Every setting (container/network names, `DB_USER`, `DB_PASSWORD`,
+`CONFIG_PATH`, ...) is overridable via environment variable — see the
+script's own header for the full list and defaults.
+
+**The four steps it runs, if you'd rather do this by hand / one at a
+time** (a different shape from everything else in this README — three
+are Docker orchestration shell scripts and one calls the app's own
+migration runner directly, not `queries.py`):
 
 1. **`setup_local_postgres.sh`** — runs Postgres as a sibling Docker
    container (official `postgres` image, own named volume, own Docker
@@ -160,17 +186,21 @@ Postgres (Neon, etc.) onto one running alongside its own server:
    against what step 2 already inserted there itself; that table is
    migration-application history, not real application data, and both
    sides should already agree on it since both run the same migration
-   files).
+   files). Prompts for confirmation before touching anything unless
+   `AUTO_CONFIRM=1` is set (which `migrate_to_local_db.sh` sets
+   automatically — direct/manual invocation still prompts by default).
+4. Manually: update `config.json`'s own `database_url` to the new local
+   connection string, then restart the app container.
 
-After all three: set `LOCAL_DATABASE_URL` (the connection string step 1
-printed) as an environment variable on the `live-deploy` container and
-restart it. See `app/config.py`'s own `LOCAL DB OVERRIDE` comment —
-this env var unconditionally overrides whatever `database_url`/
-`DATABASE_URL` would otherwise resolve to, remote value included, so
-there's no need to hunt down and edit every place the old connection
-string might still be sitting around (a stale `config.json`, a leftover
-`DATABASE_URL` in a deploy script). Unset it to go back to normal
-resolution at any time.
+There's also a code-level safety net independent of all of the above —
+`app/config.py`'s `LOCAL_DATABASE_URL` env var: if set, it
+unconditionally overrides whatever `database_url`/`DATABASE_URL` would
+otherwise resolve to, remote value included, even if `config.json`
+itself never gets updated (a stale file, a deploy script that
+regenerates it from an old template). `migrate_to_local_db.sh` updates
+`config.json` directly instead of relying on this, but the env var is
+still there as a second line of defense — set it too if you want belt
+and suspenders. Unset it to go back to normal resolution at any time.
 
 There used to be a `resync_supertrend_state.py` here — a standalone
 script to manually correct a `pivot_supertrend*` deployment's SuperTrend
