@@ -48,7 +48,16 @@ set -euo pipefail
 : "${REMOTE_DATABASE_URL:?Set REMOTE_DATABASE_URL to your current (remote) database_url}"
 : "${LOCAL_DATABASE_URL:?Set LOCAL_DATABASE_URL to the local DB's connection string (see setup_local_postgres.sh's output)}"
 DB_NETWORK="${DB_NETWORK:-live_deploy_net}"
-DB_IMAGE="${DB_IMAGE:-postgres:16}"
+# PG_CLIENT_IMAGE, deliberately SEPARATE from setup_local_postgres.sh's
+# own DB_IMAGE (which provisions the actual local SERVER — no reason to
+# force that newer than it needs to be). This is only the pg_dump/psql
+# CLIENT TOOLS' own version, and it genuinely matters: pg_dump refuses
+# to dump from a server NEWER than itself ("aborting because of server
+# version mismatch" — CONFIRMED by actually hitting this against a real
+# Neon database, not theoretical). A newer client dumping FROM an older
+# server is fine; the reverse isn't. Bumped past postgres:16 for
+# exactly this reason — if your remote is newer still, override this.
+PG_CLIENT_IMAGE="${PG_CLIENT_IMAGE:-postgres:17}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "ERROR: docker is not installed / not on PATH." >&2
@@ -76,18 +85,27 @@ if [ "${AUTO_CONFIRM:-}" != "1" ]; then
 fi
 
 echo "-- running pg_dump (remote, data-only) piped into psql (local)..."
-docker run --rm \
+if ! docker run --rm \
   --network "$DB_NETWORK" \
   -e REMOTE_DATABASE_URL="$REMOTE_DATABASE_URL" \
   -e LOCAL_DATABASE_URL="$LOCAL_DATABASE_URL" \
-  "$DB_IMAGE" \
+  "$PG_CLIENT_IMAGE" \
   bash -c '
     set -euo pipefail
     pg_dump --data-only --no-owner --no-privileges --disable-triggers \
       --exclude-table=schema_migrations \
       --dbname="$REMOTE_DATABASE_URL" \
       | psql --set ON_ERROR_STOP=on --dbname="$LOCAL_DATABASE_URL"
-  '
+  '; then
+  echo >&2
+  echo "ERROR: the pg_dump/psql step above failed. If the error mentions" >&2
+  echo "'server version mismatch', your remote database is running a" >&2
+  echo "newer Postgres major version than PG_CLIENT_IMAGE=$PG_CLIENT_IMAGE" >&2
+  echo "— re-run with a newer client image, e.g.:" >&2
+  echo "  PG_CLIENT_IMAGE=postgres:18 ./custom_scripts/copy_remote_data_to_local.sh" >&2
+  echo "(or, via the full pipeline: PG_CLIENT_IMAGE=postgres:18 ./custom_scripts/migrate_to_local_db.sh)" >&2
+  exit 1
+fi
 
 echo
 echo "-- done. Sanity-check row counts on both sides, e.g.:"
