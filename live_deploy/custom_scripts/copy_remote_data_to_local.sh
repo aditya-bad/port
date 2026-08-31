@@ -54,10 +54,11 @@ DB_NETWORK="${DB_NETWORK:-live_deploy_net}"
 # CLIENT TOOLS' own version, and it genuinely matters: pg_dump refuses
 # to dump from a server NEWER than itself ("aborting because of server
 # version mismatch" — CONFIRMED by actually hitting this against a real
-# Neon database, not theoretical). A newer client dumping FROM an older
-# server is fine; the reverse isn't. Bumped past postgres:16 for
-# exactly this reason — if your remote is newer still, override this.
-PG_CLIENT_IMAGE="${PG_CLIENT_IMAGE:-postgres:17}"
+# remote database, not theoretical: server 18.6, client 17.11). A newer
+# client dumping FROM an older server is fine; the reverse isn't.
+# postgres:18 confirmed sufficient against that same remote — if yours
+# is newer still, override this.
+PG_CLIENT_IMAGE="${PG_CLIENT_IMAGE:-postgres:18}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "ERROR: docker is not installed / not on PATH." >&2
