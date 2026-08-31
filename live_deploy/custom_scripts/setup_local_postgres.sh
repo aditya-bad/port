@@ -34,7 +34,20 @@ DB_NETWORK="${DB_NETWORK:-live_deploy_net}"
 DB_VOLUME="${DB_VOLUME:-live_deploy_db_data}"
 DB_USER="${DB_USER:-liveuser}"
 DB_NAME="${DB_NAME:-live_deploy}"
-DB_IMAGE="${DB_IMAGE:-postgres:16}"
+# CONFIRMED NECESSARY BY ACTUALLY HITTING THIS, not assumed: this MUST
+# be at least as new as the remote database being migrated from (see
+# copy_remote_data_to_local.sh's own PG_CLIENT_IMAGE comment for the
+# pg_dump-side half of this) -- pg_dump's own output includes a preamble
+# of SET statements for session-level GUCs that match the SOURCE
+# server's version (e.g. `transaction_timeout`, added in PG17), and an
+# OLDER target server errors on any GUC it doesn't recognize with
+# "unrecognized configuration parameter" the instant that SET runs, data
+# copy failing outright even though pg_dump/psql themselves were both
+# new enough to read the remote fine. Keep this in step with
+# PG_CLIENT_IMAGE below, not just new enough on its own -- the safest
+# choice is actually matching the remote's own major version, not just
+# "newer than postgres:16."
+DB_IMAGE="${DB_IMAGE:-postgres:18}"
 
 # DB_PASSWORD: use whatever's given, or reuse/generate one PERSISTED to
 # PASSWORD_FILE. CONFIRMED NECESSARY BY ACTUALLY HITTING THIS, not
