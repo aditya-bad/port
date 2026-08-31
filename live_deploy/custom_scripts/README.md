@@ -127,6 +127,51 @@ zero writes.
   keypair active when they tapped "Enable notifications." See its own
   module docstring for the full byte-format rationale.
 
+### Moving off a remote-hosted database onto a local one
+
+Three scripts, a different shape from everything above (two are Docker
+orchestration shell scripts, not standalone Python against `queries.py`)
+— run in this exact order, once, to move this app from a remote-hosted
+Postgres (Neon, etc.) onto one running alongside its own server:
+
+1. **`setup_local_postgres.sh`** — runs Postgres as a sibling Docker
+   container (official `postgres` image, own named volume, own Docker
+   network) and connects the already-running `live-deploy` app
+   container to that same network, by container name (not IP — stable
+   across restarts). No docker-compose dependency (this repo deploys
+   via plain `docker run`), no host-level `postgresql.conf`/`pg_hba.conf`
+   editing. Prints the resulting local `database_url` and the exact
+   next-step commands at the end.
+2. **`create_local_schema.py`** — builds every table on the fresh local
+   database by calling the app's own `run_migrations()` (`app/db/
+   migrate.py`) standalone — the exact same idempotent migration runner
+   the app itself calls on every startup, just invoked once here
+   without needing the whole FastAPI app or a Kite session running.
+   Safe to re-run; does nothing if already up to date.
+3. **`copy_remote_data_to_local.sh`** — copies every existing ROW from
+   the remote database into the local one via `pg_dump --data-only |
+   psql`, run inside a throwaway `postgres:16` container (borrows its
+   bundled client tools rather than needing `pg_dump`/`psql` installed
+   on the host) on the same Docker network so it can resolve the local
+   DB by name. MUST run after step 2, not before — assumes every table
+   already exists with matching columns. Excludes `schema_migrations`
+   deliberately (confirmed necessary by actually running this, not
+   assumed — without it, the load fails on a duplicate-key conflict
+   against what step 2 already inserted there itself; that table is
+   migration-application history, not real application data, and both
+   sides should already agree on it since both run the same migration
+   files).
+
+After all three: set `LOCAL_DATABASE_URL` (the connection string step 1
+printed) as an environment variable on the `live-deploy` container and
+restart it. See `app/config.py`'s own `LOCAL DB OVERRIDE` comment —
+this env var unconditionally overrides whatever `database_url`/
+`DATABASE_URL` would otherwise resolve to, remote value included, so
+there's no need to hunt down and edit every place the old connection
+string might still be sitting around (a stale `config.json`, a leftover
+`DATABASE_URL` in a deploy script). Unset it to go back to normal
+resolution at any time.
+
 There used to be a `resync_supertrend_state.py` here — a standalone
 script to manually correct a `pivot_supertrend*` deployment's SuperTrend
 state after a WebSocket tick gap drifted it from reality (see

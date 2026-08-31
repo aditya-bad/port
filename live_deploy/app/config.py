@@ -7,6 +7,7 @@ other folder in it (tg_int_st_pp, generic, etc).
 
 import json
 import os
+import sys
 from pathlib import Path
 
 LIVE_DEPLOY_DIR = Path(__file__).resolve().parent.parent
@@ -75,6 +76,34 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         env_val = os.environ.get(env_name)
         if env_val:
             cfg[cfg_key] = env_val
+
+    # LOCAL DB OVERRIDE — set LOCAL_DATABASE_URL to force this app onto a
+    # local database UNCONDITIONALLY, no matter what database_url/
+    # DATABASE_URL above resolved to (or didn't). This exists for
+    # exactly one purpose: migrating off a remote-hosted DB onto one
+    # running alongside this app's own server, without having to hunt
+    # down and edit every place the old (remote) connection string might
+    # still be sitting around — a stale config.json that didn't get
+    # updated, a leftover DATABASE_URL env var in a deploy script, a
+    # config.json that gets regenerated from an old template on every
+    # redeploy. Checked here, BEFORE the required-keys validation below
+    # (not after it) — so LOCAL_DATABASE_URL alone is enough to satisfy
+    # database_url even if nothing else supplies one at all, not just an
+    # override on top of an otherwise-valid value. As long as
+    # LOCAL_DATABASE_URL is set in the environment, THIS wins, always.
+    # Unset it entirely to go back to normal database_url resolution —
+    # this is a deliberate, visible override, not a permanent rewrite of
+    # how database_url normally works.
+    local_override = os.environ.get("LOCAL_DATABASE_URL")
+    if local_override:
+        if cfg.get("database_url") and cfg["database_url"] != local_override:
+            print(
+                "live_deploy: LOCAL_DATABASE_URL is set — overriding "
+                "database_url (which was pointing elsewhere) to use the "
+                "local database instead.",
+                file=sys.stderr,
+            )
+        cfg["database_url"] = local_override
 
     missing = [k for k in REQUIRED_CONFIG_KEYS if not cfg.get(k)]
     if missing:
