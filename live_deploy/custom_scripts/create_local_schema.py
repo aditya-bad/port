@@ -17,6 +17,22 @@ a database that already has some or all migrations applied; it only
 applies whatever's still missing, and does nothing at all if it's
 already fully up to date.
 
+IMPORTANT if your --database-url's HOST is a Docker container name
+(e.g. `live-deploy-db`, from setup_local_postgres.sh): that's only
+resolvable via Docker's own embedded DNS from INSIDE a container on the
+same Docker network — running this directly on the bare host WILL fail
+with `socket.gaierror: Temporary failure in name resolution` (confirmed
+by actually hitting this, not a theoretical warning). Run it inside a
+container on that network instead — either `docker exec` into the
+already-running app container (it already has asyncpg + this app's own
+migration code, see migrate_to_local_db.sh's own Step 2 for the exact
+invocation), or a throwaway container with this repo mounted in (see
+setup_local_postgres.sh's own printed next-steps for that form). A
+--database-url whose host is a real, host-resolvable hostname or IP
+(a port-published Postgres, a remote DB like Neon) has no such
+restriction and this script can run directly on the host against it
+exactly as the USAGE below shows.
+
 USAGE:
     cd live_deploy
     python3 custom_scripts/create_local_schema.py --database-url postgresql://user:pass@host:5432/dbname

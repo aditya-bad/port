@@ -88,7 +88,35 @@ echo ">>> Step 1/4 — setting up local Postgres container"
 echo
 
 echo ">>> Step 2/4 — building schema on the local database"
-python3 "$SCRIPT_DIR/create_local_schema.py" --database-url "$LOCAL_DATABASE_URL"
+# Run this INSIDE the already-running app container, not as plain
+# `python3` on the host -- CONFIRMED NECESSARY BY ACTUALLY HITTING THIS,
+# not assumed: $LOCAL_DATABASE_URL's host is the DB's CONTAINER NAME
+# ($DB_CONTAINER), only resolvable via Docker's own embedded DNS from
+# INSIDE a container on $DB_NETWORK -- the bare host has no route to
+# it at all and fails with a plain DNS resolution error. The app
+# container is already on that network (step 1 connected it) and
+# already has asyncpg + this exact app/db/migrate.py baked into its
+# image, so this reuses it directly via `docker exec` rather than
+# needing a new container, an image pull, or a repo mount -- inlined as
+# `python3 -c` rather than `custom_scripts/create_local_schema.py`
+# itself, since custom_scripts/ isn't copied into the image (see the
+# Dockerfile's own COPY lines) and requiring a rebuild just for this
+# would defeat the whole "no extra manual steps" point of this script.
+docker exec "$APP_CONTAINER" python3 -c "
+import asyncio
+from app.db.pool import create_pool, close_pool
+from app.db.migrate import run_migrations
+
+async def main():
+    pool = await create_pool('$LOCAL_DATABASE_URL')
+    try:
+        applied = await run_migrations(pool)
+        print(f'Applied {len(applied)} migration(s): {applied}' if applied else 'Schema already up to date.')
+    finally:
+        await close_pool(pool)
+
+asyncio.run(main())
+"
 echo
 
 echo ">>> Step 3/4 — copying existing data across"
