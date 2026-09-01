@@ -74,5 +74,21 @@ docker run -d --name live-deploy --restart unless-stopped \
   -v "$(pwd)/control:/app/control" \
   live-deploy
 
+# Re-attach to the local-Postgres Docker network, if one was ever set
+# up (custom_scripts/setup_local_postgres.sh) -- CONFIRMED NECESSARY,
+# not theoretical: docker run above creates a brand-new container with
+# NO network membership beyond the default bridge, so a database_url
+# in config.json pointing at a container NAME (e.g. live-deploy-db,
+# only resolvable via Docker's own embedded DNS from another container
+# on the SAME user-defined network) would otherwise silently stop
+# resolving on every single redeploy, even though config.json itself
+# still has the right value. `|| true`: a deployment that never set up
+# a local DB (still on a remote one) has no such network to connect
+# to, and that's not an error worth aborting the script over.
+if docker network inspect live_deploy_net >/dev/null 2>&1; then
+  echo "==> Reattaching to live_deploy_net (local Postgres)"
+  docker network connect live_deploy_net live-deploy || true
+fi
+
 echo "==> Done:"
 docker ps --filter "name=live-deploy"
