@@ -18,7 +18,7 @@ Postgres when a runner starts up IS the current state, no replay needed.
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 import asyncpg
@@ -348,7 +348,18 @@ class DeploymentRunner:
 
     # ── Tick consumption ─────────────────────────────────────────────
 
-    def _is_stale_pre_creation_tick(self, tick: dict) -> bool:
+    # A tick whose exchange_timestamp lags the current wall clock by more
+    # than this is treated as a stale subscribe-time snapshot, never a
+    # live trading signal — see _is_stale_tick's own docstring. Generous
+    # on purpose: real ticks during continuous trading arrive within
+    # milliseconds of their own exchange_timestamp, so even a couple of
+    # minutes of slack (network hiccups, a burst of queued ticks after a
+    # reconnect) never falsely rejects a genuinely live one — while a
+    # subscribe-time snapshot from hours or days earlier is nowhere near
+    # this close.
+    _STALE_TICK_MAX_AGE = timedelta(minutes=5)
+
+    def _is_stale_tick(self, tick: dict) -> bool:
         """
         Kite (and this app's own dispatcher) can deliver a tick whose
         `exchange_timestamp` is the LAST TRADE time, not the moment it
@@ -366,30 +377,51 @@ class DeploymentRunner:
         default) — place a real "catch up" entry using an hours-old
         price, the moment it's deployed. calendar_btst has it worse:
         no force_exit_time-style upper bound at all, so ANY stale tick
-        past entry_time enters, regardless of how late.
+        past entry_time enters, regardless of how late. strangle_monthly_v2
+        turns out to have the identical gap in its own _maybe_enter (only
+        `t < entry_time` gates it, nothing on the late side either) — this
+        is a property of the tick-consumption layer, not any one strategy,
+        so it belongs here rather than patched into each one separately.
 
-        The fix doesn't need real wall-clock "now" as a separately
-        chosen reference — it needs the SAME clock domain the tick
-        itself is already in. `exchange_timestamp` is naive LOCAL
-        SYSTEM TIME (see this class's `_created_at_local` comment for
-        exactly why — it's whatever `datetime.fromtimestamp()` produces
-        on the machine running the Kite client, not portably "IST"), so
-        `created_at` is deliberately derived the identical way rather
-        than via a hardcoded offset, keeping both sides of this
-        comparison in the same domain on any server regardless of its
-        system timezone. The actual test is airtight either way: a tick
-        genuinely reflecting live trading can NEVER claim to be from
-        before this deployment existed. So: if `exchange_timestamp` is
-        earlier than this deployment's own `created_at`, it is
-        DEFINITELY stale — reject it outright, for every strategy,
-        before it ever reaches on_tick. A deployment resumed/restarted
-        long after its original creation is completely unaffected
-        (created_at never changes after the initial deploy, so this
-        only ever matters for the first few ticks after a brand-new
-        deployment, exactly where the bug lives).
+        Two DISTINCT ways a tick can be stale, both checked here:
+
+        1. Older than this deployment's own creation — airtight on its
+           own: a tick genuinely reflecting live trading can NEVER claim
+           to be from before this deployment existed. Catches a
+           brand-new deployment's very first snapshot tick.
+
+        2. Older than the current wall clock by more than
+           `_STALE_TICK_MAX_AGE` — catches the case #1 alone misses: an
+           ALREADY-EXISTING deployment (created_at long in the past)
+           that gets paused/resumed — or the whole app restarted — well
+           after market hours. Its very first tick after resume is once
+           again a subscribe-time snapshot, this time carrying today's
+           own last-trade time from hours earlier, which is well past
+           `created_at` and so #1 alone lets it straight through.
+           CONFIRMED live: 4 strangle_monthly_v2 deployments, fixed and
+           resumed at ~21:40 IST (hours after the market's own close),
+           each immediately placed a real "initial_entry" off a stale
+           tick carrying that afternoon's last-trade price/time — this
+           check is exactly what closes that gap.
+
+        Neither check needs real wall-clock "now" as a separately chosen
+        reference — both need the SAME clock domain the tick itself is
+        already in. `exchange_timestamp` is naive LOCAL SYSTEM TIME (see
+        this class's `_created_at_local` comment for exactly why — it's
+        whatever `datetime.fromtimestamp()` produces on the machine
+        running the Kite client, not portably "IST"), so both `created_at`
+        and "now" here are deliberately derived the identical way
+        (`datetime.now()`, no tz arg, i.e. naive local system time) rather
+        than via a hardcoded offset, keeping every side of both
+        comparisons in the same domain on any server regardless of its
+        system timezone.
         """
         ts = tick.get("exchange_timestamp")
-        return ts is not None and ts < self._created_at_local
+        if ts is None:
+            return False
+        if ts < self._created_at_local:
+            return True
+        return (datetime.now() - ts) > self._STALE_TICK_MAX_AGE
 
     async def _run(self) -> None:
         my_tokens = self.tokens
@@ -400,13 +432,13 @@ class DeploymentRunner:
                 if not relevant or self.strategy is None:
                     continue
                 for t in relevant:
-                    if self._is_stale_pre_creation_tick(t):
+                    if self._is_stale_tick(t):
                         logger.info(
-                            "%s: ignoring a tick timestamped before this "
-                            "deployment's own creation (%s < %s) — a stale "
+                            "%s: ignoring a stale tick (exchange_timestamp=%s, "
+                            "created_at=%s, now=%s) — a subscribe-time "
                             "snapshot, not a live trading signal",
                             self.deployment_name, t.get("exchange_timestamp"),
-                            self._created_at_local,
+                            self._created_at_local, datetime.now(),
                         )
                         continue
                     try:
@@ -450,7 +482,7 @@ class DeploymentRunner:
         if executed_at.tzinfo is None:
             # Every strategy passes the TICK's own exchange_timestamp
             # here — naive, per Kite's own convention (see
-            # _is_stale_pre_creation_tick's docstring: naive LOCAL
+            # _is_stale_tick's docstring: naive LOCAL
             # SYSTEM TIME, i.e. correct only insofar as the server's own
             # system tz is set to IST, the same implicit assumption
             # entry_time/force_exit_time config values already make
