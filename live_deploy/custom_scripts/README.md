@@ -59,6 +59,26 @@ zero writes.
   deployment, resolves the right token, and fixes it end to end.
   `--dry-run` previews with zero writes.
 
+- **`recreate_deployment_clean.py`** — "delete and re-register, same
+  config": force-stops, deletes, then recreates one or more deployments
+  by exact `deployment_name`, capturing the old row's
+  strategy_name/mode/initial_capital/config/notes from the database
+  itself right before deleting so the new one can never accidentally
+  drift from what was actually running. Built for a real incident: a
+  deployment that placed bogus trades off a stale subscribe-time tick
+  (see `app/deployments/runner.py`'s `_is_stale_tick`) — flattening
+  alone still leaves those bogus closed positions counted forever in
+  `win_rate_pct`/`total_realized_pnl` (no reason-based filtering
+  anywhere in those queries), so this instead deletes the deployment
+  outright (cascades away every position/event/snapshot row under the
+  old id) and creates a genuinely new one — new id, `entered_ever=False`,
+  zero trade history, identical config. Goes through the running app's
+  own API for every step (stop with `force_close=true`, delete, create),
+  same reasoning as `fix_strangle_instrument_tokens.py`'s pause/resume —
+  these have real in-process side effects a raw DB write would skip.
+  `--dry-run` prints the captured config for every matched name with
+  zero writes.
+
 - **`clean_deployment_names.py`** — strips a fixed list of words
   (`DTT`, `Intraday` today — edit `WORDS_TO_STRIP` at the top of the
   file to change the list) out of every existing deployment's
