@@ -117,20 +117,35 @@ RULES:
    active continuously, even while adjustment legs are open:
 
        total_profit = realized_pnl_today (every leg closed earlier today
-                        via reversal-unwind, each one's own entry premium
-                        minus its own exit premium, summed)
-                      + unrealized P&L of every leg still open right now
-                        (each one's own entry premium minus its current
-                        premium, summed)
+                        via reversal-unwind — ABSOLUTE RUPEES, i.e.
+                        already qty-scaled: runner.buy/sell's own
+                        realized_pnl result, summed)
+                      + unrealized P&L of every leg still open right now,
+                        ALSO in absolute rupees: each one's own
+                        (entry premium - current premium) * that leg's
+                        own qty, summed
 
-   Target = `combined_premium_profit_pct * combined_entry_premium` — the ORIGINAL 2-leg
-   entry premium ONLY (1200 in the spec's worked example -> target 120),
-   NOT the total premium collected across every leg including
-   adjustments. THIS IS A DELIBERATE, CONFIRMED CHOICE, not a silent
-   default: the alternative reading (10% of everything ever collected,
-   growing as adjustments add premium) was explicitly raised and
-   rejected in favor of this one before writing any code — the day's
-   profit goal stays fixed regardless of how much rebalancing happens.
+   BUG FIXED (confirmed against a real deployment, not theoretical):
+   this used to sum the unrealized side as bare PER-UNIT premium
+   differences, un-scaled by qty, then add that straight to the
+   already-qty-scaled realized_pnl_today — silently mixing units. A day
+   that closed at an actual combined realized loss of roughly ₹1,180
+   had this check compute total_profit=+77.85 and fire on a loss. Both
+   terms are qty-scaled now, consistently.
+
+   Target = `combined_premium_profit_pct * combined_entry_premium *
+   entry_qty` — the ORIGINAL 2 legs' entry premium ONLY (1200 in the
+   spec's worked example -> target 120 per unit, scaled to rupees by
+   entry_qty here for the same qty-consistency reason as above), NOT
+   the total premium collected across every leg including adjustments.
+   THIS "ORIGINAL 2-LEG BASIS ONLY" PART IS A DELIBERATE, CONFIRMED
+   CHOICE, not a silent default: the alternative reading (10% of
+   everything ever collected, growing as adjustments add premium) was
+   explicitly raised and rejected in favor of this one before writing
+   any code — the day's profit goal stays fixed regardless of how much
+   rebalancing happens. `entry_qty` is every leg's shared quantity
+   (lots_per_trade * lot_size, identical for original and adjustment
+   legs alike in this strategy), not a second, independent knob.
    When hit: close EVERY currently open leg immediately (full flatten),
    regardless of how many adjustment legs are open.
 
@@ -416,6 +431,14 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
 
         self.entry_spot: Optional[float] = None
         self.combined_entry_premium: Optional[float] = None
+        # The ORIGINAL 2 legs' own quantity (lots_per_trade * lot_size at
+        # entry) -- every leg in this strategy (original AND adjustment)
+        # always uses this same value, but it needs to be stored, not
+        # re-derived from a live leg, since the profit-target check below
+        # must keep working even if every original leg has since been
+        # unwound (see combined_entry_premium's own resume-reconstruction
+        # comment for why that's a real, legitimate case).
+        self.entry_qty: Optional[float] = None
         self.breakeven_lower: Optional[float] = None
         self.breakeven_upper: Optional[float] = None
 
@@ -521,6 +544,13 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         original_pe = self._find_original(self.legs["PE"], closed_today, "PE")
         if original_ce is not None and original_pe is not None:
             self.combined_entry_premium = original_ce + original_pe
+            # Every leg (original AND every adjustment) always uses the
+            # same qty (lots_per_trade * lot_size) -- re-derived fresh
+            # here rather than reconstructed from a historical position
+            # row, since a CLOSED position's own qty column reads 0 (see
+            # positions.qty's own "current open qty, zeroed on close"
+            # semantics), not what it actually traded at.
+            self.entry_qty = self.lots_per_trade * await self.resolver.get_lot_size(self.options_underlying)
             # entry_spot isn't on the leg dict -- pull it from whichever
             # original fill's metadata still exists (open leg preferred,
             # else the closed-today record).
@@ -596,6 +626,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             self.realized_pnl_today = 0.0
             self.entry_spot = None
             self.combined_entry_premium = None
+            self.entry_qty = None
             self.breakeven_lower = self.breakeven_upper = None
 
         await self._maybe_enter(runner, ts)
@@ -663,6 +694,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             return
 
         qty = self.lots_per_trade * ce_leg.lot_size
+        self.entry_qty = qty
 
         runner.dispatcher.add_instruments([
             {"instrument_token": ce_leg.instrument_token, "symbol": ce_leg.tradingsymbol},
@@ -774,13 +806,34 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                     return   # no live tick yet for some leg -- check again next tick
                 prices[leg["token"]] = p
 
-        if self.combined_entry_premium is not None:
-            unrealized = sum(
-                leg["entry_price"] - prices[leg["token"]]
-                for side_legs in self.legs.values() for leg in side_legs
-            )
+        if self.combined_entry_premium is not None and self.entry_qty is not None:
+            # BUG FIX: `realized_pnl_today` accumulates from
+            # runner.buy/sell's own `realized_pnl` result, already in
+            # absolute rupees (qty-scaled). The per-leg unrealized sum
+            # below MUST be qty-scaled too before adding it to that --
+            # summing bare (entry_price - current_price) per-unit
+            # premium differences and adding THAT straight to an
+            # already-qty-scaled rupee figure silently mixed units,
+            # understating a real loss (or overstating a real profit)
+            # by roughly a factor of qty. CONFIRMED against a real
+            # deployment: a day that closed at an actual combined
+            # realized loss of ~₹1,180 had this check compute
+            # total_profit=+77.85 (unscaled unrealized of -19.65 added
+            # to an already-scaled +97.5 realized) and fire
+            # profit_target_total on a loss. Per-leg qty read from
+            # runner.open_positions (same source _flatten_all itself
+            # uses when actually closing), falling back to
+            # self.entry_qty only if a leg's own live position row is
+            # ever missing -- every leg here always uses the same qty
+            # in practice, so that fallback is never actually a guess.
+            unrealized = 0.0
+            for side_legs in self.legs.values():
+                for leg in side_legs:
+                    pos = runner.open_positions.get(leg["token"])
+                    leg_qty = float(pos["qty"]) if pos is not None else self.entry_qty
+                    unrealized += (leg["entry_price"] - prices[leg["token"]]) * leg_qty
             total_profit = self.realized_pnl_today + unrealized
-            target = self.combined_premium_profit_pct * self.combined_entry_premium
+            target = self.combined_premium_profit_pct * self.combined_entry_premium * self.entry_qty
             if total_profit >= target:
                 await self._flatten_all(runner, ts, "profit_target_total", trigger_values={
                     "realized_pnl_today": round(self.realized_pnl_today, 2),
@@ -788,6 +841,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                     "target": round(target, 2),
                     "combined_premium_profit_pct": self.combined_premium_profit_pct,
                     "combined_entry_premium": round(self.combined_entry_premium, 2),
+                    "entry_qty": self.entry_qty,
                 })
                 return
 
