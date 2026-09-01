@@ -1,0 +1,35 @@
+# live_deploy — Docker build context excludes.
+#
+# Without this file, `docker build` sends EVERYTHING under live_deploy/
+# to the daemon on every build, COPY lines or not — a local venv/,
+# __pycache__, and stray data dumps all needlessly slow every build
+# down and can end up baked into the image if a COPY line is ever
+# broad enough to catch them.
+
+# Credentials — never bake these into an image
+config.json
+.local_db_password
+config.json.bak.*
+
+# A local Python virtualenv some setups keep inside live_deploy/ for
+# running custom_scripts/ directly on the host — never needed inside
+# the image itself (which installs its own deps via requirements.txt).
+venv/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# custom_scripts/ output -- real market-data seed dumps, not something
+# that belongs baked into the image (same reasoning as .gitignore's
+# own entry for this).
+custom_scripts/data/
+
+# supervisord.conf's own runtime output (see RUN_GUIDE.md)
+logs/*
+!logs/.gitkeep
+
+# VCS
+.git/
+.gitignore

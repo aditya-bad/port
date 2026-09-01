@@ -40,6 +40,25 @@ zero writes.
 
 ## Scripts
 
+- **`fix_strangle_instrument_tokens.py`** — another exception to "never
+  needs the app server," for two separate reasons: it needs a live
+  Kite session (fetches NSE/BSE's real instrument masters to resolve
+  each affected deployment's correct spot `instrument_token` — not
+  guessed, not hardcoded, BANKEX in particular isn't in `tokens.json`
+  at all) AND, after fixing the DB, calls the app's own API
+  (`http://localhost:8000`) to Pause then Resume every deployment it
+  touched, since a running deployment doesn't re-read its own config
+  live. Run it via `docker exec live-deploy python3
+  custom_scripts/fix_strangle_instrument_tokens.py` — needs to run
+  INSIDE the container for both the local DB (Docker-network-only
+  hostname) and the running app server (`localhost:8000`) to actually
+  be reachable. Fixes a real bug: a `strangle_monthly_v2` deployment
+  with an empty/missing `config.instrument_tokens` receives zero ticks
+  ever (see that strategy's own `on_start`) and sits "active" with 0
+  positions forever, completely silently — this finds every such
+  deployment, resolves the right token, and fixes it end to end.
+  `--dry-run` previews with zero writes.
+
 - **`clean_deployment_names.py`** — strips a fixed list of words
   (`DTT`, `Intraday` today — edit `WORDS_TO_STRIP` at the top of the
   file to change the list) out of every existing deployment's

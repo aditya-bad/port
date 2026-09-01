@@ -51,6 +51,16 @@ COPY app/ ./app/
 COPY static/ ./static/
 COPY run.py ./run.py
 COPY config.example.json ./config.example.json
+# custom_scripts/ — one-off admin scripts (see its own README.md).
+# Needed IN the image (not just the git checkout) so any of them that
+# depend on this app's own code/dependencies and Docker-network-only
+# DB access can be run via `docker exec live-deploy python3
+# custom_scripts/<script>.py` directly, without a rebuild just to add
+# one file — see fix_strangle_instrument_tokens.py for a concrete
+# example of exactly why this is needed (Kite REST access + the local
+# Postgres container, both only reachable from inside a running
+# container, not the bare host).
+COPY custom_scripts/ ./custom_scripts/
 
 # config.json / tokens.json are DELIBERATELY not copied in — see the
 # header above. Provide them at `docker run` time via -v bind mounts
