@@ -492,6 +492,17 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
                "own adjustment machinery. Optional protective-leg hedging. "
                "Live paper-trading only.",
     default_config={
+        # See on_start's own validation for exactly why this can't be
+        # left empty/omitted: with no candle logic of its own, this is
+        # ONLY here to give the deployment a live tick to drive its
+        # clock forward at all -- DeploymentRunner filters every
+        # incoming tick down to a deployment's own instrument_tokens
+        # before ever calling the strategy, so an empty list means it
+        # never gets called, ever, with zero error. NIFTY's own token
+        # by default -- override to match whichever `instrument` this
+        # deployment is actually configured for (BANKNIFTY/SENSEX/
+        # BANKEX each need their own spot token, not this one).
+        "instrument_tokens": [256265],
         "instrument": "NIFTY",
         "strike_selection_capital_pct": 0.03,
         "monthly_target_pct": 0.02,
@@ -526,6 +537,35 @@ class StrangleMonthlyV2Strategy(StrategyBase):
 
     async def on_start(self, runner) -> None:
         cfg = runner.config
+        # BUG FIX (confirmed against a real deployment, not theoretical):
+        # this strategy has no candle/signal logic of its own -- it's
+        # purely time-driven (entry_time, checkpoint, EOD, continuous
+        # ratio) -- so it never referenced config.instrument_tokens
+        # anywhere, and never validated it either. DeploymentRunner
+        # (see its own module docstring) filters every incoming tick
+        # down to THIS deployment's own instrument_tokens before ever
+        # calling the strategy at all -- an empty/missing list means
+        # ZERO ticks ever pass that filter, so on_tick, and therefore
+        # every check inside it (entry, adjustment, EOD, everything),
+        # never fires. The deployment sits "active" with 0 positions
+        # forever, completely silently -- no error, no skipped-entry
+        # log line, nothing -- because nothing ever calls in to
+        # generate one. Four real deployments were found stuck exactly
+        # this way (Nifty/BankNifty/Sensex/Bankex Strangle, all with
+        # instrument_tokens=[]) before this check existed. Require
+        # exactly one token, same shape every other strategy in this
+        # codebase already enforces (see pivot_supertrend_options.py's
+        # own identical check) -- it doesn't need to be a SPECIFIC
+        # token (unlike a candle-driven strategy, this one only needs
+        # ANY live tick to drive its own clock forward), just not zero.
+        tokens = cfg.get("instrument_tokens") or []
+        if len(tokens) != 1:
+            raise ValueError(
+                "strangle_monthly_v2 requires config.instrument_tokens to "
+                f"be a ONE-ELEMENT list — without it, this deployment "
+                f"receives NO ticks at all (see DeploymentRunner's own "
+                f"tick-filtering) and silently never trades — got {tokens!r}"
+            )
         self.instrument = str(cfg.get("instrument", "NIFTY")).strip().upper()
         if self.instrument not in SUPPORTED_INSTRUMENTS:
             raise ValueError(
