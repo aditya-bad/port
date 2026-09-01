@@ -145,12 +145,40 @@ class DeploymentManager:
     # ── Startup / shutdown ───────────────────────────────────────────
 
     async def load_active_on_startup(self) -> int:
-        """Resume every 'active' deployment. Returns how many were started."""
+        """Resume every 'active' deployment. Returns how many were actually started.
+
+        One deployment's on_start() rejecting its own config (e.g. a
+        strategy validating that a required field is set) must NEVER
+        take down every other deployment's resume, let alone the
+        entire app's startup — this loop used to have no try/except at
+        all, so a single bad row raised straight out of this method,
+        which app startup does not catch either, which crashed the
+        whole process before it ever started serving requests. Under
+        `--restart unless-stopped` that's not a crash, it's a
+        deterministic infinite restart loop: the exact same row fails
+        the exact same way on every single restart, so the container
+        never recovers on its own — confirmed the hard way in
+        production. Mirror the try/except already used around this
+        same call in create_deployment/resume below: log and skip the
+        broken row, keep going.
+        """
         rows = await queries.list_deployments(self.pool, status="active")
+        started = 0
         for row in rows:
-            await self._start_runner(row)
-        logger.info("Resumed %d active deployment(s) on startup", len(rows))
-        return len(rows)
+            try:
+                await self._start_runner(row)
+            except Exception:
+                logger.exception(
+                    "Failed to resume deployment %s (%s) on startup -- "
+                    "left 'active' in the DB but with no runner; fix the "
+                    "underlying config issue and Pause+Resume it (or "
+                    "restart the app) to retry",
+                    row["deployment_name"], row["id"],
+                )
+                continue
+            started += 1
+        logger.info("Resumed %d/%d active deployment(s) on startup", started, len(rows))
+        return started
 
     async def shutdown_all(self) -> None:
         """Stop every runner task. Deployment status in the DB is untouched."""
