@@ -68,6 +68,7 @@ Full method list:
 
 import asyncio
 import logging
+import time
 from dataclasses import replace
 from datetime import date, datetime
 from typing import Iterable, Optional, Union
@@ -135,6 +136,24 @@ SEARCH_EXCHANGES: tuple[str, ...] = ("NSE", "NFO", "BSE", "BFO")
 _INSTRUMENT_CACHE: dict[str, dict] = {}
 _CACHE_LOCKS: dict[str, asyncio.Lock] = {}
 
+# Kite's own per-second REST rate limit is shared process-wide too — one
+# limit against this Kite account, not one per deployment's own
+# OptionsResolver instance (every strategy makes its own instance, see
+# each strategy's own `self.resolver = OptionsResolver(...)`). CONFIRMED
+# IN PRODUCTION: several strangle_monthly_v2 deployments sharing the same
+# entry_time each price 2 legs of their own moments apart, and with
+# enough of them live at once, that's a genuine simultaneous burst
+# against ONE shared limit -- not a hypothetical one, this is the exact
+# traceback that came out of it (KiteException: Too many requests, code
+# 429). A per-instance throttle can't see that burst coming at all: each
+# resolver only knows about its own 1-2 calls, never the other
+# deployments' calls landing in the same instant. Module-level state
+# (same pattern _INSTRUMENT_CACHE/_CACHE_LOCKS above already use) is what
+# makes the throttle actually see everything.
+_KITE_CALL_MIN_INTERVAL = 0.35   # seconds between successive Kite REST calls, process-wide (~3/sec)
+_kite_call_lock = asyncio.Lock()
+_kite_call_next_allowed_at = 0.0   # time.monotonic() timestamp; 0.0 == "no reservation yet"
+
 
 def _month_after(year: int, month: int) -> tuple[int, int]:
     return (year + 1, 1) if month == 12 else (year, month + 1)
@@ -173,7 +192,7 @@ class OptionsResolver:
                 return cached
 
             kite = self._kite()
-            data = await asyncio.to_thread(kite.instruments, exchange)
+            data = await self._kite_call(kite.instruments, exchange)
             by_name: dict[str, list[dict]] = {}
             for row in data:
                 by_name.setdefault(row["name"], []).append(row)
@@ -535,7 +554,7 @@ class OptionsResolver:
 
         kite = self._kite()
         keys = [leg.key for leg in legs]
-        ltp_resp = await asyncio.to_thread(kite.ltp, keys) if keys else {}
+        ltp_resp = await self._kite_call(kite.ltp, keys) if keys else {}
 
         best_leg, best_diff, best_price = None, None, None
         for leg in legs:
@@ -586,7 +605,7 @@ class OptionsResolver:
         keys = [leg.key for leg in legs]
         quotes: dict = {}
         for i in range(0, len(keys), 200):   # chunk defensively — quote() has an instrument cap
-            chunk = await asyncio.to_thread(kite.quote, keys[i:i + 200])
+            chunk = await self._kite_call(kite.quote, keys[i:i + 200])
             quotes.update(chunk)
 
         best_leg, best_oi, best_price = None, -1, None
@@ -648,23 +667,46 @@ class OptionsResolver:
     # often, but because several straddle/spread strategies sharing the
     # same entry_time each price 2-4 legs of their own, and enough of
     # those land in the same second across every deployment at once.
-    # A 429 is transient by nature -- worth one bounded retry before
-    # giving up and skipping the entry outright, same as this file's
-    # own daily instrument-master fetch already tolerates a slow network
-    # without failing every caller waiting on it.
-    _KITE_RETRY_ATTEMPTS = 3
+    # A 429 is transient by nature -- worth several bounded retries
+    # before giving up and skipping the entry outright, same as this
+    # file's own daily instrument-master fetch already tolerates a slow
+    # network without failing every caller waiting on it. Widened from
+    # 3 to 5 attempts (0.6/1.2/2.4/4.8s backoff, ~9s worst case) after a
+    # real burst across 4 simultaneous strangle_monthly_v2 deployments
+    # exhausted 3 attempts before Kite's own limit had actually cleared
+    # -- an entry that ends up a few seconds late is still correct;
+    # skipping it outright for the day is not. The module-level throttle
+    # this now goes through FIRST (see _KITE_CALL_MIN_INTERVAL above) is
+    # the real fix for that burst -- retry here is the fallback for
+    # whatever gets through it anyway (another process on the same API
+    # key, a burst tighter than the throttle spaces out), not a
+    # replacement for it.
+    _KITE_RETRY_ATTEMPTS = 5
     _KITE_RETRY_BASE_DELAY = 0.6   # seconds; doubles each retry
 
     async def _kite_call(self, fn, *args):
         """
-        asyncio.to_thread(fn, *args), with automatic retry-with-backoff
-        SPECIFICALLY for a 429 rate-limit response. Any other
-        KiteException (bad token, invalid instrument, ...) is NOT
-        transient and is NOT retried here -- raised straight through,
-        same as before this helper existed.
+        asyncio.to_thread(fn, *args), through the module-level
+        process-wide throttle (spaces every Kite REST call, from every
+        deployment's own OptionsResolver instance, at least
+        _KITE_CALL_MIN_INTERVAL apart -- see that constant's own comment
+        for why this has to be module-level, not per-instance), with
+        automatic retry-with-backoff SPECIFICALLY for a 429 rate-limit
+        response that gets through anyway. Any other KiteException (bad
+        token, invalid instrument, ...) is NOT transient and is NOT
+        retried here -- raised straight through, same as before this
+        helper existed.
         """
+        global _kite_call_next_allowed_at
         last_exc = None
         for attempt in range(self._KITE_RETRY_ATTEMPTS):
+            async with _kite_call_lock:
+                now = time.monotonic()
+                wait = _kite_call_next_allowed_at - now
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                    now = time.monotonic()
+                _kite_call_next_allowed_at = now + _KITE_CALL_MIN_INTERVAL
             try:
                 return await asyncio.to_thread(fn, *args)
             except KiteException as exc:
