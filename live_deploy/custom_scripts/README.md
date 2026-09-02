@@ -59,6 +59,53 @@ zero writes.
   deployment, resolves the right token, and fixes it end to end.
   `--dry-run` previews with zero writes.
 
+- **`remove_todays_trades.py`** — "undo a whole calendar day, everywhere,
+  correctly": deletes every trade dated `--date` (required, no default —
+  a destructive op shouldn't have a "today" convenience default) across
+  EVERY deployment, intraday and positional alike, and un-does everything
+  that trade touched, not just the position rows. Built for a real
+  incident: `force_exit_time` silently failed to fire for several
+  intraday deployments and the eventual cleanup flatten used a stale/
+  mistimed LTP as the exit price — the day's booked P&L was provably
+  wrong, and the fix was "delete the whole day, we're OK losing it."
+  Three things a bare `DELETE FROM positions` would get wrong, all
+  handled here: (1) **cash** — sums `record_fill`'s own exact
+  `-(qty*price)`/`+(qty*price)` formula over every `position_lots` row
+  dated `--date` and reverses that exact total, correct regardless of
+  whether those lots were opens, adds, or closes; (2) **persisted
+  strategy state** (`deployment_state` — cycle_id/entered_ever/etc.,
+  NOT re-derived from `positions` on its own) — cleared per affected
+  deployment so `on_start`/`_resume_from_db` reconstructs fresh from
+  whatever real history is left; (3) **live in-memory runner state** —
+  same reasoning as every other script here: Pause+Resume via the app's
+  own API afterward for every deployment it touched, hands-off. Also
+  clears that day's `deployment_events` and `deployment_snapshots` for
+  touched deployments so the Activity tab/equity curve don't keep
+  showing values for trades that no longer exist. Dates are compared in
+  IST (`AT TIME ZONE 'Asia/Kolkata'`), matching every other day-boundary
+  concept in this app.
+
+  ONE case it deliberately does NOT auto-handle: a position opened on an
+  EARLIER day that also picked up a lot on `--date` (e.g. a same-day
+  adjustment on an older multi-day position) — reconstructing that
+  position's pre-`--date` qty/avg_entry_price would mean replaying its
+  remaining older lots with the same averaging math `record_fill` itself
+  uses, and this script doesn't guess at that. It detects the case,
+  per-deployment, and ABORTS ONLY that deployment (every other
+  deployment in the run is untouched by one abort) — printed clearly,
+  left for manual handling. `--dry-run` previews the full plan (every
+  deployment's cash before/after, position/lot counts, and which ones
+  would abort and why) with zero writes.
+
+  Verified end-to-end against a real local Postgres in the sandbox with
+  4 seeded cases (fully same-day open+close, same-day still-open,
+  the mixed-day abort case, and an untouched control with no trades
+  that day) and the app's pause/resume API calls mocked: both
+  same-day cases end with `current_cash` restored to EXACTLY their
+  `initial_capital` and zero remaining positions; the mixed-day
+  deployment and the untouched control both come out completely
+  byte-for-byte unchanged.
+
 - **`recreate_deployment_clean.py`** — "delete and re-register, same
   config": force-stops, deletes, then recreates one or more deployments
   by exact `deployment_name`, capturing the old row's
