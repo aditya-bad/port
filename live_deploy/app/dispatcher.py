@@ -354,7 +354,24 @@ class LiveDataDispatcher:
 
     def _on_noreconnect(self, ws):
         self.connected = False
-        logger.error("Kite WebSocket gave up reconnecting")
+        # CONFIRMED IN PRODUCTION: kiteconnect's own ticker gives up after
+        # its internal max-attempts cap (50) -- most commonly because the
+        # access_token has genuinely expired (every reconnect attempt
+        # fails with 403 Forbidden, not a transient network blip that a
+        # 51st attempt would ever clear). `status.needs_login` is
+        # computed as `self._kws is None` (see that property below) --
+        # leaving _kws pointing at this now-permanently-dead ticker
+        # object meant the UI kept showing "Disconnected — reconnecting…"
+        # (static/index.html's own needs_login ? ... : ... banner text)
+        # forever, when the true, actionable state was "Not connected —
+        # login required". A dead-and-abandoned _kws is functionally
+        # identical to "never logged in yet" either way (reconnect()
+        # already handles _kws being None as its normal first-ever-login
+        # case), so dropping the reference here is safe and makes the
+        # banner tell the truth instead of implying this will resolve
+        # itself with no action needed.
+        self._kws = None
+        logger.error("Kite WebSocket gave up reconnecting — access_token likely expired, needs a fresh login")
 
     def _on_ticks(self, ws, ticks):
         """
