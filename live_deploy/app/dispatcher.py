@@ -124,6 +124,16 @@ class LiveDataDispatcher:
 
         self._loop: asyncio.AbstractEventLoop | None = None
         self._kws = None   # no connection at all until bind_loop()/reconnect()
+        # Separate from `self._kws is None` on purpose -- see reconnect()'s
+        # own docstring for why. Once Twisted's reactor thread has been
+        # bootstrapped by a real connect() call, it keeps running for the
+        # rest of this process's life even through a give-up (see
+        # _on_noreconnect), so `_kws` going back to None on give-up must
+        # NOT make a later reconnect() think it's talking to a
+        # not-yet-started reactor again -- this flag is the actual
+        # "has the reactor thread ever been started" answer, and it never
+        # resets back to False once set.
+        self._reactor_started = False
 
         self.connected = False
         self.ticks_received = 0
@@ -193,17 +203,25 @@ class LiveDataDispatcher:
         old_kws = self._kws
         self.connected = False
 
-        if old_kws is None:
+        if not self._reactor_started:
             # First-ever connection this process -- the reactor hasn't
             # started yet, so there's no concurrent thread to race with.
             # Mirrors bind_loop()'s own direct call for this exact case.
+            # Deliberately NOT `old_kws is None` (see `_reactor_started`'s
+            # own comment in __init__) -- _kws can go back to None later,
+            # after a give-up (_on_noreconnect), with the reactor thread
+            # from that earlier connection still very much alive; using
+            # `old_kws is None` here would then skip straight back to this
+            # branch's direct, unmarshaled connect() call and reintroduce
+            # the exact race this whole method exists to prevent.
             self._connect_with(access_token)
         else:
             def _do_reconnect():
-                try:
-                    old_kws.close()
-                except Exception:
-                    logger.exception("Error closing previous Kite WebSocket during reconnect")
+                if old_kws is not None:
+                    try:
+                        old_kws.close()
+                    except Exception:
+                        logger.exception("Error closing previous Kite WebSocket during reconnect")
                 self._connect_with(access_token)
 
             try:
@@ -223,6 +241,7 @@ class LiveDataDispatcher:
 
     def _connect_with(self, access_token: str) -> None:
         self.access_token = access_token
+        self._reactor_started = True
         self._kws = self._kite_ticker_cls(self.api_key, access_token)
         self._kws.on_ticks = self._on_ticks
         self._kws.on_connect = self._on_connect
@@ -352,26 +371,82 @@ class LiveDataDispatcher:
         self.reconnect_count += 1
         logger.warning("Kite WebSocket reconnecting (attempt %d)", attempts_count)
 
+    # Cool-down before an automatic post-give-up retry attempt -- see
+    # _on_noreconnect. Deliberately modest, not aggressive: kiteconnect's
+    # own internal reconnect loop (reconnect_max_tries=50,
+    # reconnect_max_delay=60s, exponential up to that cap) already spends
+    # a long time backing off on its own before ever reaching give-up, so
+    # this doesn't need to retry fast -- CONFIRMED IN PRODUCTION that a
+    # give-up can resolve on its own with the SAME access_token still
+    # valid the whole time (an access_token expiring was the first
+    # hypothesis here and turned out to be wrong that time -- the token
+    # was issued that morning and never refreshed, yet it worked again
+    # hours later with no new login) -- so a real Kite-side transient
+    # outage, not just a stale token, is a genuine, confirmed case this
+    # needs to recover from on its own.
+    _AUTO_RETRY_AFTER_GIVEUP_DELAY = 60   # seconds
+
     def _on_noreconnect(self, ws):
         self.connected = False
-        # CONFIRMED IN PRODUCTION: kiteconnect's own ticker gives up after
-        # its internal max-attempts cap (50) -- most commonly because the
-        # access_token has genuinely expired (every reconnect attempt
-        # fails with 403 Forbidden, not a transient network blip that a
-        # 51st attempt would ever clear). `status.needs_login` is
-        # computed as `self._kws is None` (see that property below) --
-        # leaving _kws pointing at this now-permanently-dead ticker
-        # object meant the UI kept showing "Disconnected — reconnecting…"
-        # (static/index.html's own needs_login ? ... : ... banner text)
-        # forever, when the true, actionable state was "Not connected —
-        # login required". A dead-and-abandoned _kws is functionally
-        # identical to "never logged in yet" either way (reconnect()
-        # already handles _kws being None as its normal first-ever-login
-        # case), so dropping the reference here is safe and makes the
-        # banner tell the truth instead of implying this will resolve
-        # itself with no action needed.
+        # `status.needs_login` is computed as `self._kws is None` (see
+        # that property below) -- leaving _kws pointing at this now-dead
+        # ticker object meant the UI kept showing "Disconnected —
+        # reconnecting…" (static/index.html's own needs_login ? ... : ...
+        # banner text) forever, when the true state needed EITHER a fresh
+        # login (if the token really had expired) OR just time (if this
+        # was a transient Kite-side outage -- confirmed to happen, see
+        # _AUTO_RETRY_AFTER_GIVEUP_DELAY's own comment). Either way,
+        # "quietly still retrying with no visible state change" was never
+        # the honest answer.
         self._kws = None
-        logger.error("Kite WebSocket gave up reconnecting — access_token likely expired, needs a fresh login")
+        logger.error(
+            "Kite WebSocket gave up reconnecting -- scheduling an automatic "
+            "retry in %ds (will keep retrying on this same cycle until it "
+            "succeeds or a fresh login provides a new access_token)",
+            self._AUTO_RETRY_AFTER_GIVEUP_DELAY,
+        )
+        # Fires on kiteconnect's own reactor thread, same as every other
+        # callback here -- marshal onto the asyncio loop to sleep and
+        # retry, same bridge _on_ticks already uses in the other
+        # direction (asyncio.run_coroutine_threadsafe).
+        if self._loop is not None and self._loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._auto_retry_after_giveup(), self._loop)
+
+    async def _auto_retry_after_giveup(self) -> None:
+        """
+        Self-healing follow-up to a give-up kiteconnect's own reconnect
+        loop can't come back from on its own (it's a one-shot: 50 tries,
+        then done, forever, until something outside it calls connect()
+        again). Without this, "Kite WebSocket gave up reconnecting" meant
+        the dispatcher just sat there until a HUMAN noticed (via the
+        banner fix above) and either re-logged in or restarted the
+        process -- for a transient Kite-side outage that would have
+        cleared on its own, that's a needless outage stretched out by
+        however long it took someone to notice.
+
+        Retries with the SAME access_token that was last used (self.
+        access_token, set by _connect_with on every successful connect
+        attempt) -- confirmed safe to reuse: see this method's caller's
+        own comment on a real give-up that self-resolved with no new
+        login. If the token genuinely has expired, this retry (and every
+        one after it, since a renewed give-up re-schedules another one
+        of these) just keeps failing harmlessly with 403 until a human
+        completes a fresh login, which calls reconnect() with a NEW
+        token directly -- this loop doesn't fight that, it only acts
+        while _kws is still None (i.e. nothing else has already
+        reconnected first).
+        """
+        await asyncio.sleep(self._AUTO_RETRY_AFTER_GIVEUP_DELAY)
+        if self._kws is not None:
+            return   # something else (a manual re-login) already beat us to it
+        if not self.access_token:
+            logger.warning(
+                "Kite auto-retry: no access_token has ever been set yet -- "
+                "waiting for a first login instead of guessing"
+            )
+            return
+        logger.info("Kite auto-retry: attempting reconnect with the last known access_token")
+        self.reconnect(self.access_token)
 
     def _on_ticks(self, ws, ticks):
         """
