@@ -88,8 +88,26 @@ class LiveDataDispatcher:
         initial_access_token: Optional[str] = None,
         kite_ticker_cls=KiteTicker,   # injectable for testing without real Kite
         schedule_on_ticker_thread: Optional[Callable] = None,   # injectable for tests
+        on_connection_issue: Optional[Callable] = None,
     ):
         self.broadcaster = broadcaster
+        # Optional async callback: on_connection_issue(event_type, message),
+        # called ONLY for the two states worth waking a human up for --
+        # "kite_disconnected" (kiteconnect's own reconnect loop gave up
+        # entirely -- see _on_noreconnect) and "kite_reconnected" (came
+        # back afterward -- see _on_connect). Deliberately NOT fired for
+        # every _on_close/_on_reconnect blip: those are kiteconnect's own
+        # normal, usually-self-healing backoff cycle, and a human getting
+        # paged for each one would train them to ignore the channel
+        # entirely by the time a real, sustained outage happens. Wired in
+        # main.py to both an in-app toast (via event_broadcaster, same
+        # pipe deployment fills already use) and a mobile push (see
+        # app/notifications.py) -- "my real money is sitting in a
+        # deployment nothing is watching right now" is exactly the kind
+        # of thing that should reach a phone, not just a sidebar badge
+        # someone has to be looking at.
+        self._on_connection_issue = on_connection_issue
+        self._was_ever_broken = False   # has _on_noreconnect fired at least once THIS process?
         self.instrument_tokens = [t["instrument_token"] for t in tokens]
         self.token_labels = {
             t["instrument_token"]: t.get("symbol", str(t["instrument_token"]))
@@ -358,6 +376,16 @@ class LiveDataDispatcher:
         if self.instrument_tokens:
             ws.subscribe(self.instrument_tokens)
             ws.set_mode(self._kite_mode, self.instrument_tokens)
+        # Only worth telling a human "it's back" if it was ever ACTUALLY
+        # broken (_on_noreconnect fired) -- otherwise every normal boot's
+        # first-ever connect would fire a "Kite reconnected!" alert for
+        # nothing having gone wrong at all.
+        if self._was_ever_broken:
+            self._was_ever_broken = False
+            self._fire_connection_issue(
+                "kite_reconnected",
+                "Kite WebSocket reconnected — live tick/order monitoring has resumed.",
+            )
 
     def _on_close(self, ws, code, reason):
         self.connected = False
@@ -399,11 +427,18 @@ class LiveDataDispatcher:
         # "quietly still retrying with no visible state change" was never
         # the honest answer.
         self._kws = None
+        self._was_ever_broken = True
         logger.error(
             "Kite WebSocket gave up reconnecting -- scheduling an automatic "
             "retry in %ds (will keep retrying on this same cycle until it "
             "succeeds or a fresh login provides a new access_token)",
             self._AUTO_RETRY_AFTER_GIVEUP_DELAY,
+        )
+        self._fire_connection_issue(
+            "kite_disconnected",
+            "Kite WebSocket gave up reconnecting — no live ticks are reaching any "
+            "deployment right now. Retrying automatically in the background; "
+            "log in again if this doesn't clear on its own.",
         )
         # Fires on kiteconnect's own reactor thread, same as every other
         # callback here -- marshal onto the asyncio loop to sleep and
@@ -411,6 +446,18 @@ class LiveDataDispatcher:
         # direction (asyncio.run_coroutine_threadsafe).
         if self._loop is not None and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(self._auto_retry_after_giveup(), self._loop)
+
+    def _fire_connection_issue(self, event_type: str, message: str) -> None:
+        """Marshal the optional on_connection_issue callback onto the
+        asyncio loop -- both call sites here (_on_noreconnect, _on_connect)
+        fire from kiteconnect's own reactor thread, and the callback is a
+        coroutine (see its own comment in __init__: it awaits a DB write
+        via event_broadcaster and a webpush call)."""
+        if self._on_connection_issue is None:
+            return
+        if self._loop is None or not self._loop.is_running():
+            return
+        asyncio.run_coroutine_threadsafe(self._on_connection_issue(event_type, message), self._loop)
 
     async def _auto_retry_after_giveup(self) -> None:
         """

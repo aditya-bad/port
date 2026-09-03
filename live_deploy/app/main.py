@@ -39,7 +39,7 @@ registers under that name.
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -57,7 +57,7 @@ from .db.migrate import run_migrations
 from .db.pool import close_pool, create_pool
 from .deployments.manager import DeploymentManager
 from .dispatcher import LiveDataDispatcher
-from .notifications import is_push_configured
+from .notifications import is_push_configured, send_push_for_all
 from .routers import admin as admin_router
 from .routers import aggregate as aggregate_router
 from .routers import auth as auth_router
@@ -174,6 +174,59 @@ async def startup() -> None:
     # ws_ticks's own docstring for the full story.
     app.state.shutdown_event = asyncio.Event()
 
+    # ── In-app real-time alerts: a SECOND, separate Broadcaster instance
+    # (same fan-out class as ticks, own subscriber set) carrying
+    # deployment events (fills, pause/resume/stop, strategy errors) out
+    # to /sse/events. Kept apart from the tick broadcaster on purpose —
+    # DeploymentRunner subscribes to the tick one to feed its own
+    # strategy, and would wrongly try to treat an event payload as a
+    # tick if the two streams were merged. Built BEFORE the dispatcher
+    # below (moved up from its original spot) because the dispatcher's
+    # own on_connection_issue callback needs a live reference to it.
+    event_broadcaster = Broadcaster()
+    app.state.event_broadcaster = event_broadcaster
+
+    async def _on_kite_connection_issue(event_type: str, message: str) -> None:
+        """
+        Wired into LiveDataDispatcher as on_connection_issue — see that
+        parameter's own docstring for exactly which two states this
+        fires for (a real give-up, and recovering from one) and why not
+        every routine reconnect blip. Two delivery paths, same reasoning
+        as DeploymentRunner.notify_execution's own "why both" comment:
+        the in-app toast only reaches someone with the tab open right
+        now; the whole POINT of this is reaching someone who ISN'T
+        looking at the app when their real money stops being watched.
+
+        1. event_broadcaster — same pipe every deployment fill/pause/
+           resume already uses, so this needs ZERO new frontend
+           plumbing: static/index.html's existing showToast() and
+           notification-centre code just need entries for these two new
+           event_types (see index.html's own TOAST_LABELS). Not tied to
+           any one deployment_id (this is a system-level connectivity
+           event, not "about" one specific deployment), so this bypasses
+           DeploymentManager._record_event's DB write entirely — a raw
+           broadcast(), same shape, deployment_id/deployment_name filled
+           in with a synthetic "Kite Connection" label instead of a real
+           row. Deliberately not persisted: this is a live, ephemeral
+           alert, not trade history.
+        2. send_push_for_all — the SAME mobile push channel
+           execution_entry/execution_exit already use (Account ->
+           Notifications' "Enable notifications"), a no-op if push was
+           never configured.
+        """
+        await event_broadcaster.broadcast({
+            "deployment_id": None,
+            "deployment_name": "Kite Connection",
+            "strategy_name": None,
+            "event_type": event_type,
+            "message": message,
+            "metadata": {},
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        if is_push_configured(config):
+            title = "⚠️ Kite disconnected" if event_type == "kite_disconnected" else "✅ Kite reconnected"
+            await send_push_for_all(db_pool, config, title, message)
+
     broadcaster = Broadcaster()
     dispatcher = LiveDataDispatcher(
         api_key=config["api_key"],
@@ -181,21 +234,12 @@ async def startup() -> None:
         tick_mode=config["tick_mode"],
         broadcaster=broadcaster,
         initial_access_token=initial_token,
+        on_connection_issue=_on_kite_connection_issue,
     )
     loop = asyncio.get_running_loop()
     dispatcher.bind_loop(loop)
     app.state.broadcaster = broadcaster
     app.state.dispatcher = dispatcher
-
-    # ── In-app real-time alerts: a SECOND, separate Broadcaster instance
-    # (same fan-out class as ticks, own subscriber set) carrying
-    # deployment events (fills, pause/resume/stop, strategy errors) out
-    # to /ws/events. Kept apart from the tick broadcaster on purpose —
-    # DeploymentRunner subscribes to the tick one to feed its own
-    # strategy, and would wrongly try to treat an event payload as a
-    # tick if the two streams were merged.
-    event_broadcaster = Broadcaster()
-    app.state.event_broadcaster = event_broadcaster
 
     # ── Aggregate-read cache: GET /deployments, /positions, /trades/
     # recent, /strategies were reported taking 3-6s to load on every

@@ -474,6 +474,20 @@ tr.trade-row:focus-visible {
 .badge.bad { background: var(--loss-soft); color: var(--loss); }
 .badge .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 
+/* The Kite connection badge specifically (not every .badge.bad in the
+   app -- e.g. a loss figure elsewhere is also "bad" but isn't an alert
+   demanding action) -- a static muted badge in a sidebar footer is easy
+   to glance past even while actively looking at the screen, and this
+   state means real capital may be sitting unmonitored. */
+#statusBar .badge.bad { animation: statusPulse 1.6s ease-in-out infinite; }
+@keyframes statusPulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--loss-soft); }
+  50% { box-shadow: 0 0 0 5px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #statusBar .badge.bad { animation: none; }
+}
+
 .btn {
   padding: 9px 13px; border: 3px solid var(--line); cursor: pointer; background: var(--paper); color: var(--ink);
   font-family: var(--font-body); font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.03em;
@@ -3657,7 +3671,21 @@ const TOAST_LABELS = {
   fill_buy: 'Buy', fill_sell: 'Sell', strategy_error: 'Strategy error',
   paused: 'Paused', resumed: 'Resumed', stopped: 'Stopped', flattened: 'Flattened',
   created: 'Deployed', execution_entry: 'Entry', execution_exit: 'Exit',
+  // Not tied to any one deployment (app/main.py's _on_kite_connection_issue
+  // broadcasts these with deployment_name: "Kite Connection", a synthetic
+  // label, not a real deployment) -- fired only for a genuine give-up and
+  // the recovery from one, never routine reconnect blips. See
+  // app/dispatcher.py's on_connection_issue param docstring for why only
+  // these two, and TOAST_AUTO_DISMISS_MS below for why this one stays up
+  // longer than the default.
+  kite_disconnected: 'Lost connection', kite_reconnected: 'Connection restored',
 };
+// kite_disconnected specifically means "nothing is watching your real
+// positions right now" -- the default 8s auto-dismiss (fine for "a fill
+// happened, nice to know") isn't enough for something this serious to
+// go unnoticed if you glance away for a moment. Stays up until
+// dismissed by hand.
+const TOAST_STICKY = new Set(['kite_disconnected']);
 // fill_buy/fill_sell are still recorded (each deployment's own Activity
 // tab shows every fill) but are no longer toasted here -- as of Step 85
 // execution_entry/execution_exit supersede them for the in-app-toast +
@@ -3666,8 +3694,8 @@ const TOAST_LABELS = {
 // per fill. See app/deployments/runner.py's notify_execution().
 const TOAST_SUPPRESSED = new Set(['fill_buy', 'fill_sell']);
 function _toastCategory(eventType) {
-  if (eventType === 'strategy_error') return 'error';
-  if (eventType === 'execution_entry' || eventType === 'execution_exit') return 'info';
+  if (eventType === 'strategy_error' || eventType === 'kite_disconnected') return 'error';
+  if (eventType === 'execution_entry' || eventType === 'execution_exit' || eventType === 'kite_reconnected') return 'info';
   return 'neutral';   // paused/resumed/stopped/flattened -- administrative, not a P&L outcome
 }
 function connectEventSocket() {
@@ -3698,7 +3726,9 @@ function showToast(ev) {
     <button class="toast-close" aria-label="Dismiss" onclick="this.closest('.toast').remove()">✕</button>
   `;
   stack.appendChild(el);
-  setTimeout(() => el.remove(), TOAST_AUTO_DISMISS_MS);
+  if (!TOAST_STICKY.has(ev.event_type)) {
+    setTimeout(() => el.remove(), TOAST_AUTO_DISMISS_MS);
+  }
   // Mobile/background push notifications are a separate delivery path
   // (Web Push via a service worker, see static/js/account.js +
   // static/sw.js + app/notifications.py) -- not fired from here. This
