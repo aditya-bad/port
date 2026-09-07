@@ -194,16 +194,41 @@ Section 6 can grow a side's leg count any more (see Section 5's own
 growth post-convergence (Section 7).
 
 ──────────────────────────────────────────────────────────────────────
+STRIKE-CROSS CAP (CONFIRMED requirement, applies to BOTH Section 5 and
+Section 6, every roll, for as long as this is still a strangle)
+──────────────────────────────────────────────────────────────────────
+Neither section's own strike search (`OptionsResolver.get_leg_by_premium`,
+inside `_open_leg`) has any awareness of the OTHER side's strike at all
+— left alone, a smaller side that keeps needing more premium (a PE
+climbing toward spot as its own strike rises, a CE descending toward
+spot as its own strike falls) could roll to a strike AT OR PAST the
+opposite side's own current strike, inverting the strangle into a
+nonsensical crossed position (e.g. a PE strike sitting ABOVE its own
+CE's strike). `_open_leg` now caps this: after resolving the naturally
+closest-premium strike for a replacement leg, if that strike would
+reach or cross the opposite side's own current strike (checked against
+whichever single leg is open on that side — always exactly one,
+pre-convergence, per the structural point above), the replacement opens
+at the opposite side's EXACT strike instead of the premium-driven one.
+This is what makes convergence (below) something Section 5/6 can
+actually DRIVE TOWARD deterministically, not just something that might
+happen to occur if a roll's premium target coincidentally lands on the
+same strike the other side already holds.
+
+──────────────────────────────────────────────────────────────────────
 7. CONVERGENCE (strangle -> straddle)
 ──────────────────────────────────────────────────────────────────────
-Detected when repeated Section 5/6 actions bring both sides down to
-exactly one leg each, at the SAME strike. Checked once, right after any
-Section 5/6 leg change; STICKY once detected — `self.converged` stays
-True for the rest of this cycle even if a LATER Section 5/6 action
-(both of which keep running post-convergence, see below) happens to
-move a strike again. FLAGGED DESIGN DECISION: the spec doesn't address
-whether convergence should be "sticky" or continuously re-evaluated;
-sticky was chosen because oscillating between convergence-governed and
+Detected the moment both sides hold exactly one leg each at the SAME
+strike — either by coincidence (a Section 5/6 roll's own premium target
+happens to land there) or FORCED (the strike-cross cap immediately
+above snaps a roll to the opposite side's strike rather than letting it
+overshoot past it). Checked once, right after any Section 5/6 leg
+change; STICKY once detected — `self.converged` stays True for the
+rest of this cycle even if a LATER Section 5/6 action (both of which
+keep running post-convergence, see below) happens to move a strike
+again. FLAGGED DESIGN DECISION: the spec doesn't address whether
+convergence should be "sticky" or continuously re-evaluated; sticky was
+chosen because oscillating between convergence-governed and
 strangle-governed behavior on every subsequent roll seemed like the
 less stable, more surprising choice, and `fixed_stop`'s own definition
 ("never recalculated") already implies convergence is meant to be a
@@ -1054,6 +1079,42 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             strike_window=self.adjustment_strike_window, exclude_strikes=exclude,
         )
         price = leg.last_price
+
+        # STRIKE-CROSS CAP (confirmed requirement — see module docstring's
+        # new "STRIKE-CROSS CAP" note, right after Section 6): a strangle
+        # roll's premium-driven strike search has no awareness of the
+        # OTHER side's own strike at all — left unchecked, a smaller side
+        # that keeps needing more premium (PE climbing toward spot, CE
+        # descending toward spot) could roll to a strike AT OR PAST the
+        # opposite side's own strike, inverting the strangle into a
+        # nonsensical crossed position (e.g. a PE strike above its own
+        # CE's strike). Only meaningful pre-convergence, when the
+        # opposite side still has exactly the one leg Section 5/6 always
+        # leave it at (see this class's own "IMPORTANT STRUCTURAL POINT"
+        # above Section 5 — neither section ever grows a side's leg
+        # count); post-convergence, active_management's own delegated
+        # opens go through `IntradayDTTAdjustedStrategy._adjust` instead
+        # of this method entirely, so this never fires there.
+        opposite_side = OTHER_SIDE[side]
+        opposite_legs = self.legs[opposite_side]
+        if len(opposite_legs) == 1:
+            opposite_strike = opposite_legs[0]["strike"]
+            # PE strikes climb TOWARD the CE's strike as premium is
+            # chased; CE strikes descend TOWARD the PE's strike — either
+            # reaching (not just passing) the opposite strike is the cap.
+            crosses = (leg.strike >= opposite_strike) if side == "PE" else (leg.strike <= opposite_strike)
+            if crosses:
+                logger.info(
+                    "%s: %s roll's %.2f-premium-target strike (%.2f) would reach/cross "
+                    "the %s side's own strike (%.2f) — capping to exactly %.2f instead "
+                    "of letting the strangle invert; this forces convergence to a "
+                    "straddle at that shared strike.",
+                    runner.deployment_name, side, target_premium, leg.strike,
+                    opposite_side, opposite_strike, opposite_strike,
+                )
+                leg = await self.resolver.get_leg(self.instrument, self.contract_expiry, opposite_strike, side)
+                price = await self.resolver.get_ltp(leg)
+
         self.adjustments_used += 1
         role = f"adjustment_{self.adjustments_used}"
         self._leg_seq += 1
