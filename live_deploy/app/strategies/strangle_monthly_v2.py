@@ -258,6 +258,31 @@ convergence (per that section's own explicit heading), and Section 4
 (checkpoint) keeps running underneath everything, unchanged, at the
 same top-of-priority position it had before convergence.
 
+KNOWN LIMITATION — FLAGGED FOR LATER, NOT YET RESOLVED (raised by the
+strategy owner, deliberately not fixed in the same pass as the
+strike-cross cap above, since it needs its own separate confirmation
+before touching real trading behavior): the strategy owner has stated
+that once a position converges into a straddle, the STRANGLE's own
+adjustment config — `eod_gap_floor`, `adjustment_band_min`,
+`adjustment_band_max` — should no longer apply at all; only whichever
+`convergence_mode` is configured should govern from that point on.
+That is NOT what this file currently does under `active_management`
+specifically: per the paragraph immediately above (and Section 6's own
+heading), Section 6 (EOD) keeps firing post-convergence in that mode,
+using `_eod_check` completely unmodified — i.e. still evaluating
+`eod_gap_floor`/`adjustment_band_min/max` against a position that's
+supposed to be governed by straddle rules instead. (Under `fixed_stop`/
+`trailing_stop` this doesn't arise the same way — `_maybe_manage`'s own
+`frozen_post_convergence` guard stops Section 6 from running in those
+two modes, which is ALSO in tension with this very paragraph's claim
+that Section 6 runs "in ALL three modes" — that claim is only actually
+true for `active_management`; worth reconciling the text itself
+against `_maybe_manage`'s real gating at the same time this is fixed.)
+Needs its own explicit design decision (does Section 6 stop entirely
+post-convergence under active_management too? does active_management's
+own delegated EOD-equivalent, if any, replace it?) before changing —
+not guessed at here.
+
 ACTIVE-MANAGEMENT DELEGATION — how "reuse the actual functions" works
 without subclassing: `IntradayDTTAdjustedStrategy._adjust`,
 `._unwind_one`, and `._handle_adjustment_trigger` are ordinary instance
