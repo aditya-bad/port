@@ -132,21 +132,21 @@ the losing side's strike never moves.
 
 IMPORTANT STRUCTURAL POINT, easy to get wrong by analogy with
 intraday_dtt_advanced: this section ALWAYS REPLACES, never GROWS leg
-count. Whether the triggering side currently has one leg or two
-(the two-leg case only arises from a PRIOR Section 6 EOD accumulation —
-this section itself never grows a side past its current count), the
-action is the same: close the single CHEAPEST currently-open leg on
-that side (tie-break: earliest-opened — same rule as reversal-unwind
-elsewhere in this codebase), then open exactly ONE replacement, sized
-so the resulting SIDE TOTAL (remaining leg(s)' current premium + new
-leg's premium) lands at the midpoint of [adjustment_band_min,
-adjustment_band_max] (default 80-95%) of the bigger side's current
-premium. This is DIFFERENT from `intraday_dtt_advanced`'s roll (which
-only replaces once AT a concurrent cap, and otherwise plainly ADDS) —
-here, replacement happens EVERY time this trigger fires, regardless of
-current leg count, and net leg count on the triggering side is
-unchanged by this section alone. Only Section 6 ever grows a side's leg
-count.
+count. Whether the triggering side currently has one leg or two (a
+second leg can only ever exist via `convergence_mode=active_management`'s
+own delegated growth post-convergence — see Section 7; NEITHER this
+section nor Section 6 below ever grows a side's own leg count any
+more), the action is the same: close the single CHEAPEST currently-open
+leg on that side (tie-break: earliest-opened — same rule as
+reversal-unwind elsewhere in this codebase), then open exactly ONE
+replacement, sized so the resulting SIDE TOTAL (remaining leg(s)'
+current premium + new leg's premium) lands at the midpoint of
+[adjustment_band_min, adjustment_band_max] (default 80-95%) of the
+bigger side's current premium. This is DIFFERENT from
+`intraday_dtt_advanced`'s roll (which only replaces once AT a
+concurrent cap, and otherwise plainly ADDS) — here, replacement happens
+EVERY time this trigger fires, regardless of current leg count, and net
+leg count on the triggering side is unchanged by this section alone.
 
 ──────────────────────────────────────────────────────────────────────
 6. DAILY EOD CHECK (eod_check_time, default 15:13 — fixed, every day,
@@ -160,47 +160,38 @@ move this later without re-deriving why it was placed here.
 
     compare sum(all CE legs) vs sum(all PE legs)
     if smaller_side_sum < eod_gap_floor (default 80%) * bigger_side_sum:
-        protected = whichever leg on that side has been open LONGEST
-            (by an explicit open-order `seq` stamp, not list position --
-            see "PROTECTED LEG" note below)
-        if smaller_side has ONLY the protected leg (no extras yet):
-            GROW — sell one additional leg on that side (protected leg
-            untouched), sized so the side's NEW total lands at the
-            midpoint of [eod_gap_floor, adjustment_band_max] (reusing
-            Section 5's band config -- the spec's own "80-95% band"
-            language for this section matches those defaults exactly,
-            so this reuses the SAME two config keys rather than
-            inventing EOD-specific ones not listed in the config
-            schema). This is that side's first accumulation event.
-        else (side already has 1 or 2 extras beyond the protected leg):
-            REPLACE the cheapest of the EXTRAS ONLY (the protected leg
-            is never a candidate here -- the spec's own phrasing,
-            "square off whichever of the TWO [adjustment legs]", never
-            includes the side's longest-held leg; tie-break: earliest-
-            opened among the extras, same rule as everywhere else —
-            FLAGGED default, not confirmed against source material, per
-            the spec's own note) with one new leg, same band sizing.
-            Net leg count on the side is unchanged either way, so this
-            never stacks past the 1+max_adjustments cap once there's
-            ever been a single extra.
+        ALWAYS REPLACE — same shape as Section 5's own roll, just with
+        eod_gap_floor as the band's lower bound instead of
+        adjustment_trigger_ratio/adjustment_band_min: close the single
+        CHEAPEST currently-open leg on that side (tie-break:
+        earliest-opened, by an explicit open-order `seq` stamp, not
+        list position — same rule as Section 5), then open exactly ONE
+        replacement, sized so the side's NEW total lands at the
+        midpoint of [eod_gap_floor, adjustment_band_max] (reusing
+        Section 5's own adjustment_band_max — the spec's own "80-95%
+        band" language for this section matches those defaults exactly,
+        so this reuses that config key rather than inventing an
+        EOD-specific one). Net leg count on the side is unchanged.
 
-PROTECTED LEG, Section 6 vs Section 5 -- a real, deliberate asymmetry:
-Section 5's roll explicitly makes the ORIGINAL leg eligible ("the
-original leg is eligible too... it competes on equal footing"); Section
-6's accumulation/replacement NEVER touches whichever leg has been open
-longest on that side, regardless of its role label. "Longest open" is
-tracked via an explicit monotonic `seq` counter stamped on every leg at
-open time, not list position -- Section 5's own roll can remove index 0
-and append its replacement at the end, which would silently shift
-"protection" onto a younger leg if list index were used instead.
-
-This grow-then-replace-at-cap shape is structurally the SAME pattern
-`intraday_dtt_advanced` uses for its own rolling cap — but it is NOT
-implemented by calling into that strategy's code. Section 7 explicitly
-reserves cross-strategy reuse for `convergence_mode=active_management`
-specifically; this section is this strategy's own mechanism with its
-own (different) trigger and sizing formula, so it gets its own
-implementation, structured the same way on purpose for consistency.
+CONFIRMED FIX, NOT THE ORIGINAL READING (real bug, found against a live
+deployment, not theoretical): this used to treat a side's FIRST breach
+of eod_gap_floor as a GROW (sell one additional leg, leave whichever
+leg had been open longest — the "protected" leg — untouched and
+permanently immune to this check from then on) and only REPLACE
+starting on a LATER breach, once an "extra" leg already existed
+alongside the protected one. That directly defeated this section's own
+stated purpose: closing the CE/PE premium gap so a big overnight
+gap-up/gap-down can't produce a large, unhedged net loss between the
+two sides. A side that had never rolled before could sit at a wide gap
+indefinitely, since its one leg was exactly the "protected" one this
+check would never touch. There is no more protected leg, on either
+side, ever — every leg on the triggering side is an equally eligible
+candidate to be the one closed, every time this fires, including the
+side's very first (and only) leg. This also means neither Section 5 nor
+Section 6 can grow a side's leg count any more (see Section 5's own
+"IMPORTANT STRUCTURAL POINT" above) — the only way a side ever exceeds
+1 leg now is `convergence_mode=active_management`'s own delegated
+growth post-convergence (Section 7).
 
 ──────────────────────────────────────────────────────────────────────
 7. CONVERGENCE (strangle -> straddle)
@@ -918,15 +909,17 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # to sit at EXACTLY the 2 legs it converged with until the stop
         # fires or checkpoint/contract-expiry closes it out — neither of
         # which is scoped to convergence state, so both are correctly
-        # left alone by this guard. Letting Section 5 keep rolling would
-        # silently turn the straddle back into a strangle, defeating the
-        # whole point of a converged state; letting Section 6 keep
-        # growing a side injects that new leg's own premium into
-        # `combined_now`, corrupting the stop calculation with an
-        # artifact that has nothing to do with real market movement
-        # (e.g. converged at 600/stop 660, drifts to a harmless 630 —
-        # then an EOD-added leg worth ~82.5 pushes combined_now to
-        # 712.5, tripping the stop on zero real loss). active_management
+        # left alone by this guard. Letting Section 5 OR Section 6 keep
+        # rolling would silently turn the straddle back into a strangle
+        # (a replacement leg lands at whatever strike currently hits the
+        # target premium band, not necessarily the converged strike),
+        # defeating the whole point of a converged state, and injects
+        # that new leg's own freshly-resolved premium into `combined_now`,
+        # corrupting the stop calculation with an artifact that has
+        # nothing to do with real market movement (e.g. converged at
+        # 600/stop 660, drifts to a harmless 630 — then an EOD replacement
+        # leg worth ~82.5 pushes combined_now to 712.5, tripping the stop
+        # on zero real loss). active_management
         # is DELIBERATELY EXCLUDED from this freeze — it already governs
         # its own post-convergence leg changes via delegation (Section 5
         # replaced by `_active_management_tick`), and Section 6 (EOD) is
@@ -1035,12 +1028,17 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         """
         `reversed_hedge_order` / `hedge_point_distance`: set by callers
         that just closed the leg being replaced (Section 5's roll,
-        Section 6's at-cap replace) — per the module docstring's
-        "HEDGING" roll-order requirement, a REPLACE must place the new
-        protective leg BEFORE the new short (reversed from how entry/
-        grow do it, short-then-hedge, since there nothing existing is
-        being closed first so there's no exposure gap to protect
-        against). `hedge_point_distance`, if given, is the REPLACED
+        Section 6's replace — every trigger, on both, since neither
+        section grows a side's leg count any more) — per the module
+        docstring's "HEDGING" roll-order requirement, a REPLACE must
+        place the new protective leg BEFORE the new short (reversed
+        from the plain short-then-hedge order the `else` branch below
+        uses, for a hypothetical caller with nothing existing being
+        closed first, so there's no exposure gap to protect against —
+        `_enter`'s own initial entry doesn't call `_open_leg` at all,
+        it sells directly and hedges via `_open_hedge_for_short_leg`,
+        so no current caller actually takes that branch).
+        `hedge_point_distance`, if given, is the REPLACED
         leg's own hedge distance, carried forward onto the new leg
         instead of resolving a fresh premium-target hedge — "roll in
         lockstep... to maintain a fixed point-distance."
@@ -1090,8 +1088,12 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             await self._resolve_and_open_hedge(runner, ts, side, leg, price, trigger, hedge_point_distance)
             await _sell_short()
         else:
-            # Normal order (entry, or a Section-6 GROW with nothing being
-            # closed alongside it) — short first, hedge second.
+            # Normal order — short first, hedge second. See this
+            # method's own docstring: no current caller actually reaches
+            # this branch (both Section 5's roll and Section 6's replace
+            # always pass reversed_hedge_order=True); kept as the sane
+            # default for a future direct `_open_leg` call with nothing
+            # being closed alongside it.
             await _sell_short()
             await self._resolve_and_open_hedge(runner, ts, side, leg, price, trigger, hedge_point_distance)
 
@@ -1155,7 +1157,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             reversed_hedge_order=True, hedge_point_distance=point_distance, prices=prices,
         )
 
-    # ── Section 6: EOD 80% check — grows under cap, replaces at cap ────
+    # ── Section 6: EOD 80% check — ALWAYS replaces (never grows) ────────
 
     async def _eod_check(self, runner, ts, prices: dict[int, float]) -> None:
         if not (self.legs["CE"] and self.legs["PE"]):
@@ -1180,41 +1182,39 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         band_mid = (self.eod_gap_floor + self.adjustment_band_max) / 2
         band_target_total = band_mid * bigger_sum
         side_legs = self.legs[smaller_side]
-        # The PROTECTED leg is whichever on this side has been open
-        # LONGEST (lowest `seq`) -- Section 6, unlike Section 5, never
-        # touches it ("square off whichever of the TWO [adjustment
-        # legs]..." -- the spec's own phrasing never includes the side's
-        # longest-held leg as a candidate). Deliberately keyed by `seq`,
-        # not list position -- Section 5's own roll can remove index 0
-        # and append its replacement at the end, which would silently
-        # shift "protection" onto a younger leg if list index were used.
-        protected = min(side_legs, key=lambda l: l["seq"])
-        extras = [l for l in side_legs if l is not protected]
 
-        if not extras:
-            # GROW: first accumulation event on this side -- 1 leg -> 2,
-            # protected leg untouched.
-            new_leg_target = band_target_total - prices[protected["token"]]
-            await self._open_leg(runner, ts, smaller_side, new_leg_target, "eod_gap_check", trigger_values, prices=prices)
-        else:
-            # REPLACE: side already has 1 or 2 extras (2 = at the cap) --
-            # tiebreak among the EXTRAS ONLY (never the protected leg),
-            # lowest current premium wins, ties toward earliest-opened.
-            # Net leg count on this side is unchanged either way, so the
-            # cap ("never stacks a third leg") is respected automatically
-            # once there's ever been a single extra.
-            cheapest_extra = min(extras, key=lambda l: (prices[l["token"]], l["seq"]))
-            remaining_sum = sum(prices[l["token"]] for l in side_legs if l is not cheapest_extra)
-            new_leg_target = band_target_total - remaining_sum
-            # Same reversed hedge-before-short ordering as Section 5's
-            # roll -- this is ALSO a replace (close then open).
-            old_hedge = self.hedges.get(cheapest_extra["token"])
-            point_distance = old_hedge["point_distance"] if old_hedge else None
-            await self._close_leg(runner, ts, smaller_side, cheapest_extra, "eod_gap_check", trigger_values)
-            await self._open_leg(
-                runner, ts, smaller_side, new_leg_target, "eod_gap_check", trigger_values,
-                reversed_hedge_order=True, hedge_point_distance=point_distance, prices=prices,
-            )
+        # BUG FIX (confirmed against a real deployment — see module
+        # docstring's Section 6): this used to treat a side's FIRST
+        # breach of eod_gap_floor as a "GROW" (sell one additional leg,
+        # leave the original leg open and permanently immune to this
+        # check for the rest of its life) and only REPLACE on a later
+        # breach. That defeated the whole point of this check — closing
+        # the CE/PE premium gap so a gap-up/gap-down can't produce a
+        # large, unhedged net loss between the two sides — since a side
+        # that had never rolled before could sit with a wide gap
+        # indefinitely. Every trigger now does the same thing,
+        # unconditionally, structurally identical to Section 5's own
+        # `_roll_side`: close the single CHEAPEST currently-open leg on
+        # this side (tie-break: earliest-opened, i.e. lowest `seq` —
+        # same rule as Section 5), then open exactly ONE replacement
+        # sized so the side's new total lands at the band midpoint. No
+        # leg is ever protected from this check, including the original
+        # — net leg count on the side is unchanged (still whatever it
+        # was before this call), so this can never grow a side past its
+        # current leg count either.
+        cheapest = min(side_legs, key=lambda l: (prices[l["token"]], l["seq"]))
+        remaining_sum = sum(prices[l["token"]] for l in side_legs if l is not cheapest)
+        new_leg_target = band_target_total - remaining_sum
+
+        # Same reversed hedge-before-short ordering as Section 5's roll
+        # -- this is ALSO a replace (close then open).
+        old_hedge = self.hedges.get(cheapest["token"])
+        point_distance = old_hedge["point_distance"] if old_hedge else None
+        await self._close_leg(runner, ts, smaller_side, cheapest, "eod_gap_check", trigger_values)
+        await self._open_leg(
+            runner, ts, smaller_side, new_leg_target, "eod_gap_check", trigger_values,
+            reversed_hedge_order=True, hedge_point_distance=point_distance, prices=prices,
+        )
 
     # ── Section 7: convergence detection + active-management delegation ─
 
@@ -1269,10 +1269,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             nothing else here ever looks at.
           - `_adjust` appends a leg dict WITHOUT a `"seq"` key (that field
             is specific to this strategy's own Section 5/6 "which leg is
-            protected" bookkeeping — `intraday_dtt_adjusted` has no such
-            concept). Section 6 (EOD) keeps running unmodified post-
-            convergence even under active_management (per that section's
-            own heading), and its `min(..., key=lambda l: l["seq"])` would
+            cheapest, ties toward earliest-opened" bookkeeping —
+            `intraday_dtt_adjusted` has no such concept). Section 6 (EOD)
+            keeps running unmodified post-convergence even under
+            active_management (per that section's own heading), and its
+            `min(..., key=lambda l: (prices[...], l["seq"]))` would
             raise `KeyError` on such a leg — so any leg missing `"seq"`
             after a delegated call is stamped with one here, exactly as
             if it had been opened through this strategy's own `_open_leg`.
