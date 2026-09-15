@@ -18,7 +18,7 @@ Postgres when a runner starts up IS the current state, no replay needed.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Optional
 
 import asyncpg
@@ -359,6 +359,20 @@ class DeploymentRunner:
     # this close.
     _STALE_TICK_MAX_AGE = timedelta(minutes=5)
 
+    # Real trading hours, IST — a tick timestamped outside this window is
+    # NEVER a live, tradeable price, no matter how close its own
+    # exchange_timestamp is to the current wall clock (see _is_stale_tick's
+    # own docstring, case 3, for the CONFIRMED incident this exists for:
+    # a pre-open snapshot at 08:06 IST, timestamped close enough to "now"
+    # to sail straight past the staleness check above, triggered a real
+    # roll off a price that was never actually tradeable). 15:40, not
+    # 15:30 — confirmed with the strategy owner: NSE F&O's real close
+    # moved to 15:40 under the 2026 Closing Auction Session rules (the
+    # auction itself runs 15:15-15:35), so 15:30 would reject genuinely
+    # live ticks in the last 10 minutes of a real session.
+    _MARKET_OPEN_TIME = time(9, 15)
+    _MARKET_CLOSE_TIME = time(15, 40)
+
     def _is_stale_tick(self, tick: dict) -> bool:
         """
         Kite (and this app's own dispatcher) can deliver a tick whose
@@ -383,7 +397,7 @@ class DeploymentRunner:
         is a property of the tick-consumption layer, not any one strategy,
         so it belongs here rather than patched into each one separately.
 
-        Two DISTINCT ways a tick can be stale, both checked here:
+        Three DISTINCT ways a tick can be untrustworthy, all checked here:
 
         1. Older than this deployment's own creation — airtight on its
            own: a tick genuinely reflecting live trading can NEVER claim
@@ -404,24 +418,66 @@ class DeploymentRunner:
            tick carrying that afternoon's last-trade price/time — this
            check is exactly what closes that gap.
 
-        Neither check needs real wall-clock "now" as a separately chosen
-        reference — both need the SAME clock domain the tick itself is
-        already in. `exchange_timestamp` is naive LOCAL SYSTEM TIME (see
-        this class's `_created_at_local` comment for exactly why — it's
-        whatever `datetime.fromtimestamp()` produces on the machine
-        running the Kite client, not portably "IST"), so both `created_at`
-        and "now" here are deliberately derived the identical way
-        (`datetime.now()`, no tz arg, i.e. naive local system time) rather
-        than via a hardcoded offset, keeping every side of both
-        comparisons in the same domain on any server regardless of its
-        system timezone.
+        3. Timestamped outside real trading hours (`_MARKET_OPEN_TIME`..
+           `_MARKET_CLOSE_TIME`) — checks #1/#2 catch a tick that's old,
+           this one catches a tick that's TIMELY but still never a real
+           trading signal. CONFIRMED live: a login at 08:06 IST delivered
+           a subscribe-time snapshot for several instruments whose OWN
+           exchange_timestamp read close enough to "now" (08:06ish) to
+           pass check #2 outright, well within `_STALE_TICK_MAX_AGE` —
+           but 08:06 IST is before the market has genuinely opened
+           (pre-open is 09:00-09:15, continuous trading starts 09:15), so
+           no real, tradeable price exists at that moment at all.
+           strangle_monthly_v2's EOD check saw a real (if economically
+           meaningless) premium comparison off it and rolled a leg for
+           real. Age-based staleness alone can never catch this — the
+           tick genuinely WAS "recent," just recent-and-still-not-live.
+
+        Neither of checks #1/#2 needs real wall-clock "now" as a
+        separately chosen reference — both need the SAME clock domain the
+        tick itself is already in. `exchange_timestamp` is naive LOCAL
+        SYSTEM TIME (see this class's `_created_at_local` comment for
+        exactly why — it's whatever `datetime.fromtimestamp()` produces
+        on the machine running the Kite client, not portably "IST"), so
+        both `created_at` and "now" here are deliberately derived the
+        identical way (`datetime.now()`, no tz arg, i.e. naive local
+        system time) rather than via a hardcoded offset, keeping every
+        side of both comparisons in the same domain on any server
+        regardless of its system timezone. Check #3 relies on that same
+        existing assumption (naive local time IS IST, the same implicit
+        assumption entry_time/force_exit_time config values already make
+        everywhere else) rather than introducing a new one.
         """
         ts = tick.get("exchange_timestamp")
         if ts is None:
             return False
         if ts < self._created_at_local:
             return True
-        return (datetime.now() - ts) > self._STALE_TICK_MAX_AGE
+        if (datetime.now() - ts) > self._STALE_TICK_MAX_AGE:
+            return True
+        t = ts.time()
+        return t < self._MARKET_OPEN_TIME or t > self._MARKET_CLOSE_TIME
+
+    def _stale_tick_reason(self, tick: dict) -> str:
+        """Human-readable version of whichever _is_stale_tick condition
+        actually fired, for the log line in _run() below -- three
+        genuinely different situations (age since creation, age since
+        now, outside trading hours) all used to share one vague
+        "a subscribe-time snapshot" message, which stopped being accurate
+        the moment case 3 (market hours) was added -- that one isn't
+        necessarily a subscribe-time snapshot at all, just a timely tick
+        that arrived at a meaningless moment."""
+        ts = tick.get("exchange_timestamp")
+        if ts is None:
+            return "no exchange_timestamp"
+        if ts < self._created_at_local:
+            return "older than this deployment's own creation"
+        if (datetime.now() - ts) > self._STALE_TICK_MAX_AGE:
+            return "older than the current wall clock by more than %s" % self._STALE_TICK_MAX_AGE
+        t = ts.time()
+        if t < self._MARKET_OPEN_TIME or t > self._MARKET_CLOSE_TIME:
+            return f"timestamped outside real trading hours ({self._MARKET_OPEN_TIME}-{self._MARKET_CLOSE_TIME} IST)"
+        return "unknown"   # unreachable in practice — _is_stale_tick already returned True to get here
 
     async def _run(self) -> None:
         my_tokens = self.tokens
@@ -434,11 +490,10 @@ class DeploymentRunner:
                 for t in relevant:
                     if self._is_stale_tick(t):
                         logger.info(
-                            "%s: ignoring a stale tick (exchange_timestamp=%s, "
-                            "created_at=%s, now=%s) — a subscribe-time "
-                            "snapshot, not a live trading signal",
+                            "%s: ignoring an untrustworthy tick (exchange_timestamp=%s, "
+                            "now=%s) — %s, not a live trading signal",
                             self.deployment_name, t.get("exchange_timestamp"),
-                            self._created_at_local, datetime.now(),
+                            datetime.now(), self._stale_tick_reason(t),
                         )
                         continue
                     try:
