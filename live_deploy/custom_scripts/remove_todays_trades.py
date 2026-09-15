@@ -27,19 +27,32 @@ several places a trade's effects live.
    or closes, with no assumptions about position state.
 
 2. THE POSITION ROWS. Every position touched by a lot dated today is
-   deleted OUTRIGHT, ONLY if that position was ALSO opened today (cascades
-   away its lots automatically, ON DELETE CASCADE). A position opened on
-   an EARLIER day that happens to have picked up an adjustment lot today
-   is a genuinely different, harder case (would need replaying its
-   remaining older lots to reconstruct qty/avg_entry_price/status
-   in-application, the same averaging math record_fill itself does) --
-   this script does NOT guess at that. It detects the case per deployment
-   and ABORTS EARLY, PRINTS which deployment/position needs manual
-   handling, and touches NOTHING for that deployment (every deployment is
-   independent -- one abort never blocks the others). Confirmed today's
-   actual data has zero such cases (every open/closed position seen
-   was opened today outright) but the script checks for real rather than
-   assuming that stays true on a later run.
+   deleted OUTRIGHT if it was ALSO opened today (cascades away its lots
+   automatically, ON DELETE CASCADE). A position opened on an EARLIER day
+   that picked up a lot today is a mixed-day case, split into two:
+
+   - Exactly ONE lot today, and it's the one that CLOSED the position:
+     safe to auto-handle, no averaging math involved -- undo just that
+     lot (delete it, reverse its own cash delta) and flip the position
+     back to 'open' with qty restored from that same lot's own qty
+     (record_fill's own ClosingQtyMismatch check guarantees a closing
+     fill's qty always exactly equals what was open before it, so
+     there's no ambiguity in what to restore). CONFIRMED real, not
+     theoretical: several genuine checkpoint_target/continuous_50pct_
+     trigger closes, correctly triggered by real strategy logic, off a
+     tick that should never have reached it at all (a pre-market
+     snapshot timestamped close enough to "now" to look live -- see the
+     market-hours fix in app/deployments/runner.py). The trigger wasn't
+     wrong; the tick behind it was.
+   - Anything else (more than one lot today, or a lot that ADDED to /
+     left the position open rather than closing it) would need replaying
+     the position's remaining older lots to reconstruct qty/
+     avg_entry_price/status in-application, the same averaging math
+     record_fill itself does -- this script does NOT guess at that. It
+     detects the case per deployment and ABORTS EARLY, PRINTS which
+     deployment/position needs manual handling, and touches NOTHING for
+     that deployment (every deployment is independent -- one abort never
+     blocks the others).
 
 3. PERSISTED STRATEGY STATE (deployment_state table). A strategy's
    cycle_id/entered_ever/entered_today/etc. isn't derived fresh from
@@ -118,7 +131,7 @@ async def main(target_date_str: str, dry_run: bool, only_deployments: list[str] 
             for missing in only_set - found_names:
                 print(f"SKIP  {missing!r}: no such deployment — check the exact name (case-sensitive)")
 
-        plan = []          # [(deployment, cash_delta_to_reverse, position_ids_to_delete, lot_count)]
+        plan = []          # [(deployment, cash_delta, position_ids_to_delete, positions_to_reopen, lot_count)]
         aborted = []       # [(deployment_name, reason)]
 
         for dep in deployments:
@@ -126,7 +139,7 @@ async def main(target_date_str: str, dry_run: bool, only_deployments: list[str] 
 
             lots_today = await pool.fetch(
                 """
-                SELECT l.*, p.opened_at, p.status
+                SELECT l.*, p.opened_at, p.status, p.closed_at
                 FROM position_lots l
                 JOIN positions p ON p.id = l.position_id
                 WHERE l.deployment_id = $1
@@ -137,29 +150,57 @@ async def main(target_date_str: str, dry_run: bool, only_deployments: list[str] 
             if not lots_today:
                 continue
 
-            position_ids_today_lots = {row["position_id"] for row in lots_today}
+            lots_by_position: dict = {}
+            position_info: dict = {}
+            for row in lots_today:
+                lots_by_position.setdefault(row["position_id"], []).append(row)
+                position_info[row["position_id"]] = row
 
-            # Detect the hard case: a position opened on an EARLIER day
-            # that picked up a lot today (e.g. a same-day adjustment on an
-            # older multi-day position) -- see module docstring's point 2.
-            # opened_at comes back as an aware UTC datetime (asyncpg's own
-            # mapping for timestamptz); converting to IST here in Python
-            # matches the AT TIME ZONE 'Asia/Kolkata' comparison the SQL
-            # query above already used to select these rows in the first
-            # place -- same day-boundary convention on both sides.
-            seen_positions = {row["position_id"]: row["opened_at"] for row in lots_today}
-            mixed_day_positions = [
-                pid for pid, opened_at in seen_positions.items()
-                if opened_at.astimezone(IST).date() != target_date
-            ]
+            positions_to_delete: list = []   # opened today -- delete outright
+            positions_to_reopen: list = []   # [(position_id, lot_id, reopen_qty)]
+            unhandled: list = []             # mixed-day cases this script won't guess at
 
-            if mixed_day_positions:
+            for pid, lots in lots_by_position.items():
+                info = position_info[pid]
+                opened_today = info["opened_at"].astimezone(IST).date() == target_date
+                if opened_today:
+                    positions_to_delete.append(pid)
+                    continue
+
+                # A position from an EARLIER day that picked up exactly ONE
+                # lot today, and that lot is the one that closed it -- the
+                # one mixed-day case safe to auto-handle without any lot-
+                # replay averaging: reopening means undoing that single
+                # close, nothing else. qty to restore is that lot's own
+                # qty -- record_fill's own ClosingQtyMismatch guarantees a
+                # closing fill's qty always exactly equals what was open
+                # before it, so there's no ambiguity to resolve.
+                # CONFIRMED real case (not theoretical): a genuine
+                # checkpoint_target/continuous_50pct_trigger close,
+                # correctly triggered by strategy logic -- just off a
+                # pre-market tick that should never have reached it (see
+                # the market-hours fix in app/deployments/runner.py). The
+                # trigger itself isn't the problem; the tick behind it is.
+                if len(lots) == 1 and info["status"] == "closed" \
+                        and info["closed_at"] is not None \
+                        and info["closed_at"].astimezone(IST).date() == target_date:
+                    positions_to_reopen.append((pid, lots[0]["id"], float(lots[0]["qty"])))
+                    continue
+
+                # Anything else on a pre-existing position (an add/adjustment
+                # lot that left it open, more than one lot today, a close
+                # whose own closed_at doesn't match today for some reason)
+                # would need replaying its remaining older lots' averaging
+                # math -- not guessed at here, see module docstring point 2.
+                unhandled.append(pid)
+
+            if unhandled:
                 aborted.append((
                     dep["deployment_name"],
-                    f"{len(mixed_day_positions)} position(s) opened before {target_date} "
-                    f"picked up a lot dated {target_date} (e.g. a same-day adjustment on an "
-                    f"older position) -- not auto-handled, see script docstring point 2. "
-                    f"position_id(s): {mixed_day_positions}",
+                    f"{len(unhandled)} position(s) opened before {target_date} picked up a lot "
+                    f"dated {target_date} in a way that isn't a single same-day close (e.g. a "
+                    f"same-day adjustment on an older position) -- not auto-handled, see script "
+                    f"docstring point 2. position_id(s): {unhandled}",
                 ))
                 continue
 
@@ -168,7 +209,7 @@ async def main(target_date_str: str, dry_run: bool, only_deployments: list[str] 
                 else (float(row["qty"]) * float(row["price"]))
                 for row in lots_today
             )
-            plan.append((dep, cash_delta, list(position_ids_today_lots), len(lots_today)))
+            plan.append((dep, cash_delta, positions_to_delete, positions_to_reopen, len(lots_today)))
 
         print(f"=== Plan for {target_date} (IST) ===\n")
         if aborted:
@@ -181,9 +222,13 @@ async def main(target_date_str: str, dry_run: bool, only_deployments: list[str] 
             print("Nothing to do -- no deployment has a trade dated that day.")
             return
 
-        for dep, cash_delta, position_ids, lot_count in plan:
+        for dep, cash_delta, position_ids, reopen_list, lot_count in plan:
             print(f"{dep['deployment_name']!r}")
-            print(f"    positions to delete: {len(position_ids)}, lots: {lot_count}")
+            if position_ids:
+                print(f"    positions to delete: {len(position_ids)}")
+            if reopen_list:
+                print(f"    positions to REOPEN (undoing today's close only): {len(reopen_list)}")
+            print(f"    lots: {lot_count}")
             print(f"    current_cash: {dep['current_cash']} -> {float(dep['current_cash']) - cash_delta:.2f} "
                   f"(reversing {cash_delta:+.2f})")
             print(f"    deployment_state: cleared")
@@ -198,7 +243,7 @@ async def main(target_date_str: str, dry_run: bool, only_deployments: list[str] 
         headers = {"X-API-Key": api_key}
         base = "http://localhost:8000"
 
-        for dep, cash_delta, position_ids, lot_count in plan:
+        for dep, cash_delta, position_ids, reopen_list, lot_count in plan:
             dep_id = dep["id"]
             name = dep["deployment_name"]
             async with pool.acquire() as conn:
@@ -208,9 +253,22 @@ async def main(target_date_str: str, dry_run: bool, only_deployments: list[str] 
                         "WHERE id = $1",
                         dep_id, cash_delta,
                     )
-                    await conn.execute(
-                        "DELETE FROM positions WHERE id = ANY($1::uuid[])", position_ids,
-                    )
+                    if position_ids:
+                        await conn.execute(
+                            "DELETE FROM positions WHERE id = ANY($1::uuid[])", position_ids,
+                        )
+                    for pid, lot_id, reopen_qty in reopen_list:
+                        # Undo exactly the one lot that closed this position
+                        # today -- the position itself goes back to 'open'
+                        # with its pre-close qty restored, everything about
+                        # it from before today (the original opening lot,
+                        # its own metadata) untouched.
+                        await conn.execute(
+                            "UPDATE positions SET status = 'open', qty = $2, "
+                            "closed_at = NULL, realized_pnl = 0 WHERE id = $1",
+                            pid, reopen_qty,
+                        )
+                        await conn.execute("DELETE FROM position_lots WHERE id = $1", lot_id)
                     await conn.execute(
                         "DELETE FROM deployment_state WHERE deployment_id = $1", dep_id,
                     )
@@ -224,8 +282,9 @@ async def main(target_date_str: str, dry_run: bool, only_deployments: list[str] 
                         "AND (snapshot_at AT TIME ZONE 'Asia/Kolkata')::date = $2",
                         dep_id, target_date,
                     )
-            print(f"  {name}: DB corrected (cash reversed, {len(position_ids)} position(s) "
-                  f"deleted, state/events/snapshots for {target_date} cleared)")
+            print(f"  {name}: DB corrected (cash reversed, {len(position_ids)} position(s) deleted, "
+                  f"{len(reopen_list)} position(s) reopened, state/events/snapshots for "
+                  f"{target_date} cleared)")
 
             try:
                 if dep["status"] == "active":
