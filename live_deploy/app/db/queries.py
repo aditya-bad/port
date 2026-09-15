@@ -19,6 +19,7 @@ one qty-equality check in record_fill — the schema already supports it.
 """
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
@@ -333,11 +334,12 @@ async def list_positions_with_episode(
             """,
             deployment_id,
         )
-    if not rows:
-        return []
+        if not rows:
+            return []
+        closing_reason_of = await _fetch_closing_reasons(conn, [r["id"] for r in rows])
 
     episode_of: dict[UUID, tuple] = {}
-    for ep in _group_into_episodes(rows):
+    for ep in _group_into_episodes(rows, closing_reason_of):
         for r in ep["rows"]:
             episode_of[r["id"]] = (ep["start"], ep["end"])
 
@@ -1080,8 +1082,60 @@ async def get_intraday_mtm_range(
 # deployment (realistically minutes to days).
 _EPISODE_GAP_TOLERANCE = timedelta(minutes=5)
 
+# CONFIRMED real case the plain tolerance-by-itself gets wrong: a
+# strangle that fully converges then hits its convergence_stop closes
+# EVERY leg (genuinely flat, same shape as "a single-leg roll with
+# nothing else open" above), and the very next tick's reentry_after_
+# convergence_stop opens brand new legs a second later -- well within
+# _EPISODE_GAP_TOLERANCE, so it bridged into the SAME episode even
+# though it's a deliberate new cycle (confirmed via strangle_monthly_v2's
+# own cycle_id metadata incrementing across the boundary). Time alone
+# can't tell "a roll's close+reopen, still the same strategic bet" apart
+# from "a stop-out followed by a fresh bet" -- both look identical as
+# raw [close, open] timing. The actual signal is WHY it closed: mirrors
+# static/js/api.js's own triggerBadge() classifier exactly (same regex
+# families) -- 'stop' (risk-off/forced exits) and 'profit' (target-driven
+# closes) both mean "this strategic bet concluded," never bridged
+# regardless of gap size; 'adjust' (rolls/rebalancing/signal flips,
+# including pivot_supertrend's own st_flip -- the ORIGINAL scenario this
+# tolerance exists for) still bridges exactly as before, unaffected by
+# this change.
+_STOP_OR_PROFIT_TRIGGER_RE = re.compile(
+    r"stop|force_exit|force_close|spike|backstop|profit_target|checkpoint|decay",
+    re.IGNORECASE,
+)
 
-def _group_into_episodes(positions: list) -> list[dict]:
+
+def _is_stop_or_profit_close(reason: Optional[str]) -> bool:
+    return bool(reason) and bool(_STOP_OR_PROFIT_TRIGGER_RE.search(reason))
+
+
+async def _fetch_closing_reasons(conn, position_ids: list) -> dict:
+    """position_id -> the `reason` on whichever lot actually closed it
+    (absent for a still-open position, or one with no reason recorded).
+    Every fill in this codebase is either a same-direction add or a FULL
+    close (record_fill requires an exact qty match -- no partial exits,
+    same assumption _POSITION_LOT_AGG_JOIN's own comment already makes),
+    so a position has at most one exit-direction lot; DISTINCT ON is a
+    defensive generalization, not an expectation of ever averaging more
+    than one row."""
+    if not position_ids:
+        return {}
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT ON (pl.position_id) pl.position_id, pl.reason
+        FROM position_lots pl
+        JOIN positions p ON p.id = pl.position_id
+        WHERE pl.position_id = ANY($1::uuid[])
+          AND ((p.side = 'long' AND pl.action = 'sell') OR (p.side = 'short' AND pl.action = 'buy'))
+        ORDER BY pl.position_id, pl.executed_at DESC
+        """,
+        position_ids,
+    )
+    return {r["position_id"]: r["reason"] for r in rows}
+
+
+def _group_into_episodes(positions: list, closing_reason_of: Optional[dict] = None) -> list[dict]:
     """Step 103 — the actual interval-merge, factored out of
     get_positional_episode_mtm_rows (Step 102) so it can also back
     list_positions_with_episode below: standard sweep-line merge of
@@ -1092,22 +1146,54 @@ def _group_into_episodes(positions: list) -> list[dict]:
     nothing else open) — see get_positional_episode_mtm_rows' own
     docstring for the full reasoning, which still applies unchanged
     here. `positions` must already be sorted by opened_at ASCENDING.
+
+    `closing_reason_of` (optional, `{position_id: reason}` from
+    `_fetch_closing_reasons`) is what decides whether the tolerance
+    bridge is even eligible to fire at all — see `_STOP_OR_PROFIT_
+    TRIGGER_RE`'s own comment above for why. Omitted entirely (None),
+    every gap within tolerance still bridges — the pre-this-fix
+    behavior — so any OTHER caller that hasn't been updated to fetch
+    reasons yet degrades to the old behavior instead of breaking.
+
     Returns `[{"start": ..., "end": ... or None, "rows": [...]}]` in
     THE SAME order as the input (oldest episode first) — callers sort
     however they need afterward.
     """
+    closing_reason_of = closing_reason_of or {}
     episodes: list[dict] = []
     for p in positions:
         if episodes and (
             episodes[-1]["end"] is None
-            or p["opened_at"] <= episodes[-1]["end"] + _EPISODE_GAP_TOLERANCE
+            or (
+                not episodes[-1].get("hard_stop")
+                and p["opened_at"] <= episodes[-1]["end"] + _EPISODE_GAP_TOLERANCE
+            )
         ):
             ep = episodes[-1]
             ep["rows"].append(p)
             if ep["end"] is not None:
-                ep["end"] = None if p["closed_at"] is None else max(ep["end"], p["closed_at"])
+                if p["closed_at"] is None:
+                    ep["end"] = None
+                    ep["hard_stop"] = False
+                elif p["closed_at"] >= ep["end"]:
+                    # This position is (tied for) the episode's latest
+                    # close so far -- its own reason is what decides
+                    # hard_stop from here; an earlier-closing leg
+                    # processed after it (rare, but positions aren't
+                    # guaranteed to arrive in closed_at order) must NOT
+                    # override that with its own, less relevant reason.
+                    ep["end"] = p["closed_at"]
+                    ep["hard_stop"] = _is_stop_or_profit_close(closing_reason_of.get(p["id"]))
         else:
-            episodes.append({"start": p["opened_at"], "end": p["closed_at"], "rows": [p]})
+            episodes.append({
+                "start": p["opened_at"],
+                "end": p["closed_at"],
+                "hard_stop": (
+                    _is_stop_or_profit_close(closing_reason_of.get(p["id"]))
+                    if p["closed_at"] is not None else False
+                ),
+                "rows": [p],
+            })
     return episodes
 
 
@@ -1192,7 +1278,8 @@ async def get_positional_episode_mtm_rows(
         if not positions:
             return []
 
-        episodes = _group_into_episodes(positions)
+        closing_reason_of = await _fetch_closing_reasons(conn, [r["id"] for r in positions])
+        episodes = _group_into_episodes(positions, closing_reason_of)
         episodes.sort(key=lambda e: e["start"], reverse=True)
         episodes = episodes[:limit]
 
@@ -1518,6 +1605,7 @@ async def pnl_summary_for_range(
             ORDER BY p.deployment_id, p.opened_at ASC
             """,
         )
+        closing_reason_of = await _fetch_closing_reasons(conn, [r["id"] for r in all_positions])
 
     by_deployment: dict[UUID, list] = {}
     for r in all_positions:
@@ -1525,7 +1613,7 @@ async def pnl_summary_for_range(
 
     positions_closed = wins = losses = 0
     for dep_positions in by_deployment.values():
-        for ep in _group_into_episodes(dep_positions):
+        for ep in _group_into_episodes(dep_positions, closing_reason_of):
             if ep["end"] is None or not (start <= ep["end"] < end):
                 continue
             ep_pnl = sum(r["realized_pnl"] for r in ep["rows"])
