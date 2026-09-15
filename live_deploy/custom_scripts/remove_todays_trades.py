@@ -70,6 +70,8 @@ several places a trade's effects live.
 Runs INSIDE the app container (DB access + this app's own dependencies):
     docker exec live-deploy python3 custom_scripts/remove_todays_trades.py --date 2026-09-02
     docker exec live-deploy python3 custom_scripts/remove_todays_trades.py --date 2026-09-02 --dry-run
+    docker exec live-deploy python3 custom_scripts/remove_todays_trades.py --date 2026-09-11 \
+        --deployment "Straddle Nifty Advanced" --deployment "Straddle Nifty Breakeven Adjustments"
 
 --date is REQUIRED and deliberately not defaulted to "today" -- this is
 a destructive, irreversible operation; naming the exact date explicitly
@@ -96,7 +98,7 @@ from app.db.pool import close_pool, create_pool
 IST = ZoneInfo("Asia/Kolkata")
 
 
-async def main(target_date_str: str, dry_run: bool) -> None:
+async def main(target_date_str: str, dry_run: bool, only_deployments: list[str] | None = None) -> None:
     # Parsed ONCE here into a real date object -- asyncpg's date codec
     # needs an actual datetime.date for a $n::date parameter, a plain
     # ISO string doesn't auto-cast (confirmed by hitting exactly that
@@ -104,11 +106,17 @@ async def main(target_date_str: str, dry_run: bool) -> None:
     # target_date_str is kept around only for the human-readable prints
     # below.
     target_date = date.fromisoformat(target_date_str)
+    only_set = set(only_deployments) if only_deployments else None
 
     cfg = load_config()
     pool = await create_pool(cfg["database_url"])
     try:
         deployments = await pool.fetch("SELECT * FROM deployments ORDER BY deployment_name")
+        if only_set is not None:
+            deployments = [d for d in deployments if d["deployment_name"] in only_set]
+            found_names = {d["deployment_name"] for d in deployments}
+            for missing in only_set - found_names:
+                print(f"SKIP  {missing!r}: no such deployment — check the exact name (case-sensitive)")
 
         plan = []          # [(deployment, cash_delta_to_reverse, position_ids_to_delete, lot_count)]
         aborted = []       # [(deployment_name, reason)]
@@ -241,5 +249,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--date", required=True, help="Date to remove, YYYY-MM-DD, compared in IST (required, no default).")
     parser.add_argument("--dry-run", action="store_true", help="Preview the plan without writing anything.")
+    parser.add_argument(
+        "--deployment", action="append", dest="deployments", metavar="NAME",
+        help="Only touch this exact deployment_name (repeatable for several). Omit to process every "
+             "deployment with a trade on --date -- use this when the date's contamination is scoped to "
+             "specific deployments (e.g. a few intraday ones holding a stale multi-day-old position) and "
+             "OTHER deployments have a legitimate, wanted trade on that same date that must not be touched.",
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.date, args.dry_run))
+    asyncio.run(main(args.date, args.dry_run, args.deployments))
