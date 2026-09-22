@@ -28,17 +28,17 @@ BSE/BFO respectively — see Section 9).
 Rotation rule, applied ONLY at the moment of a fresh entry (initial or a
 checkpoint-triggered re-entry — see Section 4), NEVER re-evaluated on an
 already-open position:
-    day 1-15 of the calendar month  -> THIS_MONTH's contract
-    day 16-end of month             -> NEXT_MONTH's contract
-OVERRIDE on top of the day<=15 branch only: if THIS_MONTH's own expiry
+    day 1-10 of the calendar month  -> THIS_MONTH's contract
+    day 11-end of month             -> NEXT_MONTH's contract
+OVERRIDE on top of the day<=10 branch only: if THIS_MONTH's own expiry
 date is already <=14 days out by the time of entry, roll straight to
 NEXT_MONTH instead, even though the day-of-month alone would normally
-still say THIS_MONTH. day<=15 is a fixed calendar proxy for "far enough
+still say THIS_MONTH. day<=10 is a fixed calendar proxy for "far enough
 from expiry to be worth a fresh entry" — usually correct, but a monthly
 expiry that lands unusually early in a given month (e.g. shifted earlier
 by an exchange holiday) can make that proxy wrong on its own; this
 checks the ACTUAL expiry date as a safety net rather than trusting the
-day-of-month alone. Never applies in the day>15 branch — that one is
+day-of-month alone. Never applies in the day>10 branch — that one is
 already NEXT_MONTH regardless, already at least ~2 weeks out.
 Once locked in at entry, `self.contract_expiry` (an actual `date`, not a
 selector string) is used for EVERY resolver call this position ever
@@ -779,16 +779,16 @@ class StrangleMonthlyV2Strategy(StrategyBase):
 
     async def _enter(self, runner, ts, trigger: str) -> None:
         try:
-            selector = "THIS_MONTH" if ts.date().day <= 15 else "NEXT_MONTH"
+            selector = "THIS_MONTH" if ts.date().day <= 10 else "NEXT_MONTH"
             expiry = await self.resolver.resolve_expiry(self.instrument, selector, reference_date=ts.date())
-            # Override, day<=15 branch only: even within the window that
+            # Override, day<=10 branch only: even within the window that
             # normally picks THIS_MONTH, if that contract's own expiry is
             # already <=14 days out, roll straight to NEXT_MONTH instead.
-            # day<=15 is a fixed calendar proxy for "far enough from
+            # day<=10 is a fixed calendar proxy for "far enough from
             # expiry to be worth a fresh entry" -- usually accurate, but
             # a monthly expiry that falls unusually early in the month (a
             # holiday shifting it earlier) can make the proxy wrong
-            # without this check. Never applies in the day>15 branch --
+            # without this check. Never applies in the day>10 branch --
             # that one already means NEXT_MONTH regardless, already at
             # least ~2 weeks out, nothing to override.
             if selector == "THIS_MONTH" and (expiry - ts.date()).days <= 14:
