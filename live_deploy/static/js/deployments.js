@@ -8,6 +8,17 @@
 // navigates to that deployment's Strategy Detail page — a real
 // drill-down, not an inline expand.
 
+// Strategy Lab (Step 108) -- a RESERVED tag name, not a new backend
+// concept: any deployment tagged "Strategy Lab" (via the existing
+// Settings → Tags catalog, same free-form tags every deployment
+// already has) is treated as a not-yet-proven idea being trialed,
+// hidden from the default "Live only" list view by the #filterLab
+// select so it doesn't crowd the deployments actually being relied on.
+// Reuses every bit of existing table/sort/column/CSV machinery below --
+// this is purely one more predicate in _filteredRows(), never a second
+// table or a second page.
+const STRATEGY_LAB_TAG = 'Strategy Lab';
+
 // Column definitions — the single source of truth this whole view is
 // built from: the header row, each body cell, the column-visibility
 // menu, sorting, and CSV export ALL read from this one list, so adding
@@ -46,8 +57,24 @@ const DEPLOY_COLUMNS = [
   },
   {
     key: 'status', label: 'Status',
+    headerTitle: 'The small line under a live strategy\'s tag (if any) is its own status_fields — same live data as its Detail page\'s "Live strategy state" section, first value only.',
     sortValue: d => d.status,
-    render: d => `<span class="tag tag-${d.status}">${d.status}</span>`,
+    // status_fields (Step 108) -- only ever non-empty for a currently
+    // RUNNING deployment whose strategy opts into get_status_fields
+    // (most don't -- see DeploymentOut.status_fields's own docstring),
+    // so this stays a silent no-op for the vast majority of rows,
+    // exactly like the dedicated Detail-page section it mirrors. First
+    // field only, to keep the list scannable -- that's the "Status"
+    // one for a flat strangle_monthly_v2 (the actual motivating case:
+    // "why isn't the next trade initiated?" answered without opening
+    // the deployment at all now), or "Cycle" once a position is open.
+    render: d => {
+      const hint = d.status_fields?.[0];
+      const hintHtml = hint
+        ? `<div class="card-sub" style="margin-top:2px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(`${hint.label}: ${hint.value}`)}">${escapeHtml(String(hint.value))}</div>`
+        : '';
+      return `<span class="tag tag-${d.status}">${d.status}</span>${hintHtml}`;
+    },
   },
   {
     key: 'mode', label: 'Mode',
@@ -297,12 +324,28 @@ const Deployments = {
   // the current sort -- so "what's visible, in what order" is one
   // single source both the table body and the total row already agree
   // with, no separate re-sort needed anywhere else.
+  // Just the Strategy Lab predicate, factored out so ensureQuickFilters'
+  // own status-chip counts can agree with the table below it -- both
+  // need "whatever the #filterLab select currently says" applied FIRST,
+  // before status/strategy/search narrow it further, or a chip reading
+  // "Active 2" while the lab-filtered table shows only 1 row would be a
+  // real, visible inconsistency (confirmed while testing this feature).
+  _labScopedRows() {
+    const labFilter = document.getElementById('filterLab')?.value || 'live';
+    return this._all.filter(d => {
+      const isLab = (d.tags || []).includes(STRATEGY_LAB_TAG);
+      if (labFilter === 'live' && isLab) return false;
+      if (labFilter === 'lab' && !isLab) return false;
+      return true;
+    });
+  },
+
   _filteredRows() {
     const statusFilter = document.getElementById('filterStatus').value;
     const strategyFilter = document.getElementById('filterStrategy').value;
     const searchEl = document.getElementById('deploymentsSearch');
     const query = (searchEl ? searchEl.value : '').trim().toLowerCase();
-    const rows = this._all.filter(d =>
+    const rows = this._labScopedRows().filter(d =>
       (!statusFilter || d.status === statusFilter) &&
       (!strategyFilter || d.strategy_name === strategyFilter) &&
       this._matchesSearch(d, query)
@@ -650,8 +693,9 @@ const Deployments = {
       chips.className = 'ux-status-chips';
       filters.parentNode.insertBefore(chips, filters);
     }
-    const counts = { '': this._all.length, active: 0, paused: 0, stopped: 0 };
-    this._all.forEach(d => { counts[d.status] = (counts[d.status] || 0) + 1; });
+    const labScoped = this._labScopedRows();
+    const counts = { '': labScoped.length, active: 0, paused: 0, stopped: 0 };
+    labScoped.forEach(d => { counts[d.status] = (counts[d.status] || 0) + 1; });
     const current = document.getElementById('filterStatus')?.value || '';
     chips.innerHTML = [
       ['', 'All'], ['active', 'Active'], ['paused', 'Paused'], ['stopped', 'Stopped'],
@@ -687,6 +731,7 @@ const Deployments = {
     sessionStorage.setItem('uxDeploymentListState', JSON.stringify({
       status: document.getElementById('filterStatus')?.value || '',
       strategy: document.getElementById('filterStrategy')?.value || '',
+      lab: document.getElementById('filterLab')?.value || 'live',
       search: document.getElementById('deploymentsSearch')?.value || '',
       sortKey: this._sortKey,
       sortDir: this._sortDir,
@@ -699,9 +744,11 @@ const Deployments = {
     if (!state) return;
     const status = document.getElementById('filterStatus');
     const strategy = document.getElementById('filterStrategy');
+    const lab = document.getElementById('filterLab');
     const search = document.getElementById('deploymentsSearch');
     if (status) status.value = state.status || '';
     if (strategy && [...strategy.options].some(o => o.value === state.strategy)) strategy.value = state.strategy || '';
+    if (lab) lab.value = state.lab || 'live';
     if (search) search.value = state.search || '';
     if (state.sortKey) this._sortKey = state.sortKey;
     if (state.sortDir) this._sortDir = state.sortDir;

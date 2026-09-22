@@ -270,7 +270,18 @@ async def startup() -> None:
     # "the UI just updated" path is now /ws/events firing the instant a
     # mutation happens, not either side polling the other.
     cache = AggregateCache()
-    cache.register("deployments", lambda: fetch_deployments_list(db_pool, dispatcher), interval=90.0)
+    # manager= reads app.state.deployment_manager fresh on every call
+    # (never a captured local), since DeploymentManager itself is only
+    # constructed AFTER this cache (cache.start() below performs this
+    # key's very first populate before app.state.deployment_manager
+    # exists at all -- see this cache's own comment just above, and
+    # _enrich_status_fields_many's docstring for why a None manager at
+    # that first call is correct, not a bug).
+    cache.register(
+        "deployments",
+        lambda: fetch_deployments_list(db_pool, dispatcher, getattr(app.state, "deployment_manager", None)),
+        interval=90.0,
+    )
     cache.register("positions_open", lambda: fetch_positions_open(db_pool, dispatcher), interval=90.0)
     cache.register("trades_recent", lambda: fetch_trades_recent(db_pool), interval=90.0)
     cache.register("portfolio_equity_curve", lambda: fetch_portfolio_equity_curve(db_pool), interval=90.0)
@@ -312,6 +323,13 @@ async def startup() -> None:
     )
     resumed = await manager.load_active_on_startup()
     app.state.deployment_manager = manager
+    # The "deployments" cache's very first populate (inside cache.start()
+    # above) ran before `manager` existed, so every row's status_fields
+    # came back empty regardless of what just got resumed here -- refresh
+    # once more now that live runners actually exist, so the very first
+    # real page load already reflects them instead of waiting out the 90s
+    # backstop interval. See _enrich_status_fields_many's own docstring.
+    await cache.refresh_now("deployments")
 
     # ── Equity-curve snapshots: periodic, not per-tick — see
     # DeploymentManager.snapshot_loop's own docstring for why.

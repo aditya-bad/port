@@ -95,6 +95,15 @@ class DeploymentUpdate(BaseModel):
     notifications_enabled: Optional[bool] = None
 
 
+class StatusField(BaseModel):
+    """One live indicator value on GET /deployments/{id}/strategy-status
+    — see StrategyBase.get_status_fields's own docstring (Step 87).
+    Also embedded on DeploymentOut.status_fields below (Step 108), for
+    the Deployed Strategies list's own compact per-row hint."""
+    label: str
+    value: Any
+
+
 class DeploymentOut(BaseModel):
     id: UUID
     deployment_name: str
@@ -140,6 +149,18 @@ class DeploymentOut(BaseModel):
     #   current_cash == initial_capital + realized_pnl + open_cost_basis
     # See routers/deployments.py's _open_cost_basis for the computation.
     open_cost_basis: float = 0.0
+    # Same shape/source as GET /deployments/{id}/strategy-status's own
+    # `fields` (Step 87) -- called against a LIVE runner only (see
+    # routers/deployments.py's _enrich_status_fields_many), never the
+    # persisted-state fallback that single-deployment endpoint also has,
+    # so this is always empty for a paused/stopped deployment or one
+    # whose strategy doesn't override get_status_fields at all (most of
+    # them -- opt-in per strategy, same as the dedicated endpoint).
+    # Cheap to compute in bulk: calling an already-running strategy
+    # instance's own method is pure in-process Python, no extra DB or
+    # network round trip, which is what makes it safe to fold into this
+    # already-cached list response rather than needing a second one.
+    status_fields: list[StatusField] = Field(default_factory=list)
 
     class Config:
         from_attributes = True
@@ -385,13 +406,6 @@ class PnlStrategyBreakdown(BaseModel):
     strategy_name: str
     realized_pnl: float
     positions_closed: int
-
-
-class StatusField(BaseModel):
-    """One live indicator value on GET /deployments/{id}/strategy-status
-    — see StrategyBase.get_status_fields's own docstring (Step 87)."""
-    label: str
-    value: Any
 
 
 class StrategyStatusOut(BaseModel):

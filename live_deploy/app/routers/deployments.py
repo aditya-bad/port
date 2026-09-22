@@ -101,7 +101,45 @@ async def _enrich_pnl_many(pool, dispatcher, rows: list[dict]) -> None:
         row["open_cost_basis"] = round(cost_basis_map.get(dep_id, 0.0), 2)
 
 
-async def fetch_deployments_list(pool, dispatcher) -> list[dict]:
+def _enrich_status_fields_many(rows: list[dict], manager) -> None:
+    """Mutates each row in place, adding `status_fields` (Step 108) --
+    the Deployed Strategies list's own compact per-row hint, same data
+    GET /deployments/{id}/strategy-status shows on the Detail page, just
+    the LIVE half of it (no persisted-state fallback here — a list row
+    for a paused/stopped deployment simply gets an empty list, same as
+    "unavailable" on that dedicated endpoint).
+
+    `manager` is None at the very first cache populate on a cold boot
+    (see main.py's own comment on why: AggregateCache is built, and its
+    very first refresh runs, before DeploymentManager exists at all,
+    since DeploymentManager itself needs a live cache reference) --
+    every row's status_fields is correctly empty in that case (nothing
+    has a live runner yet regardless), and main.py explicitly forces
+    one more cache.refresh_now("deployments") right after
+    load_active_on_startup() resumes everything, so this stays accurate
+    from the very first real page load onward, not just eventually via
+    the 90s backstop interval.
+
+    Pure in-process Python (an already-running strategy instance's own
+    method call) — no DB or network round trip, so looping over every
+    row here costs nothing worth measuring, unlike _enrich_pnl_many's
+    real queries above."""
+    if manager is None:
+        return
+    for row in rows:
+        runner = manager.get_runner(row["id"])
+        if runner is None or runner.strategy is None:
+            continue
+        try:
+            fields = runner.strategy.get_status_fields()
+        except Exception:
+            logger.exception("%s: get_status_fields() raised (list enrichment)", row["deployment_name"])
+            fields = None
+        if fields:
+            row["status_fields"] = fields
+
+
+async def fetch_deployments_list(pool, dispatcher, manager=None) -> list[dict]:
     """The full, unfiltered deployment list, pnl-enriched -- this is
     the actual DB-round-trip-heavy work behind GET /deployments with no
     status filter (the only shape the frontend ever requests), pulled
@@ -111,6 +149,7 @@ async def fetch_deployments_list(pool, dispatcher) -> list[dict]:
     rows = await queries.list_deployments(pool, status=None)
     out = [_annotate(r) for r in rows]
     await _enrich_pnl_many(pool, dispatcher, out)
+    _enrich_status_fields_many(out, manager)
     return out
 
 
@@ -173,6 +212,7 @@ async def list_deployments(request: Request, status: str | None = None):
     rows = await queries.list_deployments(pool, status=status)
     out = [_annotate(r) for r in rows]
     await _enrich_pnl_many(pool, request.app.state.dispatcher, out)
+    _enrich_status_fields_many(out, getattr(request.app.state, "deployment_manager", None))
     return out
 
 

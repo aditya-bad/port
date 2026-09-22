@@ -2781,6 +2781,11 @@ table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
         <select id="filterStrategy" onchange="Deployments.render()">
           <option value="">All strategies</option>
         </select>
+        <select id="filterLab" onchange="Deployments.render()" title="Strategy Lab -- anything tagged 'Strategy Lab' (Settings → Tags) is a not-yet-proven idea you're trying out, kept out of this main list by default so it doesn't crowd the deployments you're actually relying on.">
+          <option value="live">Live only</option>
+          <option value="lab">Strategy Lab only</option>
+          <option value="all">All (Live + Lab)</option>
+        </select>
         <input type="text" id="deploymentsSearch" placeholder="Search name, strategy, tags, notes…"
                oninput="Deployments.onSearchInput()" style="flex:1; min-width:180px;">
         <div class="col-selector" id="colSelectorWrap">
