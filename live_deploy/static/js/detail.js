@@ -1043,9 +1043,20 @@ const Detail = {
       const ps = (u.position_ids || []).map(id => byId.get(id)).filter(Boolean);
       const unrealized = ps.filter(p => p.status === 'open').reduce((s, p) => s + Number(p.unrealized_pnl || 0), 0);
       const total = Number(u.realized_pnl || 0) + unrealized;
+      // "View period report" only for a CLOSED cycle -- an open one
+      // hasn't settled into any report period's realized-P&L number yet
+      // (Reports is realized-P&L-only, see reports.js's own module
+      // docstring), so there's nothing there yet to jump to. Reverse of
+      // Reports.openDeploymentForPeriod (reports.js) -- that one carries
+      // a period INTO Detail's History; this carries a closed cycle's
+      // own settle date back OUT to Reports, at Daily granularity since
+      // that's the exact period boundary a `closed_at` falls into.
+      const reportLink = u.status === 'closed'
+        ? ` · <a onclick="event.stopPropagation(); Reports.openForDate('${istDateKey(u.closed_at)}')">View period report →</a>`
+        : '';
       return `<div class="ux-cycle-card" id="uxCycle-${i}">
         <div class="ux-cycle-head" onclick="document.getElementById('uxCycle-${i}').classList.toggle('open')">
-          <div><b>${this._dep.mode === 'positional' ? 'Cycle' : 'Position'} · ${fmtDateTime(u.opened_at)}</b><div class="card-sub">${u.status === 'open' ? 'Open' : `Closed ${fmtDateTime(u.closed_at)}`} · ${ps.length} leg${ps.length === 1 ? '' : 's'}</div></div>
+          <div><b>${this._dep.mode === 'positional' ? 'Cycle' : 'Position'} · ${fmtDateTime(u.opened_at)}</b><div class="card-sub">${u.status === 'open' ? 'Open' : `Closed ${fmtDateTime(u.closed_at)}`} · ${ps.length} leg${ps.length === 1 ? '' : 's'}${reportLink}</div></div>
           <span class="tag tag-${u.status === 'open' ? 'active' : 'stopped'}">${u.status}</span>
           <b class="${pnlClass(total)}">${fmtSignedMoney(total)}</b>
         </div>

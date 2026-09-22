@@ -259,6 +259,31 @@ const Reports = {
       tr.classList.toggle('active-row', tr.dataset.strategy === this._strategyFilter));
   },
 
+  // Reverse of openDeploymentForPeriod below -- Detail's History tab
+  // (paintHistoryPositions, detail.js) calls this on a closed cycle
+  // card's own settle date to jump back to the Daily report it counted
+  // toward. Always a real hash change (this is only ever invoked from
+  // a #/deployments/... hash), so the router's own `view === 'reports'
+  // -> Reports.load()` handles the actual fetch+render -- no direct
+  // load() call needed here, same as openDeploymentForPeriod/
+  // Detail.openMatrixMonth's identical "set state, then navigate"
+  // shape.
+  openForDate(dateIso) {
+    const today = new Date(nowIstDateKey() + 'T00:00:00Z').getTime();
+    const target = new Date(dateIso + 'T00:00:00Z').getTime();
+    this._period = 'day';
+    this._offset = Math.max(0, Math.round((today - target) / 86_400_000));
+    // Keep the Daily/Weekly/Monthly tab pills in sync with the period
+    // just set above -- load() itself never touches them (only the
+    // click handlers that change _period normally do), and the DOM
+    // persists across view switches in this SPA, so a stale Weekly/
+    // Monthly pill from an earlier Reports visit this session would
+    // otherwise linger highlighted even once this lands on Daily data.
+    document.querySelectorAll('#reportsPeriodTabs button').forEach(b =>
+      b.classList.toggle('active', b.dataset.period === 'day'));
+    window.location.hash = '#/reports';
+  },
+
   // Jumps into the clicked deployment's History tab, pre-filtered to
   // the EXACT Daily/Weekly/Monthly window this report row came from --
   // same "_historyRange + navigate" mechanism Detail's own Analytics

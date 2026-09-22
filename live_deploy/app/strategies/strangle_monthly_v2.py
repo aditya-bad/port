@@ -512,8 +512,9 @@ docstring for the two other bridging fixes this delegation needs
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver
@@ -522,6 +523,8 @@ from .pivot_supertrend import _parse_hhmm
 from .registry import register_strategy
 
 logger = logging.getLogger("live_deploy.strategies.strangle_monthly_v2")
+
+_IST = ZoneInfo("Asia/Kolkata")
 
 OTHER_SIDE = {"CE": "PE", "PE": "CE"}
 SUPPORTED_INSTRUMENTS = {
@@ -1724,6 +1727,43 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             side: [{"strike": l["strike"], "role": l["role"], "token": l["token"]} for l in self.legs[side]]
             for side in ("CE", "PE")
         }
+
+    def get_status_fields(self) -> Optional[list]:
+        """See StrategyBase.get_status_fields's own docstring. Built for
+        one confirmed real question ("why isn't the next trade
+        initiated?"): a flat deployment sitting at 0 legs before
+        entry_time is indistinguishable, from the Overview tab alone,
+        from one that's actually stuck -- _maybe_enter's own "not yet
+        time" path (Section 2) logs nothing at all. This surfaces that
+        distinction directly.
+
+        No `status_fields_from_state` counterpart -- unlike
+        pivot_supertrend*, this strategy never overrides
+        get_persistable_state (its position state is already resume-safe
+        via the DB, see _resume_from_db), so there is no persisted blob
+        to reconstruct a "waiting for entry time" message from for a
+        paused/stopped deployment; there's also no live clock ticking
+        against it in that state for the message to mean anything.
+        Base class default (None) is correct here, not a shortcut.
+        """
+        if self.legs["CE"] or self.legs["PE"]:
+            return [
+                {"label": "Cycle", "value": self.cycle_id},
+                {"label": "Contract expiry", "value": self.contract_expiry.isoformat() if self.contract_expiry else "—"},
+                {"label": "Legs open", "value": f"{len(self.legs['CE'])} CE / {len(self.legs['PE'])} PE"},
+            ]
+        now = datetime.now(_IST)
+        entry_label = self.entry_time.strftime("%H:%M")
+        if now.time() < self.entry_time:
+            status = f"Waiting for entry time ({entry_label} IST)"
+        elif self.entered_ever:
+            status = f"Past entry time — re-entering after {self._last_flatten_trigger or 'unknown'} on next tick"
+        else:
+            status = "Past entry time — entering on next tick"
+        fields = [{"label": "Status", "value": status}]
+        if self.entered_ever:
+            fields.append({"label": "Cycles completed", "value": self.cycle_id})
+        return fields
 
     async def on_stop(self, runner) -> None:
         tokens = [l["token"] for side_legs in self.legs.values() for l in side_legs]
