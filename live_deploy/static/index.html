@@ -685,6 +685,10 @@ td { padding: 9px 10px; border-bottom: 2px solid var(--row-line); font-family: v
 }
 .clickable-row { cursor: pointer; }
 .clickable-row:hover { background: var(--sand); }
+/* Reports' By Strategy rows (Step 106): marks the row currently
+   filtering the By Deployment table below it, same idea as .active on
+   the period-nav tabs just above. */
+.clickable-row.active-row { background: var(--sand); box-shadow: inset 3px 0 0 var(--accent, var(--ink)); }
 
 /* ── Strategy Detail ──────────────────────────────────────────────── */
 .detail-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; flex-wrap: wrap; margin-bottom: 4px; }

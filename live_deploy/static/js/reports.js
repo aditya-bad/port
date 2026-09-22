@@ -11,6 +11,9 @@ const Reports = {
   _period: 'day',
   _offset: 0,
   _trendRows: [],   // kept around for exportCsv()
+  _report: null,        // last-loaded report (r), kept for filterByStrategy's re-render
+  _depModeById: {},      // deployment_id -> 'intraday'|'positional', for the By Deployment mode tag
+  _strategyFilter: null, // strategy_name currently filtering By Deployment, or null
 
   // Calendar heatmap's own range state (Step 74) -- see dashboard.js's
   // identical field for the full reasoning; this view's calendar is
@@ -42,13 +45,16 @@ const Reports = {
     // re-fetches on every load() same as everything else here for
     // simplicity, not because its own data depends on this._period/
     // this._offset (it never does).
-    const [report, trend, calendarRows] = await Promise.all([
+    const [report, trend, calendarRows, deployments] = await Promise.all([
       Api.getPnlReport(this._period, this._offset),
       Api.getPnlDigest(this._period, 14),
       this._fetchCalendarRows(),
+      Api.listDeployments(),
     ]);
+    this._depModeById = Object.fromEntries((deployments || []).map(d => [d.id, d.mode]));
 
     document.getElementById('reportsPeriodLabel').textContent = report.label;
+    this._report = report;
     this.renderStats(report);
     this.renderByStrategy(report);
     this.renderByDeployment(report);
@@ -94,6 +100,7 @@ const Reports = {
     document.getElementById('reportsCalendar').innerHTML = renderPnlHeatmap(rows, {
       year,
       selector: { value: this._calendarRange, onChange: 'Reports.changeCalendarRange(this.value)' },
+      onDayClick: 'Reports.openCalendarDay',
     });
     scrollPnlHeatmapToEnd('reportsCalendar');
   },
@@ -102,6 +109,24 @@ const Reports = {
     this._calendarRange = value === 'recent' ? 'recent' : Number(value);
     const rows = await this._fetchCalendarRows();
     this.renderCalendar(rows);
+  },
+
+  // Jumps the Daily/Weekly/Monthly drill-down above straight to the
+  // clicked calendar day -- always switches to the 'day' period (the
+  // calendar itself is always daily, see this view's own _calendarRange
+  // comment), computed as an offset from today the same way
+  // period_bounds() on the backend does: whole IST calendar days back
+  // from "now", so offset 0 really is today.
+  openCalendarDay(dateIso) {
+    const today = new Date(nowIstDateKey() + 'T00:00:00Z').getTime();
+    const clicked = new Date(dateIso + 'T00:00:00Z').getTime();
+    const offset = Math.round((today - clicked) / 86_400_000);
+    if (offset < 0) return;   // padding cell past "today" -- shouldn't be clickable, but stay safe
+    this._period = 'day';
+    this._offset = offset;
+    document.querySelectorAll('#reportsPeriodTabs button').forEach(b =>
+      b.classList.toggle('active', b.dataset.period === 'day'));
+    this.load();
   },
 
   // Keyboard/accessibility fallback -- the visible arrow buttons this
@@ -196,7 +221,7 @@ const Reports = {
       <table><thead><tr>
         <th>Strategy</th><th>Realized P&amp;L</th><th>% of total</th><th>Positions closed</th>
       </tr></thead>
-      <tbody>${r.by_strategy.map(row => `<tr>
+      <tbody>${r.by_strategy.map(row => `<tr class="clickable-row ${this._strategyFilter === row.strategy_name ? 'active-row' : ''}" data-strategy="${escapeHtml(row.strategy_name)}" tabindex="0" onclick="Reports.filterByStrategy('${escapeHtml(row.strategy_name)}')" title="Filter By Deployment to this strategy">
         <td>${escapeHtml(row.strategy_name)}</td>
         <td class="${pnlClass(row.realized_pnl)}">${fmtSignedMoney(row.realized_pnl)}</td>
         <td>${((Math.abs(row.realized_pnl) / total) * 100).toFixed(1)}%</td>
@@ -206,19 +231,70 @@ const Reports = {
     `;
   },
 
+  // Strategy rows have no detail page of their own to link to -- filter
+  // the SAME report's By Deployment table down to that strategy's
+  // deployments instead, entirely client-side (r.by_deployment is
+  // already fully loaded, no second request). Clicking the same
+  // strategy again clears the filter, same toggle feel as a lot of
+  // this app's other filter chips.
+  //
+  // Deliberately does NOT re-render #reportsByStrategy wholesale --
+  // _renderContributionChart() prepends its own chart markup into that
+  // same container via insertAdjacentHTML, outside renderByStrategy()'s
+  // own innerHTML, so a full re-render here would silently discard it.
+  // Toggling the .active-row class directly is enough to reflect the
+  // selection.
+  filterByStrategy(strategyName) {
+    this._strategyFilter = this._strategyFilter === strategyName ? null : strategyName;
+    this._markActiveStrategyRow();
+    if (this._report) this.renderByDeployment(this._report);
+  },
+  clearStrategyFilter() {
+    this._strategyFilter = null;
+    this._markActiveStrategyRow();
+    if (this._report) this.renderByDeployment(this._report);
+  },
+  _markActiveStrategyRow() {
+    document.querySelectorAll('#reportsByStrategy tr[data-strategy]').forEach(tr =>
+      tr.classList.toggle('active-row', tr.dataset.strategy === this._strategyFilter));
+  },
+
+  // Jumps into the clicked deployment's History tab, pre-filtered to
+  // the EXACT Daily/Weekly/Monthly window this report row came from --
+  // same "_historyRange + navigate" mechanism Detail's own Analytics
+  // matrix already uses (openMatrixMonth/openMatrixYear), so this reuses
+  // Detail.paintHistoryPositions()'s existing range-filter logic rather
+  // than adding a second one.
+  openDeploymentForPeriod(depId, r) {
+    Detail._historyRange = { start: r.period_start, end: r.period_end, label: r.label };
+    Detail._historyMode = 'positions';
+    window.location.hash = `#/deployments/${depId}/history`;
+  },
+
   renderByDeployment(r) {
     const el = document.getElementById('reportsByDeployment');
-    if (!r.by_deployment.length) {
-      el.innerHTML = emptyHtml('No positions closed by any deployment in this period.');
+    const rows = this._strategyFilter
+      ? r.by_deployment.filter(row => row.strategy_name === this._strategyFilter)
+      : r.by_deployment;
+    const filterChip = this._strategyFilter
+      ? `<span class="ux-history-filter-chip">${escapeHtml(this._strategyFilter)} <button class="btn btn-secondary btn-sm" style="padding:1px 5px;" onclick="Reports.clearStrategyFilter()">✕</button></span>`
+      : '';
+    if (!rows.length) {
+      el.innerHTML = (filterChip ? `<div style="margin-bottom:8px;">${filterChip}</div>` : '') +
+        emptyHtml(this._strategyFilter ? `No deployments running "${escapeHtml(this._strategyFilter)}" closed positions in this period.` : 'No positions closed by any deployment in this period.');
       return;
     }
     el.innerHTML = `
+      ${filterChip ? `<div style="margin-bottom:8px;">${filterChip}</div>` : ''}
       <div class="table-wrap">
       <table><thead><tr>
-        <th>Deployment</th><th>Strategy</th><th>Realized P&amp;L</th><th>Positions closed</th>
+        <th>Deployment</th><th>Mode</th><th>Strategy</th>
+        <th>Realized P&amp;L <span data-tooltip="Positional cycles may span more than one period; each period shows only what settled within it.">ⓘ</span></th>
+        <th>Positions closed</th>
       </tr></thead>
-      <tbody>${r.by_deployment.map(row => `<tr class="clickable-row" tabindex="0" onclick="location.hash='#/deployments/${row.deployment_id}'">
+      <tbody>${rows.map(row => `<tr class="clickable-row" tabindex="0" onclick="Reports.openDeploymentForPeriod('${row.deployment_id}', Reports._report)">
         <td>${escapeHtml(row.deployment_name)}</td>
+        <td><span class="tag tag-info">${escapeHtml(this._depModeById[row.deployment_id] || '—')}</span></td>
         <td>${escapeHtml(row.strategy_name)}</td>
         <td class="${pnlClass(row.realized_pnl)}">${fmtSignedMoney(row.realized_pnl)}</td>
         <td>${row.positions_closed}</td>

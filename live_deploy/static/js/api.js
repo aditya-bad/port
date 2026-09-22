@@ -1225,7 +1225,15 @@ function renderPnlHeatmap(rows, opts = {}) {
         (row.positions_closed ? `<br>${row.positions_closed} closed (${row.wins}W/${row.losses}L)` : '') +
         (row.fills ? `<br>${row.fills} fill${row.fills === 1 ? '' : 's'}` : '');
     }
-    return `<div class="pnl-heatmap-cell" style="background:${bg}" data-tooltip="${escapeHtml(tooltip)}"></div>`;
+    // opts.onDayClick (optional): a "Namespace.method" string, called as
+    // `Namespace.method('YYYY-MM-DD')` on click -- same plain-string-callback
+    // shape as opts.selector.onChange above, not a real function reference,
+    // since this markup is a raw HTML string assembled once and dropped in
+    // via innerHTML rather than attached with real DOM listeners. Existing
+    // [data-tooltip] CSS already gives every real-data cell the pointer
+    // cursor/hover outline this needs -- no new class required.
+    const clickable = opts.onDayClick ? ` onclick="${opts.onDayClick}('${date}')" role="button" tabindex="0"` : '';
+    return `<div class="pnl-heatmap-cell" style="background:${bg}" data-tooltip="${escapeHtml(tooltip)}"${clickable}></div>`;
   }).join('');
 
   // Month labels, one per column that starts a new calendar month —
