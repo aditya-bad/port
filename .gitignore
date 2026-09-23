@@ -21,3 +21,16 @@ dist/
 build/
 .venv/
 venv/
+
+# Android (live_deploy/android/) — build outputs, per-machine local
+# config, and the Gradle wrapper jar (a binary this repo doesn't commit;
+# see android/README.md's own "Getting it running" step 2 for why —
+# Android Studio/`gradle wrapper` regenerates it on first sync).
+live_deploy/android/local.properties
+live_deploy/android/**/build/
+live_deploy/android/.gradle/
+live_deploy/android/.idea/
+live_deploy/android/**/*.iml
+live_deploy/android/gradle/wrapper/gradle-wrapper.jar
+live_deploy/android/captures/
+live_deploy/android/.cxx/

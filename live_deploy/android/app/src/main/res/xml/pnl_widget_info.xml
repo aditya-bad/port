@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+    android:minWidth="180dp"
+    android:minHeight="90dp"
+    android:targetCellWidth="3"
+    android:targetCellHeight="2"
+    android:maxResizeWidth="300dp"
+    android:maxResizeHeight="180dp"
+    android:resizeMode="horizontal|vertical"
+    android:widgetCategory="home_screen"
+    android:previewImage="@drawable/widget_preview"
+    android:initialLayout="@android:layout/list_content"
+    android:updatePeriodMillis="1800000" />
+    <!-- updatePeriodMillis=30min: this is only a BACKSTOP -- Android
+         clamps AppWidgetProvider's own updatePeriodMillis to a 30-minute
+         floor regardless of what's declared (a well-documented OS
+         restriction, not a choice made here), so the real refresh cadence
+         comes from PnlWidgetWorker's own WorkManager periodic request
+         (15-minute minimum, see that file), scheduled once from
+         PnlWidgetReceiver.onUpdate. This attribute exists purely so a
+         widget added while the app has never otherwise run still gets
+         SOME periodic refresh trigger from the OS itself. -->
