@@ -96,6 +96,32 @@ kept in its own clearly-separated section since (per the spec) this
 mechanism has never been combined with the rest of this strategy's
 logic before and needs its own isolated verification.
 
+LONG-DATED ENTRY OVERRIDE (`long_days_target_percentage`, default 5%):
+`strike_selection_capital_pct` (default 3%) is tuned for a normal-length
+entry, but a FRESH entry (initial or checkpoint re-entry, never a
+roll/EOD/hedge — see below) whose resolved contract is more than 29 days
+out prices strikes far enough OTM, this early, that live liquidity is
+practically zero. At fresh-entry time only, if
+`(expiry - entry_date).days > 29`, `long_days_target_percentage`
+replaces `strike_selection_capital_pct` in the Step 3 formula above for
+THAT entry's target_premium — a bigger target premium means a closer,
+more liquid strike. EXCEPTION: if the entry date and the resolved
+expiry fall in the SAME calendar month (year+month match) — a >29-day
+gap is still possible here for a contract whose expiry lands very late
+in the month — the normal `strike_selection_capital_pct` is used anyway,
+even though the day-count alone would otherwise trigger the override.
+This choice is made ONCE per fresh entry and is NOT re-derived for that
+position's own rolls/EOD-accumulation/hedges — those resolve their
+target premium from the CURRENT live band math (Sections 5/6), never
+from either capital-pct config, so there is nothing for this override to
+apply to there. Deployments created before this option existed are
+backfilled to the same default (0.05 — see the config-key backfill
+migration) rather than silently falling back to code-level default only
+in the DB's blind spot; this deliberately DOES change their next fresh
+entry's strike selection when the >29-day condition is met, which is the
+point (fixing the too-far-OTM/illiquid entries this was added for) — it
+never touches an already-open position's existing legs.
+
 ──────────────────────────────────────────────────────────────────────
 4. CHECKPOINT PROFIT TARGET
 ──────────────────────────────────────────────────────────────────────
@@ -559,6 +585,7 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
         "instrument_tokens": [256265],
         "instrument": "NIFTY",
         "strike_selection_capital_pct": 0.03,
+        "long_days_target_percentage": 0.05,
         "monthly_target_pct": 0.02,
         "checkpoint_profit_pct_of_capital": 0.005,
         "entry_time": "10:00",
@@ -635,6 +662,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self.options_underlying = self.instrument
 
         self.strike_selection_capital_pct = float(cfg.get("strike_selection_capital_pct", 0.03))
+        # See module docstring's "LONG-DATED ENTRY OVERRIDE" (Section 3)
+        # -- only ever consulted at fresh-entry time (_enter), never for
+        # a roll/EOD-accumulation leg/hedge.
+        self.long_days_target_percentage = float(cfg.get("long_days_target_percentage", 0.05))
         self.monthly_target_pct = float(cfg.get("monthly_target_pct", 0.02))   # informational only
         # checkpoint_pct is the pre-rename name -- read as a fallback so
         # a deployment created before this rename keeps working unchanged.
@@ -798,7 +829,36 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 selector = "NEXT_MONTH"
                 expiry = await self.resolver.resolve_expiry(self.instrument, selector, reference_date=ts.date())
             lot_size = await self.resolver.get_lot_size(self.instrument)
-            target_premium = (runner.initial_capital * self.strike_selection_capital_pct) / lot_size / 2
+            # LONG-DATED ENTRY OVERRIDE -- see module docstring's Section
+            # 3. A fresh entry resolved more than 29 days out from its
+            # own expiry prices strikes so far OTM, this early, that
+            # live liquidity is practically zero at the default (lower)
+            # strike_selection_capital_pct -- unless entry and expiry
+            # still land in the same calendar month (year+month match),
+            # in which case the normal pct applies regardless of the
+            # day count. Decided once, here, for this fresh entry only
+            # -- never re-derived for this position's own rolls/EOD
+            # legs/hedges, which price off live band math instead (see
+            # Sections 5/6), not either capital-pct config.
+            days_to_expiry = (expiry - ts.date()).days
+            same_calendar_month = (
+                ts.date().year == expiry.year and ts.date().month == expiry.month
+            )
+            long_days_override = days_to_expiry > 29 and not same_calendar_month
+            effective_capital_pct = (
+                self.long_days_target_percentage if long_days_override
+                else self.strike_selection_capital_pct
+            )
+            if long_days_override:
+                logger.info(
+                    "%s: fresh entry %d days from expiry (%s), outside the "
+                    "current calendar month -- using long_days_target_percentage "
+                    "(%.4f) instead of strike_selection_capital_pct (%.4f) for "
+                    "strike selection to avoid too-far-OTM/illiquid strikes.",
+                    runner.deployment_name, days_to_expiry, expiry.isoformat(),
+                    self.long_days_target_percentage, self.strike_selection_capital_pct,
+                )
+            target_premium = (runner.initial_capital * effective_capital_pct) / lot_size / 2
             ce_leg = await self.resolver.get_leg_by_premium(
                 self.instrument, expiry, "CE", target_premium, strike_window=self.adjustment_strike_window,
             )
@@ -844,6 +904,9 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             # `qty` (see module docstring's Section 3, "REVISED").
             "capital_ref": runner.initial_capital, "capital_now": runner.cash,
             "day_of_month": ts.date().day, "rotation_selector": selector,
+            # See module docstring's "LONG-DATED ENTRY OVERRIDE".
+            "days_to_expiry": days_to_expiry, "long_days_override": long_days_override,
+            "strike_selection_capital_pct": effective_capital_pct,
         }
         for side, leg in (("CE", ce_leg), ("PE", pe_leg)):
             price = leg.last_price
