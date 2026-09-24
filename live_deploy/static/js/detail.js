@@ -1000,6 +1000,7 @@ const Detail = {
   },
 
   paintHistory() {
+    this._stopLivePositionUpdates();   // never stack trackers across re-renders/mode switches -- see renderOverview's identical discipline
     const body = document.getElementById('detailBody');
     const range = this._historyRange;
     body.innerHTML = `
@@ -1039,10 +1040,34 @@ const Detail = {
     }).slice().sort((a, b) => new Date(b.closed_at || b.opened_at) - new Date(a.closed_at || a.opened_at));
     if (!units.length) { content.innerHTML = emptyHtml('No positions/cycles in this period.'); return; }
     const byId = new Map((this._historyPositions || []).map(p => [p.id, p]));
+    // Collected across every rendered cycle as we build the markup below,
+    // then handed to window.LivePnl.track() once, after innerHTML is set
+    // -- this is exactly why an OPEN cycle's own total used to show a
+    // flat, wrong "0" instead of "—" (Number(p.unrealized_pnl || 0)
+    // silently treated "no live price yet at fetch time" as "exactly
+    // zero P&L") and never moved afterward at all: this whole tab only
+    // ever painted once, off GET .../positions' own fetch-time snapshot
+    // (app/routers/deployments.py's get_positions stamps unrealized_pnl
+    // from whatever price the dispatcher happened to have at THAT
+    // instant), with no live-tick wiring the way renderOverview's own
+    // positionsTable already has. Same window.LivePnl/data-ux-position-id
+    // pattern as that table, extended to every open leg across every
+    // rendered cycle card, not just the single "currently open" one
+    // Overview shows.
+    const openLegsForTracking = [];
     content.innerHTML = units.map((u, i) => {
       const ps = (u.position_ids || []).map(id => byId.get(id)).filter(Boolean);
-      const unrealized = ps.filter(p => p.status === 'open').reduce((s, p) => s + Number(p.unrealized_pnl || 0), 0);
-      const total = Number(u.realized_pnl || 0) + unrealized;
+      const openLegs = ps.filter(p => p.status === 'open');
+      openLegsForTracking.push(...openLegs);
+      // "—" (not 0) for a cycle with an open leg no live price has been
+      // seen for yet at all -- same "never fabricate a 0 for no data"
+      // convention positionsTable's own total row already follows.
+      // Resolves itself the instant a real tick arrives, same as that
+      // table -- see the live-tracking wiring below.
+      const knownOpen = openLegs.filter(p => p.unrealized_pnl != null);
+      const unrealizedKnown = knownOpen.length === openLegs.length;
+      const unrealized = knownOpen.reduce((s, p) => s + Number(p.unrealized_pnl), 0);
+      const total = unrealizedKnown ? Number(u.realized_pnl || 0) + unrealized : null;
       // "View period report" only for a CLOSED cycle -- an open one
       // hasn't settled into any report period's realized-P&L number yet
       // (Reports is realized-P&L-only, see reports.js's own module
@@ -1058,11 +1083,44 @@ const Detail = {
         <div class="ux-cycle-head" onclick="document.getElementById('uxCycle-${i}').classList.toggle('open')">
           <div><b>${this._dep.mode === 'positional' ? 'Cycle' : 'Position'} · ${fmtDateTime(u.opened_at)}</b><div class="card-sub">${u.status === 'open' ? 'Open' : `Closed ${fmtDateTime(u.closed_at)}`} · ${ps.length} leg${ps.length === 1 ? '' : 's'}${reportLink}</div></div>
           <span class="tag tag-${u.status === 'open' ? 'active' : 'stopped'}">${u.status}</span>
-          <b class="${pnlClass(total)}">${fmtSignedMoney(total)}</b>
+          <b class="ux-cycle-total ${total != null ? pnlClass(total) : ''}" data-ux-cycle-index="${i}">${total != null ? fmtSignedMoney(total) : '—'}</b>
         </div>
-        <div class="ux-cycle-body"><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Open Qty</th><th>Entry Price</th><th>Exit Price</th><th>Total Qty</th><th>Realized</th><th>Status</th></tr></thead><tbody>${ps.map(p => `<tr><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td><td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td><td class="${pnlClass(p.realized_pnl)}">${fmtSignedMoney(p.realized_pnl)}</td><td>${escapeHtml(p.status)}</td></tr>`).join('')}</tbody></table></div></div>
+        <div class="ux-cycle-body"><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Open Qty</th><th>Entry Price</th><th>Exit Price</th><th>Total Qty</th><th>Price</th><th>Unrealized</th><th>Realized</th><th>Status</th></tr></thead><tbody>${ps.map(p => `<tr data-ux-position-id="${p.id}"><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td><td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td><td class="ux-live-price">${p.status === 'open' ? (p.current_price != null ? fmtNum(p.current_price) : '—') : '—'}</td><td class="ux-live-pnl ${p.status === 'open' && p.unrealized_pnl != null ? pnlClass(p.unrealized_pnl) : ''}">${p.status === 'open' ? (p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—') : '—'}</td><td class="${pnlClass(p.realized_pnl)}">${fmtSignedMoney(p.realized_pnl)}</td><td>${escapeHtml(p.status)}</td></tr>`).join('')}</tbody></table></div></div>
       </div>`;
     }).join('');
+
+    if (window.LivePnl && openLegsForTracking.length) {
+      this._livePnlHandler = window.LivePnl.track(openLegsForTracking, ({ pnlFor, priceFor }) => {
+        if (this._tab !== 'history' || this._historyMode !== 'positions') return;
+        openLegsForTracking.forEach(p => {
+          const row = content.querySelector(`tr[data-ux-position-id="${p.id}"]`);
+          if (!row) return;
+          const px = priceFor(p.instrument_token);
+          const pp = pnlFor(p.id);
+          if (px != null) row.querySelector('.ux-live-price').textContent = fmtNum(px);
+          if (pp != null) {
+            const cell = row.querySelector('.ux-live-pnl');
+            cell.textContent = fmtSignedMoney(pp); cell.className = `ux-live-pnl ${pnlClass(pp)}`;
+          }
+        });
+        // Re-derive each cycle's own header total from the SAME live
+        // pnlFor() this just updated the per-leg cells with (falling
+        // back to that leg's own fetch-time unrealized_pnl if no tick
+        // has touched its token yet this session) -- keeps the header
+        // number and the leg rows underneath it always agreeing with
+        // each other, never one live and the other frozen.
+        units.forEach((u, i) => {
+          const ps = (u.position_ids || []).map(id => byId.get(id)).filter(Boolean);
+          const openLegs = ps.filter(p => p.status === 'open');
+          if (!openLegs.length) return;   // fully-closed cycle's total never changes live
+          const values = openLegs.map(p => pnlFor(p.id) ?? p.unrealized_pnl);
+          if (values.some(v => v == null)) return;   // still missing a live price for at least one leg -- leave the "—" up rather than understate the total
+          const total = Number(u.realized_pnl || 0) + values.reduce((s, v) => s + v, 0);
+          const el = content.querySelector(`.ux-cycle-total[data-ux-cycle-index="${i}"]`);
+          if (el) { el.textContent = fmtSignedMoney(total); el.className = `ux-cycle-total ${pnlClass(total)}`; }
+        });
+      });
+    }
   },
 
   paintHistoryExecutions(content) {
