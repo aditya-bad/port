@@ -59,6 +59,21 @@ zero writes.
   deployment, resolves the right token, and fixes it end to end.
   `--dry-run` previews with zero writes.
 
+- **`backfill_long_days_target_percentage.py`** — same shape as the
+  script above, for a different `strangle_monthly_v2` config key: fills
+  in `long_days_target_percentage` (default `0.05`) on every deployment
+  missing it, so the setting is visible in the Configuration tab/editor
+  instead of only applying invisibly via the code-level default. See
+  that strategy's own module docstring, "LONG-DATED ENTRY OVERRIDE" —
+  a fresh entry resolved more than 29 days from its own expiry, outside
+  the current calendar month, now targets a bigger (more liquid) strike
+  instead of the far-OTM one `strike_selection_capital_pct` alone
+  produced. Only affects the NEXT fresh entry of each fixed deployment
+  — never touches an already-open position's legs, nothing to flatten.
+  Same Pause+Resume-via-API finish as `fix_strangle_instrument_tokens.py`
+  and for the same reason (a running deployment doesn't re-read its own
+  config live). `--dry-run` previews with zero writes.
+
 - **`remove_todays_trades.py`** — "undo a whole calendar day, everywhere,
   correctly": deletes every trade dated `--date` (required, no default —
   a destructive op shouldn't have a "today" convenience default) across

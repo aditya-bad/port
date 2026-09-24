@@ -115,11 +115,12 @@ position's own rolls/EOD-accumulation/hedges — those resolve their
 target premium from the CURRENT live band math (Sections 5/6), never
 from either capital-pct config, so there is nothing for this override to
 apply to there. Deployments created before this option existed are
-backfilled to the same default (0.05 — see the config-key backfill
-migration) rather than silently falling back to code-level default only
-in the DB's blind spot; this deliberately DOES change their next fresh
-entry's strike selection when the >29-day condition is met, which is the
-point (fixing the too-far-OTM/illiquid entries this was added for) — it
+backfilled to the same default (0.05 — see
+custom_scripts/backfill_long_days_target_percentage.py) rather than
+silently falling back to code-level default only in the DB's blind
+spot; this deliberately DOES change their next fresh entry's strike
+selection when the >29-day condition is met, which is the point
+(fixing the too-far-OTM/illiquid entries this was added for) — it
 never touches an already-open position's existing legs.
 
 ──────────────────────────────────────────────────────────────────────
