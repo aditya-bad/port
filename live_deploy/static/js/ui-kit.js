@@ -545,6 +545,19 @@ UIKit.attachTableColumnInteractions = function attachTableColumnInteractions(tab
     th.appendChild(handle);
 
     handle.addEventListener('pointerdown', e => {
+      // Drag-to-resize is a mouse/pen affordance -- on touch, this
+      // 7px-wide strip sits right on top of a column boundary in the
+      // header row, exactly where a swipe-to-scroll gesture starting
+      // (or passing through) the header naturally lands. Hijacking
+      // that touch into a resize (rather than letting it scroll) can
+      // silently shrink a column to a couple dozen px and PERSIST that
+      // via uxTableWidths -- every reload after that renders the
+      // column's own content overflowing, uncontained, straight into
+      // its neighbor (indistinguishable from two columns' text drawn
+      // on top of each other). Bailing out here for touch leaves the
+      // gesture alone entirely (see the CSS's own touch-action, which
+      // no longer blocks it) so it just scrolls like anywhere else.
+      if (e.pointerType === 'touch') return;
       e.preventDefault(); e.stopPropagation();
       const currentIndex = [...head.cells].indexOf(th);
       const startX = e.clientX;

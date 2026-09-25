@@ -1491,6 +1491,17 @@ html { overflow-x: hidden; overflow-y: auto; }
    Professional table behavior
    ------------------------------------------------------------------ */
 .table-wrap table.ux-table { table-layout: fixed; min-width: 100%; width: max-content; }
+/* A too-narrow column (a saved uxTableWidths entry, or just a tight
+   viewport) must never let a cell's own content bleed sideways into
+   its neighbor -- with the default overflow-wrap, a single unbroken
+   token (a ticker symbol, a long number) has no natural break point
+   and simply overflows the cell's box horizontally, rendering right on
+   top of the next column's own text. `anywhere` gives it one: an
+   over-wide token wraps onto a second line WITHIN its own cell instead
+   (the row just grows taller), fully containing it either way. Doesn't
+   touch normal multi-word text (an Events "Message" cell, say), which
+   already wraps at its word boundaries same as before. */
+.ux-table td { overflow-wrap: anywhere; }
 .ux-table th { position: relative; user-select: none; }
 .ux-table th.ux-col-draggable { cursor: grab; }
 .ux-table th.ux-col-dragging { opacity: .55; }
@@ -1503,7 +1514,12 @@ html { overflow-x: hidden; overflow-y: auto; }
   height: 100%;
   cursor: col-resize;
   z-index: 3;
-  touch-action: none;
+  /* NOT touch-action: none -- drag-to-resize only ever engages for a
+     mouse/pen pointerdown (see ui-kit.js's own guard); on touch this
+     strip sits directly on a column boundary in the header row, right
+     where a swipe-to-scroll naturally lands, so it must stay a normal
+     scrollable/pannable area rather than swallowing that gesture. */
+  touch-action: auto;
 }
 .ux-col-resizer::after {
   content: '';
