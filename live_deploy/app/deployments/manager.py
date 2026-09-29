@@ -388,6 +388,92 @@ class DeploymentManager:
         )
         return len(open_positions)
 
+    async def remove_trades(self, deployment_id: UUID) -> dict:
+        """
+        Flatten's destructive sibling: instead of CLOSING the current
+        trade/cycle, this DELETES it outright — positions, lots, the
+        fill/execution events it logged, its cash impact reversed — so
+        it leaves no trace in the report, not just a closed-out entry
+        in it. See queries.resolve_current_trade_scope for exactly what
+        "the current trade" means (just what's open right now for most
+        strategies; the WHOLE current cycle including its already-
+        closed legs for a strategy like strangle_monthly_v2 that sets
+        StrategyBase.ADJUSTMENT_GROUP_BY) and queries.remove_trade_scope
+        for exactly what gets deleted/reversed/left alone.
+
+        Irreversible — unlike flatten (which only ever adds one more,
+        completely ordinary closing fill to the record), there is no
+        "resume and it's back" from this. Raises ValueError if there is
+        nothing to remove (a genuinely flat deployment, or a strategy
+        with no ADJUSTMENT_GROUP_BY that has never traded) rather than
+        silently no-op'ing the way flatten does for 0 open positions —
+        the caller asked for something specific to be gone; staying
+        silent about "there was nothing there" would be misleading for
+        an action this irreversible.
+
+        Works on 'active' or 'paused' deployments, same as flatten.
+        Unlike flatten (which parks the deployment in 'paused' either
+        way), an 'active' deployment stays active: its in-memory runner
+        is torn down, the DB surgery runs, then a FRESH runner is built
+        immediately from the now-corrected row — the exact same "call
+        the app's own API to Pause then Resume" trick
+        custom_scripts/remove_todays_trades.py already uses from
+        outside the process, just done natively in-process here since
+        this runs INSIDE it. A 'paused' deployment simply stays paused,
+        nothing to rebuild.
+        """
+        row = await queries.get_deployment(self.pool, deployment_id)
+        if row is None:
+            raise KeyError(f"No such deployment: {deployment_id}")
+        if row["status"] == "stopped":
+            raise ValueError("Deployment is stopped — resume it first, or use Delete instead.")
+
+        cls = get_strategy_class(row["strategy_name"])
+        group_by = getattr(cls, "ADJUSTMENT_GROUP_BY", None) if cls is not None else None
+        scope = await queries.resolve_current_trade_scope(self.pool, deployment_id, group_by)
+        if not scope["position_ids"]:
+            raise ValueError("Nothing to remove — no open position (or current cycle) for this deployment.")
+
+        was_active = row["status"] == "active"
+        if was_active:
+            runner = self.runners.pop(str(deployment_id), None)
+            if runner is not None:
+                await runner.stop()   # dumps its (about-to-be-stale) state; remove_trade_scope clears it right after
+
+        result = await queries.remove_trade_scope(
+            self.pool, deployment_id, scope["position_ids"], scope["min_opened_at"],
+        )
+
+        if was_active:
+            fresh_row = await queries.get_deployment(self.pool, deployment_id)
+            try:
+                await self._start_runner(fresh_row)
+            except Exception:
+                # Same recovery shape as resume()'s own except block --
+                # the deletion above already committed, so this must NOT
+                # leave the row claiming 'active' with no runner actually
+                # tracking it (a silently broken deployment: still shows
+                # as running, never processes another tick). Roll back to
+                # 'paused' so it's recoverable via an ordinary Resume once
+                # whatever on_start rejected is fixed, instead of needing
+                # a server restart to notice and self-heal.
+                await queries.set_status(self.pool, deployment_id, "paused")
+                logger.exception(
+                    "%s: trades removed, but the runner failed to restart — "
+                    "left paused for manual Resume", row["deployment_name"],
+                )
+                raise
+
+        await self._record_event(
+            deployment_id, row["deployment_name"], row["strategy_name"], "trades_removed",
+            metadata={"positions_removed": result["positions_removed"], "cash_delta": result["cash_delta"]},
+        )
+        logger.info(
+            "Removed trades for deployment %s: %d position(s) deleted, cash reversed by %.2f",
+            row["deployment_name"], result["positions_removed"], result["cash_delta"],
+        )
+        return result
+
     async def flatten_all(self) -> dict:
         """The actual panic button: flatten() every deployment that
         isn't already stopped. Never lets one deployment's failure

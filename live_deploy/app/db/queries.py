@@ -697,6 +697,160 @@ async def force_close_position(
 
 
 # ═════════════════════════════════════════════════════════════════════
+# REMOVE TRADES — wipe (not close) the current trade/cycle, leaving no
+# trace of it having existed. See DeploymentManager.remove_trades for
+# the full flow (runner teardown/rebuild); the two functions below are
+# its DB half.
+# ═════════════════════════════════════════════════════════════════════
+
+async def resolve_current_trade_scope(
+    pool: asyncpg.Pool, deployment_id: UUID, group_by: Optional[str],
+) -> dict[str, Any]:
+    """
+    Decides what "the current trade" means for Remove Trades.
+
+    Without a grouping concept (most strategies — one position IS one
+    trade start to finish, nothing spans across it via rolls or
+    checkpoint re-entries), scope is simply whatever's OPEN right now;
+    closing it was always going to be a genuinely separate trade from
+    whatever came before it.
+
+    WITH one (`group_by` = StrategyBase.ADJUSTMENT_GROUP_BY — "day" for
+    intraday_dtt_adjusted/advanced, "cycle_id" for strangle_monthly_v2),
+    a single logical trade can span MANY position rows over its life —
+    every roll/EOD-accumulation leg/checkpoint re-entry closes one
+    position row and opens a new one, all stamped with the SAME group
+    value. "The current trade" has to mean every row sharing that
+    value, open or already closed, or Remove Trades would silently
+    leave an already-rolled-away leg's realized P&L sitting in the
+    report while only deleting whatever's still open right now — the
+    exact gap the strangle_monthly_v2 case was called out for.
+
+    "Current" = whichever group value is the MOST RECENT this
+    deployment has ever used (MAX, regardless of whether anything in it
+    is still open) — these strategies only ever have ONE group value
+    with open positions at a time (a fresh entry is always gated on
+    nothing already being open — see e.g. strangle_monthly_v2._enter),
+    so this is unambiguous while a trade/cycle is live, and lets the
+    action still target "what just happened" immediately after it
+    fully closes, before a new one starts.
+
+    Returns {"position_ids": [...], "min_opened_at": datetime|None} —
+    the latter is the lower bound remove_trade_scope needs to time-box
+    its execution_entry/execution_exit event cleanup. Empty
+    position_ids means nothing to remove (a genuinely flat deployment
+    that has never traded, or whose last remaining trade already got
+    removed).
+    """
+    async with pool.acquire() as conn:
+        if not group_by:
+            rows = await conn.fetch(
+                "SELECT id, opened_at FROM positions WHERE deployment_id = $1 AND status = 'open'",
+                deployment_id,
+            )
+        else:
+            if group_by == "day":
+                group_expr = "date_trunc('day', opened_at AT TIME ZONE 'Asia/Kolkata')"
+            elif group_by == "cycle_id":
+                # Cast to int -- left as text, MAX() would compare
+                # lexicographically ("10" < "9"), silently picking the
+                # wrong "latest" cycle the moment one reaches 2 digits.
+                group_expr = "(metadata->>'cycle_id')::int"
+            else:
+                raise ValueError(f"group_by must be 'day' or 'cycle_id', got {group_by!r}")
+
+            latest = await conn.fetchval(
+                f"SELECT MAX({group_expr}) FROM positions WHERE deployment_id = $1",
+                deployment_id,
+            )
+            rows = [] if latest is None else await conn.fetch(
+                f"SELECT id, opened_at FROM positions WHERE deployment_id = $1 AND {group_expr} = $2",
+                deployment_id, latest,
+            )
+
+    return {
+        "position_ids": [r["id"] for r in rows],
+        "min_opened_at": min((r["opened_at"] for r in rows), default=None),
+    }
+
+
+async def remove_trade_scope(
+    pool: asyncpg.Pool, deployment_id: UUID, position_ids: list[UUID], min_opened_at: datetime,
+) -> dict[str, Any]:
+    """
+    The actual deletion behind Remove Trades — reverses everything
+    `position_ids` (from resolve_current_trade_scope, above) touched.
+    Same reasoning custom_scripts/remove_todays_trades.py already
+    established for a date-scoped version of this:
+
+    1. CASH — sums record_fill's own exact cash formula (-(qty*price)
+       for a buy, +(qty*price) for a sell) over every lot these
+       positions ever recorded, and subtracts that total back out of
+       current_cash — correct regardless of whether a given lot was an
+       open, an add, or a close.
+    2. THE POSITION ROWS — deleted outright; position_lots.position_id
+       ON DELETE CASCADE takes every one of their lots with them. No
+       partial/reopen case to handle here (unlike remove_todays_trades.py's
+       date-scoped version) — every position in this scope was entirely
+       opened (and, if closed, entirely closed) within this same trade/
+       cycle by construction, never spanning into an earlier one.
+    3. deployment_state — cleared. A strategy's own on_start/resume path
+       (e.g. strangle_monthly_v2._resume_from_db, which explicitly
+       re-derives cycle_id from whatever closed positions remain) is
+       already written to reconstruct correctly from positions/
+       position_lots history alone — the exact resume-safety path a
+       real restart already exercises, reused here as-is.
+    4. deployment_events — fill_buy/fill_sell rows are deleted by their
+       own exact metadata->>'position_id' (every fill event carries
+       one — see DeploymentRunner._fill). execution_entry/
+       execution_exit rows don't carry a position_id (one such event
+       can cover an entire multi-leg entry), so those are deleted by
+       time window instead, bounded below by min_opened_at and above by
+       now() — safe because these two event types are ONLY ever
+       recorded for an actual trade execution, and a deployment never
+       has two independent trades/cycles open at once, so nothing else
+       could have logged one in that window.
+
+    Deliberately NEVER touches deployment_snapshots (the equity-curve
+    chart, not the report itself — Reports/Analytics compute straight
+    off `positions`) or any non-trade event (paused/resumed/created/
+    strategy_error/flattened/...) — Remove Trades erases the trade, not
+    this deployment's own operational history.
+
+    Returns {"positions_removed", "cash_delta"}.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            cash_delta = await conn.fetchval(
+                """
+                SELECT COALESCE(SUM(
+                    CASE WHEN action = 'buy' THEN -(qty * price) ELSE (qty * price) END
+                ), 0)
+                FROM position_lots WHERE position_id = ANY($1::uuid[])
+                """,
+                position_ids,
+            )
+            await conn.execute(
+                "UPDATE deployments SET current_cash = current_cash - $2, updated_at = now() WHERE id = $1",
+                deployment_id, cash_delta,
+            )
+            await conn.execute("DELETE FROM positions WHERE id = ANY($1::uuid[])", position_ids)
+            await conn.execute("DELETE FROM deployment_state WHERE deployment_id = $1", deployment_id)
+            await conn.execute(
+                """
+                DELETE FROM deployment_events
+                WHERE deployment_id = $1
+                  AND (
+                    (event_type IN ('fill_buy', 'fill_sell') AND metadata->>'position_id' = ANY($2::text[]))
+                    OR (event_type IN ('execution_entry', 'execution_exit') AND created_at >= $3)
+                  )
+                """,
+                deployment_id, [str(pid) for pid in position_ids], min_opened_at,
+            )
+    return {"positions_removed": len(position_ids), "cash_delta": float(cash_delta)}
+
+
+# ═════════════════════════════════════════════════════════════════════
 # LOTS / TRADES (for reporting)
 # ═════════════════════════════════════════════════════════════════════
 

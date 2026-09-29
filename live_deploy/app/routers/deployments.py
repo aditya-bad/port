@@ -585,6 +585,40 @@ async def flatten_deployment(deployment_id: UUID, request: Request):
     return {"positions_closed": closed}
 
 
+@router.post("/{deployment_id}/remove-trades")
+async def remove_trades(deployment_id: UUID, request: Request):
+    """
+    Flatten's destructive sibling: DELETES the current trade/cycle
+    outright — not just closes it — reversing its cash impact and
+    scrubbing its fill/execution events, so it leaves no trace in the
+    report at all (see DeploymentManager.remove_trades's own docstring
+    for the exact scope and what does/doesn't get touched). "Current
+    trade" is the whole current CYCLE for a strategy like
+    strangle_monthly_v2 that groups multi-leg trades via
+    StrategyBase.ADJUSTMENT_GROUP_BY — every roll/re-entry leg it's
+    opened this cycle, not just whatever's still open right now — and
+    just whatever's currently open for every other strategy.
+
+    Irreversible. Works on 'active' or 'paused' deployments; unlike
+    flatten, an active one stays active (its runner is torn down and
+    immediately rebuilt from the corrected DB, not parked paused).
+    """
+    manager = request.app.state.deployment_manager
+    try:
+        result = await manager.remove_trades(deployment_id)
+    except KeyError:
+        raise HTTPException(404, "No such deployment")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    cache = request.app.state.cache
+    await asyncio.gather(
+        cache.refresh_now("deployments"),
+        cache.refresh_now("positions_open"),
+        cache.refresh_now("trades_recent"),
+    )
+    return result
+
+
 @router.post("/{deployment_id}/delete")
 async def delete_deployment(deployment_id: UUID, request: Request):
     """

@@ -118,6 +118,11 @@ const Api = {
     const data = await r.json().catch(() => ({}));
     return { ok: r.ok, data };
   },
+  async removeTrades(id) {
+    const r = await fetch(`/deployments/${id}/remove-trades`, { method: 'POST' });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, data };
+  },
   async deleteDeployment(id) {
     return fetch(`/deployments/${id}/delete`, { method: 'POST' });
   },

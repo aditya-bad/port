@@ -88,6 +88,7 @@ const Detail = {
       <button class="ux-menu-item" onclick="UIKit.closePopover(); location.hash='#/deployments/${dep.id}/configuration'">View configuration</button>
       <div class="ux-menu-sep"></div>
       ${dep.status !== 'stopped' ? `<button class="ux-menu-item" onclick="UIKit.closePopover(); Detail.flatten()">Close open positions (don't stop)</button>` : ''}
+      ${dep.status !== 'stopped' ? `<button class="ux-menu-item" style="color:var(--loss)" onclick="UIKit.closePopover(); Detail.removeTrades()">Remove trades (wipe current trade)</button>` : ''}
       ${dep.status !== 'stopped' ? `<button class="ux-menu-item" style="color:var(--loss)" onclick="UIKit.closePopover(); UIKit.openStopDialog('${dep.id}', ${JSON.stringify(dep.deployment_name)})">Stop deployment</button>` : ''}
       ${dep.status === 'stopped' ? `<button class="ux-menu-item" style="color:var(--loss)" onclick="UIKit.closePopover(); Detail.deleteDeployment()">Delete deployment</button>` : ''}`);
   },
@@ -1198,6 +1199,22 @@ const Detail = {
     const { ok, data } = await Api.flattenDeployment(this._id);
     if (!ok) { alert(data.detail || 'Could not flatten this deployment.'); return; }
     alert(`Closed ${data.positions_closed} position(s).`);
+    await this.load(this._id);
+  },
+
+  // Flatten's destructive sibling -- DELETES the current trade/cycle
+  // outright instead of closing it, so it leaves no trace in P&L,
+  // reports, or history. For a strategy that groups multi-leg trades
+  // (StrategyBase.ADJUSTMENT_GROUP_BY -- e.g. strangle_monthly_v2's
+  // cycle_id), this reaches back to every already-closed leg of the
+  // SAME cycle too, not just whatever's still open right now -- see
+  // manager.remove_trades' own docstring. Irreversible, unlike flatten.
+  async removeTrades() {
+    const name = this._dep.deployment_name;
+    if (!confirm(`Permanently DELETE the current trade for "${name}"?\n\nThis is not a close -- every position in it (including already-closed legs of the same cycle, for a strategy that rolls) is wiped from the database entirely: cash is reversed as if it never happened, and it will no longer appear anywhere in Reports or History.\n\nThis cannot be undone. Continue?`)) return;
+    const { ok, data } = await Api.removeTrades(this._id);
+    if (!ok) { alert(data.detail || 'Could not remove trades for this deployment.'); return; }
+    alert(`Removed ${data.positions_removed} position(s) — cash reversed by ${fmtSignedMoney(data.cash_delta)}.`);
     await this.load(this._id);
   },
 
