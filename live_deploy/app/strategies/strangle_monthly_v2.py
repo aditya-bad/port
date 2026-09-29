@@ -123,6 +123,27 @@ selection when the >29-day condition is met, which is the point
 (fixing the too-far-OTM/illiquid entries this was added for) — it
 never touches an already-open position's existing legs.
 
+LIQUIDITY GUARD (log-only for now): every fresh entry's CE/PE strikes
+are picked purely by price — closest LTP to target_premium — with no
+awareness of whether that strike is actually tradeable. The long-dated
+override above fixes ONE cause of a too-far-OTM/illiquid strike (low
+target % this early), but a genuinely dead strike (near-zero open
+interest, a huge bid-ask spread) can still be the closest-by-price
+match even with a sensible target. `get_leg_by_premium` is called here
+with `check_liquidity=True`: this does NOT change which strike gets
+selected — it still sells the exact same price-closest strike as
+before — it only fetches one extra quote() over the same candidate
+window and, if that strike fails a basic liquidity bar, logs a warning
+naming which other candidate in the window would have passed instead.
+The plan is to watch that log across real trading days, confirm the
+threshold (get_leg_by_premium's own min_oi/max_spread_pct defaults)
+catches genuinely dead strikes without flagging normal ones, and only
+then flip it to actually influence strike selection. Rolls/EOD-
+accumulation legs/hedges don't call this with check_liquidity at all —
+they price off live band math (Sections 5/6), not a capital-pct
+target, so a "closest to my target premium, but is it liquid" check
+doesn't apply to them the same way.
+
 ──────────────────────────────────────────────────────────────────────
 4. CHECKPOINT PROFIT TARGET
 ──────────────────────────────────────────────────────────────────────
@@ -860,11 +881,22 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                     self.long_days_target_percentage, self.strike_selection_capital_pct,
                 )
             target_premium = (runner.initial_capital * effective_capital_pct) / lot_size / 2
+            # check_liquidity=True -- see module docstring's "LIQUIDITY
+            # GUARD" and get_leg_by_premium's own docstring. Log-only for
+            # now: never changes which strike gets picked, only fetches
+            # one extra quote() over this same candidate window and logs
+            # a warning if the strike about to be sold looks illiquid.
+            # Fresh entries only (this call), not rolls/EOD legs/hedges
+            # -- those price off live band math, not a capital-pct
+            # target, so "closest to a target premium, maybe illiquid"
+            # doesn't apply to them the same way.
             ce_leg = await self.resolver.get_leg_by_premium(
                 self.instrument, expiry, "CE", target_premium, strike_window=self.adjustment_strike_window,
+                check_liquidity=True,
             )
             pe_leg = await self.resolver.get_leg_by_premium(
                 self.instrument, expiry, "PE", target_premium, strike_window=self.adjustment_strike_window,
+                check_liquidity=True,
             )
         except NoKiteSession:
             logger.warning(

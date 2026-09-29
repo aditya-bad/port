@@ -505,10 +505,32 @@ class OptionsResolver:
         self, underlying: str, expiry_selector: Union[str, int, date], option_type: str,
         target_price: float, strike_window: int = 15, exchange: Optional[str] = None,
         exclude_strikes: Optional[Iterable[float]] = None,
+        check_liquidity: bool = False, min_oi: int = 500, max_spread_pct: float = 0.15,
     ) -> OptionLeg:
         """
         The leg (of `option_type`) whose current LTP is closest to
         `target_price` — "THIS_WEEK CE with price closest to 40".
+
+        `check_liquidity` (default False — every existing caller is
+        completely unaffected): a LOG-ONLY liquidity guard, no behavior
+        change yet. Every strategy picks its strike purely by price —
+        "closest to my target premium" — with zero awareness of whether
+        anyone is actually trading that strike. A strike that's the
+        closest price match but has near-zero open interest or a huge
+        bid-ask spread is a phantom fill: the paper-trading engine
+        happily "buys" it at the quoted LTP, but a real order there
+        could fill far worse, or not at all. When True, this fetches one
+        extra batched quote() over the SAME candidate window already
+        priced above (skipped entirely, zero extra cost, when False) and,
+        if the price-closest strike this function is about to return
+        fails a basic liquidity bar (`min_oi` open interest, or
+        `max_spread_pct` bid-ask spread as a fraction of mid-price),
+        logs which OTHER candidate in this same window would have
+        passed — it still returns the exact same price-closest leg
+        either way. See strangle_monthly_v2's own module docstring,
+        "LIQUIDITY GUARD", for why this exists and the plan for turning
+        it from log-only into something that actually changes strike
+        selection.
 
         "Closest" = smallest absolute difference between the strike's
         live LTP and `target_price`. On an exact tie between two or more
@@ -572,7 +594,99 @@ class OptionsResolver:
                 f"for {underlying} {expiry}"
                 + (f" (excluding strikes {sorted(exclude)})" if exclude else "")
             )
+
+        if check_liquidity:
+            await self._log_liquidity_check(
+                legs, ltp_resp, best_leg, best_diff, target_price, min_oi, max_spread_pct,
+            )
+
         return replace(best_leg, last_price=best_price)
+
+    @staticmethod
+    def _leg_liquidity_ok(quote_entry: dict, min_oi: int, max_spread_pct: float) -> tuple[bool, str]:
+        """True/reason for whether one quote() entry clears the liquidity
+        bar — open interest at least `min_oi`, AND (when top-of-book
+        depth is even present — some illiquid strikes report none at
+        all, which is itself a liquidity red flag) a bid-ask spread no
+        wider than `max_spread_pct` of the mid price. Reason string is
+        empty when it passes, human-readable when it doesn't (for the
+        log line in _log_liquidity_check below)."""
+        reasons = []
+        oi = quote_entry.get("oi")
+        if oi is None or oi < min_oi:
+            reasons.append(f"OI {oi} < {min_oi}")
+
+        depth = quote_entry.get("depth") or {}
+        buy = depth.get("buy") or []
+        sell = depth.get("sell") or []
+        best_bid = buy[0]["price"] if buy and buy[0].get("price") else None
+        best_ask = sell[0]["price"] if sell and sell[0].get("price") else None
+        if not best_bid or not best_ask:
+            reasons.append("no bid/ask depth quoted")
+        else:
+            mid = (best_bid + best_ask) / 2
+            spread_pct = (best_ask - best_bid) / mid if mid else None
+            if spread_pct is not None and spread_pct > max_spread_pct:
+                reasons.append(f"spread {spread_pct:.0%} > {max_spread_pct:.0%} of mid")
+
+        return (not reasons), "; ".join(reasons)
+
+    async def _log_liquidity_check(
+        self, legs: list[OptionLeg], ltp_resp: dict, best_leg: OptionLeg, best_diff: float,
+        target_price: float, min_oi: int, max_spread_pct: float,
+    ) -> None:
+        """The log-only half of get_leg_by_premium's check_liquidity —
+        see that method's own docstring. Failures here (a quote() call
+        that errors, or a leg missing from the response) are swallowed
+        to a warning log, never raised — this is diagnostic-only, and
+        must never be able to break a real entry that would otherwise
+        have succeeded."""
+        kite = self._kite()
+        keys = [leg.key for leg in legs]
+        quotes: dict = {}
+        try:
+            for i in range(0, len(keys), 200):   # quote() has an instrument-count cap, same chunking as get_max_oi_strike
+                chunk = await self._kite_call(kite.quote, keys[i:i + 200])
+                quotes.update(chunk)
+        except Exception:
+            logger.warning(
+                "Liquidity guard: could not fetch quotes to check %s — skipping this check",
+                best_leg.tradingsymbol,
+            )
+            return
+
+        best_entry = quotes.get(best_leg.key)
+        if best_entry is None:
+            return
+        ok, reason = self._leg_liquidity_ok(best_entry, min_oi, max_spread_pct)
+        if ok:
+            return
+
+        # Closest-by-price candidate (other than the one that just
+        # failed) that WOULD pass, for context in the log line.
+        alt, alt_diff = None, None
+        for leg in legs:
+            if leg.key == best_leg.key:
+                continue
+            ltp_entry = ltp_resp.get(leg.key)
+            quote_entry = quotes.get(leg.key)
+            if not ltp_entry or not quote_entry:
+                continue
+            alt_ok, _ = self._leg_liquidity_ok(quote_entry, min_oi, max_spread_pct)
+            if not alt_ok:
+                continue
+            diff = abs(ltp_entry["last_price"] - target_price)
+            if alt_diff is None or diff < alt_diff:
+                alt, alt_diff = leg, diff
+
+        logger.warning(
+            "LIQUIDITY GUARD (log-only, strike selection unchanged): %s (strike %s, "
+            "%.2f from target premium %.2f) looks illiquid — %s.%s",
+            best_leg.tradingsymbol, best_leg.strike, best_diff, target_price, reason,
+            f" {alt.tradingsymbol} (strike {alt.strike}, {alt_diff:.2f} from target) "
+            f"would have passed the liquidity bar instead"
+            if alt is not None else " no other candidate in this window passes the bar either",
+        )
 
     async def get_max_oi_strike(
         self, underlying: str, expiry_selector: Union[str, int, date], option_type: Optional[str] = None,
