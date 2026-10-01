@@ -108,6 +108,14 @@ class LiveDataDispatcher:
         # someone has to be looking at.
         self._on_connection_issue = on_connection_issue
         self._was_ever_broken = False   # has _on_noreconnect fired at least once THIS process?
+        # Repeats the "kite_disconnected" alert every _REMINDER_INTERVAL
+        # seconds for as long as the outage lasts -- a single alert at
+        # the moment it breaks is easy to miss (phone on silent, away
+        # from the laptop), and this is "real money sitting unwatched"
+        # for however long it takes someone to notice. Started in
+        # _on_noreconnect, cancelled the moment _on_connect sees it
+        # actually come back.
+        self._disconnect_reminder_task: Optional[asyncio.Task] = None
         self.instrument_tokens = [t["instrument_token"] for t in tokens]
         self.token_labels = {
             t["instrument_token"]: t.get("symbol", str(t["instrument_token"]))
@@ -382,6 +390,7 @@ class LiveDataDispatcher:
         # nothing having gone wrong at all.
         if self._was_ever_broken:
             self._was_ever_broken = False
+            self._stop_disconnect_reminder()
             self._fire_connection_issue(
                 "kite_reconnected",
                 "Kite WebSocket reconnected — live tick/order monitoring has resumed.",
@@ -446,6 +455,57 @@ class LiveDataDispatcher:
         # direction (asyncio.run_coroutine_threadsafe).
         if self._loop is not None and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(self._auto_retry_after_giveup(), self._loop)
+            self._start_disconnect_reminder()
+
+    _REMINDER_INTERVAL = 60   # seconds -- "every minute until it's fixed," per explicit request
+
+    def _start_disconnect_reminder(self) -> None:
+        """Schedules _disconnect_reminder_loop onto the asyncio loop, same
+        thread-marshaling as _auto_retry_after_giveup right above (this
+        runs from kiteconnect's reactor thread). Guarded so a SECOND
+        give-up while one reminder loop is already running (e.g. the
+        auto-retry above reconnects, then immediately gives up again)
+        doesn't stack a second, overlapping loop sending double alerts —
+        _on_connect's _stop_disconnect_reminder() is the only place that
+        ever clears this back to None."""
+        if self._disconnect_reminder_task is not None and not self._disconnect_reminder_task.done():
+            return
+        self._disconnect_reminder_task = asyncio.run_coroutine_threadsafe(
+            self._disconnect_reminder_loop(), self._loop,
+        )
+
+    def _stop_disconnect_reminder(self) -> None:
+        """Called from _on_connect (reactor thread) once a real recovery
+        is confirmed. run_coroutine_threadsafe (used to start this loop)
+        returns a concurrent.futures.Future specifically so cancelling it
+        is already thread-safe straight from here — no call_soon_
+        threadsafe marshaling needed, unlike every other cross-thread
+        touch in this class that deals with a plain coroutine/asyncio.Task
+        instead."""
+        task = self._disconnect_reminder_task
+        self._disconnect_reminder_task = None
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _disconnect_reminder_loop(self) -> None:
+        """Re-fires the SAME kite_disconnected alert every
+        _REMINDER_INTERVAL seconds for as long as the outage lasts --
+        _on_noreconnect's own call to _fire_connection_issue already
+        covers the FIRST alert the instant it breaks; this is purely the
+        repeat. Stops itself defensively if self.connected somehow flips
+        true without going through _on_connect's cancel (belt-and-
+        braces — the cancel is the normal path), and is itself a no-op
+        the moment it's actually cancelled (asyncio.sleep raises
+        CancelledError straight out, nothing left to catch)."""
+        while True:
+            await asyncio.sleep(self._REMINDER_INTERVAL)
+            if self.connected:
+                return
+            self._fire_connection_issue(
+                "kite_disconnected",
+                "Kite is STILL disconnected — no live ticks are reaching any "
+                "deployment. Log in again if this doesn't clear on its own.",
+            )
 
     def _fire_connection_issue(self, event_type: str, message: str) -> None:
         """Marshal the optional on_connection_issue callback onto the
