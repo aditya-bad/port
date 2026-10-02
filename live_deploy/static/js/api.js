@@ -79,6 +79,18 @@ const Api = {
       body: JSON.stringify({ endpoint }),
     });
   },
+  async getNotificationMuteStatus() {
+    const r = await fetch('/notifications/mute-status');
+    return r.json();   // {muted: bool, muted_until: string|null}
+  },
+  async muteNotificationsToday() {
+    const r = await fetch('/notifications/mute-today', { method: 'POST' });
+    return r.json();
+  },
+  async unmuteNotifications() {
+    const r = await fetch('/notifications/unmute', { method: 'POST' });
+    return r.json();
+  },
 
   // ── Deployments (CRUD/lifecycle) ───────────────────────────────
   async listDeployments() {

@@ -213,7 +213,19 @@ async def startup() -> None:
            execution_entry/execution_exit already use (Account ->
            Notifications' "Enable notifications"), a no-op if push was
            never configured.
+
+        Checked first, before either delivery path: the "Mark as
+        holiday" mute (app/routers/notifications.py's /mute-today) —
+        both the initial alert AND LiveDataDispatcher's own every-60s
+        repeat while still down funnel through this one callback, so
+        muting here silences the whole thing with nothing to change on
+        the dispatcher side. Reads the SAME cached value
+        /notifications/mute-status shows the button, so what the UI
+        displays always matches what actually got suppressed.
         """
+        muted_until = await cache.get("notification_mute_until")
+        if muted_until is not None and datetime.now(timezone.utc) < muted_until:
+            return
         await event_broadcaster.broadcast({
             "deployment_id": None,
             "deployment_name": "Kite Connection",
@@ -294,6 +306,16 @@ async def startup() -> None:
     # got cached. A DB outage still surfaces within one interval, which
     # is the right trade for a status indicator.
     cache.register("db_health", lambda: check_db_health(db_pool), interval=15.0)
+    # Read on every Kite-connection-issue alert (see
+    # _on_kite_connection_issue below) and by GET /notifications/mute-
+    # status for the "Mark as holiday" button's own display -- cached
+    # for the same reason db_health is: avoid a live Neon round trip on
+    # a check that fires on every reconnect attempt during an outage,
+    # i.e. exactly when load should be going DOWN, not up. mute/unmute
+    # both call cache.refresh_now() themselves right after writing, so
+    # toggling the button takes effect immediately rather than waiting
+    # out this interval.
+    cache.register("notification_mute_until", lambda: queries.get_notification_mute_until(db_pool), interval=15.0)
     # Read by AuthMiddleware on every single authenticated request (see
     # app/auth.py's _session_ok) -- has to be a cached in-memory read,
     # not a live query per request, or this revocation check would add

@@ -1971,6 +1971,34 @@ async def set_kite_session(
 
 
 # ═════════════════════════════════════════════════════════════════════
+# NOTIFICATION HOLIDAY — "Mark as holiday" mute for Kite-connection
+# alerts (kite_disconnected/kite_reconnected). See
+# app/routers/notifications.py for the mute/unmute endpoints that call
+# these and app/main.py's _on_kite_connection_issue for where the mute
+# is actually enforced.
+# ═════════════════════════════════════════════════════════════════════
+
+async def get_notification_mute_until(pool: asyncpg.Pool) -> Optional[datetime]:
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT muted_until FROM notification_holiday WHERE id = 1")
+
+
+async def set_notification_mute_until(pool: asyncpg.Pool, until: Optional[datetime]) -> None:
+    """`until=None` unmutes immediately (the "Unmute" action) — otherwise
+    every Kite-connection alert is suppressed up to that moment."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO notification_holiday (id, muted_until, updated_at)
+            VALUES (1, $1, now())
+            ON CONFLICT (id) DO UPDATE
+                SET muted_until = $1, updated_at = now()
+            """,
+            until,
+        )
+
+
+# ═════════════════════════════════════════════════════════════════════
 # STRATEGY SETTINGS — the admin enable/disable toggle layered on top of
 # app.strategies.registry's in-memory registrations (see registry.py's
 # own module docstring: registration itself is still pure Python/import-

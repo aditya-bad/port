@@ -3320,9 +3320,25 @@ table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
 
 async function pollHealth() {
   try {
-    const r = await fetch('/health');
-    const h = await r.json();
+    const [h, mute] = await Promise.all([
+      fetch('/health').then(r => r.json()),
+      Api.getNotificationMuteStatus().catch(() => ({ muted: false, muted_until: null })),
+    ]);
     const bar = document.getElementById('statusBar');
+    // "Mark as holiday" mutes kite_disconnected/kite_reconnected alerts
+    // (both the initial one and the dispatcher's own every-60s repeat
+    // while still down) until 7am the next day -- shown/offered
+    // regardless of the current connection state, since the whole
+    // point is pre-empting the reconnect-churn noise, not reacting to
+    // it only once it's already started.
+    const muteRow = mute.muted
+      ? `<div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+           <span class="badge" style="background:var(--stone);">🔇 Alerts muted until ${escapeHtml(fmtDateTime(mute.muted_until))}</span>
+           <button class="btn btn-secondary btn-sm" onclick="unmuteKiteAlerts()">Unmute</button>
+         </div>`
+      : `<div style="margin-top:6px;">
+           <button class="btn btn-secondary btn-sm" onclick="markKiteAlertsHoliday()" title="Mute Kite-disconnected alerts for the rest of today, resuming automatically at 7am tomorrow">Mark as holiday</button>
+         </div>`;
     if (h.kite_connected) {
       bar.innerHTML = `
         <span class="badge ok"><span class="dot"></span> Kite connected</span>
@@ -3331,6 +3347,7 @@ async function pollHealth() {
           <button class="btn btn-secondary btn-sm" onclick="loginWithKite()">Re-login</button>
           <button class="btn btn-secondary btn-sm" onclick="openManualLoginModal()">Enter manually</button>
         </div>
+        ${muteRow}
       `;
     } else {
       const label = h.needs_login ? 'Not connected — login required' : 'Disconnected — reconnecting…';
@@ -3340,12 +3357,24 @@ async function pollHealth() {
           <button class="btn btn-primary btn-sm" onclick="loginWithKite()">Login with Kite</button>
           <button class="btn btn-secondary btn-sm" onclick="openManualLoginModal()">Enter manually</button>
         </div>
+        ${muteRow}
       `;
     }
   } catch (e) {
     document.getElementById('statusBar').innerHTML =
       '<span class="badge bad"><span class="dot"></span> server unreachable</span>';
   }
+}
+
+async function markKiteAlertsHoliday() {
+  if (!confirm('Mute Kite-disconnected/reconnected alerts for the rest of today? They resume automatically at 7:00 AM tomorrow.')) return;
+  await Api.muteNotificationsToday();
+  await pollHealth();
+}
+
+async function unmuteKiteAlerts() {
+  await Api.unmuteNotifications();
+  await pollHealth();
 }
 
 async function logout() {
