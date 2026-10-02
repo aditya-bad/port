@@ -224,17 +224,47 @@ UIKit.syncKiteStatus = function syncKiteStatus() {
   dot.className = `ux-status-dot ${connected ? 'ok' : bad ? 'bad' : ''}`;
 };
 
-UIKit.openKitePopover = function openKitePopover(event) {
+UIKit.openKitePopover = async function openKitePopover(event) {
   event.stopPropagation();
+  // Captured NOW, synchronously -- event.currentTarget is only valid
+  // during the event's own dispatch and goes back to null the instant
+  // this function's first `await` below yields control back to the
+  // browser, which would otherwise make openPopover's own
+  // anchor.getBoundingClientRect() throw on a null anchor (confirmed:
+  // this exact bug shipped in the first version of this change, caught
+  // by testing against a real page, not just reading the diff).
+  const anchor = event.currentTarget;
   const statusText = document.getElementById('statusBar')?.textContent.replace(/\s+/g, ' ').trim() || 'Status unavailable';
-  this.openPopover(event.currentTarget, `
+  // This popover is the ACTUAL Kite-status surface most views show
+  // (#statusBar itself, inside the sidebar, is hidden behind the mobile
+  // hamburger and easy to miss even on desktop) -- the "Mark as
+  // holiday" mute (see index.html's pollHealth()/markKiteAlertsHoliday
+  // for the matching #statusBar copy of this same control) has to live
+  // HERE too, or it's effectively invisible to anyone using this topbar
+  // button, which is most people, most of the time.
+  let muteRow = '';
+  try {
+    const mute = await Api.getNotificationMuteStatus();
+    muteRow = mute.muted
+      ? `<div style="padding:4px 9px;font-size:11px;color:var(--parchment);">🔇 Alerts muted until ${escapeHtml(fmtDateTime(mute.muted_until))}</div>
+         <button class="ux-menu-item" onclick="UIKit.closePopover(); unmuteKiteAlerts()">Unmute alerts</button>`
+      : `<button class="ux-menu-item" onclick="UIKit.closePopover(); markKiteAlertsHoliday()">Mark as holiday (mute alerts today)</button>`;
+  } catch (e) {
+    // Mute status failed to load -- the rest of the popover (status
+    // text, re-login actions) is still useful on its own, so this
+    // degrades to just leaving the mute row out rather than failing
+    // the whole popover.
+  }
+  this.openPopover(anchor, `
     <div style="padding:7px 9px 9px;">
       <div style="font-size:9px;color:var(--parchment);text-transform:uppercase;font-weight:800;letter-spacing:.06em;">Kite connection</div>
       <div style="font-size:11px;font-weight:700;margin-top:5px;">${escapeHtml(statusText)}</div>
     </div>
     <div class="ux-menu-sep"></div>
     <button class="ux-menu-item" onclick="UIKit.closePopover(); loginWithKite()">Re-login with Kite</button>
-    <button class="ux-menu-item" onclick="UIKit.closePopover(); openManualLoginModal()">Enter token manually</button>`);
+    <button class="ux-menu-item" onclick="UIKit.closePopover(); openManualLoginModal()">Enter token manually</button>
+    <div class="ux-menu-sep"></div>
+    ${muteRow}`);
 };
 
 UIKit.openPopover = function openPopover(anchor, html) {
