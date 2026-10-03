@@ -35,19 +35,31 @@ const Reports = {
     document.getElementById('reportsByDeployment').innerHTML = spinnerHtml();
     document.getElementById('reportsTrend').innerHTML = spinnerHtml();
     document.getElementById('reportsCalendar').innerHTML = spinnerHtml();
-    document.getElementById('reportsNextBtn').disabled = this._offset === 0;
-    document.getElementById('reportsLatestBtn').disabled = this._offset === 0;
+    // "All time" has no other period to step through (there's exactly
+    // one all-time range) -- Prev/Next/Latest are all meaningless for
+    // it, unlike every other tab where Prev always has somewhere to go.
+    const isAllTime = this._period === 'all';
+    document.getElementById('reportsPrevBtn').disabled = isAllTime;
+    document.getElementById('reportsNextBtn').disabled = isAllTime || this._offset === 0;
+    document.getElementById('reportsLatestBtn').disabled = isAllTime || this._offset === 0;
 
     this._restoreSectionState();
 
     // The calendar is portfolio-wide and always DAILY, independent of
-    // the Daily/Weekly/Monthly tabs and Prev/Next nav above it -- it
-    // re-fetches on every load() same as everything else here for
-    // simplicity, not because its own data depends on this._period/
-    // this._offset (it never does).
+    // the Daily/Weekly/Monthly/Yearly/All-time tabs and Prev/Next nav
+    // above it -- it re-fetches on every load() same as everything else
+    // here for simplicity, not because its own data depends on
+    // this._period/this._offset (it never does).
+    //
+    // The Trend section (a digest of several RECENT periods) has no
+    // meaningful shape for "all time" -- there's exactly one all-time
+    // bucket, so "recent all-time periods" isn't a real trend -- it's
+    // skipped entirely rather than asking the backend to bucket by
+    // something that isn't a real calendar grain (see
+    // queries._DIGEST_PERIODS' own comment).
     const [report, trend, calendarRows, deployments] = await Promise.all([
       Api.getPnlReport(this._period, this._offset),
-      Api.getPnlDigest(this._period, 14),
+      isAllTime ? Promise.resolve(null) : Api.getPnlDigest(this._period, 14),
       this._fetchCalendarRows(),
       Api.listDeployments(),
     ]);
@@ -58,7 +70,7 @@ const Reports = {
     this.renderStats(report);
     this.renderByStrategy(report);
     this.renderByDeployment(report);
-    this._trendRows = trend;
+    this._trendRows = trend || [];
     this.renderTrend(trend);
     this.renderCalendar(calendarRows);
 
@@ -160,6 +172,10 @@ const Reports = {
     // delta=+1 -> Prev (further into the past); delta=-1 -> Next
     // (toward the present) -- offset can never go negative (offset=0
     // IS the present, there's no "future period" to step into).
+    // All Time has nowhere to step at all (see load()'s own Prev/Next/
+    // Latest disabling) -- guarded here too in case this is ever
+    // reached some other way than the (disabled) buttons.
+    if (this._period === 'all') return;
     const next = this._offset + delta;
     if (next < 0) return;
     this._offset = next;
@@ -174,8 +190,13 @@ const Reports = {
 
   renderStats(r) {
     const el = document.getElementById('reportsStats');
-    const delta = r.realized_pnl - r.prev_realized_pnl;
-    const deltaPct = r.prev_realized_pnl !== 0 ? (delta / Math.abs(r.prev_realized_pnl)) * 100 : null;
+    // prev_realized_pnl is null only for period="all" -- there is no
+    // "previous all-time period" to diff against (see aggregate.py's
+    // pnl_report), so the delta row shows a plain note there instead
+    // of a nonsensical "vs previous period" comparison.
+    const hasPrev = r.prev_realized_pnl !== null && r.prev_realized_pnl !== undefined;
+    const delta = hasPrev ? r.realized_pnl - r.prev_realized_pnl : null;
+    const deltaPct = hasPrev && r.prev_realized_pnl !== 0 ? (delta / Math.abs(r.prev_realized_pnl)) * 100 : null;
     const totalDecided = r.wins + r.losses;
     const winRate = totalDecided > 0 ? (r.wins / totalDecided) * 100 : 0;
 
@@ -183,9 +204,10 @@ const Reports = {
       <div class="stat-card">
         <div class="stat-label">Realized P&amp;L</div>
         <div class="stat-value ${pnlClass(r.realized_pnl)}">${fmtSignedMoney(r.realized_pnl)}</div>
-        <div class="report-delta ${pnlClass(delta)}">
-          ${delta >= 0 ? '▲' : '▼'} ${fmtSignedMoney(delta)}${deltaPct !== null ? ` (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%)` : ''}
-          <span style="color:var(--parchment); font-weight:500;">vs previous period</span>
+        <div class="report-delta ${hasPrev ? pnlClass(delta) : ''}">
+          ${hasPrev
+            ? `${delta >= 0 ? '▲' : '▼'} ${fmtSignedMoney(delta)}${deltaPct !== null ? ` (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%)` : ''} <span style="color:var(--parchment); font-weight:500;">vs previous period</span>`
+            : `<span style="color:var(--parchment); font-weight:500;">Every realized rupee since the first trade</span>`}
         </div>
       </div>
       <div class="stat-card">
@@ -334,12 +356,22 @@ const Reports = {
       const d = new Date(iso);
       return isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { year: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' });
     }
+    if (this._period === 'year') {
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-IN', { year: 'numeric', timeZone: 'Asia/Kolkata' });
+    }
     return fmtDate(iso);
   },
 
   renderTrend(rows) {
-    document.getElementById('reportsTrend').innerHTML =
-      renderPnlTrendTable(rows, { periodLabel: iso => this._periodLabel(iso) });
+    // rows is null specifically for the All Time tab (load() never
+    // fetches a digest for it at all -- see its own comment) -- show
+    // why, rather than reusing renderPnlTrendTable's own empty-rows
+    // message ("No closed positions recorded yet."), which would be
+    // actively misleading here if plenty of positions HAVE closed.
+    document.getElementById('reportsTrend').innerHTML = rows === null
+      ? emptyHtml('Recent-periods trend isn\'t shown for All Time — there\'s only one all-time period to show. Switch to Daily/Weekly/Monthly/Yearly for a trend.')
+      : renderPnlTrendTable(rows, { periodLabel: iso => this._periodLabel(iso) });
   },
 
   // ── Collapsible sections — instant show/hide, persisted per-section

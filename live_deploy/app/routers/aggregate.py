@@ -45,13 +45,27 @@ def period_bounds(period: str, offset: int, now: datetime | None = None) -> tupl
     date_trunc('week', ...) convention used elsewhere in this file, so
     the Reports page's single-period view and the digest's multi-period
     trend table never disagree about where a week boundary falls.
+
+    "year" follows the same offset convention as every other period
+    (offset=0 is the current IST calendar year, offset=1 is last year,
+    ...). "all" is the one exception: there is no calendar boundary to
+    step through, so `offset` is accepted but ignored, always returning
+    the same [epoch, now) range -- the Reports page disables Prev/Next
+    for this tab rather than relying on this to reject a nonzero
+    offset. The epoch (2000-01-01 IST) is just "early enough to include
+    every real position this app could ever have recorded," not derived
+    from actual data -- there's no need for it to be exact, only early.
     """
-    if period not in ("day", "week", "month"):
-        raise ValueError(f"period must be 'day', 'week', or 'month', got {period!r}")
+    if period not in ("day", "week", "month", "year", "all"):
+        raise ValueError(f"period must be 'day', 'week', 'month', 'year', or 'all', got {period!r}")
     now = now or datetime.now(timezone.utc)
     now_ist = now.astimezone(_IST)
 
-    if period == "day":
+    if period == "all":
+        start = datetime(2000, 1, 1, tzinfo=_IST)
+        end = now_ist
+        label = "All time"
+    elif period == "day":
         today = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
         start = today - timedelta(days=offset)
         end = start + timedelta(days=1)
@@ -62,7 +76,7 @@ def period_bounds(period: str, offset: int, now: datetime | None = None) -> tupl
         start = monday - timedelta(weeks=offset)
         end = start + timedelta(weeks=1)
         label = f"Week of {start.strftime('%d %b %Y')}"
-    else:   # month
+    elif period == "month":
         first_of_this_month = now_ist.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         y, m = first_of_this_month.year, first_of_this_month.month - offset
         while m < 1:
@@ -71,6 +85,12 @@ def period_bounds(period: str, offset: int, now: datetime | None = None) -> tupl
         start = first_of_this_month.replace(year=y, month=m)
         end = start.replace(year=y + 1, month=1) if m == 12 else start.replace(month=m + 1)
         label = start.strftime("%b %Y")
+    else:   # year
+        first_of_this_year = now_ist.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        y = first_of_this_year.year - offset
+        start = first_of_this_year.replace(year=y)
+        end = start.replace(year=y + 1)
+        label = str(y)
 
     return start.astimezone(timezone.utc), end.astimezone(timezone.utc), label
 
@@ -200,8 +220,8 @@ async def pnl_digest(request: Request, period: str = "day", limit: int = 30, yea
     IST calendar year is returned (see year_bounds/
     queries.list_pnl_digest_for_range), not just "the most recent N".
     """
-    if period not in ("day", "week", "month"):
-        raise HTTPException(422, detail="period must be 'day', 'week', or 'month'")
+    if period not in ("day", "week", "month", "year"):
+        raise HTTPException(422, detail="period must be 'day', 'week', 'month', or 'year'")
     pool = request.app.state.db_pool
     if year is not None:
         start, end = year_bounds(year)
@@ -221,18 +241,30 @@ async def pnl_report(request: Request, period: str = "day", offset: int = 0):
     O" actually means, and queries.pnl_summary_for_range /
     pnl_by_strategy_for_range / pnl_by_deployment_for_range for the
     underlying queries -- all REALIZED P&L only, same reasoning as
-    /portfolio/pnl-digest."""
-    if period not in ("day", "week", "month"):
-        raise HTTPException(422, detail="period must be 'day', 'week', or 'month'")
+    /portfolio/pnl-digest.
+
+    period="all" is the one exception to the "always has a previous
+    period" shape: there's no "previous all-time" to compare against,
+    so prev_realized_pnl comes back null instead (see PnlReportOut) and
+    offset is accepted but ignored (period_bounds' own doc) -- the
+    frontend disables Prev/Next for this tab rather than relying on
+    this to reject a nonzero offset.
+    """
+    if period not in ("day", "week", "month", "year", "all"):
+        raise HTTPException(422, detail="period must be 'day', 'week', 'month', 'year', or 'all'")
     if offset < 0:
         raise HTTPException(422, detail="offset must be >= 0 (0 = current period, 1 = previous, ...)")
 
     pool = request.app.state.db_pool
     start, end, label = period_bounds(period, offset)
-    prev_start, prev_end, _ = period_bounds(period, offset + 1)
 
     summary = await queries.pnl_summary_for_range(pool, start, end)
-    prev_summary = await queries.pnl_summary_for_range(pool, prev_start, prev_end)
+    if period == "all":
+        prev_realized_pnl = None
+    else:
+        prev_start, prev_end, _ = period_bounds(period, offset + 1)
+        prev_summary = await queries.pnl_summary_for_range(pool, prev_start, prev_end)
+        prev_realized_pnl = prev_summary["realized_pnl"]
     by_strategy = await queries.pnl_by_strategy_for_range(pool, start, end)
     by_deployment = await queries.pnl_by_deployment_for_range(pool, start, end)
 
@@ -240,7 +272,7 @@ async def pnl_report(request: Request, period: str = "day", offset: int = 0):
         "period": period, "offset": offset,
         "period_start": start, "period_end": end, "label": label,
         **summary,
-        "prev_realized_pnl": prev_summary["realized_pnl"],
+        "prev_realized_pnl": prev_realized_pnl,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_deployment": [dict(r) for r in by_deployment],
     }

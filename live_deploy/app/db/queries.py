@@ -1081,7 +1081,14 @@ async def list_portfolio_equity_curve(
         )
 
 
-_DIGEST_PERIODS = ("day", "week", "month")
+_DIGEST_PERIODS = ("day", "week", "month", "year")
+# Deliberately NOT "all" -- every digest query below buckets via
+# date_trunc($1, ...), which already handles "year" correctly for free
+# (it's a real Postgres date_trunc field), but "all" isn't a bucketing
+# grain at all: there's exactly one all-time bucket, so a "trend of
+# recent all-time periods" is meaningless. The Reports page's All Time
+# tab uses /portfolio/pnl-report instead (a single range, not a
+# digest), which handles "all" on its own -- see aggregate.py.
 
 
 async def list_pnl_digest(

@@ -470,17 +470,20 @@ class PnlReportOut(BaseModel):
     show a "vs previous period" delta without a second round trip),
     and the by-strategy / by-deployment breakdowns for the selected
     period. All realized-P&L only, same reasoning as PnlDigestRow."""
-    period: str            # "day" | "week" | "month"
+    period: str            # "day" | "week" | "month" | "year" | "all"
     offset: int
     period_start: datetime
     period_end: datetime
-    label: str              # human-readable period name, e.g. "16 Aug 2026" / "Week of 11 Aug 2026" / "Aug 2026"
+    label: str              # human-readable period name, e.g. "16 Aug 2026" / "Week of 11 Aug 2026" / "Aug 2026" / "2026" / "All time"
     realized_pnl: float
     positions_closed: int
     wins: int
     losses: int
     fills: int
-    prev_realized_pnl: float
+    # None only for period="all" -- there is no "previous all-time
+    # period" to compare against, unlike every other period type, which
+    # always has one (see aggregate.py's pnl_report).
+    prev_realized_pnl: Optional[float] = None
     by_strategy: list[PnlStrategyBreakdown]
     by_deployment: list[PnlDeploymentBreakdown]
 
