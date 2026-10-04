@@ -1,6 +1,7 @@
 package com.livedeploy.app.ui.nav
 
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material3.Icon
@@ -20,6 +21,7 @@ import com.livedeploy.app.ui.AppViewModelFactory
 import com.livedeploy.app.ui.dashboard.DashboardScreen
 import com.livedeploy.app.ui.deployments.DeploymentDetailScreen
 import com.livedeploy.app.ui.deployments.DeploymentsScreen
+import com.livedeploy.app.ui.reports.ReportsScreen
 import com.livedeploy.app.ui.setup.SetupScreen
 
 private object Routes {
@@ -27,6 +29,7 @@ private object Routes {
     const val DASHBOARD = "dashboard"
     const val DEPLOYMENTS = "deployments"
     const val DEPLOYMENT_DETAIL = "deployments/{id}"
+    const val REPORTS = "reports"
     fun deploymentDetail(id: String) = "deployments/$id"
 }
 
@@ -35,6 +38,7 @@ private data class BottomTab(val route: String, val label: String, val icon: and
 private val bottomTabs = listOf(
     BottomTab(Routes.DASHBOARD, "Dashboard", Icons.Default.Dashboard),
     BottomTab(Routes.DEPLOYMENTS, "Deployments", Icons.Default.List),
+    BottomTab(Routes.REPORTS, "Reports", Icons.Default.BarChart),
 )
 
 /**
@@ -110,6 +114,9 @@ fun LiveDeployNavGraph(factory: AppViewModelFactory, startAtSetup: Boolean) {
                     deploymentId = id,
                     onBack = { navController.popBackStack() },
                 )
+            }
+            composable(Routes.REPORTS) {
+                ReportsScreen(factory = factory)
             }
         }
     }

@@ -25,6 +25,20 @@ sealed class DashboardUiState {
     data class Error(val message: String) : DashboardUiState()
 }
 
+/** GET /health (kite_connected/needs_login) + GET /notifications/mute-
+ * status merged into one shape for the Dashboard's own Kite-status chip
+ * — see DashboardScreen's KiteStatusRow/KiteStatusDialog. null (not
+ * modeled as its own loading/error state) just means "not fetched yet
+ * or the health check itself failed" — the chip shows a neutral
+ * "Checking…" for that rather than its own full error screen, since
+ * losing Kite status shouldn't block the KPI grid from rendering. */
+data class DashboardKiteStatus(
+    val connected: Boolean,
+    val needsLogin: Boolean,
+    val muted: Boolean,
+    val mutedUntil: String?,
+)
+
 /** Deliberately client-side aggregation over the SAME GET /deployments
  * list Deployments screen already fetches (each row already carries its
  * own realized_pnl/unrealized_pnl, enriched server-side — see
@@ -38,6 +52,9 @@ class DashboardViewModel(private val repository: DeploymentsRepository) : ViewMo
     private val _uiState = MutableStateFlow<DashboardUiState>(DashboardUiState.Loading)
     val uiState: StateFlow<DashboardUiState> = _uiState.asStateFlow()
 
+    private val _kiteStatus = MutableStateFlow<DashboardKiteStatus?>(null)
+    val kiteStatus: StateFlow<DashboardKiteStatus?> = _kiteStatus.asStateFlow()
+
     init {
         refresh()
     }
@@ -49,6 +66,50 @@ class DashboardViewModel(private val repository: DeploymentsRepository) : ViewMo
                 is ApiResult.Success -> _uiState.value = DashboardUiState.Loaded(computeKpis(result.data))
                 is ApiResult.Failure -> _uiState.value = DashboardUiState.Error(result.message)
             }
+        }
+        refreshKiteStatus()
+    }
+
+    // Two independent calls, not folded into DashboardUiState — Kite
+    // connectivity and the KPI grid have nothing to do with each other
+    // (one failing shouldn't block the other from showing), same
+    // "separate concern" reasoning the web app's own #statusBar follows
+    // against its own deployments list.
+    fun refreshKiteStatus() {
+        viewModelScope.launch {
+            val health = repository.health()
+            val mute = repository.muteStatus()
+            val healthData = (health as? ApiResult.Success)?.data
+            _kiteStatus.value = if (healthData != null) {
+                DashboardKiteStatus(
+                    connected = healthData.kiteConnected,
+                    needsLogin = healthData.needsLogin,
+                    muted = (mute as? ApiResult.Success)?.data?.muted ?: false,
+                    mutedUntil = (mute as? ApiResult.Success)?.data?.mutedUntil,
+                )
+            } else {
+                null
+            }
+        }
+    }
+
+    // "Mark as holiday" — mutes kite_disconnected/kite_reconnected
+    // alerts for the rest of today, resuming automatically at 7am IST
+    // tomorrow (the backend decides the exact cutoff — see routers/
+    // notifications.py's mute-today). Re-fetches status either way so
+    // the chip/dialog reflect whatever the server actually stored, not
+    // an assumed success.
+    fun muteToday() {
+        viewModelScope.launch {
+            repository.muteToday()
+            refreshKiteStatus()
+        }
+    }
+
+    fun unmute() {
+        viewModelScope.launch {
+            repository.unmute()
+            refreshKiteStatus()
         }
     }
 

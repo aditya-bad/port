@@ -52,13 +52,17 @@ data class StatusField(
 
 /** GET /health's real shape (app/routers/health.py) — status/
  * database_connected/running_deployments plus the dispatcher's own
- * spread-in fields; only the two this app actually shows on the Setup
- * screen's connection check are declared (ignoreUnknownKeys drops the
- * rest, see ApiClient's Json{} config). */
+ * spread-in fields (dispatcher.status, see app/dispatcher.py) merged
+ * straight into the same JSON object. kite_connected/needs_login back
+ * the Dashboard's own Kite-status chip (only the fields this app
+ * actually shows are declared; ignoreUnknownKeys drops the rest, see
+ * ApiClient's Json{} config). */
 @Serializable
 data class HealthOut(
     val status: String = "unknown",
     @SerialName("database_connected") val databaseConnected: Boolean = false,
+    @SerialName("kite_connected") val kiteConnected: Boolean = false,
+    @SerialName("needs_login") val needsLogin: Boolean = false,
 )
 
 /** POST /deployments/{id}/pause|stop|flatten's own real response shape
@@ -69,3 +73,66 @@ data class HealthOut(
  * not a documented no-op the way Response<Void> is. */
 @Serializable
 data class ActionResult(val status: String)
+
+/** POST /deployments/{id}/remove-trades' real response shape (routers/
+ * deployments.py's remove_trades) — {"positions_removed": int,
+ * "cash_delta": float}. See DeploymentManager.remove_trades (the Python
+ * backend) for exactly what this deletes/reverses — this model only
+ * needs to carry enough back to confirm it to the user. */
+@Serializable
+data class RemoveTradesResult(
+    @SerialName("positions_removed") val positionsRemoved: Int,
+    @SerialName("cash_delta") val cashDelta: Double,
+)
+
+/** GET/POST /notifications/mute-status|mute-today|unmute's shared
+ * response shape (routers/notifications.py) — the "Mark as holiday"
+ * mute for Kite-disconnected alerts. mutedUntil is an ISO-8601 UTC
+ * instant (7:00 IST the day after mute-today was called), or null when
+ * not muted — rendered as-is via Formatting.kt's formatIsoInstant
+ * rather than parsed into a typed date, same "pure display text"
+ * reasoning as StatusField.value above. */
+@Serializable
+data class MuteStatus(
+    val muted: Boolean,
+    @SerialName("muted_until") val mutedUntil: String? = null,
+)
+
+/** GET /portfolio/pnl-report's real shape (routers/aggregate.py's
+ * pnl_report) — mirrors PnlReportOut field-for-field. prevRealizedPnl is
+ * null only for period="all" (there's no "previous all-time period" to
+ * diff against — see that endpoint's own docstring). */
+@Serializable
+data class PnlReport(
+    val period: String,
+    val offset: Int,
+    val label: String,
+    @SerialName("realized_pnl") val realizedPnl: Double,
+    @SerialName("positions_closed") val positionsClosed: Int,
+    val wins: Int,
+    val losses: Int,
+    val fills: Int,
+    @SerialName("prev_realized_pnl") val prevRealizedPnl: Double? = null,
+    @SerialName("by_strategy") val byStrategy: List<PnlStrategyBreakdown> = emptyList(),
+    @SerialName("by_deployment") val byDeployment: List<PnlDeploymentBreakdown> = emptyList(),
+)
+
+/** Mirrors PnlStrategyBreakdown (schemas.py) — one strategy's realized
+ * P&L within the selected Reports period. */
+@Serializable
+data class PnlStrategyBreakdown(
+    @SerialName("strategy_name") val strategyName: String,
+    @SerialName("realized_pnl") val realizedPnl: Double,
+    @SerialName("positions_closed") val positionsClosed: Int,
+)
+
+/** Mirrors PnlDeploymentBreakdown (schemas.py) — one deployment's
+ * realized P&L within the selected Reports period. */
+@Serializable
+data class PnlDeploymentBreakdown(
+    @SerialName("deployment_id") val deploymentId: String,
+    @SerialName("deployment_name") val deploymentName: String,
+    @SerialName("strategy_name") val strategyName: String,
+    @SerialName("realized_pnl") val realizedPnl: Double,
+    @SerialName("positions_closed") val positionsClosed: Int,
+)

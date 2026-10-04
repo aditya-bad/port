@@ -3,6 +3,10 @@ package com.livedeploy.app.data
 import com.livedeploy.app.network.ActionResult
 import com.livedeploy.app.network.ApiClient
 import com.livedeploy.app.network.Deployment
+import com.livedeploy.app.network.HealthOut
+import com.livedeploy.app.network.MuteStatus
+import com.livedeploy.app.network.PnlReport
+import com.livedeploy.app.network.RemoveTradesResult
 import kotlinx.coroutines.flow.first
 
 sealed class ApiResult<out T> {
@@ -86,4 +90,21 @@ class DeploymentsRepository(private val settingsStore: SettingsStore) {
         call { it.stopDeployment(id, forceClose) }
 
     suspend fun flatten(id: String): ApiResult<ActionResult> = call { it.flattenDeployment(id) }
+
+    // Flatten's destructive sibling — see app/deployments/manager.py's
+    // remove_trades for exactly what this deletes/reverses on the
+    // backend. Irreversible; the confirmation lives in the screen, not
+    // here (same split as every other action in this class).
+    suspend fun removeTrades(id: String): ApiResult<RemoveTradesResult> = call { it.removeTrades(id) }
+
+    suspend fun health(): ApiResult<HealthOut> = call { it.health() }
+
+    suspend fun muteStatus(): ApiResult<MuteStatus> = call { it.muteStatus() }
+
+    suspend fun muteToday(): ApiResult<MuteStatus> = call { it.muteToday() }
+
+    suspend fun unmute(): ApiResult<MuteStatus> = call { it.unmute() }
+
+    suspend fun pnlReport(period: String, offset: Int): ApiResult<PnlReport> =
+        call { it.pnlReport(period, offset) }
 }

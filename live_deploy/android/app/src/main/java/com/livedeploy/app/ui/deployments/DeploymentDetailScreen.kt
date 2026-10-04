@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -20,6 +21,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -27,7 +29,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -90,6 +94,7 @@ fun DeploymentDetailScreen(
                 onResume = viewModel::resume,
                 onStop = { viewModel.stop(forceClose = false) },
                 onFlatten = viewModel::flatten,
+                onRemoveTrades = viewModel::removeTrades,
             )
         }
     }
@@ -103,7 +108,38 @@ private fun DeploymentDetailBody(
     onResume: () -> Unit,
     onStop: () -> Unit,
     onFlatten: () -> Unit,
+    onRemoveTrades: () -> Unit,
 ) {
+    // Irreversible (see manager.remove_trades on the backend), same
+    // "confirm before firing" requirement the web app's own
+    // window.confirm() enforces for this action — a plain button tap
+    // with no confirmation would be too easy to hit by accident next to
+    // Pause/Flatten/Stop.
+    var showRemoveTradesConfirm by remember { mutableStateOf(false) }
+    if (showRemoveTradesConfirm) {
+        AlertDialog(
+            onDismissRequest = { showRemoveTradesConfirm = false },
+            title = { Text("Remove trades?") },
+            text = {
+                Text(
+                    "Permanently DELETE the current trade for \"${deployment.deploymentName}\".\n\n" +
+                        "This is not a close — every position in it (including already-closed legs of " +
+                        "the same cycle, for a strategy that rolls) is wiped from the database entirely: " +
+                        "cash is reversed as if it never happened, and it will no longer appear anywhere " +
+                        "in Reports or History.\n\nThis cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showRemoveTradesConfirm = false
+                    onRemoveTrades()
+                }) { Text("Remove trades", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemoveTradesConfirm = false }) { Text("Cancel") }
+            },
+        )
+    }
     Column(
         modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -152,6 +188,20 @@ private fun DeploymentDetailBody(
                 }
                 else -> Text("Stopped — no actions available.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+        // Flatten's destructive sibling (see manager.remove_trades) —
+        // own row, not crowded in with Pause/Flatten/Stop above, same
+        // "set apart from the routine lifecycle actions" reasoning the
+        // web app's own separator before this button in its "···More"
+        // menu already follows. Available whenever the deployment isn't
+        // stopped, same condition as Flatten.
+        if (deployment.status != "stopped") {
+            OutlinedButton(
+                onClick = { showRemoveTradesConfirm = true },
+                colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error,
+                ),
+            ) { Text("Remove trades") }
         }
     }
 }

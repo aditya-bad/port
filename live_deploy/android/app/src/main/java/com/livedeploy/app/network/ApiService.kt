@@ -42,4 +42,22 @@ interface ApiService {
 
     @POST("deployments/{id}/flatten")
     suspend fun flattenDeployment(@Path("id") id: String): Response<ActionResult>
+
+    @POST("deployments/{id}/remove-trades")
+    suspend fun removeTrades(@Path("id") id: String): Response<RemoveTradesResult>
+
+    @GET("notifications/mute-status")
+    suspend fun muteStatus(): Response<MuteStatus>
+
+    @POST("notifications/mute-today")
+    suspend fun muteToday(): Response<MuteStatus>
+
+    @POST("notifications/unmute")
+    suspend fun unmute(): Response<MuteStatus>
+
+    @GET("portfolio/pnl-report")
+    suspend fun pnlReport(
+        @Query("period") period: String,
+        @Query("offset") offset: Int,
+    ): Response<PnlReport>
 }

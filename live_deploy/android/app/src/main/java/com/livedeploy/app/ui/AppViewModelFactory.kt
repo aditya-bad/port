@@ -29,6 +29,8 @@ class AppViewModelFactory(private val app: LiveDeployApplication) : ViewModelPro
                 com.livedeploy.app.ui.deployments.DeploymentsViewModel(repository) as T
             modelClass.isAssignableFrom(com.livedeploy.app.ui.deployments.DeploymentDetailViewModel::class.java) ->
                 com.livedeploy.app.ui.deployments.DeploymentDetailViewModel(repository) as T
+            modelClass.isAssignableFrom(com.livedeploy.app.ui.reports.ReportsViewModel::class.java) ->
+                com.livedeploy.app.ui.reports.ReportsViewModel(repository) as T
             else -> throw IllegalArgumentException("Unknown ViewModel class: $modelClass")
         }
     }
