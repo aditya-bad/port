@@ -177,6 +177,20 @@ TODAY's date — never carrying the just-closed position's contract
 forward. `self.cycle_id` increments and `self.cycle_realized_pnl`
 resets to 0.0 on every fresh entry (initial or checkpoint-triggered).
 
+`checkpoint_exit_not_before` (default None/disabled — existing
+deployments are completely unaffected unless this is explicitly set):
+an optional "HH:MM" floor below which a checkpoint-target hit is
+deliberately NOT acted on. Added because the market's first couple of
+ticks after open (9:15) can be noisy/gappy enough to spuriously satisfy
+`checkpoint_target` on a tick that doesn't reflect a real, tradeable
+price — if set (e.g. "09:17"), a target reached before this time is
+simply left alone THIS tick (no flatten, no re-entry) and re-checked
+fresh on every later tick exactly as if nothing had happened; every
+other section (adjustments, rolls, EOD, convergence stop) keeps running
+normally in the meantime. This is purely a "don't act on it yet" gate —
+it never changes the target itself, and once the clock passes this
+time, a still-live target is acted on immediately as usual.
+
 ──────────────────────────────────────────────────────────────────────
 5. CONTINUOUS ADJUSTMENT (all day, every day — pre AND post convergence)
 ──────────────────────────────────────────────────────────────────────
@@ -610,6 +624,7 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
         "long_days_target_percentage": 0.05,
         "monthly_target_pct": 0.02,
         "checkpoint_profit_pct_of_capital": 0.005,
+        "checkpoint_exit_not_before": None,
         "entry_time": "10:00",
         "enter_immediately_on_deploy": False,
         "enable_hedging": False,
@@ -697,6 +712,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self.entry_time = _parse_hhmm(cfg.get("entry_time", "10:00"))
         if self.entry_time is None:
             raise ValueError("strangle_monthly_v2 requires a non-null entry_time")
+        # See module docstring's Section 4 -- None (the default) means
+        # exactly today's existing behavior, unchanged: a checkpoint hit
+        # is acted on the instant it's seen, same as every deployment
+        # already running before this existed.
+        self.checkpoint_exit_not_before = _parse_hhmm(cfg.get("checkpoint_exit_not_before"))
         self.enter_immediately_on_deploy = bool(cfg.get("enter_immediately_on_deploy", False))
 
         self.enable_hedging = bool(cfg.get("enable_hedging", False))
@@ -1024,7 +1044,15 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         )
         total_cycle_profit = self.cycle_realized_pnl + unrealized
         checkpoint_target = self.checkpoint_profit_pct_of_capital * runner.initial_capital
-        if total_cycle_profit >= checkpoint_target:
+        # See module docstring's Section 4 -- gated just means "not yet,"
+        # not "ignored": skipping this whole block falls straight through
+        # to Section 3 onward below, so the cycle keeps rolling/adjusting
+        # normally in the meantime and gets re-evaluated fresh next tick.
+        checkpoint_gated = (
+            self.checkpoint_exit_not_before is not None
+            and ts.time() < self.checkpoint_exit_not_before
+        )
+        if total_cycle_profit >= checkpoint_target and not checkpoint_gated:
             await self._flatten_all(
                 runner, ts, "checkpoint_target",
                 {

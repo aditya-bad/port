@@ -57,6 +57,11 @@ const Detail = {
       document.getElementById('detailBody').innerHTML = '';
       return;
     }
+    // 'recent' isn't safe for a positional deployment's Calendar
+    // heatmap -- see _effectiveCalendarYear's own comment. Pin the
+    // selector itself to the current year up front so it displays what
+    // actually gets rendered, rather than relying on that fallback alone.
+    if (this._dep.mode === 'positional') this._calendarRange = Number(nowIstDateKey().slice(0, 4));
     this.renderHeader(this._dep);
     this.renderTabs();
     await this.renderBody();
@@ -403,7 +408,17 @@ const Detail = {
     const winRatePct = pnls.length ? (wins.length / pnls.length) * 100 : 0;
     const avgWin = wins.length ? wins.reduce((a, b) => a + b, 0) / wins.length : 0;
     const avgLoss = losses.length ? losses.reduce((a, b) => a + b, 0) / losses.length : 0;
-    const totalRealizedPnl = pnls.reduce((a, b) => a + b, 0);   // same total regardless of grouping -- grouping only changes the bucket count, not the sum
+    // NOT pnls.reduce(...) -- for a strategy that rolls/adjusts within a
+    // still-open cycle (e.g. strangle_monthly_v2), `closedUnits` excludes
+    // the WHOLE cycle until it finally flattens, even though several of
+    // its legs already closed and banked real realized P&L along the
+    // way. Summing only `pnls` here would silently drop that already-
+    // realized money, drifting away from the one authoritative number
+    // (the DB-tracked running total) that the Overview tab's "Realized
+    // all-time" row and the Monthly Performance matrix below (which sums
+    // raw `positions.realized_pnl` with no unit grouping at all) both
+    // already agree on -- this card needs to agree with them too.
+    const totalRealizedPnl = this._dep.realized_pnl || 0;
     const grossWin = pnls.filter(v => v > 0).reduce((a, b) => a + b, 0);
     const grossLoss = pnls.filter(v => v < 0).reduce((a, b) => a + b, 0);   // negative
     const profitFactor = grossLoss < 0 ? grossWin / Math.abs(grossLoss) : (grossWin > 0 ? Infinity : null);
@@ -555,19 +570,24 @@ const Detail = {
       <section>
         <div class="report-section-header" style="cursor:default; padding:0; margin-bottom:10px; justify-content:space-between; flex-wrap:wrap;">
           <h2 style="margin:0;">Recent Periods</h2>
-          <div class="tabs" id="detailStatsTrendTabs" style="margin:0;">
+          ${this._dep.mode === 'positional' ? '' : `<div class="tabs" id="detailStatsTrendTabs" style="margin:0;">
             <button class="${this._statsTrendPeriod === 'day' ? 'active' : ''}" data-period="day" onclick="Detail.changeStatsTrendPeriod('day')">Daily</button>
             <button class="${this._statsTrendPeriod === 'week' ? 'active' : ''}" data-period="week" onclick="Detail.changeStatsTrendPeriod('week')">Weekly</button>
             <button class="${this._statsTrendPeriod === 'month' ? 'active' : ''}" data-period="month" onclick="Detail.changeStatsTrendPeriod('month')">Monthly</button>
-          </div>
+          </div>`}
         </div>
+        ${this._dep.mode === 'positional' ? `<div class="table-note" style="margin-bottom:8px;">
+          One row per open strategic position (every leg, adjustment, and roll combined) — a
+          positional deployment's history doesn't bucket into calendar days/weeks/months the
+          way an intraday one does, so there's no period toggle here.
+        </div>` : ''}
         <div id="detailStatsTrend">${renderPnlTrendTable(trendRows, { periodLabel: iso => this._statsPeriodLabel(iso) })}</div>
       </section>
 
       <section>
         <h2>P&amp;L Calendar</h2>
         <div id="detailStatsCalendar">${renderPnlHeatmap(calendarRows, {
-          year: this._calendarRange === 'recent' ? null : this._calendarRange,
+          year: this._effectiveCalendarYear(),
           selector: { value: this._calendarRange, onChange: 'Detail.changeCalendarRange(this.value)' },
         })}</div>
       </section>
@@ -672,12 +692,29 @@ const Detail = {
     `;
   },
 
+  // The actual year to query/render for, given the current
+  // `_calendarRange` selector state -- null means "recent" (a true
+  // rolling last-365-days view), EXCEPT 'recent' is NOT safe for a
+  // "positional" deployment: the backend silently ignores `period` for
+  // it and returns one row per open episode instead of one per
+  // calendar day (see queries.list_pnl_digest_for_deployment's own
+  // docstring), which the heatmap would otherwise plot as one day
+  // absorbing a whole episode's cumulative P&L. Pinning to the current
+  // IST year instead always takes the range-scoped query, which
+  // buckets by real calendar day regardless of mode. One shared helper
+  // so the fetch (_fetchStatsCalendarRows) and the render call
+  // (changeCalendarRange) can't drift apart on this.
+  _effectiveCalendarYear() {
+    if (this._calendarRange !== 'recent') return this._calendarRange;
+    return this._dep.mode === 'positional' ? Number(nowIstDateKey().slice(0, 4)) : null;
+  },
+
   // This deployment's own daily P&L as a GitHub-style heatmap (see
   // renderPnlHeatmap, api.js), backed by GET /deployments/{id}/pnl-digest
   // (deployment-scoped twin of the Reports page's portfolio-wide
   // GET /portfolio/pnl-digest).
   _fetchStatsCalendarRows() {
-    const year = this._calendarRange === 'recent' ? null : this._calendarRange;
+    const year = this._effectiveCalendarYear();
     return year
       ? Api.getPnlDigestForDeployment(this._id, 'day', 400, year)
       : Api.getPnlDigestForDeployment(this._id, 'day', 400);
@@ -686,9 +723,8 @@ const Detail = {
   async changeCalendarRange(value) {
     this._calendarRange = value === 'recent' ? 'recent' : Number(value);
     const rows = await this._fetchStatsCalendarRows();
-    const year = this._calendarRange === 'recent' ? null : this._calendarRange;
     document.getElementById('detailStatsCalendar').innerHTML = renderPnlHeatmap(rows, {
-      year,
+      year: this._effectiveCalendarYear(),
       selector: { value: this._calendarRange, onChange: 'Detail.changeCalendarRange(this.value)' },
     });
     scrollPnlHeatmapToEnd('detailStatsCalendar');
