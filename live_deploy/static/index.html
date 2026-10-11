@@ -1072,6 +1072,18 @@ tr.trade-detail-row td {
 .modal .btn-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
 .modal-msg { margin-top: 10px; font-size: 13px; font-weight: 600; }
 
+/* ── Tools page (calculators) — a fixed-width form beside a results
+   panel that grows to fill the rest of the row; stacks to one column
+   on narrow viewports, same breakpoint the mobile sidebar already
+   switches at. */
+.ux-tools-grid { display: grid; grid-template-columns: minmax(260px, 340px) 1fr; gap: 24px; align-items: start; }
+.ux-tools-form { background: var(--panel); border: 2px solid var(--line); padding: 16px; }
+.ux-tools-form .btn { width: 100%; margin-top: 4px; }
+.ux-tools-note { font-size: 11.5px; color: var(--parchment); line-height: 1.6; margin-top: 10px; }
+@media (max-width: 760px) {
+  .ux-tools-grid { grid-template-columns: 1fr; }
+}
+
 /* Deploy specifically (not every modal — Clear All, Edit Deployment
    etc. have few enough fields that the default 560px is already
    fine) gets more room above the mobile breakpoint: a strategy's
@@ -2651,6 +2663,7 @@ table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
       <a class="nav-item" data-nav="compare" href="#/compare">Compare</a>
       <a class="nav-item" data-nav="reports" href="#/reports">Reports</a>
       <a class="nav-item" data-nav="instruments" href="#/instruments">Instruments</a>
+      <a class="nav-item" data-nav="tools" href="#/tools">Tools</a>
       <a class="nav-item" data-nav="account" href="#/account">Account</a>
       <div class="sidebar-footer">
         <div class="status-bar" id="statusBar">
@@ -3001,6 +3014,24 @@ table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
       </section>
     </div>
 
+    <!-- ═══ Tools ═══ -->
+    <div id="view-tools" class="view">
+      <div class="view-header">
+        <div>
+          <h1>Tools</h1>
+          <div class="view-sub">SIP / CAGR / brokerage calculators — generic math, not tied to any deployment</div>
+        </div>
+      </div>
+      <div class="tabs" id="toolsTabs">
+        <button class="active" data-tab="sip" onclick="Tools.switchTab('sip')">SIP</button>
+        <button data-tab="stepup" onclick="Tools.switchTab('stepup')">Step-up SIP</button>
+        <button data-tab="lumpsum" onclick="Tools.switchTab('lumpsum')">Lumpsum + Step-up SIP</button>
+        <button data-tab="cagr" onclick="Tools.switchTab('cagr')">CAGR</button>
+        <button data-tab="brokerage" onclick="Tools.switchTab('brokerage')">Brokerage</button>
+      </div>
+      <div id="toolsBody"></div>
+    </div>
+
     <!-- ═══ Account ═══ -->
     <div id="view-account" class="view">
       <div class="view-header">
@@ -3304,6 +3335,7 @@ table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
 </div>
 
 <script src="/js/api.js"></script>
+<script src="/js/calculators.js"></script>
 <script src="/js/ui-kit.js"></script>
 <script src="/js/dashboard.js"></script>
 <script src="/js/catalog.js"></script>
@@ -3313,6 +3345,7 @@ table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
 <script src="/js/reports.js"></script>
 <script src="/js/detail.js"></script>
 <script src="/js/instruments.js"></script>
+<script src="/js/tools.js"></script>
 <script src="/js/account.js"></script>
 <script>
 // ── App shell: auth status polling + hash-based view routing ─────────
@@ -3798,7 +3831,7 @@ function showToast(ev) {
 // ── Router ────────────────────────────────────────────────────────────
 // Six real views + one drill-down (detail, reached only by navigating
 // to #/deployments/{id}, never a sidebar destination of its own).
-const VIEWS = ['dashboard', 'catalog', 'deployments', 'portfolio', 'compare', 'reports', 'detail', 'instruments', 'account'];
+const VIEWS = ['dashboard', 'catalog', 'deployments', 'portfolio', 'compare', 'reports', 'detail', 'instruments', 'tools', 'account'];
 
 function router() {
   const hash = (window.location.hash || '#/dashboard').replace(/^#\/?/, '');
@@ -3827,6 +3860,7 @@ function router() {
   else if (view === 'reports') Reports.load();
   else if (view === 'detail') Detail.load(param);
   else if (view === 'instruments') Instruments.load();
+  else if (view === 'tools') Tools.load();
   else if (view === 'account') Account.load();
 
   _startAutoRefresh();

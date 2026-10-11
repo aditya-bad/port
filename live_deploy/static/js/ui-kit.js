@@ -160,12 +160,12 @@ UIKit.groupNavigation = function groupNavigation() {
     ['LIVE', ['dashboard']],
     ['STRATEGIES', ['deployments', 'catalog']],
     ['ANALYZE', ['portfolio', 'compare', 'reports']],
-    ['DATA', ['instruments']],
+    ['DATA', ['instruments', 'tools']],
     ['SYSTEM', ['account']],
   ];
   const labels = {
     dashboard: 'Overview', deployments: 'Deployed', catalog: 'Catalog', portfolio: 'Portfolio',
-    compare: 'Compare', reports: 'Reports', instruments: 'Instruments', account: 'Settings',
+    compare: 'Compare', reports: 'Reports', instruments: 'Instruments', tools: 'Tools', account: 'Settings',
   };
 
   const footer = group.querySelector('.sidebar-footer');
