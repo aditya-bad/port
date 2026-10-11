@@ -74,6 +74,21 @@ zero writes.
   and for the same reason (a running deployment doesn't re-read its own
   config live). `--dry-run` previews with zero writes.
 
+- **`backfill_estimated_charges.py`** — fills in
+  `positions.estimated_charges` (migration 0016 — the "with brokerage"
+  global toggle's backing data, see app/charges.py) for every CLOSED
+  position that predates the toggle shipping. The column defaults to 0
+  and `queries.record_fill` only computes a real value going forward,
+  at the moment a position actually closes — a pre-existing closed
+  position stays at 0 (net == gross, the toggle looks like a no-op for
+  it) until this runs. Same DB-only shape as
+  `backfill_long_days_target_percentage.py` above (no Kite session, no
+  Pause+Resume — this doesn't touch anything a running strategy reads
+  live). Selects `WHERE estimated_charges = 0`, so it's safe to re-run:
+  a position already backfilled (or closed live, post-migration) is
+  skipped, not recomputed. `--dry-run` previews the total it would
+  apply with zero writes.
+
 - **`remove_todays_trades.py`** — "undo a whole calendar day, everywhere,
   correctly": deletes every trade dated `--date` (required, no default —
   a destructive op shouldn't have a "today" convenience default) across
