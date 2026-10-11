@@ -41,10 +41,37 @@ your own memory of that trade, that's a DATA problem (worth digging
 into before trusting any total above), not something this script can
 self-diagnose from aggregates alone.
 
+Pure DB read/write -- no Kite session, no running app server involved,
+so (unlike fix_strangle_instrument_tokens.py / backfill_missed_force_exit.py
+/ backfill_long_days_target_percentage.py) this never NEEDS to run inside
+the container. Run it from wherever `DATABASE_URL` (env var or
+config.json) is actually reachable:
+
+  - If Postgres is reachable directly from the machine you're on (a
+    public host, or a port published to the host), run it straight
+    from a checkout with this app's requirements.txt installed:
+        python3 custom_scripts/backfill_estimated_charges.py --dry-run
+        python3 custom_scripts/backfill_estimated_charges.py --dry-run --sample 5
+        python3 custom_scripts/backfill_estimated_charges.py
+
+  - If it's NOT reachable that way -- e.g. `database_url`/`DATABASE_URL`
+    is a Docker-network-only hostname (a docker-compose service name,
+    or a container's own internal DNS name), you'll hit
+    `socket.gaierror: ... Temporary failure in name resolution` trying
+    the above from the bare host. custom_scripts/ is already copied
+    into the image (see the Dockerfile's own comment on this) for
+    exactly this case -- run it INSIDE the container instead, where
+    that hostname actually resolves:
+        docker exec live-deploy python3 custom_scripts/backfill_estimated_charges.py --dry-run
+        docker exec live-deploy python3 custom_scripts/backfill_estimated_charges.py --dry-run --sample 5
+        docker exec live-deploy python3 custom_scripts/backfill_estimated_charges.py
+
 USAGE:
     python3 custom_scripts/backfill_estimated_charges.py --dry-run
     python3 custom_scripts/backfill_estimated_charges.py --dry-run --sample 5
     python3 custom_scripts/backfill_estimated_charges.py
+  (or the `docker exec live-deploy python3 ...` form above, if the bare
+  host can't resolve/reach your Postgres)
 """
 import argparse
 import asyncio

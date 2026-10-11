@@ -87,7 +87,17 @@ zero writes.
   live). Selects `WHERE estimated_charges = 0`, so it's safe to re-run:
   a position already backfilled (or closed live, post-migration) is
   skipped, not recomputed. `--dry-run` previews the total it would
-  apply with zero writes.
+  apply with zero writes. `--sample N` (default 3, 0 disables) also
+  prints N real positions per deployment -- symbol, entry/exit price,
+  qty, and the full charge breakdown -- to spot-check against your own
+  trade memory, not just trust the aggregate totals. Pure DB read/write,
+  no Kite session or app API call, so it runs fine straight from a bare
+  checkout IF Postgres is reachable from there; if `DATABASE_URL` is a
+  Docker-network-only hostname and you hit a DNS resolution error
+  (`socket.gaierror`) running it that way, run it via `docker exec
+  live-deploy python3 custom_scripts/backfill_estimated_charges.py`
+  instead -- same as the other scripts below, `custom_scripts/` is
+  already baked into the image for exactly this case.
 
 - **`remove_todays_trades.py`** — "undo a whole calendar day, everywhere,
   correctly": deletes every trade dated `--date` (required, no default —
