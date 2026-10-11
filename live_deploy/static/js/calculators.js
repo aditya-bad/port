@@ -97,12 +97,32 @@ Calculators.cagr = function cagr({ initialValue, finalValue, years }) {
 // ── Brokerage (Zerodha-equivalent) ──────────────────────────────────
 // Rates below are cross-checked against Zerodha's own published
 // charges (zerodha.com/charges), Zerodha's support articles, and NSE's
-// own transaction-charge circular (effective 1 Oct 2024) as of this
-// writing. THREE of these figures are government/exchange-set and
-// change independently of Zerodha (most recently: F&O STT revised
-// w.e.f. 1 Apr 2026) — re-verify against zerodha.com/charges directly
-// before trusting this for anything beyond an estimate, and update
-// this one table (nothing else) if a rate changes.
+// own transaction-charge circular as of this writing, THEN corrected
+// against a real, live side-by-side check against zerodha.com's own
+// brokerage calculator (two Equity Options trades, qty 400 and 40000,
+// buy 100/sell 110 both times) -- the exchange transaction charge
+// figure this started with for OPTIONS (0.03503%, from a source
+// claiming an Oct 2024 NSE revision) undershot Zerodha's actual
+// displayed number on BOTH trades; the pre-"revision" figure
+// (0.03553%) matches exactly, so that claimed revision was wrong (or
+// never applied to this segment). Re-ran the full breakdown
+// (brokerage/STT/exchange/SEBI/GST/stamp duty/total/net) against both
+// trades and every figure now matches Zerodha's to the paisa --
+// including stamp duty needing to be ROUNDED to the nearest whole
+// rupee (not left as a raw decimal), which the formula below now does.
+//
+// equity_intraday/futures' exchangePct were reverted the same way
+// (back to their own pre-"revision" figures, 0.00307%/0.00183%) on the
+// INFERENCE that the same wrong "revision" source was the problem for
+// them too, not from an independent live check the way options was --
+// worth a similar side-by-side Equity Intraday / Futures trade on
+// zerodha.com/brokerage-calculator to actually confirm.
+//
+// THREE of these figures are government/exchange-set and change
+// independently of Zerodha (most recently: F&O STT revised w.e.f. 1
+// Apr 2026) — re-verify against zerodha.com/charges directly before
+// trusting this for anything beyond an estimate, and update this one
+// table (nothing else) if a rate changes.
 //
 // Models a plain buy-then-sell (or sell-then-buy) round trip fully
 // squared off before expiry — exactly what Zerodha's own brokerage
@@ -117,21 +137,21 @@ Calculators.BROKERAGE_RATES = {
     label: 'Equity Intraday',
     brokeragePct: 0.0003, brokerageCap: 20,         // 0.03% or Rs 20/executed order, whichever is lower
     sttPct: 0.00025, sttBothSides: false,            // 0.025% of trade value, sell side only
-    exchangePct: 0.0000297,                          // NSE: Rs 2.97 per lakh of turnover (both sides)
+    exchangePct: 0.0000307,                          // NSE: Rs 3.07 per lakh of turnover (both sides)
     stampDutyPct: 0.00003,                           // 0.003% of trade value, buy side only
   },
   futures: {
     label: 'Equity Futures',
     brokeragePct: 0.0003, brokerageCap: 20,
     sttPct: 0.0005, sttBothSides: false,             // 0.05% of trade value, sell side only (w.e.f. 1 Apr 2026)
-    exchangePct: 0.0000173,                          // NSE: Rs 1.73 per lakh of turnover
+    exchangePct: 0.0000183,                          // NSE: Rs 1.83 per lakh of turnover
     stampDutyPct: 0.00002,                           // 0.002% of trade value, buy side only
   },
   options: {
     label: 'Equity Options',
     brokerageFlat: 20,                               // flat Rs 20 per executed order -- NOT percentage-based
     sttPct: 0.0015, sttBothSides: false,             // 0.15% of PREMIUM value, sell side only (w.e.f. 1 Apr 2026)
-    exchangePct: 0.0003503,                          // NSE: Rs 35.03 per lakh of PREMIUM turnover
+    exchangePct: 0.0003553,                          // NSE: Rs 35.53 per lakh of PREMIUM turnover -- verified exact (see comment above)
     stampDutyPct: 0.00003,                           // 0.003% of premium value, buy side only
   },
 };
@@ -164,7 +184,12 @@ Calculators.brokerage = function brokerage({ segment, buyPrice, sellPrice, quant
   const exchangeAmt = rates.exchangePct * turnover;
   const sebiAmt = Calculators.SEBI_CHARGE_PCT * turnover;
   const gstAmt = Calculators.GST_PCT * (brokerageAmt + exchangeAmt + sebiAmt);
-  const stampDutyAmt = rates.stampDutyPct * buyValue;
+  // Rounded to the nearest whole rupee (the Indian Stamp Act's own
+  // collection convention) -- unlike every other charge here, which
+  // Zerodha's own calculator shows as a raw decimal. Verified against
+  // both live trades above: 0.00003 * Rs 40,000 = Rs 1.20 displayed as
+  // Rs 1, not Rs 1.20.
+  const stampDutyAmt = Math.round(rates.stampDutyPct * buyValue);
 
   const totalCharges = brokerageAmt + sttAmt + exchangeAmt + sebiAmt + gstAmt + stampDutyAmt;
   const grossPnl = sellValue - buyValue;
