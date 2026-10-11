@@ -595,13 +595,45 @@ const Detail = {
     scrollPnlHeatmapToEnd('detailStatsCalendar');
   },
 
+  // The Monthly Performance matrix needs a genuine calendar-month digest
+  // across this deployment's ENTIRE history, regardless of mode -- the
+  // recency-limited, no-year call (period=month, no year) silently
+  // returns one row per open EPISODE instead for a "positional"
+  // deployment (see _effectiveCalendarYear's own comment and
+  // queries.list_pnl_digest_for_deployment's docstring), each dated at
+  // its EARLIEST leg's opened_at. A cycle that rolls across several
+  // months (exactly what strangle_monthly_v2 does) then has its ENTIRE
+  // realized P&L dumped into whichever single month it first opened
+  // in, with every other month it was actually active in showing
+  // nothing -- reproduced directly: three legs worth ₹4,000/₹5,000/
+  // ₹3,831, closed in Aug/Sep/Oct respectively (₹12,831 total, matching
+  // dep.realized_pnl), came back as ONE row dated in August for
+  // ₹12,831, instead of three real monthly buckets.
+  //
+  // Fixed the same way as the Calendar heatmap's year-picker: the
+  // range-scoped endpoint (year=...) buckets by real calendar month
+  // off the raw `positions` table with NO episode logic at all,
+  // regardless of mode -- one call per year of this deployment's life
+  // (a handful of requests, not a hot path, same reasoning
+  // queries.get_positional_episode_mtm_rows' own docstring already
+  // uses for its own per-episode snapshot queries), merged into one
+  // row list.
+  async _fetchMonthlyMatrixRows() {
+    const firstYear = Number(istDateKey(this._dep.created_at).slice(0, 4));
+    const lastYear = Number(nowIstDateKey().slice(0, 4));
+    const years = [];
+    for (let y = firstYear; y <= lastYear; y++) years.push(y);
+    const perYear = await Promise.all(years.map(y => Api.getPnlDigestForDeployment(this._id, 'month', 12, y)));
+    return perYear.flat();
+  },
+
   async renderAnalytics() {
     const body = document.getElementById('detailBody');
     body.classList.add('ux-analytics');
     await this._renderAnalyticsBody();
     try {
       const [monthly, snaps] = await Promise.all([
-        Api.getPnlDigestForDeployment(this._id, 'month', 180),
+        this._fetchMonthlyMatrixRows(),
         Api.getSnapshots(this._id),
       ]);
       this._matrixRows = monthly;
