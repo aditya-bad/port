@@ -44,18 +44,21 @@ _SEBI_CHARGE_PCT = 0.000001               # Rs 10 per crore, both sides
 _GST_PCT = 0.18                           # on (brokerage + exchange + SEBI) only, never on STT/stamp duty
 
 
-def estimate_options_charges(buy_price: float, sell_price: float, qty: float) -> float:
-    """Total estimated charges (brokerage + STT + exchange transaction
-    charges + SEBI charges + GST + stamp duty) for one options position
-    squared off via a buy leg at `buy_price` and a sell leg at
-    `sell_price`, `qty` lots-worth total (already lots × lot size) —
-    direction-agnostic, same as the JS calculator: pass the position's
+def charge_breakdown(buy_price: float, sell_price: float, qty: float) -> dict:
+    """Same computation as estimate_options_charges below, but returns
+    every line item separately (brokerage/stt/exchange/sebi/gst/
+    stamp_duty/total) instead of just the total — for anything that
+    needs to show or audit the breakdown itself (e.g.
+    custom_scripts/backfill_estimated_charges.py's own per-charge-type
+    report), not just the single combined figure callers like
+    queries.record_fill only ever need.
+
+    Direction-agnostic, same as the JS calculator: pass the position's
     own buy-side price as `buy_price` and sell-side price as
     `sell_price` regardless of whether it was opened long or short (see
-    callers for the side-aware mapping).
-
-    Rounds only stamp duty to the nearest whole rupee (matching
-    Zerodha's own display), exactly like calculators.js's brokerage().
+    callers for the side-aware mapping). Rounds only stamp duty to the
+    nearest whole rupee (matching Zerodha's own display), exactly like
+    calculators.js's brokerage().
     """
     buy_value = buy_price * qty
     sell_value = sell_price * qty
@@ -67,5 +70,21 @@ def estimate_options_charges(buy_price: float, sell_price: float, qty: float) ->
     sebi = _SEBI_CHARGE_PCT * turnover
     gst = _GST_PCT * (brokerage + exchange + sebi)
     stamp_duty = round(_STAMP_DUTY_PCT * buy_value)
+    total = brokerage + stt + exchange + sebi + gst + stamp_duty
 
-    return brokerage + stt + exchange + sebi + gst + stamp_duty
+    return {
+        "brokerage": brokerage, "stt": stt, "exchange": exchange,
+        "sebi": sebi, "gst": gst, "stamp_duty": stamp_duty, "total": total,
+    }
+
+
+def estimate_options_charges(buy_price: float, sell_price: float, qty: float) -> float:
+    """Total estimated charges (brokerage + STT + exchange transaction
+    charges + SEBI charges + GST + stamp duty) for one options position
+    squared off via a buy leg at `buy_price` and a sell leg at
+    `sell_price`, `qty` lots-worth total (already lots × lot size) --
+    see charge_breakdown() above for the itemized version; this is just
+    its own ["total"], the only figure every other caller here actually
+    needs.
+    """
+    return charge_breakdown(buy_price, sell_price, qty)["total"]
