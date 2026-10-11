@@ -86,6 +86,7 @@ async def main(dry_run: bool) -> None:
             rows = await conn.fetch(
                 """
                 SELECT p.id, p.deployment_id, d.deployment_name, d.status AS deployment_status,
+                       d.include_in_reports,
                        p.symbol, p.side, p.realized_pnl, p.avg_entry_price,
                        lot_agg.total_qty, lot_agg.exit_price
                 FROM positions p
@@ -119,9 +120,19 @@ async def main(dry_run: bool) -> None:
             total_charges = 0.0
             total_realized = 0.0
             total_turnover = 0.0
+            # Scoped the same way the Reports page's own "All Time" view
+            # is (pnl_summary_for_range/list_pnl_by_strategy_for_range:
+            # include_in_reports=true only) -- this is the number that
+            # should actually line up against what's on screen there,
+            # NOT the grand total above it, which deliberately includes
+            # every deployment regardless of that flag (see this
+            # script's own module docstring).
+            reportable_charges = 0.0
+            reportable_realized = 0.0
+            reportable_count = 0
             skipped = 0
             updates = []
-            by_dep = {}   # deployment_name -> {status, count, realized, charges, turnover}
+            by_dep = {}   # deployment_name -> {status, include_in_reports, count, realized, charges, turnover}
             # Per-charge-type stats -- sum, and a count of how many
             # positions actually had a NON-ZERO amount for that
             # component (every component but stamp_duty is nonzero for
@@ -150,12 +161,18 @@ async def main(dry_run: bool) -> None:
                 total_turnover += turnover
                 updates.append((r["id"], charges))
 
+                if r["include_in_reports"]:
+                    reportable_charges += charges
+                    reportable_realized += float(r["realized_pnl"] or 0)
+                    reportable_count += 1
+
                 for t in _CHARGE_TYPES:
                     by_type[t]["sum"] += breakdown[t]
                     if breakdown[t] > 0:
                         by_type[t]["count"] += 1
 
-                dep_key = f"{r['deployment_name']} ({r['deployment_status']})"
+                reports_flag = "" if r["include_in_reports"] else ", EXCLUDED from reports"
+                dep_key = f"{r['deployment_name']} ({r['deployment_status']}{reports_flag})"
                 dep = by_dep.setdefault(dep_key, {"count": 0, "realized": 0.0, "charges": 0.0, "turnover": 0.0})
                 dep["count"] += 1
                 dep["realized"] += float(r["realized_pnl"] or 0)
@@ -178,7 +195,9 @@ async def main(dry_run: bool) -> None:
                 avg = d["sum"] / len(updates) if updates else 0
                 print(f"  {_CHARGE_LABELS[t]:<55} {d['count']:>7}/{len(updates):<4} {d['sum']:>14,.2f} {avg:>14,.2f}")
             print()
-            print(f"  TOTAL across all deployments above (every closed position in the DB, any status):")
+            print(f"  GRAND TOTAL across all deployments above (every closed position in the DB,")
+            print(f"  ANY status, ANY include_in_reports -- NOT the same scope as the Reports page,")
+            print(f"  see the scoped total right below this one):")
             print(f"    Positions backfilled:  {len(updates)}")
             print(f"    Total turnover:        {total_turnover:,.2f}  (buy value + sell value, summed)")
             print(f"    Total gross realized P&L:          {total_realized:>14,.2f}")
@@ -186,10 +205,26 @@ async def main(dry_run: bool) -> None:
             print(f"    ────────────────────────────────────────────────")
             print(f"    CURRENT P&L AFTER BROKERAGE (net):  {total_realized - total_charges:>13,.2f}")
             print()
-            print("  If this total looks too high, check the per-deployment table above first --")
-            print("  it's summed across EVERY deployment regardless of status/include_in_reports,")
-            print("  so an old/stopped/test deployment's history can dominate it even though your")
-            print("  dashboard's own 'Total P&L' is scoped to active+paused live deployments only.")
+            print(f"  REPORTABLE TOTAL -- include_in_reports=true deployments only, the SAME scope")
+            print(f"  the Reports page's own 'All Time' view uses (pnl_summary_for_range). This is")
+            print(f"  the number that should actually line up against what you see on screen there:")
+            print(f"    Positions backfilled:  {reportable_count}")
+            print(f"    Total gross realized P&L:          {reportable_realized:>14,.2f}")
+            print(f"    Total estimated charges to apply:  {reportable_charges:>14,.2f}")
+            print(f"    ────────────────────────────────────────────────")
+            print(f"    CURRENT P&L AFTER BROKERAGE (net):  {reportable_realized - reportable_charges:>13,.2f}")
+            print()
+            print("  Still won't match the Reports page's own position COUNT exactly, even once")
+            print("  include_in_reports lines up -- Reports counts strategic EPISODES (a straddle's")
+            print("  CE+PE legs, plus every roll/adjustment merged into it, count as ONE 'position")
+            print("  closed'), while every count above is raw `positions` table ROWS (2+ per")
+            print("  episode). Only the include_in_reports scope affects the P&L SUM shown above --")
+            print("  episode-vs-row grouping only changes how many buckets it's split into, never")
+            print("  the total.")
+            print()
+            print("  If a total still looks wrong after scoping to REPORTABLE above, check the")
+            print("  per-deployment table -- the '(..., EXCLUDED from reports)' tag on a row shows")
+            print("  exactly which deployments the GRAND TOTAL pulls in that REPORTABLE leaves out.")
 
             if dry_run:
                 print("  --dry-run: no writes made.")
