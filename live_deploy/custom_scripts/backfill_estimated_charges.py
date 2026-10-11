@@ -24,18 +24,26 @@ app's strategies ever produce, so this filter is a safe proxy for
 Does NOT touch realized_pnl, cash, or anything else — purely fills in
 the one new column, nothing a running deployment's own logic reads.
 
-Prints three things before writing anything (same under --dry-run or a
-real run): a per-DEPLOYMENT table (so a surprising total can be traced
-to which deployment it came from, not assumed to be a bug), a per-
-CHARGE-TYPE table (brokerage/STT/exchange/SEBI/GST/stamp duty, each
-with its own total and how many positions it actually applied to --
-spot-check any one of these against the Tools page's own Brokerage
-calculator on a single real trade), and a final "current P&L after
-brokerage" headline (total gross realized minus total charges, across
-everything being backfilled).
+Prints several things before writing anything (same under --dry-run or
+a real run): a per-DEPLOYMENT table (so a surprising total can be
+traced to which deployment it came from, not assumed to be a bug), a
+per-CHARGE-TYPE table (brokerage/STT/exchange/SEBI/GST/stamp duty,
+each with its own total and how many positions it actually applied
+to), a GRAND TOTAL and a REPORTABLE TOTAL (the one scoped to match the
+Reports page's own "All Time" view), and -- the actual way to verify
+this against reality, not just internal consistency -- a SAMPLE of
+individual real positions per deployment (symbol, entry/exit price,
+quantity, and the full per-component charge breakdown for that ONE
+trade), via --sample N (default 3 per deployment, 0 to disable). This
+is deliberately read-only math on whatever's actually stored for a
+position you traded -- if a sampled row's numbers look wrong against
+your own memory of that trade, that's a DATA problem (worth digging
+into before trusting any total above), not something this script can
+self-diagnose from aggregates alone.
 
 USAGE:
     python3 custom_scripts/backfill_estimated_charges.py --dry-run
+    python3 custom_scripts/backfill_estimated_charges.py --dry-run --sample 5
     python3 custom_scripts/backfill_estimated_charges.py
 """
 import argparse
@@ -65,7 +73,7 @@ _CHARGE_LABELS = {
 }
 
 
-async def main(dry_run: bool) -> None:
+async def main(dry_run: bool, sample: int) -> None:
     cfg = load_config()
     pool = await create_pool(cfg["database_url"])
     try:
@@ -87,7 +95,7 @@ async def main(dry_run: bool) -> None:
                 """
                 SELECT p.id, p.deployment_id, d.deployment_name, d.status AS deployment_status,
                        d.include_in_reports,
-                       p.symbol, p.side, p.realized_pnl, p.avg_entry_price,
+                       p.symbol, p.side, p.realized_pnl, p.avg_entry_price, p.closed_at,
                        lot_agg.total_qty, lot_agg.exit_price
                 FROM positions p
                 JOIN deployments d ON d.id = p.deployment_id
@@ -140,6 +148,7 @@ async def main(dry_run: bool) -> None:
             # on a very small trade, so "how many times" is a genuinely
             # different number there).
             by_type = {t: {"sum": 0.0, "count": 0} for t in _CHARGE_TYPES}
+            samples_by_dep = {}   # deployment_name -> [recent rows' full detail], most-recent-last
             for r in rows:
                 if r["exit_price"] is None:
                     # No closing lot found at all -- shouldn't happen for a
@@ -179,6 +188,17 @@ async def main(dry_run: bool) -> None:
                 dep["charges"] += charges
                 dep["turnover"] += turnover
 
+                if sample > 0:
+                    lst = samples_by_dep.setdefault(dep_key, [])
+                    lst.append({
+                        "symbol": r["symbol"], "side": r["side"], "closed_at": r["closed_at"],
+                        "buy_price": buy_price, "sell_price": sell_price, "qty": qty,
+                        "turnover": turnover, "realized_pnl": float(r["realized_pnl"] or 0),
+                        "breakdown": breakdown,
+                    })
+                    if len(lst) > sample:
+                        lst.pop(0)   # rows arrive in opened_at ASC order -- keep only the MOST RECENT `sample`
+
             print(f"  {len(updates)} to update, {skipped} skipped (no closing lot / zero qty found).")
             print()
             print("  By deployment (gross realized P&L vs. estimated charges vs. net, for positions being backfilled):")
@@ -187,6 +207,32 @@ async def main(dry_run: bool) -> None:
                 net = d["realized"] - d["charges"]
                 print(f"  {dep_key:<45} {d['count']:>9} {d['turnover']:>14,.2f} {d['realized']:>14,.2f} {d['charges']:>12,.2f} {net:>14,.2f}")
             print()
+
+            if sample > 0:
+                print(f"  Sample of up to {sample} real position(s) per deployment (most recent first) --")
+                print("  the actual way to verify this against reality, not just internal consistency.")
+                print("  Cross-check symbol/entry/exit/qty below against your own memory or Kite")
+                print("  tradebook for that trade; the breakdown is the same 6 components as the")
+                print("  Tools page's own Brokerage calculator, so a mismatch there is a DATA problem,")
+                print("  not a formula problem.")
+                for dep_key in sorted(by_dep.keys(), key=lambda k: by_dep[k]["charges"], reverse=True):
+                    lst = samples_by_dep.get(dep_key, [])
+                    if not lst:
+                        continue
+                    print()
+                    print(f"  {dep_key}:")
+                    for row in reversed(lst):   # most recent first
+                        b = row["breakdown"]
+                        when = row["closed_at"].strftime("%Y-%m-%d %H:%M") if row["closed_at"] else "?"
+                        print(f"    {when}  {row['symbol']:<20} {row['side']:<5} qty={row['qty']:>8,.0f}  "
+                              f"buy={row['buy_price']:>10,.2f}  sell={row['sell_price']:>10,.2f}  "
+                              f"turnover={row['turnover']:>12,.2f}  gross_pnl={row['realized_pnl']:>10,.2f}")
+                        print(f"        charges: brokerage={b['brokerage']:.2f}  stt={b['stt']:.2f}  "
+                              f"exchange={b['exchange']:.2f}  sebi={b['sebi']:.2f}  gst={b['gst']:.2f}  "
+                              f"stamp_duty={b['stamp_duty']:.2f}  total={b['total']:.2f}  "
+                              f"net_pnl={row['realized_pnl'] - b['total']:.2f}")
+                print()
+
             print("  By charge type, summed across every position above (verify this against the Tools")
             print("  page's own Brokerage calculator on a single real trade if you want to spot-check it):")
             print(f"  {'Charge type':<55} {'Applied to':>12} {'Total amount':>14} {'Avg/position':>14}")
@@ -244,5 +290,8 @@ async def main(dry_run: bool) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--sample", type=int, default=3,
+                         help="Print this many real positions per deployment for manual "
+                              "verification against your own trade memory (0 to disable).")
     args = parser.parse_args()
-    asyncio.run(main(args.dry_run))
+    asyncio.run(main(args.dry_run, args.sample))
