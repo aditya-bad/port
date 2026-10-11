@@ -2197,6 +2197,11 @@ table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
 .ux-icon-btn:hover { background: var(--stone); }
 .ux-icon-btn { width: 36px; padding: 0; }
 .ux-unread-badge { border: 2px solid var(--line); }
+/* "With brokerage" toggle (#uxChargesToggle) -- same highlighted-active
+   treatment .tabs button.active already uses, so ON reads as clearly
+   "selected," not just a slightly different idle button. */
+.ux-status-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.ux-status-btn.active:hover { background: var(--accent); }
 
 /* Dashboard KPIs — literally follow the app's stat-card treatment. */
 .ux-kpi {
@@ -3442,6 +3447,20 @@ function toggleTheme() {
   _applyThemeButtonLabel();
 }
 
+// "With brokerage" global toggle -- see api.js's includeCharges()/
+// pnlPreferred() for how a page actually picks a figure, and
+// ui-kit.js's UIKit.applyChargesButtonLabel for the topbar button's own
+// label/active state. Re-running router() (not a page-specific partial
+// update) is deliberate: it re-invokes whatever view is CURRENTLY on
+// screen's own load(), the simplest way to get every page correct with
+// zero per-page special-casing -- this app's scale makes a full
+// refetch on a toggle flip cheap enough not to matter.
+function toggleCharges() {
+  localStorage.setItem('includeCharges', (!includeCharges()).toString());
+  UIKit.applyChargesButtonLabel();
+  router();
+}
+
 // ── Mobile slide-in nav drawer — desktop never calls these (the
 // toggle button itself is display:none there, so nothing ever invokes
 // toggleMobileNav), and closeMobileNav() removing classes that are
@@ -3709,11 +3728,31 @@ window.LivePnl = {
     }
     const prices = new Map();   // instrument_token -> latest live price
 
+    // Internally "with brokerage" toggle-aware (see api.js's
+    // includeCharges()) -- every caller of pnlFor/totalPnl automatically
+    // reflects the global toggle with ZERO changes needed at the call
+    // site, the same way every other P&L figure in this app does.
+    // Projects a charge using Calculators.brokerage (calculators.js,
+    // loaded app-wide) off the position's own entry price/side/qty and
+    // the live tick price as a hypothetical exit -- same formula/
+    // approximation as the backend's own _projected_charges
+    // (routers/deployments.py) for an open position, just computed
+    // client-side here since these numbers never touch the backend at
+    // tick speed.
+    function chargesFor(positionId) {
+      const b = basis.get(positionId);
+      const price = b && prices.get(b.token);
+      if (!b || price == null) return 0;
+      const buyPrice = b.side === 'long' ? b.avg : price;
+      const sellPrice = b.side === 'long' ? price : b.avg;
+      return Calculators.brokerage({ segment: 'options', buyPrice, sellPrice, quantity: b.qty }).totalCharges;
+    }
     function pnlFor(positionId) {
       const b = basis.get(positionId);
       const price = b && prices.get(b.token);
       if (!b || price == null) return null;
-      return b.side === 'long' ? (price - b.avg) * b.qty : (b.avg - price) * b.qty;
+      const gross = b.side === 'long' ? (price - b.avg) * b.qty : (b.avg - price) * b.qty;
+      return includeCharges() ? gross - chargesFor(positionId) : gross;
     }
     // Optional deploymentId filters the total to just that deployment's
     // own positions -- omit it for a portfolio-wide total across all of

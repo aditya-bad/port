@@ -1,0 +1,11 @@
+-- "With brokerage" toggle (Step: global charges toggle) -- one
+-- estimated-charges figure per CLOSED position, computed once at close
+-- time from the same formula the Tools page's Brokerage calculator
+-- uses (see app/charges.py), stored rather than recomputed on every
+-- read so every P&L aggregation query can sum it directly alongside
+-- realized_pnl (SUM(realized_pnl - estimated_charges) AS
+-- realized_pnl_net) with no extra per-row application-code work.
+-- DEFAULT 0 for every existing row -- see
+-- custom_scripts/backfill_estimated_charges.py for backfilling real
+-- figures into pre-existing closed positions.
+ALTER TABLE positions ADD COLUMN IF NOT EXISTS estimated_charges NUMERIC(18,2) NOT NULL DEFAULT 0;

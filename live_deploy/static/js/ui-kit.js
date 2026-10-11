@@ -196,6 +196,7 @@ UIKit.ensureTopbar = function ensureTopbar() {
       <button class="ux-status-btn" id="uxKiteStatus" onclick="UIKit.openKitePopover(event)">
         <span class="ux-status-dot" id="uxKiteDot"></span><span id="uxKiteText">Checking Kite…</span>
       </button>
+      <button class="ux-status-btn" id="uxChargesToggle" title="Every P&amp;L figure app-wide, with or without estimated brokerage/STT/other charges" onclick="toggleCharges()"></button>
     </div>
     <div class="ux-topbar-right">
       <button class="ux-icon-btn" title="Notifications" onclick="UIKit.toggleNotificationPanel(event)">🔔<span class="ux-unread-badge" id="uxUnreadBadge" style="display:none;">0</span></button>
@@ -222,6 +223,24 @@ UIKit.syncKiteStatus = function syncKiteStatus() {
   const bad = /not connected|disconnected|unreachable|login required/i.test(raw);
   text.textContent = connected ? 'Kite connected' : bad ? 'Kite disconnected' : 'Kite checking…';
   dot.className = `ux-status-dot ${connected ? 'ok' : bad ? 'bad' : ''}`;
+};
+
+// "With brokerage" global toggle -- a pure display preference,
+// localStorage-backed (same mechanism as the dark-mode toggle, see
+// index.html's own toggleTheme), NOT a server-side setting: every page
+// already gets both the gross AND net-of-estimated-charges figure in
+// every P&L response (see app/charges.py / positions.estimated_charges
+// on the backend), so there's nothing to sync across devices here --
+// only which of the two a given browser currently prefers to render.
+// See api.js's includeCharges()/pnlPreferred() for how a page actually
+// picks between them, and index.html's toggleCharges() for the click
+// handler (it needs `router()`, which lives there).
+UIKit.applyChargesButtonLabel = function applyChargesButtonLabel() {
+  const btn = document.getElementById('uxChargesToggle');
+  if (!btn) return;
+  const on = includeCharges();
+  btn.textContent = on ? '🧾 With brokerage' : '🧾 Without brokerage';
+  btn.classList.toggle('active', on);
 };
 
 UIKit.openKitePopover = async function openKitePopover(event) {
@@ -939,6 +958,7 @@ UIKit.init = function init() {
   this.ensureSurfaces();
   this.groupNavigation();
   this.ensureTopbar();
+  this.applyChargesButtonLabel();
   this.loadNotifications();
   this.startTableObserver();
 

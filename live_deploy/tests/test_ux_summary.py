@@ -5,7 +5,7 @@ from uuid import uuid4
 from app.routers.ux_summary import _active_rows
 
 
-def _pos(dep_id, *, opened, closed=None, status="open", pnl=0.0):
+def _pos(dep_id, *, opened, closed=None, status="open", pnl=0.0, charges=0.0):
     return {
         "id": uuid4(),
         "deployment_id": dep_id,
@@ -13,6 +13,7 @@ def _pos(dep_id, *, opened, closed=None, status="open", pnl=0.0):
         "opened_at": opened,
         "closed_at": closed,
         "realized_pnl": pnl,
+        "estimated_charges": charges,
     }
 
 

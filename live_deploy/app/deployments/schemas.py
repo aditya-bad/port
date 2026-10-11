@@ -140,6 +140,17 @@ class DeploymentOut(BaseModel):
     # routers/deployments.py's _enrich_pnl / per-deployment pnl lookup.
     realized_pnl: float = 0.0
     unrealized_pnl: float = 0.0
+    # Net-of-estimated-charges twins of the two figures above -- the
+    # "with brokerage" global toggle's backing data (see app/charges.py
+    # for the formula and positions.estimated_charges for where it's
+    # stored). realized_pnl_net sums (realized_pnl - estimated_charges)
+    # per closed position; unrealized_pnl_net subtracts a live
+    # PROJECTED charge for every open position (what it would cost to
+    # close right now, at its current price) -- nothing is actually
+    # charged until a position really closes, so this is always a
+    # hypothetical, same as unrealized_pnl itself already is.
+    realized_pnl_net: float = 0.0
+    unrealized_pnl_net: float = 0.0
     # Entry-price cost basis of every currently OPEN position, netted:
     # +qty*avg_entry_price for a short (a sold option's premium, sitting
     # in cash as a credit until it's bought back), -qty*avg_entry_price
@@ -188,10 +199,21 @@ class PositionOut(BaseModel):
     total_qty: float = 0.0                  # qty ever entered -- open + already-closed portion, both.
     exit_price: Optional[float] = None      # None while status == "open"
     realized_pnl: float
+    # Net-of-estimated-charges twin -- the "with brokerage" global
+    # toggle's backing figure for ONE position (see app/charges.py and
+    # positions.estimated_charges). 0.0 while still open (realized_pnl
+    # itself is 0.0 then too) -- see unrealized_pnl_net below for this
+    # position's PROJECTED charge if closed right now.
+    realized_pnl_net: float = 0.0
     opened_at: datetime
     closed_at: Optional[datetime] = None
     current_price: Optional[float] = None
     unrealized_pnl: Optional[float] = None
+    # Same idea as unrealized_pnl itself: a live, purely hypothetical
+    # figure (what it would cost to close THIS position right now, at
+    # its current price) -- None whenever unrealized_pnl is None (no
+    # live price yet), never computed from a stale/stored charge.
+    unrealized_pnl_net: Optional[float] = None
 
 
 class PositionOutWithEpisode(PositionOut):
@@ -348,6 +370,11 @@ class PnlDigestRow(BaseModel):
     number into a digest of settled history would misrepresent it."""
     period_start: datetime
     realized_pnl: float
+    # Net-of-estimated-charges twin -- the "with brokerage" global
+    # toggle's backing figure (see app/charges.py and
+    # positions.estimated_charges). Same realized-only scope as
+    # realized_pnl itself.
+    realized_pnl_net: float = 0.0
     positions_closed: int
     wins: int
     losses: int
@@ -405,6 +432,7 @@ class PnlStrategyBreakdown(BaseModel):
     — see queries.pnl_by_strategy_for_range."""
     strategy_name: str
     realized_pnl: float
+    realized_pnl_net: float = 0.0
     positions_closed: int
 
 
@@ -444,6 +472,7 @@ class PnlDeploymentBreakdown(BaseModel):
     deployment_name: str
     strategy_name: str
     realized_pnl: float
+    realized_pnl_net: float = 0.0
     positions_closed: int
 
 
@@ -451,14 +480,24 @@ class StrategyLeaderboardRow(BaseModel):
     """One strategy's ALL-TIME realized P&L, across every deployment
     that ever ran it — see queries.list_strategy_leaderboard. Ships
     gross_win/gross_loss rather than a pre-computed profit factor; see
-    that query's own docstring for why."""
+    that query's own docstring for why. The _net fields are this same
+    data with every closed position's estimated_charges subtracted
+    first (see app/charges.py) -- wins_net/losses_net can differ from
+    wins/losses for a position whose charges flipped it from a small
+    gross win to a net loss, not just a rescaled copy of the same
+    counts."""
     strategy_name: str
     realized_pnl: float
+    realized_pnl_net: float = 0.0
     positions_closed: int
     wins: int
     losses: int
+    wins_net: int = 0
+    losses_net: int = 0
     gross_win: float
     gross_loss: float
+    gross_win_net: float = 0.0
+    gross_loss_net: float = 0.0
     deployments_count: int
 
 
@@ -476,6 +515,7 @@ class PnlReportOut(BaseModel):
     period_end: datetime
     label: str              # human-readable period name, e.g. "16 Aug 2026" / "Week of 11 Aug 2026" / "Aug 2026" / "2026" / "All time"
     realized_pnl: float
+    realized_pnl_net: float = 0.0
     positions_closed: int
     wins: int
     losses: int
@@ -484,6 +524,7 @@ class PnlReportOut(BaseModel):
     # period" to compare against, unlike every other period type, which
     # always has one (see aggregate.py's pnl_report).
     prev_realized_pnl: Optional[float] = None
+    prev_realized_pnl_net: Optional[float] = None
     by_strategy: list[PnlStrategyBreakdown]
     by_deployment: list[PnlDeploymentBreakdown]
 

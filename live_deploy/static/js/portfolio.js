@@ -132,7 +132,7 @@ const Portfolio = {
       const g = bySymbol[p.symbol] || (bySymbol[p.symbol] = { deployments: new Set(), netQty: 0, unrealized: 0 });
       g.deployments.add(p.deployment_name);
       g.netQty += p.side === 'long' ? p.qty : -p.qty;
-      g.unrealized += p.unrealized_pnl || 0;
+      g.unrealized += pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net') || 0;
     });
     const rows = Object.entries(bySymbol)
       .sort((a, b) => Math.abs(b[1].unrealized) - Math.abs(a[1].unrealized))
@@ -165,18 +165,23 @@ const Portfolio = {
       el.innerHTML = emptyHtml('No closed positions recorded yet — this fills in once a strategy has actually closed a trade.');
       return;
     }
+    const net = includeCharges();
     const body = rows.map(r => {
-      const decided = r.wins + r.losses;
-      const winRate = decided > 0 ? ((r.wins / decided) * 100).toFixed(1) + '%' : '—';
+      const wins = net ? r.wins_net : r.wins;
+      const losses = net ? r.losses_net : r.losses;
+      const grossWin = net ? r.gross_win_net : r.gross_win;
+      const grossLoss = net ? r.gross_loss_net : r.gross_loss;
+      const decided = wins + losses;
+      const winRate = decided > 0 ? ((wins / decided) * 100).toFixed(1) + '%' : '—';
       // Same profit-factor convention Detail's own Stats tab computes
       // client-side from raw closed-position pnls (see detail.js) --
       // gross_loss is a NEGATIVE sum here, so Math.abs() before dividing.
       let profitFactor;
-      if (r.gross_loss < 0) profitFactor = (r.gross_win / Math.abs(r.gross_loss)).toFixed(2);
-      else profitFactor = r.gross_win > 0 ? '∞' : '—';
+      if (grossLoss < 0) profitFactor = (grossWin / Math.abs(grossLoss)).toFixed(2);
+      else profitFactor = grossWin > 0 ? '∞' : '—';
       return `<tr>
         <td>${escapeHtml(r.strategy_name)}</td>
-        <td class="${pnlClass(r.realized_pnl)}">${fmtSignedMoney(r.realized_pnl)}</td>
+        <td class="${pnlClass(pnlPreferred(r, 'realized_pnl', 'realized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(r, 'realized_pnl', 'realized_pnl_net'))}</td>
         <td>${winRate}</td>
         <td>${profitFactor}</td>
         <td>${r.positions_closed}</td>

@@ -357,14 +357,20 @@ Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
     active: dep.mode !== 'positional',
     started_at: null,
     realized_pnl: 0,
+    realized_pnl_net: 0,
     today_realized_pnl: 0,
+    today_realized_pnl_net: 0,
     unrealized_pnl: 0,
+    unrealized_pnl_net: 0,
     total_pnl: 0,
+    total_pnl_net: 0,
     return_pct: dep.initial_capital ? 0 : null,
+    return_pct_net: dep.initial_capital ? 0 : null,
     open_positions: 0,
     last_action_at: null,
     last_action: null,
     last_cycle_pnl: null,
+    last_cycle_pnl_net: null,
     last_cycle_opened_at: null,
     last_cycle_closed_at: null,
   };
@@ -379,7 +385,9 @@ Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
     const openPositions = positions.filter(p => p.status === 'open');
     const today = dayDigest.find(r => istDateKey(r.period_start) === nowIstDateKey());
     blank.today_realized_pnl = today ? Number(today.realized_pnl || 0) : 0;
+    blank.today_realized_pnl_net = today ? Number(today.realized_pnl_net || 0) : 0;
     blank.unrealized_pnl = openPositions.reduce((s, p) => s + Number(p.unrealized_pnl || 0), 0);
+    blank.unrealized_pnl_net = openPositions.reduce((s, p) => s + Number(p.unrealized_pnl_net || 0), 0);
     blank.open_positions = openPositions.length;
     const latestLot = tradesPage && tradesPage.lots && tradesPage.lots[0];
     if (latestLot) {
@@ -390,7 +398,9 @@ Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
     if (dep.mode !== 'positional') {
       blank.active = true;
       blank.realized_pnl = blank.today_realized_pnl;
+      blank.realized_pnl_net = blank.today_realized_pnl_net;
       blank.total_pnl = blank.realized_pnl + blank.unrealized_pnl;
+      blank.total_pnl_net = blank.realized_pnl_net + blank.unrealized_pnl_net;
       blank.started_at = `${nowIstDateKey()}T00:00:00+05:30`;
     } else {
       const units = groupPositionsIntoUnits(positions, 'position');
@@ -402,31 +412,42 @@ Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
         blank.active = true;
         blank.period_label = openUnits.length > 1 ? `${openUnits.length} active cycles` : 'Current cycle';
         blank.realized_pnl = openUnits.reduce((s, u) => s + Number(u.realized_pnl || 0), 0);
+        blank.realized_pnl_net = openUnits.reduce((s, u) => s + Number(u.realized_pnl_net || 0), 0);
         blank.started_at = openUnits.map(u => u.opened_at).filter(Boolean)
           .sort((a, b) => new Date(a) - new Date(b))[0] || null;
         blank.total_pnl = blank.realized_pnl + blank.unrealized_pnl;
+        blank.total_pnl_net = blank.realized_pnl_net + blank.unrealized_pnl_net;
       } else {
         blank.active = false;
         blank.realized_pnl = 0;
+        blank.realized_pnl_net = 0;
         blank.unrealized_pnl = 0;
+        blank.unrealized_pnl_net = 0;
         blank.total_pnl = 0;
+        blank.total_pnl_net = 0;
         const last = closedUnits[closedUnits.length - 1];
         if (last) {
           blank.last_cycle_pnl = Number(last.realized_pnl || 0);
+          blank.last_cycle_pnl_net = Number(last.realized_pnl_net || 0);
           blank.last_cycle_opened_at = last.opened_at || null;
           blank.last_cycle_closed_at = last.closed_at || null;
         }
       }
     }
     blank.return_pct = dep.initial_capital ? (blank.total_pnl / dep.initial_capital) * 100 : null;
+    blank.return_pct_net = dep.initial_capital ? (blank.total_pnl_net / dep.initial_capital) * 100 : null;
   } catch (e) {
     console.warn('Active summary failed for', dep.deployment_name, e);
     // Fallback to data already present in DeploymentOut so the UI never
     // disappears just because one supplemental endpoint failed.
     blank.unrealized_pnl = Number(dep.unrealized_pnl || 0);
+    blank.unrealized_pnl_net = Number(dep.unrealized_pnl_net || 0);
     blank.total_pnl = dep.mode === 'positional'
       ? blank.unrealized_pnl
       : Number(dep.unrealized_pnl || 0);
+    blank.total_pnl_net = dep.mode === 'positional'
+      ? blank.unrealized_pnl_net
+      : Number(dep.unrealized_pnl_net || 0);
   }
 
   this._activeSummaryCache.set(dep.id, { ts: Date.now(), value: blank });
@@ -446,8 +467,9 @@ Api.enrichDeployments = async function enrichDeployments(deployments, openPositi
     const openByDep = new Map();
     (positions || []).forEach(p => {
       const key = String(p.deployment_id);
-      const current = openByDep.get(key) || { pnl: 0, count: 0 };
+      const current = openByDep.get(key) || { pnl: 0, pnlNet: 0, count: 0 };
       current.pnl += Number(p.unrealized_pnl || 0);
+      current.pnlNet += Number(p.unrealized_pnl_net || 0);
       current.count += 1;
       openByDep.set(key, current);
     });
@@ -455,15 +477,18 @@ Api.enrichDeployments = async function enrichDeployments(deployments, openPositi
       const key = String(dep.id);
       const row = byServer.get(key);
       if (!row) return;
-      const open = openByDep.get(key) || { pnl: 0, count: 0 };
+      const open = openByDep.get(key) || { pnl: 0, pnlNet: 0, count: 0 };
       const summary = {
         ...row,
         deployment_id: dep.id,
         unrealized_pnl: open.pnl,
+        unrealized_pnl_net: open.pnlNet,
         open_positions: open.count,
         total_pnl: Number(row.realized_pnl || 0) + open.pnl,
+        total_pnl_net: Number(row.realized_pnl_net || 0) + open.pnlNet,
       };
       summary.return_pct = dep.initial_capital ? (summary.total_pnl / dep.initial_capital) * 100 : null;
+      summary.return_pct_net = dep.initial_capital ? (summary.total_pnl_net / dep.initial_capital) * 100 : null;
       dep._uxActive = summary;
       this._activeSummaryCache.set(dep.id, { ts: Date.now(), value: summary });
     });
@@ -560,6 +585,35 @@ function fmtDate(iso) {
 
 function pnlClass(n) {
   return (n || 0) >= 0 ? 'pos' : 'neg';
+}
+
+// ── "With brokerage" global toggle ──────────────────────────────────
+// A pure display preference, localStorage-backed (same mechanism as
+// the dark-mode toggle) -- every P&L-bearing API response already
+// carries BOTH a gross figure and its net-of-estimated-charges twin
+// (realized_pnl/realized_pnl_net, unrealized_pnl/unrealized_pnl_net,
+// etc. -- see app/charges.py and positions.estimated_charges on the
+// backend), so there's no extra fetch or server round trip needed to
+// flip this; only which of the two keys a page currently renders.
+// index.html's toggleCharges() (the click handler) re-runs the current
+// view's own load() after flipping this, so every page picks the new
+// preference up on its own next render rather than needing to patch
+// numbers in place.
+function includeCharges() {
+  return localStorage.getItem('includeCharges') === 'true';
+}
+
+// Picks whichever of a P&L-bearing row's two keys the toggle currently
+// prefers to render -- falls back to `grossKey` whenever `netKey` isn't
+// present at all (an older cached shape, or a row type that genuinely
+// has no charges concept), never NaN/undefined. `row` itself may be
+// null/undefined (a stat that hasn't loaded yet) -- returns null, same
+// "not computed" convention every fmt* helper above already treats as
+// "—".
+function pnlPreferred(row, grossKey, netKey) {
+  if (!row) return null;
+  if (includeCharges() && row[netKey] != null) return row[netKey];
+  return row[grossKey] != null ? row[grossKey] : null;
 }
 
 function escapeHtml(s) {
@@ -965,7 +1019,8 @@ function groupPositionsIntoUnits(allPositions, granularity) {
   if (granularity === 'trade') {
     return allPositions.map(p => ({
       opened_at: p.opened_at, closed_at: p.closed_at, status: p.status,
-      realized_pnl: p.realized_pnl || 0, position_ids: [p.id],
+      realized_pnl: p.realized_pnl || 0, realized_pnl_net: p.realized_pnl_net || 0,
+      position_ids: [p.id],
     }));
   }
   const groups = new Map();
@@ -979,6 +1034,10 @@ function groupPositionsIntoUnits(allPositions, granularity) {
     closed_at: rows[0].episode_closed_at,
     status: rows.every(p => p.status === 'closed') ? 'closed' : 'open',
     realized_pnl: rows.reduce((s, p) => s + (p.realized_pnl || 0), 0),
+    // "With brokerage" global toggle twin (see app/charges.py) -- summed
+    // the same way as realized_pnl itself, off each position's own
+    // realized_pnl_net (routers/deployments.py's get_positions).
+    realized_pnl_net: rows.reduce((s, p) => s + (p.realized_pnl_net || 0), 0),
     position_ids: rows.map(p => p.id),
   }));
 }
@@ -990,10 +1049,17 @@ function groupPositionsIntoUnits(allPositions, granularity) {
 // `profitFactor` are null (not 0) when there's no closed history yet
 // to compute them from, same "not computed" convention as every other
 // optional stat in this app — rendered as "—", never a misleading 0%.
+// Internally "with brokerage" toggle-aware (see includeCharges() above)
+// -- every caller (Compare's table, Detail's own equivalent inline
+// computation) automatically reflects the global toggle with no
+// changes needed at the call site, same pattern as window.LivePnl
+// (index.html). Reads each unit's own realized_pnl_net (set by
+// groupPositionsIntoUnits above) when the toggle is on.
 function computeUnitStats(units) {
   const closedUnits = units.filter(u => u.status === 'closed');
   const openUnits = units.filter(u => u.status === 'open');
-  const pnls = closedUnits.map(u => u.realized_pnl).filter(v => v != null);
+  const pnlKey = includeCharges() ? 'realized_pnl_net' : 'realized_pnl';
+  const pnls = closedUnits.map(u => u[pnlKey]).filter(v => v != null);
   const wins = pnls.filter(v => v > 0);
   const grossWin = pnls.filter(v => v > 0).reduce((a, b) => a + b, 0);
   const grossLoss = pnls.filter(v => v < 0).reduce((a, b) => a + b, 0);   // negative
@@ -1207,12 +1273,16 @@ function renderPnlHeatmap(rows, opts = {}) {
     rangeEndPadded = _addDaysToIsoDate(today, 6 - _dayOfWeekIsoDate(today));      // snap forward to this week's Saturday
   }
 
+  // "With brokerage" global toggle (see includeCharges()/pnlPreferred()).
+  const dayPnl = r => Number(pnlPreferred(r, 'realized_pnl', 'realized_pnl_net') || 0);
+
   // Quantile buckets computed ONLY from real, in-range days (never the
   // padding cells either side, which carry no data by construction).
   const gainAbs = [], lossAbs = [];
   for (const [date, r] of byDate.entries()) {
-    if (date < rangeStart || date > today || !r.realized_pnl) continue;
-    (r.realized_pnl > 0 ? gainAbs : lossAbs).push(Math.abs(r.realized_pnl));
+    const pnl = dayPnl(r);
+    if (date < rangeStart || date > today || !pnl) continue;
+    (pnl > 0 ? gainAbs : lossAbs).push(Math.abs(pnl));
   }
   gainAbs.sort((a, b) => a - b);
   lossAbs.sort((a, b) => a - b);
@@ -1232,7 +1302,7 @@ function renderPnlHeatmap(rows, opts = {}) {
     // now handles both mouse hover and touch tap for this same markup.
     let tooltip = `<b>${fmtDate(date)}</b><br>no activity`;
     if (row) {
-      const pnl = row.realized_pnl || 0;
+      const pnl = dayPnl(row);
       if (pnl > 0) { bg = `var(--heat-gain-${_quantileBucket(gainAbs, pnl)})`; winDays++; }
       else if (pnl < 0) { bg = `var(--heat-loss-${_quantileBucket(lossAbs, Math.abs(pnl))})`; lossDays++; }
       totalPnl += pnl;
@@ -1376,7 +1446,13 @@ function renderPnlTrendTable(rows, opts = {}) {
   if (!rows.length) {
     return emptyHtml('No closed positions recorded yet.');
   }
-  const maxAbs = Math.max(...rows.map(r => Math.abs(r.realized_pnl)), 1);
+  // "With brokerage" global toggle (see includeCharges()/pnlPreferred()
+  // above) -- M2M Best/Worst are deliberately left on their own raw
+  // figures: those come from deployment_snapshots (overall portfolio
+  // value swings), not from positions.realized_pnl, so there's no
+  // per-position charge to net out of them.
+  const v = r => Number(pnlPreferred(r, 'realized_pnl', 'realized_pnl_net') || 0);
+  const maxAbs = Math.max(...rows.map(r => Math.abs(v(r))), 1);
   const showMtm = rows.some(r => r.max_profit !== undefined && r.max_profit !== null);
   // Positional mode's rows are one PER EPISODE (every leg/adjustment/
   // roll that overlapped in time, combined -- see _pnlRowPeriodLabel's
@@ -1390,7 +1466,8 @@ function renderPnlTrendTable(rows, opts = {}) {
                   `<th title="${isPositional ? 'This position&#39;s own worst combined mark-to-market standing (every leg and adjustment together), from its own open' : 'This period&#39;s own worst mark-to-market standing, from its own start'}">M2M Worst</th>` : ''}
     </tr></thead>
     <tbody>${rows.map(row => {
-      const pct = (Math.abs(row.realized_pnl) / maxAbs) * 50;   // 50% = half the track, since the bar grows from a CENTER zero-line
+      const pnl = v(row);
+      const pct = (Math.abs(pnl) / maxAbs) * 50;   // 50% = half the track, since the bar grows from a CENTER zero-line
       const decided = row.wins + row.losses;
       const winRate = decided > 0 ? ((row.wins / decided) * 100).toFixed(0) + '%' : '—';
       return `<tr>
@@ -1399,9 +1476,9 @@ function renderPnlTrendTable(rows, opts = {}) {
           <div class="report-row-value">
             <div class="report-bar-track">
               <div class="report-bar-zero"></div>
-              <div class="report-bar-fill ${row.realized_pnl >= 0 ? 'gain' : 'loss'}" style="width:${pct}%"></div>
+              <div class="report-bar-fill ${pnl >= 0 ? 'gain' : 'loss'}" style="width:${pct}%"></div>
             </div>
-            <span class="${pnlClass(row.realized_pnl)}">${fmtSignedMoney(row.realized_pnl)}</span>
+            <span class="${pnlClass(pnl)}">${fmtSignedMoney(pnl)}</span>
           </div>
         </td>
         <td>${row.positions_closed}</td>

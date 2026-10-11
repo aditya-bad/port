@@ -84,16 +84,18 @@ const DEPLOY_COLUMNS = [
   {
     key: 'ux_current_pnl', label: 'Current P&L', numeric: true,
     headerTitle: 'Intraday = Today. Positional = currently active strategic cycle.',
-    sortValue: d => d._uxActive?.total_pnl ?? -Infinity,
+    sortValue: d => pnlPreferred(d._uxActive, 'total_pnl', 'total_pnl_net') ?? -Infinity,
     render: d => {
       const a = d._uxActive;
       if (!a) return '<span class="card-sub">calculating…</span>';
       if (d.mode === 'positional' && !a.active) {
-        return `<span class="ux-current-pnl"><span>—</span><span class="ux-pnl-period">Flat${a.last_cycle_pnl != null ? ` · last ${fmtSignedMoney(a.last_cycle_pnl)}` : ''}</span></span>`;
+        const lastCyclePnl = pnlPreferred(a, 'last_cycle_pnl', 'last_cycle_pnl_net');
+        return `<span class="ux-current-pnl"><span>—</span><span class="ux-pnl-period">Flat${lastCyclePnl != null ? ` · last ${fmtSignedMoney(lastCyclePnl)}` : ''}</span></span>`;
       }
-      return `<span class="ux-current-pnl ${pnlClass(a.total_pnl)}">${fmtSignedMoney(a.total_pnl)}<span class="ux-pnl-period">${escapeHtml(a.period_label)}</span></span>`;
+      const totalPnl = pnlPreferred(a, 'total_pnl', 'total_pnl_net');
+      return `<span class="ux-current-pnl ${pnlClass(totalPnl)}">${fmtSignedMoney(totalPnl)}<span class="ux-pnl-period">${escapeHtml(a.period_label)}</span></span>`;
     },
-    csvValue: d => d._uxActive?.total_pnl ?? '',
+    csvValue: d => pnlPreferred(d._uxActive, 'total_pnl', 'total_pnl_net') ?? '',
     // total(ctx) -- see the tfoot-building comment below on why every
     // numeric column owns its own total function. Deliberately sums
     // over ctx.allRows, not ctx.reportRows -- unlike the legacy
@@ -106,7 +108,7 @@ const DEPLOY_COLUMNS = [
     total: ({ allRows }) => {
       const ready = allRows.filter(d => d._uxActive);
       if (!ready.length) return '';
-      const t = ready.reduce((s, d) => s + (d._uxActive.total_pnl || 0), 0);
+      const t = ready.reduce((s, d) => s + (pnlPreferred(d._uxActive, 'total_pnl', 'total_pnl_net') || 0), 0);
       return `<span class="ux-current-pnl ${pnlClass(t)}">${fmtSignedMoney(t)}</span>`;
     },
   },
@@ -175,10 +177,10 @@ const DEPLOY_COLUMNS = [
   },
   {
     key: 'realized', label: 'Realized', numeric: true,
-    sortValue: d => d.realized_pnl || 0,
-    render: d => `<span class="${pnlClass(d.realized_pnl)}">${fmtSignedMoney(d.realized_pnl)}</span>`,
+    sortValue: d => pnlPreferred(d, 'realized_pnl', 'realized_pnl_net') || 0,
+    render: d => `<span class="${pnlClass(pnlPreferred(d, 'realized_pnl', 'realized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(d, 'realized_pnl', 'realized_pnl_net'))}</span>`,
     total: ({ reportRows }) => {
-      const t = reportRows.reduce((s, d) => s + (d.realized_pnl || 0), 0);
+      const t = reportRows.reduce((s, d) => s + (pnlPreferred(d, 'realized_pnl', 'realized_pnl_net') || 0), 0);
       return `<span class="${pnlClass(t)}">${fmtSignedMoney(t)}</span>`;
     },
   },
@@ -188,15 +190,15 @@ const DEPLOY_COLUMNS = [
     // handler in load() below) -- td gets a `live-pnl` class + the
     // deployment id so that handler can find it again without a
     // re-render.
-    sortValue: d => d.unrealized_pnl || 0,
-    render: d => `<span class="live-pnl ${pnlClass(d.unrealized_pnl)}">${fmtSignedMoney(d.unrealized_pnl)}</span>`,
+    sortValue: d => pnlPreferred(d, 'unrealized_pnl', 'unrealized_pnl_net') || 0,
+    render: d => `<span class="live-pnl ${pnlClass(pnlPreferred(d, 'unrealized_pnl', 'unrealized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(d, 'unrealized_pnl', 'unrealized_pnl_net'))}</span>`,
     total: ({ reportRows }) => {
       // NOT live-ticked itself (a per-render snapshot, same as every
       // other total here) -- unlike the individual `live-pnl` cells,
       // there's no live-total tick handler wired to this footer cell.
       // Accurate as of the last render/refresh, same staleness window
       // the rest of this row's totals already have.
-      const t = reportRows.reduce((s, d) => s + (d.unrealized_pnl || 0), 0);
+      const t = reportRows.reduce((s, d) => s + (pnlPreferred(d, 'unrealized_pnl', 'unrealized_pnl_net') || 0), 0);
       return `<span class="live-pnl-total ${pnlClass(t)}">${fmtSignedMoney(t)}</span>`;
     },
   },
@@ -274,7 +276,7 @@ const Deployments = {
       for (const d of this._filteredRows()) {
         if (!d.include_in_reports) continue;
         const combined = totalPnl(d.id);
-        visibleUnrealized += combined != null ? combined : (d.unrealized_pnl || 0);
+        visibleUnrealized += combined != null ? combined : (pnlPreferred(d, 'unrealized_pnl', 'unrealized_pnl_net') || 0);
         if (combined != null) anyPriced = true;
       }
       if (anyPriced) {

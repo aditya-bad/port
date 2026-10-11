@@ -289,7 +289,7 @@ function _avgHoldMs(r) {
 // -- a risk-profile number, not a scored one (a bigger largest-loss
 // often just reflects bigger position sizing, not a worse edge).
 function _extremePnl(r, which) {
-  const pnls = r.units.filter(u => u.status === 'closed').map(u => u.realized_pnl);
+  const pnls = r.units.filter(u => u.status === 'closed').map(u => pnlPreferred(u, 'realized_pnl', 'realized_pnl_net'));
   if (!pnls.length) return null;
   return which === 'max' ? Math.max(...pnls) : Math.min(...pnls);
 }
@@ -666,7 +666,7 @@ const Compare = {
       const closedByTime = r.units.filter(u => u.status === 'closed')
         .slice().sort((a, b) => new Date(a.closed_at || a.opened_at) - new Date(b.closed_at || b.opened_at));
       const lastThree = closedByTime.slice(-3);
-      if (lastThree.length === 3 && lastThree.every(u => u.realized_pnl <= 0)) {
+      if (lastThree.length === 3 && lastThree.every(u => pnlPreferred(u, 'realized_pnl', 'realized_pnl_net') <= 0)) {
         r.flag = { icon: '⚠️', label: '3-loss streak', cls: 'tag-error', title: 'Its last 3 closed positions were all losses.' };
         return;
       }
@@ -852,7 +852,7 @@ const Compare = {
     lossStreaks.forEach(r => {
       const lastThree = r.units.filter(u => u.status === 'closed')
         .slice().sort((a, b) => new Date(a.closed_at || a.opened_at) - new Date(b.closed_at || b.opened_at)).slice(-3);
-      const total = lastThree.reduce((s, u) => s + u.realized_pnl, 0);
+      const total = lastThree.reduce((s, u) => s + pnlPreferred(u, 'realized_pnl', 'realized_pnl_net'), 0);
       items.push({ cls: 'attn-bad', html:
         `⚠️ <a href="#/deployments/${r.deployment.id}">${escapeHtml(r.deployment.deployment_name)}</a> has lost its last 3 closed positions in a row ` +
         `(${fmtSignedMoney(total)} combined). Worth a closer look — is the strategy or the market regime still working?` });

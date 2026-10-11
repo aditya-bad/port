@@ -62,6 +62,13 @@ def _active_rows(
             and day_start <= r["closed_at"] < day_end
         ]
         today_realized = sum(float(r["realized_pnl"] or 0) for r in today_closed)
+        # Net-of-estimated-charges twins -- the "with brokerage" global
+        # toggle's backing data for this endpoint (see app/charges.py
+        # and positions.estimated_charges; `positions` rows here are
+        # SELECT * so the column is already present on every row).
+        today_realized_net = sum(
+            float(r["realized_pnl"] or 0) - float(r["estimated_charges"] or 0) for r in today_closed
+        )
 
         result: dict[str, Any] = {
             "deployment_id": str(dep_id),
@@ -71,9 +78,12 @@ def _active_rows(
             "active": mode != "positional",
             "started_at": _iso(day_start),
             "realized_pnl": today_realized if mode != "positional" else 0.0,
+            "realized_pnl_net": today_realized_net if mode != "positional" else 0.0,
             "today_realized_pnl": today_realized,
+            "today_realized_pnl_net": today_realized_net,
             "open_positions": len(open_rows),
             "last_cycle_pnl": None,
+            "last_cycle_pnl_net": None,
             "last_cycle_opened_at": None,
             "last_cycle_closed_at": None,
             "last_action_at": None,
@@ -98,6 +108,10 @@ def _active_rows(
                     float(row["realized_pnl"] or 0)
                     for ep in open_episodes for row in ep["rows"]
                 )
+                result["realized_pnl_net"] = sum(
+                    float(row["realized_pnl"] or 0) - float(row["estimated_charges"] or 0)
+                    for ep in open_episodes for row in ep["rows"]
+                )
             else:
                 result["active"] = False
                 result["started_at"] = None
@@ -105,6 +119,9 @@ def _active_rows(
                 if closed:
                     last = max(closed, key=lambda ep: ep["end"])
                     result["last_cycle_pnl"] = sum(float(r["realized_pnl"] or 0) for r in last["rows"])
+                    result["last_cycle_pnl_net"] = sum(
+                        float(r["realized_pnl"] or 0) - float(r["estimated_charges"] or 0) for r in last["rows"]
+                    )
                     result["last_cycle_opened_at"] = _iso(last["start"])
                     result["last_cycle_closed_at"] = _iso(last["end"])
 

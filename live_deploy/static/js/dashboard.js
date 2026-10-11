@@ -201,8 +201,8 @@ const Dashboard = {
     // exclusion load() already applied to positions/trades above, kept
     // consistent here for the KPI card and breakdown list.
     const live = deployments.filter(d => d.status !== 'stopped' && d.include_in_reports);
-    const totalRealized = live.reduce((s, d) => s + (d.realized_pnl || 0), 0);
-    const totalUnrealized = live.reduce((s, d) => s + (d.unrealized_pnl || 0), 0);
+    const totalRealized = live.reduce((s, d) => s + (pnlPreferred(d, 'realized_pnl', 'realized_pnl_net') || 0), 0);
+    const totalUnrealized = live.reduce((s, d) => s + (pnlPreferred(d, 'unrealized_pnl', 'unrealized_pnl_net') || 0), 0);
     const total = totalRealized + totalUnrealized;
 
     const counts = { active: 0, paused: 0, stopped: 0 };
@@ -214,8 +214,8 @@ const Dashboard = {
     // update in place (see load()'s live callback below); the ranking
     // itself only changes on the next real reload.
     const breakdownList = live
-      .map(d => ({ id: d.id, name: d.deployment_name, realized: d.realized_pnl || 0,
-                   pnl: (d.realized_pnl || 0) + (d.unrealized_pnl || 0) }))
+      .map(d => ({ id: d.id, name: d.deployment_name, realized: pnlPreferred(d, 'realized_pnl', 'realized_pnl_net') || 0,
+                   pnl: (pnlPreferred(d, 'realized_pnl', 'realized_pnl_net') || 0) + (pnlPreferred(d, 'unrealized_pnl', 'unrealized_pnl_net') || 0) }))
       .sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl))
       .slice(0, 6);
     const breakdown = breakdownList
@@ -279,7 +279,7 @@ const Dashboard = {
         <td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td>
         <td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td>
         <td class="live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
-        <td class="live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
+        <td class="live-pnl ${pnlClass(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net'))}">${p.unrealized_pnl != null ? fmtSignedMoney(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net')) : '—'}</td>
       </tr>`).join('')}</tbody></table>
       </div>
     `;
@@ -373,14 +373,14 @@ const Dashboard = {
       const live = deployments.filter(d => d.status !== 'stopped');
       const activeSummaries = live.map(d => d._uxActive).filter(Boolean);
 
-      const activePnl = activeSummaries.reduce((s, a) => s + Number(a.total_pnl || 0), 0);
-      const todayRealized = deployments.reduce((s, d) => s + Number(d._uxActive?.today_realized_pnl || 0), 0);
+      const activePnl = activeSummaries.reduce((s, a) => s + Number(pnlPreferred(a, 'total_pnl', 'total_pnl_net') || 0), 0);
+      const todayRealized = deployments.reduce((s, d) => s + Number(pnlPreferred(d._uxActive, 'today_realized_pnl', 'today_realized_pnl_net') || 0), 0);
       // How many deployments actually CONTRIBUTED to that total -- not
       // simply every deployment that exists, which would read as "N
       // deployments realized this today" when most of them may have
       // closed nothing at all today.
-      const todayRealizedDepCount = deployments.filter(d => Number(d._uxActive?.today_realized_pnl || 0) !== 0).length;
-      const openUnrealized = openPositions.reduce((s, p) => s + Number(p.unrealized_pnl || 0), 0);
+      const todayRealizedDepCount = deployments.filter(d => Number(pnlPreferred(d._uxActive, 'today_realized_pnl', 'today_realized_pnl_net') || 0) !== 0).length;
+      const openUnrealized = openPositions.reduce((s, p) => s + Number(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net') || 0), 0);
       const totalCapital = live.reduce((s, d) => s + Number(d.initial_capital || 0), 0);
       // "Capital at work" = the value actually tied up in currently
       // OPEN positions -- exactly what deployments.js's own "Open Cost"
@@ -399,8 +399,8 @@ const Dashboard = {
       // currently deployed."
       const capitalAtWork = live.reduce((s, d) => s + Math.abs(Number(d.open_cost_basis || 0)), 0);
       const capitalPct = totalCapital ? (capitalAtWork / totalCapital) * 100 : 0;
-      const activeIntraday = activeSummaries.filter(a => a.mode !== 'positional').reduce((s, a) => s + Number(a.total_pnl || 0), 0);
-      const activeCycles = activeSummaries.filter(a => a.mode === 'positional' && a.active).reduce((s, a) => s + Number(a.total_pnl || 0), 0);
+      const activeIntraday = activeSummaries.filter(a => a.mode !== 'positional').reduce((s, a) => s + Number(pnlPreferred(a, 'total_pnl', 'total_pnl_net') || 0), 0);
+      const activeCycles = activeSummaries.filter(a => a.mode === 'positional' && a.active).reduce((s, a) => s + Number(pnlPreferred(a, 'total_pnl', 'total_pnl_net') || 0), 0);
 
       const positionsByDep = {};
       openPositions.forEach(p => { (positionsByDep[p.deployment_id] ||= []).push(p); });
@@ -483,7 +483,7 @@ const Dashboard = {
       this.setupCustomize();
 
       if (window.LivePnl && openPositions.length) {
-        const realizedByDep = new Map(activeSummaries.map(s => [s.deployment_id, Number(s.realized_pnl || 0)]));
+        const realizedByDep = new Map(activeSummaries.map(s => [s.deployment_id, Number(pnlPreferred(s, 'realized_pnl', 'realized_pnl_net') || 0)]));
         const activePositional = new Set(activeSummaries.filter(s => s.mode === 'positional' && s.active).map(s => s.deployment_id));
         const intradayIds = new Set(activeSummaries.filter(s => s.mode !== 'positional').map(s => s.deployment_id));
         this._operationalLiveHandler = window.LivePnl.track(openPositions, ({ pnlFor, priceFor, totalPnl }) => {
@@ -494,10 +494,10 @@ const Dashboard = {
             const open = totalPnl(d.id);
             const realized = realizedByDep.get(d.id) || 0;
             if (intradayIds.has(d.id)) {
-              const v = realized + (open == null ? Number(d._uxActive?.unrealized_pnl || 0) : open);
+              const v = realized + (open == null ? Number(pnlPreferred(d._uxActive, 'unrealized_pnl', 'unrealized_pnl_net') || 0) : open);
               activeLive += v; intradayLive += v;
             } else if (activePositional.has(d.id)) {
-              const v = realized + (open == null ? Number(d._uxActive?.unrealized_pnl || 0) : open);
+              const v = realized + (open == null ? Number(pnlPreferred(d._uxActive, 'unrealized_pnl', 'unrealized_pnl_net') || 0) : open);
               activeLive += v; cycleLive += v;
             }
           });
@@ -541,7 +541,7 @@ const Dashboard = {
         <td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td>
         <td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td>
         <td class="ux-live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td>
-        <td class="ux-live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td>
+        <td class="ux-live-pnl ${pnlClass(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net'))}">${p.unrealized_pnl != null ? fmtSignedMoney(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net')) : '—'}</td>
       </tr>`;
     }).join('')}</tbody></table></div>`;
   },
@@ -555,9 +555,9 @@ const Dashboard = {
       <div class="table-wrap"><table><thead><tr><th>Deployment</th><th>Period</th><th>Realized</th><th>Open</th><th>Total</th></tr></thead><tbody>
       ${rows.map(({ d, s }) => `<tr class="ux-row-navigate" onclick="location.hash='#/deployments/${d.id}/overview'; UIKit.closeDrawer();">
         <td>${escapeHtml(d.deployment_name)}</td><td>${escapeHtml(s.period_label)}</td>
-        <td class="${pnlClass(s.realized_pnl)}">${fmtSignedMoney(s.realized_pnl)}</td>
-        <td class="${pnlClass(s.unrealized_pnl)}">${fmtSignedMoney(s.unrealized_pnl)}</td>
-        <td class="${pnlClass(s.total_pnl)}"><b>${fmtSignedMoney(s.total_pnl)}</b></td>
+        <td class="${pnlClass(pnlPreferred(s, 'realized_pnl', 'realized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(s, 'realized_pnl', 'realized_pnl_net'))}</td>
+        <td class="${pnlClass(pnlPreferred(s, 'unrealized_pnl', 'unrealized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(s, 'unrealized_pnl', 'unrealized_pnl_net'))}</td>
+        <td class="${pnlClass(pnlPreferred(s, 'total_pnl', 'total_pnl_net'))}"><b>${fmtSignedMoney(pnlPreferred(s, 'total_pnl', 'total_pnl_net'))}</b></td>
       </tr>`).join('')}</tbody></table></div>`);
     UIKit.enhanceTablesSoon();
   },

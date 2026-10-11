@@ -91,10 +91,11 @@ const Reports = {
     if (!target) return;
     try {
       const report = await Api.getPnlReport(this._period, this._offset);
-      const rows = (report.by_strategy || []).slice().sort((a, b) => Math.abs(Number(b.realized_pnl || 0)) - Math.abs(Number(a.realized_pnl || 0)));
+      const v = r => Number(pnlPreferred(r, 'realized_pnl', 'realized_pnl_net') || 0);
+      const rows = (report.by_strategy || []).slice().sort((a, b) => Math.abs(v(b)) - Math.abs(v(a)));
       if (!rows.length) return;
-      const maxAbs = Math.max(...rows.map(r => Math.abs(Number(r.realized_pnl || 0))), 1);
-      const visual = `<div class="ux-report-contrib"><div class="ux-card-head"><strong>P&amp;L contribution</strong><span class="card-sub">Visual first; exact table below</span></div><div class="ux-bar-list">${rows.map(r => `<div class="ux-bar-row"><span>${escapeHtml(r.strategy_name)}</span><div class="ux-bar-track"><div class="ux-bar-fill ${Number(r.realized_pnl || 0) < 0 ? 'neg' : ''}" style="width:${Math.abs(Number(r.realized_pnl || 0)) / maxAbs * 100}%"></div></div><b class="${pnlClass(r.realized_pnl)}">${fmtSignedMoney(r.realized_pnl)}</b></div>`).join('')}</div></div>`;
+      const maxAbs = Math.max(...rows.map(r => Math.abs(v(r))), 1);
+      const visual = `<div class="ux-report-contrib"><div class="ux-card-head"><strong>P&amp;L contribution</strong><span class="card-sub">Visual first; exact table below</span></div><div class="ux-bar-list">${rows.map(r => `<div class="ux-bar-row"><span>${escapeHtml(r.strategy_name)}</span><div class="ux-bar-track"><div class="ux-bar-fill ${v(r) < 0 ? 'neg' : ''}" style="width:${Math.abs(v(r)) / maxAbs * 100}%"></div></div><b class="${pnlClass(v(r))}">${fmtSignedMoney(v(r))}</b></div>`).join('')}</div></div>`;
       target.insertAdjacentHTML('afterbegin', visual);
     } catch (e) { console.warn('Report contribution chart failed', e); }
   },
@@ -190,20 +191,22 @@ const Reports = {
 
   renderStats(r) {
     const el = document.getElementById('reportsStats');
+    const realizedPnl = pnlPreferred(r, 'realized_pnl', 'realized_pnl_net');
+    const prevRealizedPnl = includeCharges() ? r.prev_realized_pnl_net : r.prev_realized_pnl;
     // prev_realized_pnl is null only for period="all" -- there is no
     // "previous all-time period" to diff against (see aggregate.py's
     // pnl_report), so the delta row shows a plain note there instead
     // of a nonsensical "vs previous period" comparison.
-    const hasPrev = r.prev_realized_pnl !== null && r.prev_realized_pnl !== undefined;
-    const delta = hasPrev ? r.realized_pnl - r.prev_realized_pnl : null;
-    const deltaPct = hasPrev && r.prev_realized_pnl !== 0 ? (delta / Math.abs(r.prev_realized_pnl)) * 100 : null;
+    const hasPrev = prevRealizedPnl !== null && prevRealizedPnl !== undefined;
+    const delta = hasPrev ? realizedPnl - prevRealizedPnl : null;
+    const deltaPct = hasPrev && prevRealizedPnl !== 0 ? (delta / Math.abs(prevRealizedPnl)) * 100 : null;
     const totalDecided = r.wins + r.losses;
     const winRate = totalDecided > 0 ? (r.wins / totalDecided) * 100 : 0;
 
     el.innerHTML = `
       <div class="stat-card">
         <div class="stat-label">Realized P&amp;L</div>
-        <div class="stat-value ${pnlClass(r.realized_pnl)}">${fmtSignedMoney(r.realized_pnl)}</div>
+        <div class="stat-value ${pnlClass(realizedPnl)}">${fmtSignedMoney(realizedPnl)}</div>
         <div class="report-delta ${hasPrev ? pnlClass(delta) : ''}">
           ${hasPrev
             ? `${delta >= 0 ? '▲' : '▼'} ${fmtSignedMoney(delta)}${deltaPct !== null ? ` (${deltaPct >= 0 ? '+' : ''}${deltaPct.toFixed(1)}%)` : ''} <span style="color:var(--parchment); font-weight:500;">vs previous period</span>`
@@ -237,7 +240,8 @@ const Reports = {
       el.innerHTML = emptyHtml('No positions closed by any strategy in this period.');
       return;
     }
-    const total = r.by_strategy.reduce((s, row) => s + Math.abs(row.realized_pnl), 0) || 1;
+    const v = row => Number(pnlPreferred(row, 'realized_pnl', 'realized_pnl_net') || 0);
+    const total = r.by_strategy.reduce((s, row) => s + Math.abs(v(row)), 0) || 1;
     el.innerHTML = `
       <div class="table-wrap">
       <table><thead><tr>
@@ -245,8 +249,8 @@ const Reports = {
       </tr></thead>
       <tbody>${r.by_strategy.map(row => `<tr class="clickable-row ${this._strategyFilter === row.strategy_name ? 'active-row' : ''}" data-strategy="${escapeHtml(row.strategy_name)}" tabindex="0" onclick="Reports.filterByStrategy('${escapeHtml(row.strategy_name)}')" title="Filter By Deployment to this strategy">
         <td>${escapeHtml(row.strategy_name)}</td>
-        <td class="${pnlClass(row.realized_pnl)}">${fmtSignedMoney(row.realized_pnl)}</td>
-        <td>${((Math.abs(row.realized_pnl) / total) * 100).toFixed(1)}%</td>
+        <td class="${pnlClass(v(row))}">${fmtSignedMoney(v(row))}</td>
+        <td>${((Math.abs(v(row)) / total) * 100).toFixed(1)}%</td>
         <td>${row.positions_closed}</td>
       </tr>`).join('')}</tbody></table>
       </div>
@@ -343,7 +347,7 @@ const Reports = {
         <td>${escapeHtml(row.deployment_name)}</td>
         <td><span class="tag tag-info">${escapeHtml(this._depModeById[row.deployment_id] || '—')}</span></td>
         <td>${escapeHtml(row.strategy_name)}</td>
-        <td class="${pnlClass(row.realized_pnl)}">${fmtSignedMoney(row.realized_pnl)}</td>
+        <td class="${pnlClass(pnlPreferred(row, 'realized_pnl', 'realized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(row, 'realized_pnl', 'realized_pnl_net'))}</td>
         <td>${row.positions_closed}</td>
       </tr>`).join('')}</tbody></table>
       </div>
@@ -405,6 +409,11 @@ const Reports = {
     const csv = toCsv(this._trendRows, [
       { key: row => this._periodLabel(row.period_start), label: 'Period' },
       { key: 'realized_pnl', label: 'Realized PnL' },
+      // Both figures always, regardless of the toggle's current state --
+      // an export is a record someone may read later, outside this
+      // page's own context, so "whichever one was selected when I
+      // clicked Export" would be a silent, easy-to-miss ambiguity.
+      { key: 'realized_pnl_net', label: 'Realized PnL (with brokerage)' },
       { key: 'positions_closed', label: 'Positions Closed' },
       { key: 'wins', label: 'Wins' },
       { key: 'losses', label: 'Losses' },

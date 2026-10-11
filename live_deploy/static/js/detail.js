@@ -159,11 +159,11 @@ const Detail = {
         Api.getTrades(dep.id, 8).catch(() => ({ lots: [] })),
       ]);
       dep._uxActive = summary;
-      const totalPnl = Number(dep.realized_pnl || 0) + Number(dep.unrealized_pnl || 0);
+      const totalPnl = Number(pnlPreferred(dep, 'realized_pnl', 'realized_pnl_net') || 0) + Number(pnlPreferred(dep, 'unrealized_pnl', 'unrealized_pnl_net') || 0);
       const totalReturn = dep.initial_capital ? (totalPnl / dep.initial_capital) * 100 : null;
       const units = groupPositionsIntoUnits(allPositions, 'position');
       const closed = units.filter(u => u.status === 'closed');
-      const pnls = closed.map(u => Number(u.realized_pnl || 0));
+      const pnls = closed.map(u => Number(pnlPreferred(u, 'realized_pnl', 'realized_pnl_net') || 0));
       const wins = pnls.filter(v => v > 0);
       const losses = pnls.filter(v => v <= 0);
       const winRate = pnls.length ? wins.length / pnls.length * 100 : null;
@@ -177,23 +177,23 @@ const Detail = {
         <div class="ux-detail-summary-grid">
           <div class="ux-detail-summary-card">
             <div class="label">${dep.mode === 'positional' ? 'Current cycle' : "Today's P&L"}</div>
-            <div class="value ${pnlClass(summary.total_pnl)}" id="uxDetailActivePnl">${dep.mode === 'positional' && !summary.active ? 'Flat' : fmtSignedMoney(summary.total_pnl)}</div>
+            <div class="value ${pnlClass(pnlPreferred(summary, 'total_pnl', 'total_pnl_net'))}" id="uxDetailActivePnl">${dep.mode === 'positional' && !summary.active ? 'Flat' : fmtSignedMoney(pnlPreferred(summary, 'total_pnl', 'total_pnl_net'))}</div>
             ${dep.mode === 'positional' && !summary.active
-              ? `<div class="row"><span>Last cycle</span><b class="${pnlClass(summary.last_cycle_pnl)}">${summary.last_cycle_pnl == null ? '—' : fmtSignedMoney(summary.last_cycle_pnl)}</b></div>`
-              : `<div class="row"><span>Realized</span><b class="${pnlClass(summary.realized_pnl)}">${fmtSignedMoney(summary.realized_pnl)}</b></div><div class="row"><span>Open</span><b class="${pnlClass(summary.unrealized_pnl)}" id="uxDetailOpenPnl">${fmtSignedMoney(summary.unrealized_pnl)}</b></div>`}
+              ? `<div class="row"><span>Last cycle</span><b class="${pnlClass(pnlPreferred(summary, 'last_cycle_pnl', 'last_cycle_pnl_net'))}">${summary.last_cycle_pnl == null ? '—' : fmtSignedMoney(pnlPreferred(summary, 'last_cycle_pnl', 'last_cycle_pnl_net'))}</b></div>`
+              : `<div class="row"><span>Realized</span><b class="${pnlClass(pnlPreferred(summary, 'realized_pnl', 'realized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(summary, 'realized_pnl', 'realized_pnl_net'))}</b></div><div class="row"><span>Open</span><b class="${pnlClass(pnlPreferred(summary, 'unrealized_pnl', 'unrealized_pnl_net'))}" id="uxDetailOpenPnl">${fmtSignedMoney(pnlPreferred(summary, 'unrealized_pnl', 'unrealized_pnl_net'))}</b></div>`}
             <div class="row"><span>${summary.started_at ? `Started ${humanAgo(summary.started_at)}` : 'Open positions'}</span><b>${summary.open_positions}</b></div>
           </div>
           <div class="ux-detail-summary-card">
             <div class="label">Total return</div>
             <div class="value ${pnlClass(totalPnl)}">${fmtSignedMoney(totalPnl)}</div>
             <div class="row"><span>Return</span><b class="${pnlClass(totalReturn)}">${totalReturn == null ? '—' : `${totalReturn >= 0 ? '+' : ''}${totalReturn.toFixed(2)}%`}</b></div>
-            <div class="row"><span>Realized all-time</span><b class="${pnlClass(dep.realized_pnl)}">${fmtSignedMoney(dep.realized_pnl)}</b></div>
+            <div class="row"><span>Realized all-time</span><b class="${pnlClass(pnlPreferred(dep, 'realized_pnl', 'realized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(dep, 'realized_pnl', 'realized_pnl_net'))}</b></div>
             <div class="row"><span>Initial capital</span><b>${fmtMoney(dep.initial_capital)}</b></div>
           </div>
           <div class="ux-detail-summary-card">
             <div class="label">Open positions</div>
             <div class="value">${openPositions.length}</div>
-            <div class="row"><span>Live unrealized</span><b class="${pnlClass(summary.unrealized_pnl)}">${fmtSignedMoney(summary.unrealized_pnl)}</b></div>
+            <div class="row"><span>Live unrealized</span><b class="${pnlClass(pnlPreferred(summary, 'unrealized_pnl', 'unrealized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(summary, 'unrealized_pnl', 'unrealized_pnl_net'))}</b></div>
             <div class="row"><span>Cash</span><b>${fmtMoney(dep.current_cash)}</b></div>
             <div class="row"><span>Analytics</span><b>${dep.include_in_reports ? 'Included' : 'Excluded'}</b></div>
           </div>
@@ -202,7 +202,7 @@ const Detail = {
         ${openPositions.length ? `<section class="ux-section">
           <div class="ux-section-head"><h2>${dep.mode === 'positional' ? 'Current position / cycle' : "Today's open positions"}</h2><span class="card-sub">Live from existing tick SSE</span></div>
           ${this.positionsTable(openPositions)}
-        </section>` : `<section class="ux-section"><div class="ux-section-head"><h2>Current position</h2></div><div class="empty">Flat right now${summary.last_cycle_pnl != null ? ` · last cycle ${fmtSignedMoney(summary.last_cycle_pnl)}` : ''}</div></section>`}
+        </section>` : `<section class="ux-section"><div class="ux-section-head"><h2>Current position</h2></div><div class="empty">Flat right now${summary.last_cycle_pnl != null ? ` · last cycle ${fmtSignedMoney(pnlPreferred(summary, 'last_cycle_pnl', 'last_cycle_pnl_net'))}` : ''}</div></section>`}
 
         ${status?.fields?.length ? `<section class="ux-section">
           <div class="ux-section-head"><h2>Live strategy state</h2>${status.source === 'persisted' ? '<span class="tag tag-warn">as of last checkpoint</span>' : '<span class="tag tag-active">live</span>'}</div>
@@ -231,7 +231,7 @@ const Detail = {
           const open = totalPnl();
           if (open != null) {
             UIKit.setLiveMoney('uxDetailOpenPnl', open);
-            UIKit.setLiveMoney('uxDetailActivePnl', Number(summary.realized_pnl || 0) + open);
+            UIKit.setLiveMoney('uxDetailActivePnl', Number(pnlPreferred(summary, 'realized_pnl', 'realized_pnl_net') || 0) + open);
             // Same combined total the two KPI cards above just used --
             // keeps the positions table's own totals row live-ticking
             // in step with them, not frozen at whatever it showed on
@@ -276,10 +276,10 @@ const Detail = {
     // Unrealized column total both already follow: never fabricate a
     // 0 for "no data", show — instead).
     const known = rows.filter(p => p.unrealized_pnl != null);
-    const total = known.length ? known.reduce((s, p) => s + (p.unrealized_pnl || 0), 0) : null;
+    const total = known.length ? known.reduce((s, p) => s + (pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net') || 0), 0) : null;
     return `<div class="table-wrap"><table>
       <thead><tr>${cols.map(k => `<th data-ux-col-key="${k}">${labels[k]}</th>`).join('')}</tr></thead>
-      <tbody>${rows.map(p => `<tr data-ux-position-id="${p.id}"><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td><td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td><td class="ux-live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td><td class="ux-live-pnl ${pnlClass(p.unrealized_pnl)}">${p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—'}</td><td>${fmtDateTime(p.opened_at)}</td></tr>`).join('')}</tbody>
+      <tbody>${rows.map(p => `<tr data-ux-position-id="${p.id}"><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td><td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td><td class="ux-live-price">${p.current_price != null ? fmtNum(p.current_price) : '—'}</td><td class="ux-live-pnl ${pnlClass(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net'))}">${p.unrealized_pnl != null ? fmtSignedMoney(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net')) : '—'}</td><td>${fmtDateTime(p.opened_at)}</td></tr>`).join('')}</tbody>
       <tfoot><tr class="positions-total-row">
         <td data-ux-col-key="symbol"><b>Total</b></td>
         <td data-ux-col-key="side"></td>
@@ -387,7 +387,7 @@ const Detail = {
       const lastLot = lots[lots.length - 1];
       const reason = (lastLot && lastLot.reason) || '(no reason recorded)';
       if (!pnlByReason[reason]) pnlByReason[reason] = { pnl: 0, count: 0 };
-      pnlByReason[reason].pnl += u.realized_pnl;
+      pnlByReason[reason].pnl += pnlPreferred(u, 'realized_pnl', 'realized_pnl_net');
       pnlByReason[reason].count += 1;
     });
     const pnlBreakdown = Object.entries(pnlByReason).sort((a, b) => b[1].pnl - a[1].pnl);
@@ -402,7 +402,7 @@ const Detail = {
     // -- from each CLOSED unit's own realized_pnl (already netted,
     // whether that unit is one leg or several combined). Same
     // <=0-counts-as-a-loss convention the old backend build_report used.
-    const pnls = closedUnits.map(u => u.realized_pnl).filter(v => v != null);
+    const pnls = closedUnits.map(u => pnlPreferred(u, 'realized_pnl', 'realized_pnl_net')).filter(v => v != null);
     const wins = pnls.filter(v => v > 0);
     const losses = pnls.filter(v => v <= 0);
     const winRatePct = pnls.length ? (wins.length / pnls.length) * 100 : 0;
@@ -418,7 +418,7 @@ const Detail = {
     // all-time" row and the Monthly Performance matrix below (which sums
     // raw `positions.realized_pnl` with no unit grouping at all) both
     // already agree on -- this card needs to agree with them too.
-    const totalRealizedPnl = this._dep.realized_pnl || 0;
+    const totalRealizedPnl = pnlPreferred(this._dep, 'realized_pnl', 'realized_pnl_net') || 0;
     const grossWin = pnls.filter(v => v > 0).reduce((a, b) => a + b, 0);
     const grossLoss = pnls.filter(v => v < 0).reduce((a, b) => a + b, 0);   // negative
     const profitFactor = grossLoss < 0 ? grossWin / Math.abs(grossLoss) : (grossWin > 0 ? Infinity : null);
@@ -428,9 +428,11 @@ const Detail = {
     // Total return -- realized + unrealized against the FIXED
     // initial_capital reference (same "capital, not compounding cash"
     // basis several strategies themselves size against — see e.g.
-    // strangle_monthly_v2's Section 3/4). Deployment-wide, unaffected
-    // by the toggle either way.
-    const totalPnl = (this._dep.realized_pnl || 0) + (this._dep.unrealized_pnl || 0);
+    // strangle_monthly_v2's Section 3/4). Deployment-wide, unaffected by
+    // the PER-TRADE/PER-POSITION granularity toggle (this._statsGranularity)
+    // either way -- it IS affected by the "with brokerage" toggle, like
+    // every other P&L figure on this page.
+    const totalPnl = (pnlPreferred(this._dep, 'realized_pnl', 'realized_pnl_net') || 0) + (pnlPreferred(this._dep, 'unrealized_pnl', 'unrealized_pnl_net') || 0);
     const totalReturnPct = this._dep.initial_capital ? (totalPnl / this._dep.initial_capital) * 100 : null;
 
     const unitWord = this._statsGranularity === 'trade' ? 'trade' : 'position';
@@ -832,7 +834,7 @@ const Detail = {
 
     const bodyRows = years.map(year => {
       const monthRows = rowsByYear.get(year);
-      const totalPnl = monthRows.reduce((s, r) => s + Number(r?.realized_pnl || 0), 0);
+      const totalPnl = monthRows.reduce((s, r) => s + Number(pnlPreferred(r, 'realized_pnl', 'realized_pnl_net') || 0), 0);
       const totalPct = dep.initial_capital ? totalPnl / dep.initial_capital * 100 : 0;
       const yearPoints = snapshots.filter(s => Number(istDateKey(s.snapshot_at).slice(0, 4)) === year);
       const dd = this.computeDrawdownDetails(yearPoints, dep.initial_capital);
@@ -842,7 +844,7 @@ const Detail = {
           const future = year > nowYear || (year === nowYear && monthIndex > nowMonth);
           return `<td class="${future ? 'future' : 'zero'}">—</td>`;
         }
-        const pnl = Number(r.realized_pnl || 0);
+        const pnl = Number(pnlPreferred(r, 'realized_pnl', 'realized_pnl_net') || 0);
         const pct = dep.initial_capital ? pnl / dep.initial_capital * 100 : 0;
         const value = mode === 'percent' ? pct : pnl;
         const cls = value > 0 ? 'pos' : value < 0 ? 'neg' : 'zero';
@@ -894,7 +896,7 @@ const Detail = {
   },
 
   renderPnlDistribution(units) {
-    const vals = units.filter(u => u.status === 'closed').map(u => Number(u.realized_pnl || 0));
+    const vals = units.filter(u => u.status === 'closed').map(u => Number(pnlPreferred(u, 'realized_pnl', 'realized_pnl_net') || 0));
     if (vals.length < 2) return '';
     const min = Math.min(...vals), max = Math.max(...vals);
     const bins = Math.min(9, Math.max(5, Math.ceil(Math.sqrt(vals.length))));
@@ -1033,7 +1035,7 @@ const Detail = {
       const lots = u.position_ids.flatMap(id => lotsByPosition[id] || []).slice().sort((a, b) => new Date(a.executed_at) - new Date(b.executed_at));
       const reason = lots[lots.length - 1]?.reason || '(no reason recorded)';
       const entry = byReason[reason] ||= { pnl: 0, count: 0 };
-      entry.pnl += Number(u.realized_pnl || 0); entry.count++;
+      entry.pnl += Number(pnlPreferred(u, 'realized_pnl', 'realized_pnl_net') || 0); entry.count++;
     });
     const rows = Object.entries(byReason).sort((a, b) => Math.abs(b[1].pnl) - Math.abs(a[1].pnl));
     if (!rows.length) return '';
@@ -1135,8 +1137,8 @@ const Detail = {
       // table -- see the live-tracking wiring below.
       const knownOpen = openLegs.filter(p => p.unrealized_pnl != null);
       const unrealizedKnown = knownOpen.length === openLegs.length;
-      const unrealized = knownOpen.reduce((s, p) => s + Number(p.unrealized_pnl), 0);
-      const total = unrealizedKnown ? Number(u.realized_pnl || 0) + unrealized : null;
+      const unrealized = knownOpen.reduce((s, p) => s + Number(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net')), 0);
+      const total = unrealizedKnown ? Number(pnlPreferred(u, 'realized_pnl', 'realized_pnl_net') || 0) + unrealized : null;
       // "View period report" only for a CLOSED cycle -- an open one
       // hasn't settled into any report period's realized-P&L number yet
       // (Reports is realized-P&L-only, see reports.js's own module
@@ -1154,7 +1156,7 @@ const Detail = {
           <span class="tag tag-${u.status === 'open' ? 'active' : 'stopped'}">${u.status}</span>
           <b class="ux-cycle-total ${total != null ? pnlClass(total) : ''}" data-ux-cycle-index="${i}">${total != null ? fmtSignedMoney(total) : '—'}</b>
         </div>
-        <div class="ux-cycle-body"><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Open Qty</th><th>Entry Price</th><th>Exit Price</th><th>Total Qty</th><th>Price</th><th>Unrealized</th><th>Realized</th><th>Status</th></tr></thead><tbody>${ps.map(p => `<tr data-ux-position-id="${p.id}"><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td><td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td><td class="ux-live-price">${p.status === 'open' ? (p.current_price != null ? fmtNum(p.current_price) : '—') : '—'}</td><td class="ux-live-pnl ${p.status === 'open' && p.unrealized_pnl != null ? pnlClass(p.unrealized_pnl) : ''}">${p.status === 'open' ? (p.unrealized_pnl != null ? fmtSignedMoney(p.unrealized_pnl) : '—') : '—'}</td><td class="${pnlClass(p.realized_pnl)}">${fmtSignedMoney(p.realized_pnl)}</td><td>${escapeHtml(p.status)}</td></tr>`).join('')}</tbody></table></div></div>
+        <div class="ux-cycle-body"><div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Open Qty</th><th>Entry Price</th><th>Exit Price</th><th>Total Qty</th><th>Price</th><th>Unrealized</th><th>Realized</th><th>Status</th></tr></thead><tbody>${ps.map(p => `<tr data-ux-position-id="${p.id}"><td>${escapeHtml(p.symbol)}</td><td>${escapeHtml(p.side)}</td><td>${fmtNum(p.qty)}</td><td>${fmtNum(p.avg_entry_price)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price) : '—'}</td><td>${fmtNum(p.total_qty != null ? p.total_qty : p.qty)}</td><td class="ux-live-price">${p.status === 'open' ? (p.current_price != null ? fmtNum(p.current_price) : '—') : '—'}</td><td class="ux-live-pnl ${p.status === 'open' && p.unrealized_pnl != null ? pnlClass(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net')) : ''}">${p.status === 'open' ? (p.unrealized_pnl != null ? fmtSignedMoney(pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net')) : '—') : '—'}</td><td class="${pnlClass(pnlPreferred(p, 'realized_pnl', 'realized_pnl_net'))}">${fmtSignedMoney(pnlPreferred(p, 'realized_pnl', 'realized_pnl_net'))}</td><td>${escapeHtml(p.status)}</td></tr>`).join('')}</tbody></table></div></div>
       </div>`;
     }).join('');
 
@@ -1182,9 +1184,9 @@ const Detail = {
           const ps = (u.position_ids || []).map(id => byId.get(id)).filter(Boolean);
           const openLegs = ps.filter(p => p.status === 'open');
           if (!openLegs.length) return;   // fully-closed cycle's total never changes live
-          const values = openLegs.map(p => pnlFor(p.id) ?? p.unrealized_pnl);
+          const values = openLegs.map(p => pnlFor(p.id) ?? pnlPreferred(p, 'unrealized_pnl', 'unrealized_pnl_net'));
           if (values.some(v => v == null)) return;   // still missing a live price for at least one leg -- leave the "—" up rather than understate the total
-          const total = Number(u.realized_pnl || 0) + values.reduce((s, v) => s + v, 0);
+          const total = Number(pnlPreferred(u, 'realized_pnl', 'realized_pnl_net') || 0) + values.reduce((s, v) => s + v, 0);
           const el = content.querySelector(`.ux-cycle-total[data-ux-cycle-index="${i}"]`);
           if (el) { el.textContent = fmtSignedMoney(total); el.className = `ux-cycle-total ${pnlClass(total)}`; }
         });
