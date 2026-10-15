@@ -160,9 +160,14 @@ def _month_after(year: int, month: int) -> tuple[int, int]:
 
 
 class OptionsResolver:
-    def __init__(self, dispatcher, exchange: str = "NFO", atm_reference_mode: str = "auto"):
+    def __init__(
+        self, dispatcher, exchange: str = "NFO", atm_reference_mode: str = "auto",
+        liquidity_tolerance_pct: Optional[float] = None,
+    ):
         self.dispatcher = dispatcher
         self.exchange = exchange
+        # Default for get_leg_by_premium's liquidity tie-break; None/0 = off.
+        self.liquidity_tolerance_pct = liquidity_tolerance_pct or None
         if atm_reference_mode not in ("auto", "spot"):
             raise ValueError(
                 f"Unknown atm_reference_mode: {atm_reference_mode!r} (expected 'auto' or 'spot')"
@@ -506,10 +511,22 @@ class OptionsResolver:
         target_price: float, strike_window: int = 15, exchange: Optional[str] = None,
         exclude_strikes: Optional[Iterable[float]] = None,
         check_liquidity: bool = False, min_oi: int = 500, max_spread_pct: float = 0.15,
+        liquidity_tolerance_pct: Optional[float] = None,
     ) -> OptionLeg:
         """
         The leg (of `option_type`) whose current LTP is closest to
         `target_price` — "THIS_WEEK CE with price closest to 40".
+
+        `liquidity_tolerance_pct` (falls back to the resolver's own
+        default; None/0 = off): a liquidity TIE-BREAK, not a filter. Every
+        strike whose LTP is within ±tolerance of `target_price` is an
+        equally acceptable price match; when two or more qualify, the one
+        with the highest open interest that also clears the
+        `min_oi`/`max_spread_pct` bar wins (e.g. NIFTY 21200 over 21150
+        when both are a few rupees from target). Only one candidate in
+        tolerance, none passing the bar, or a failed quote() call all fall
+        back to the plain closest-by-price pick below, so the chosen
+        premium can never drift further than the tolerance from target.
 
         `check_liquidity` (default False — every existing caller is
         completely unaffected): a LOG-ONLY liquidity guard, no behavior
@@ -595,6 +612,16 @@ class OptionsResolver:
                 + (f" (excluding strikes {sorted(exclude)})" if exclude else "")
             )
 
+        tolerance = liquidity_tolerance_pct if liquidity_tolerance_pct is not None else self.liquidity_tolerance_pct
+        if tolerance:
+            liquid = await self._pick_liquid_within_tolerance(
+                legs, ltp_resp, best_leg, target_price, tolerance, min_oi, max_spread_pct,
+            )
+            if liquid is not None:
+                best_leg = liquid
+                best_price = ltp_resp[liquid.key]["last_price"]
+                best_diff = abs(best_price - target_price)
+
         if check_liquidity:
             await self._log_liquidity_check(
                 legs, ltp_resp, best_leg, best_diff, target_price, min_oi, max_spread_pct,
@@ -630,6 +657,65 @@ class OptionsResolver:
                 reasons.append(f"spread {spread_pct:.0%} > {max_spread_pct:.0%} of mid")
 
         return (not reasons), "; ".join(reasons)
+
+    async def get_quotes(self, keys: list[str]) -> dict:
+        """Batched kite.quote() over `EXCHANGE:TRADINGSYMBOL` keys (chunked
+        under quote()'s instrument cap). Raises on API failure."""
+        kite = self._kite()
+        quotes: dict = {}
+        for i in range(0, len(keys), 200):
+            quotes.update(await self._kite_call(kite.quote, keys[i:i + 200]))
+        return quotes
+
+    async def _pick_liquid_within_tolerance(
+        self, legs: list[OptionLeg], ltp_resp: dict, nearest_leg: OptionLeg,
+        target_price: float, tolerance: float, min_oi: int, max_spread_pct: float,
+    ) -> Optional[OptionLeg]:
+        """See get_leg_by_premium's `liquidity_tolerance_pct`. Returns the
+        leg to use instead of `nearest_leg`, or None to keep it."""
+        band = tolerance * target_price
+        in_band = [
+            leg for leg in legs
+            if ltp_resp.get(leg.key) and abs(ltp_resp[leg.key]["last_price"] - target_price) <= band
+        ]
+        if len(in_band) < 2:
+            return None
+        try:
+            quotes = await self.get_quotes([leg.key for leg in in_band])
+        except Exception:
+            logger.warning(
+                "Liquidity tie-break: quote() failed for %d candidates near %.2f — "
+                "keeping closest-by-price %s", len(in_band), target_price, nearest_leg.tradingsymbol,
+            )
+            return None
+
+        passing = []
+        for leg in in_band:
+            q = quotes.get(leg.key)
+            if q is None:
+                continue
+            ok, _ = self._leg_liquidity_ok(q, min_oi, max_spread_pct)
+            if ok:
+                passing.append((leg, q.get("oi") or 0, abs(ltp_resp[leg.key]["last_price"] - target_price)))
+        if not passing:
+            logger.warning(
+                "Liquidity tie-break: none of %s within ±%.0f%% of target %.2f pass the "
+                "liquidity bar — keeping closest-by-price %s",
+                [leg.strike for leg in in_band], tolerance * 100, target_price, nearest_leg.tradingsymbol,
+            )
+            return None
+
+        chosen, chosen_oi, _ = max(passing, key=lambda p: (p[1], -p[2]))
+        if chosen.key != nearest_leg.key:
+            nearest_oi = (quotes.get(nearest_leg.key) or {}).get("oi")
+            logger.info(
+                "Liquidity tie-break: %s (LTP %.2f, OI %s) chosen over closest-by-price %s "
+                "(LTP %.2f, OI %s) — both within ±%.0f%% of target %.2f",
+                chosen.tradingsymbol, ltp_resp[chosen.key]["last_price"], chosen_oi,
+                nearest_leg.tradingsymbol, ltp_resp[nearest_leg.key]["last_price"], nearest_oi,
+                tolerance * 100, target_price,
+            )
+        return chosen
 
     async def _log_liquidity_check(
         self, legs: list[OptionLeg], ltp_resp: dict, best_leg: OptionLeg, best_diff: float,

@@ -172,6 +172,13 @@ class LiveDataDispatcher:
         # to market without a separate REST round-trip to Kite — the tick
         # stream already carries this.
         self.last_prices: dict[int, float] = {}
+        # instrument_token -> when that last_price was actually TRADED
+        # (tick's last_trade_time, else exchange_timestamp; naive IST like
+        # every Kite tick time). A subscribe-time snapshot, or a quote-only
+        # tick on a contract that hasn't traded yet today, still carries
+        # the PREVIOUS session's price — this is how a strategy tells that
+        # apart from a genuinely current one. Absent for ltp-mode ticks.
+        self.last_price_times: dict[int, datetime] = {}
 
         self._pending_initial_token = initial_access_token
 
@@ -568,6 +575,9 @@ class LiveDataDispatcher:
             price = t.get("last_price")
             if token is not None and price is not None:
                 self.last_prices[token] = price
+                traded_at = t.get("last_trade_time") or t.get("exchange_timestamp")
+                if traded_at is not None:
+                    self.last_price_times[token] = traded_at
         if self._loop is not None and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(
                 self.broadcaster.broadcast(ticks), self._loop

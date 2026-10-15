@@ -123,26 +123,50 @@ selection when the >29-day condition is met, which is the point
 (fixing the too-far-OTM/illiquid entries this was added for) — it
 never touches an already-open position's existing legs.
 
-LIQUIDITY GUARD (log-only for now): every fresh entry's CE/PE strikes
-are picked purely by price — closest LTP to target_premium — with no
-awareness of whether that strike is actually tradeable. The long-dated
-override above fixes ONE cause of a too-far-OTM/illiquid strike (low
-target % this early), but a genuinely dead strike (near-zero open
-interest, a huge bid-ask spread) can still be the closest-by-price
-match even with a sensible target. `get_leg_by_premium` is called here
-with `check_liquidity=True`: this does NOT change which strike gets
-selected — it still sells the exact same price-closest strike as
-before — it only fetches one extra quote() over the same candidate
-window and, if that strike fails a basic liquidity bar, logs a warning
-naming which other candidate in the window would have passed instead.
-The plan is to watch that log across real trading days, confirm the
-threshold (get_leg_by_premium's own min_oi/max_spread_pct defaults)
-catches genuinely dead strikes without flagging normal ones, and only
-then flip it to actually influence strike selection. Rolls/EOD-
-accumulation legs/hedges don't call this with check_liquidity at all —
-they price off live band math (Sections 5/6), not a capital-pct
-target, so a "closest to my target premium, but is it liquid" check
-doesn't apply to them the same way.
+LIQUIDITY TIE-BREAK (`strike_liquidity_tolerance_pct`, default 5%, 0 =
+off): EVERY leg this strategy opens by premium — fresh entry, Section 5
+roll, Section 6 EOD replace, premium-targeted hedge, and
+active_management's delegated `_adjust` (all go through this
+deployment's own resolver, which carries the tolerance as its default)
+— first computes its exact target premium exactly as before (capital
+%, band midpoint, EOD midpoint, hedge target). Every strike whose LTP is
+within ±tolerance of that target is then treated as an equally good
+price match, and the one with the highest open interest that also
+clears the liquidity bar (get_leg_by_premium's min_oi/max_spread_pct)
+wins. Built for a real case: far-OTM NIFTY monthly 21150 being sold
+over the far more liquid 21200, a few rupees apart in premium. If only
+one strike is within tolerance, or none pass the bar, it falls back to
+the plain closest-by-price strike — so the sold premium never drifts
+more than the tolerance from target (at 5%, a band-midpoint roll lands
+within roughly ±4 points of the 87.5% midpoint, always inside the
+configured band). The strike-cross cap (after Section 6) still applies
+last, and the point-distance hedge roll (fixed strike offset, not a
+premium target) is unaffected. Fresh entries additionally keep the
+older log-only `check_liquidity=True` warning on whatever was chosen.
+
+STALE-PRICE GUARD: `dispatcher.last_prices` holds the last traded price
+per contract, and a contract that hasn't traded yet this session still
+carries the PREVIOUS session's close — e.g. at 09:15 the PE ticks while
+the CE hasn't traded for a couple of minutes. Comparing a live PE
+against yesterday's CE produced false 50%-trigger rolls (and fake
+checkpoint profits), with the close filled at that stale price. Two
+layers now prevent that, for every decision in Sections 2-5
+(checkpoint, convergence stop, EOD check, continuous/active-management
+adjustment); the Section 1 contract-expiry backstop is deliberately
+exempt, it must close regardless:
+  1. Freshness gate — no decision at all on a tick where any open short
+     leg's cached price was last traded before today's 09:15 open
+     (`dispatcher.last_price_times`). Management simply waits until
+     every leg has traded today.
+  2. Confirmation — when a trigger fires on tick prices, every leg is
+     re-priced from a live quote() (bid/ask mid-price, falling back to
+     last price when one side of the book is empty) and the trigger is
+     re-checked on those prices; it only acts if it still holds, and the
+     roll/EOD math then uses the confirmed prices. A trigger the quotes
+     refute is not re-checked for 15 seconds (keeps quote() calls well
+     inside Kite's rate limit). If quote() itself fails, the tick prices
+     — already known fresh from layer 1 — are used, so a Kite REST
+     hiccup can never stop the strategy from managing its position.
 
 ──────────────────────────────────────────────────────────────────────
 4. CHECKPOINT PROFIT TARGET
@@ -574,8 +598,8 @@ docstring for the two other bridging fixes this delegation needs
 """
 
 import logging
-from datetime import date, datetime
-from typing import Optional
+from datetime import date, datetime, time, timedelta
+from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from ..deployments.strategy_base import StrategyBase
@@ -589,6 +613,27 @@ logger = logging.getLogger("live_deploy.strategies.strangle_monthly_v2")
 _IST = ZoneInfo("Asia/Kolkata")
 
 OTHER_SIDE = {"CE": "PE", "PE": "CE"}
+
+# STALE-PRICE GUARD (module docstring): a leg last traded before this
+# session's open is carrying the previous session's price.
+_SESSION_OPEN = time(9, 15)
+# How long a trigger refuted by live quotes is treated as not fired.
+_CONFIRM_COOLDOWN = timedelta(seconds=15)
+
+
+def _naive_ist(dt: datetime) -> datetime:
+    return dt.astimezone(_IST).replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def _quote_price(q: dict) -> Optional[float]:
+    """Bid/ask mid from a kite.quote() entry, else its last_price."""
+    depth = q.get("depth") or {}
+    buy, sell = depth.get("buy") or [], depth.get("sell") or []
+    bid = buy[0].get("price") if buy else None
+    ask = sell[0].get("price") if sell else None
+    if bid and ask:
+        return (bid + ask) / 2
+    return q.get("last_price")
 SUPPORTED_INSTRUMENTS = {
     "NIFTY": "NFO", "BANKNIFTY": "NFO", "SENSEX": "BFO", "BANKEX": "BFO",
 }
@@ -634,6 +679,7 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
         "adjustment_band_min": 0.80,
         "adjustment_band_max": 0.95,
         "adjustment_strike_window": 40,
+        "strike_liquidity_tolerance_pct": 0.05,
         "eod_check_time": "15:13",
         "eod_gap_floor": 0.80,
         "convergence_mode": "fixed_stop",
@@ -691,7 +737,22 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 f"{sorted(SUPPORTED_INSTRUMENTS)}, got {self.instrument!r}"
             )
         self.exchange = SUPPORTED_INSTRUMENTS[self.instrument]
-        self.resolver = OptionsResolver(runner.dispatcher, exchange=self.exchange)
+        # See module docstring's "LIQUIDITY TIE-BREAK" -- set on the
+        # resolver itself so every premium-targeted pick (including the
+        # delegated active_management `_adjust`) gets it.
+        self.strike_liquidity_tolerance_pct = float(cfg.get("strike_liquidity_tolerance_pct", 0.05) or 0)
+        if not 0 <= self.strike_liquidity_tolerance_pct < 1:
+            raise ValueError(
+                f"strike_liquidity_tolerance_pct must be in [0, 1), "
+                f"got {self.strike_liquidity_tolerance_pct}"
+            )
+        self.resolver = OptionsResolver(
+            runner.dispatcher, exchange=self.exchange,
+            liquidity_tolerance_pct=self.strike_liquidity_tolerance_pct,
+        )
+        # See module docstring's "STALE-PRICE GUARD".
+        self._confirm_cooldown_until: dict[str, datetime] = {}
+        self._stale_logged: set = set()
         # Attributes named EXACTLY as intraday_dtt_adjusted's own methods
         # expect, so those methods can be called unbound against this
         # instance for convergence_mode=active_management — see module
@@ -1023,6 +1084,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                     return   # wait for a live tick on every open leg
                 prices[leg["token"]] = p
 
+        # STALE-PRICE GUARD layer 1 (see module docstring): no decision
+        # until every open short leg has actually traded this session.
+        if self._stale_legs(runner, ts):
+            return
+
         # 2 — checkpoint profit target
         # NOTE: unrealized here is REAL CASH (entry-vs-current premium
         # difference * the leg's own qty), not a raw premium-point sum --
@@ -1038,11 +1104,13 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # `checkpoint_target` is fixed off `runner.initial_capital`, NOT
         # the compounding `runner.cash` — REVISED from an earlier version
         # of this file; see module docstring's Section 4, "REVISED".
-        unrealized = sum(
-            (leg["entry_price"] - prices[leg["token"]]) * leg["qty"]
-            for side_legs in self.legs.values() for leg in side_legs
-        )
-        total_cycle_profit = self.cycle_realized_pnl + unrealized
+        def _cycle_profit(px: dict) -> float:
+            return self.cycle_realized_pnl + sum(
+                (leg["entry_price"] - px[leg["token"]]) * leg["qty"]
+                for side_legs in self.legs.values() for leg in side_legs
+            )
+
+        total_cycle_profit = _cycle_profit(prices)
         checkpoint_target = self.checkpoint_profit_pct_of_capital * runner.initial_capital
         # See module docstring's Section 4 -- gated just means "not yet,"
         # not "ignored": skipping this whole block falls straight through
@@ -1052,7 +1120,17 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             self.checkpoint_exit_not_before is not None
             and ts.time() < self.checkpoint_exit_not_before
         )
+        confirmed = None
         if total_cycle_profit >= checkpoint_target and not checkpoint_gated:
+            # STALE-PRICE GUARD layer 2: None = refuted by live quotes (or
+            # cooling down after a refute) -- fall through as if not hit.
+            confirmed = await self._confirm_trigger(
+                runner, ts, "checkpoint_target", prices,
+                lambda px: _cycle_profit(px) >= checkpoint_target,
+            )
+        if confirmed is not None:
+            total_cycle_profit = _cycle_profit(confirmed)
+            unrealized = total_cycle_profit - self.cycle_realized_pnl
             await self._flatten_all(
                 runner, ts, "checkpoint_target",
                 {
@@ -1094,7 +1172,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 # above whatever the premium happens to be this tick.
                 self._trailing_floor = min(getattr(self, "_trailing_floor", combined_now), combined_now)
                 stop_level = self._trailing_floor * (1 + self.convergence_stop_pct)
+            confirmed = None
             if combined_now >= stop_level:
+                confirmed = await self._confirm_trigger(
+                    runner, ts, "convergence_stop", prices,
+                    lambda px: sum(px[l["token"]] for sl in self.legs.values() for l in sl) >= stop_level,
+                )
+            if confirmed is not None:
+                combined_now = sum(confirmed[l["token"]] for sl in self.legs.values() for l in sl)
                 await self._flatten_all(
                     runner, ts, "convergence_stop",
                     {
@@ -1145,6 +1230,81 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             await self._active_management_tick(runner, ts, prices)
         else:
             await self._continuous_adjustment_check(runner, ts, prices)
+
+    # ── STALE-PRICE GUARD (see module docstring) ────────────────────────
+
+    def _stale_legs(self, runner, ts) -> list[str]:
+        """Symbols of open short legs whose cached price was last traded
+        before today's session open. A leg with no recorded trade time
+        (ltp-mode ticks carry none) can't be judged and never blocks."""
+        session_open = datetime.combine(_naive_ist(ts).date(), _SESSION_OPEN)
+        stale = []
+        for side_legs in self.legs.values():
+            for leg in side_legs:
+                traded_at = runner.dispatcher.last_price_times.get(leg["token"])
+                if traded_at is not None and _naive_ist(traded_at) < session_open:
+                    stale.append(leg["symbol"])
+        if stale:
+            key = (session_open.date(), tuple(sorted(stale)))
+            if key not in self._stale_logged:
+                self._stale_logged.add(key)
+                logger.info(
+                    "%s: holding all position management — %s not traded yet this "
+                    "session (cached price is from a previous session)",
+                    runner.deployment_name, ", ".join(stale),
+                )
+        return stale
+
+    async def _confirm_trigger(
+        self, runner, ts, name: str, prices: dict[int, float],
+        still_fires: Callable[[dict], bool],
+    ) -> Optional[dict[int, float]]:
+        """Re-prices every open short leg from a live quote() and re-checks
+        `still_fires` on those prices. Returns the confirmed prices to act
+        on, or None (refuted, or still cooling down from a recent refute)
+        meaning: treat this trigger as not fired. If quotes can't be
+        fetched, returns the tick prices unchanged — they already passed
+        the freshness gate, and a REST hiccup must never block management."""
+        until = self._confirm_cooldown_until.get(name)
+        if until is not None and ts < until:
+            return None
+        legs = [leg for side_legs in self.legs.values() for leg in side_legs]
+        keys = {leg["token"]: f"{self.exchange}:{leg['symbol']}" for leg in legs}
+        try:
+            quotes = await self.resolver.get_quotes(list(keys.values()))
+        except Exception:
+            logger.warning(
+                "%s: %s fired but live quotes are unavailable — acting on tick prices",
+                runner.deployment_name, name,
+            )
+            return prices
+        confirmed: dict[int, float] = {}
+        for token, key in keys.items():
+            q = quotes.get(key)
+            px = _quote_price(q) if q else None
+            if px is None:
+                logger.warning(
+                    "%s: %s fired but no live quote for %s — acting on tick prices",
+                    runner.deployment_name, name, key,
+                )
+                return prices
+            confirmed[token] = px
+
+        tick_view = {leg["symbol"]: prices[leg["token"]] for leg in legs}
+        quote_view = {leg["symbol"]: round(confirmed[leg["token"]], 2) for leg in legs}
+        if still_fires(confirmed):
+            logger.info(
+                "%s: %s confirmed by live quotes (tick %s, quote %s)",
+                runner.deployment_name, name, tick_view, quote_view,
+            )
+            return confirmed
+        self._confirm_cooldown_until[name] = ts + _CONFIRM_COOLDOWN
+        logger.warning(
+            "%s: %s fired on tick prices %s but live quotes %s don't confirm it — "
+            "not acting (re-checking in %ds)", runner.deployment_name, name,
+            tick_view, quote_view, _CONFIRM_COOLDOWN.seconds,
+        )
+        return None
 
     # ── Section 4 / general: full flatten ───────────────────────────────
 
@@ -1347,25 +1507,37 @@ class StrangleMonthlyV2Strategy(StrategyBase):
 
     # ── Section 5: continuous 50% trigger — always REPLACES in place ───
 
-    async def _continuous_adjustment_check(self, runner, ts, prices: dict[int, float]) -> None:
+    def _side_sums(self, prices: dict[int, float]) -> Optional[tuple]:
+        """(bigger_side, smaller_side, bigger_sum, smaller_sum), or None if
+        either side has no legs or a non-positive total."""
         if not (self.legs["CE"] and self.legs["PE"]):
-            return
+            return None
         ce_sum = sum(prices[l["token"]] for l in self.legs["CE"])
         pe_sum = sum(prices[l["token"]] for l in self.legs["PE"])
         if ce_sum <= 0 or pe_sum <= 0:
-            return
+            return None
         if ce_sum >= pe_sum:
-            bigger_side, smaller_side, bigger_sum, smaller_sum = "CE", "PE", ce_sum, pe_sum
-        else:
-            bigger_side, smaller_side, bigger_sum, smaller_sum = "PE", "CE", pe_sum, ce_sum
+            return "CE", "PE", ce_sum, pe_sum
+        return "PE", "CE", pe_sum, ce_sum
 
-        if smaller_sum <= self.adjustment_trigger_ratio * bigger_sum:
-            trigger_values = {
-                "bigger_side": bigger_side, "smaller_side": smaller_side,
-                "bigger_sum": bigger_sum, "smaller_sum": smaller_sum,
-                "ratio": self.adjustment_trigger_ratio,
-            }
-            await self._roll_side(runner, ts, smaller_side, bigger_sum, prices, "continuous_50pct_trigger", trigger_values)
+    async def _continuous_adjustment_check(self, runner, ts, prices: dict[int, float]) -> None:
+        def _fires(px):
+            s = self._side_sums(px)
+            return s is not None and s[3] <= self.adjustment_trigger_ratio * s[2]
+
+        if not _fires(prices):
+            return
+        confirmed = await self._confirm_trigger(runner, ts, "continuous_50pct_trigger", prices, _fires)
+        if confirmed is None:
+            return
+        prices = confirmed
+        bigger_side, smaller_side, bigger_sum, smaller_sum = self._side_sums(prices)
+        trigger_values = {
+            "bigger_side": bigger_side, "smaller_side": smaller_side,
+            "bigger_sum": bigger_sum, "smaller_sum": smaller_sum,
+            "ratio": self.adjustment_trigger_ratio,
+        }
+        await self._roll_side(runner, ts, smaller_side, bigger_sum, prices, "continuous_50pct_trigger", trigger_values)
 
     async def _roll_side(
         self, runner, ts, side: str, bigger_sum: float, prices: dict[int, float],
@@ -1396,19 +1568,19 @@ class StrangleMonthlyV2Strategy(StrategyBase):
     # ── Section 6: EOD 80% check — ALWAYS replaces (never grows) ────────
 
     async def _eod_check(self, runner, ts, prices: dict[int, float]) -> None:
-        if not (self.legs["CE"] and self.legs["PE"]):
-            return
-        ce_sum = sum(prices[l["token"]] for l in self.legs["CE"])
-        pe_sum = sum(prices[l["token"]] for l in self.legs["PE"])
-        if ce_sum <= 0 or pe_sum <= 0:
-            return
-        if ce_sum >= pe_sum:
-            bigger_side, smaller_side, bigger_sum, smaller_sum = "CE", "PE", ce_sum, pe_sum
-        else:
-            bigger_side, smaller_side, bigger_sum, smaller_sum = "PE", "CE", pe_sum, ce_sum
+        def _fires(px):
+            s = self._side_sums(px)
+            return s is not None and s[3] < self.eod_gap_floor * s[2]
 
-        if smaller_sum >= self.eod_gap_floor * bigger_sum:
+        if not _fires(prices):
             return   # within floor, nothing to do
+        # Runs once per day: a refute here means the real gap is within
+        # the floor, so there is correctly nothing to do today.
+        confirmed = await self._confirm_trigger(runner, ts, "eod_gap_check", prices, _fires)
+        if confirmed is None:
+            return
+        prices = confirmed
+        bigger_side, smaller_side, bigger_sum, smaller_sum = self._side_sums(prices)
 
         trigger_values = {
             "bigger_side": bigger_side, "smaller_side": smaller_side,
@@ -1516,39 +1688,55 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         """
         if not hasattr(self, "adjustment_size_pct"):
             self.adjustment_size_pct = 0.25   # intraday_dtt_adjusted's own default
-        self.realized_pnl_today = self.cycle_realized_pnl
-        try:
+        def _decide(px):
+            """("adjust", side, bigger_now) / ("unwind",) / None -- the
+            same conditions as before, as a pure function so the
+            STALE-PRICE GUARD can re-check them on confirmed prices."""
             if self.adjusted_side is None:
                 if self.legs["CE"] and self.legs["PE"]:
-                    ce_now = prices[self.legs["CE"][0]["token"]]
-                    pe_now = prices[self.legs["PE"][0]["token"]]
+                    ce_now = px[self.legs["CE"][0]["token"]]
+                    pe_now = px[self.legs["PE"][0]["token"]]
                     if ce_now >= pe_now:
-                        bigger_side, smaller_side, bigger_now, smaller_total = "CE", "PE", ce_now, pe_now
+                        smaller_side, bigger_now, smaller_total = "PE", ce_now, pe_now
                     else:
-                        bigger_side, smaller_side, bigger_now, smaller_total = "PE", "CE", pe_now, ce_now
+                        smaller_side, bigger_now, smaller_total = "CE", pe_now, ce_now
                     if smaller_total <= self.adjustment_trigger_ratio * bigger_now:
-                        # Call via `self.` (bound in on_start, see there)
-                        # rather than the unbound `IntradayDTTAdjusted
-                        # Strategy._handle_adjustment_trigger(self, ...)`
-                        # form -- that method's OWN body calls
-                        # `self._adjust(...)` internally, which only
-                        # resolves correctly if `_adjust` was bound onto
-                        # this instance too, not just this outer call.
-                        await self._handle_adjustment_trigger(
-                            runner, ts, smaller_side, bigger_now, prices,
-                        )
+                        return ("adjust", smaller_side, bigger_now)
+                return None
+            anchor_side = OTHER_SIDE[self.adjusted_side]
+            if self.legs[anchor_side]:
+                bigger_now = px[self.legs[anchor_side][0]["token"]]
+                smaller_total = sum(px[l["token"]] for l in self.legs[self.adjusted_side])
+                if smaller_total <= self.adjustment_trigger_ratio * bigger_now:
+                    return ("adjust", self.adjusted_side, bigger_now)
+                if len(self.legs[self.adjusted_side]) > 1 and smaller_total >= bigger_now:
+                    return ("unwind",)
+            return None
+
+        action = _decide(prices)
+        if action is None:
+            return
+        confirmed = await self._confirm_trigger(
+            runner, ts, f"active_management_{action[0]}", prices,
+            lambda px: (_decide(px) or (None,))[0] == action[0],
+        )
+        if confirmed is None:
+            return
+        prices = confirmed
+        action = _decide(prices)
+
+        self.realized_pnl_today = self.cycle_realized_pnl
+        try:
+            if action[0] == "adjust":
+                # Call via `self.` (bound in on_start, see there) rather
+                # than the unbound `IntradayDTTAdjustedStrategy.
+                # _handle_adjustment_trigger(self, ...)` form -- that
+                # method's OWN body calls `self._adjust(...)` internally,
+                # which only resolves correctly if `_adjust` was bound
+                # onto this instance too, not just this outer call.
+                await self._handle_adjustment_trigger(runner, ts, action[1], action[2], prices)
             else:
-                anchor_side = OTHER_SIDE[self.adjusted_side]
-                if self.legs[anchor_side]:
-                    bigger_now = prices[self.legs[anchor_side][0]["token"]]
-                    smaller_total = sum(prices[l["token"]] for l in self.legs[self.adjusted_side])
-                    if smaller_total <= self.adjustment_trigger_ratio * bigger_now:
-                        await self._handle_adjustment_trigger(
-                            runner, ts, self.adjusted_side, bigger_now, prices,
-                        )
-                        return
-                    if len(self.legs[self.adjusted_side]) > 1 and smaller_total >= bigger_now:
-                        await self._unwind_one(runner, ts, prices)
+                await self._unwind_one(runner, ts, prices)
         finally:
             self.cycle_realized_pnl = self.realized_pnl_today
             for side_legs in self.legs.values():
