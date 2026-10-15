@@ -196,7 +196,7 @@ UIKit.ensureTopbar = function ensureTopbar() {
       <button class="ux-status-btn" id="uxKiteStatus" onclick="UIKit.openKitePopover(event)">
         <span class="ux-status-dot" id="uxKiteDot"></span><span id="uxKiteText">Checking Kite…</span>
       </button>
-      <button class="ux-status-btn" id="uxChargesToggle" title="Every P&amp;L figure app-wide, with or without estimated brokerage/STT/other charges" onclick="toggleCharges()"></button>
+      <button class="ux-status-btn" id="uxChargesToggle" title="Click to cycle: Gross → After charges → After charges + slippage" onclick="toggleCharges()"></button>
     </div>
     <div class="ux-topbar-right">
       <button class="ux-icon-btn" title="Notifications" onclick="UIKit.toggleNotificationPanel(event)">🔔<span class="ux-unread-badge" id="uxUnreadBadge" style="display:none;">0</span></button>
@@ -238,9 +238,14 @@ UIKit.syncKiteStatus = function syncKiteStatus() {
 UIKit.applyChargesButtonLabel = function applyChargesButtonLabel() {
   const btn = document.getElementById('uxChargesToggle');
   if (!btn) return;
-  const on = includeCharges();
-  btn.textContent = on ? '🧾 With brokerage' : '🧾 Without brokerage';
-  btn.classList.toggle('active', on);
+  const mode = pnlMode();
+  btn.textContent = {
+    gross: '🧾 Gross P&L',
+    charges: '🧾 After charges',
+    all: '🧾 After charges + slippage',
+  }[mode];
+  btn.title = 'Click to cycle: Gross → After charges → After charges + slippage';
+  btn.classList.toggle('active', mode !== 'gross');
 };
 
 UIKit.openKitePopover = async function openKitePopover(event) {

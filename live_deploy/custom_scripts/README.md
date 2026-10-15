@@ -99,6 +99,17 @@ zero writes.
   instead -- same as the other scripts below, `custom_scripts/` is
   already baked into the image for exactly this case.
 
+- **`slippage_report.py`** — read-only audit of the estimated slippage
+  recorded alongside every fill (migration 0017, `app/slippage.py`;
+  fills themselves stay at LTP). Per deployment: how many fills had an
+  order book to price against, total and per-fill slippage, and slippage
+  as a % of traded value; then the most recent fills one by one — LTP
+  fill, order-book fill, per-unit difference, rupee slippage. Use it to
+  check the "After charges + slippage" P&L view against real trades
+  before trusting it. `--days N` (default 7), `--fills N` (default 10,
+  0 = totals only), `--deployment NAME`. Run via `docker exec
+  live-deploy python3 custom_scripts/slippage_report.py`.
+
 - **`remove_todays_trades.py`** — "undo a whole calendar day, everywhere,
   correctly": deletes every trade dated `--date` (required, no default —
   a destructive op shouldn't have a "today" convenience default) across

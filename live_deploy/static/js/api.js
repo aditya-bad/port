@@ -358,19 +358,25 @@ Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
     started_at: null,
     realized_pnl: 0,
     realized_pnl_net: 0,
+    realized_pnl_net_slip: 0,
     today_realized_pnl: 0,
     today_realized_pnl_net: 0,
+    today_realized_pnl_net_slip: 0,
     unrealized_pnl: 0,
     unrealized_pnl_net: 0,
+    unrealized_pnl_net_slip: 0,
     total_pnl: 0,
     total_pnl_net: 0,
+    total_pnl_net_slip: 0,
     return_pct: dep.initial_capital ? 0 : null,
     return_pct_net: dep.initial_capital ? 0 : null,
+    return_pct_net_slip: dep.initial_capital ? 0 : null,
     open_positions: 0,
     last_action_at: null,
     last_action: null,
     last_cycle_pnl: null,
     last_cycle_pnl_net: null,
+    last_cycle_pnl_net_slip: null,
     last_cycle_opened_at: null,
     last_cycle_closed_at: null,
   };
@@ -386,8 +392,10 @@ Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
     const today = dayDigest.find(r => istDateKey(r.period_start) === nowIstDateKey());
     blank.today_realized_pnl = today ? Number(today.realized_pnl || 0) : 0;
     blank.today_realized_pnl_net = today ? Number(today.realized_pnl_net || 0) : 0;
+    blank.today_realized_pnl_net_slip = today ? Number(today.realized_pnl_net_slip || 0) : 0;
     blank.unrealized_pnl = openPositions.reduce((s, p) => s + Number(p.unrealized_pnl || 0), 0);
     blank.unrealized_pnl_net = openPositions.reduce((s, p) => s + Number(p.unrealized_pnl_net || 0), 0);
+    blank.unrealized_pnl_net_slip = openPositions.reduce((s, p) => s + Number(p.unrealized_pnl_net_slip || 0), 0);
     blank.open_positions = openPositions.length;
     const latestLot = tradesPage && tradesPage.lots && tradesPage.lots[0];
     if (latestLot) {
@@ -399,8 +407,10 @@ Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
       blank.active = true;
       blank.realized_pnl = blank.today_realized_pnl;
       blank.realized_pnl_net = blank.today_realized_pnl_net;
+      blank.realized_pnl_net_slip = blank.today_realized_pnl_net_slip;
       blank.total_pnl = blank.realized_pnl + blank.unrealized_pnl;
       blank.total_pnl_net = blank.realized_pnl_net + blank.unrealized_pnl_net;
+      blank.total_pnl_net_slip = blank.realized_pnl_net_slip + blank.unrealized_pnl_net_slip;
       blank.started_at = `${nowIstDateKey()}T00:00:00+05:30`;
     } else {
       const units = groupPositionsIntoUnits(positions, 'position');
@@ -413,22 +423,28 @@ Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
         blank.period_label = openUnits.length > 1 ? `${openUnits.length} active cycles` : 'Current cycle';
         blank.realized_pnl = openUnits.reduce((s, u) => s + Number(u.realized_pnl || 0), 0);
         blank.realized_pnl_net = openUnits.reduce((s, u) => s + Number(u.realized_pnl_net || 0), 0);
+        blank.realized_pnl_net_slip = openUnits.reduce((s, u) => s + Number(u.realized_pnl_net_slip || 0), 0);
         blank.started_at = openUnits.map(u => u.opened_at).filter(Boolean)
           .sort((a, b) => new Date(a) - new Date(b))[0] || null;
         blank.total_pnl = blank.realized_pnl + blank.unrealized_pnl;
         blank.total_pnl_net = blank.realized_pnl_net + blank.unrealized_pnl_net;
+        blank.total_pnl_net_slip = blank.realized_pnl_net_slip + blank.unrealized_pnl_net_slip;
       } else {
         blank.active = false;
         blank.realized_pnl = 0;
         blank.realized_pnl_net = 0;
+        blank.realized_pnl_net_slip = 0;
         blank.unrealized_pnl = 0;
         blank.unrealized_pnl_net = 0;
+        blank.unrealized_pnl_net_slip = 0;
         blank.total_pnl = 0;
         blank.total_pnl_net = 0;
+        blank.total_pnl_net_slip = 0;
         const last = closedUnits[closedUnits.length - 1];
         if (last) {
           blank.last_cycle_pnl = Number(last.realized_pnl || 0);
           blank.last_cycle_pnl_net = Number(last.realized_pnl_net || 0);
+          blank.last_cycle_pnl_net_slip = Number(last.realized_pnl_net_slip || 0);
           blank.last_cycle_opened_at = last.opened_at || null;
           blank.last_cycle_closed_at = last.closed_at || null;
         }
@@ -436,18 +452,21 @@ Api.getActiveSummary = async function getActiveSummary(dep, force = false) {
     }
     blank.return_pct = dep.initial_capital ? (blank.total_pnl / dep.initial_capital) * 100 : null;
     blank.return_pct_net = dep.initial_capital ? (blank.total_pnl_net / dep.initial_capital) * 100 : null;
+    blank.return_pct_net_slip = dep.initial_capital ? (blank.total_pnl_net_slip / dep.initial_capital) * 100 : null;
   } catch (e) {
     console.warn('Active summary failed for', dep.deployment_name, e);
     // Fallback to data already present in DeploymentOut so the UI never
     // disappears just because one supplemental endpoint failed.
     blank.unrealized_pnl = Number(dep.unrealized_pnl || 0);
     blank.unrealized_pnl_net = Number(dep.unrealized_pnl_net || 0);
+    blank.unrealized_pnl_net_slip = Number(dep.unrealized_pnl_net_slip || 0);
     blank.total_pnl = dep.mode === 'positional'
       ? blank.unrealized_pnl
       : Number(dep.unrealized_pnl || 0);
     blank.total_pnl_net = dep.mode === 'positional'
       ? blank.unrealized_pnl_net
       : Number(dep.unrealized_pnl_net || 0);
+    blank.total_pnl_net_slip = blank.unrealized_pnl_net_slip;
   }
 
   this._activeSummaryCache.set(dep.id, { ts: Date.now(), value: blank });
@@ -467,9 +486,10 @@ Api.enrichDeployments = async function enrichDeployments(deployments, openPositi
     const openByDep = new Map();
     (positions || []).forEach(p => {
       const key = String(p.deployment_id);
-      const current = openByDep.get(key) || { pnl: 0, pnlNet: 0, count: 0 };
+      const current = openByDep.get(key) || { pnl: 0, pnlNet: 0, pnlNetSlip: 0, count: 0 };
       current.pnl += Number(p.unrealized_pnl || 0);
       current.pnlNet += Number(p.unrealized_pnl_net || 0);
+      current.pnlNetSlip += Number(p.unrealized_pnl_net_slip || 0);
       current.count += 1;
       openByDep.set(key, current);
     });
@@ -477,18 +497,21 @@ Api.enrichDeployments = async function enrichDeployments(deployments, openPositi
       const key = String(dep.id);
       const row = byServer.get(key);
       if (!row) return;
-      const open = openByDep.get(key) || { pnl: 0, pnlNet: 0, count: 0 };
+      const open = openByDep.get(key) || { pnl: 0, pnlNet: 0, pnlNetSlip: 0, count: 0 };
       const summary = {
         ...row,
         deployment_id: dep.id,
         unrealized_pnl: open.pnl,
         unrealized_pnl_net: open.pnlNet,
+        unrealized_pnl_net_slip: open.pnlNetSlip,
         open_positions: open.count,
         total_pnl: Number(row.realized_pnl || 0) + open.pnl,
         total_pnl_net: Number(row.realized_pnl_net || 0) + open.pnlNet,
+        total_pnl_net_slip: Number(row.realized_pnl_net_slip || 0) + open.pnlNetSlip,
       };
       summary.return_pct = dep.initial_capital ? (summary.total_pnl / dep.initial_capital) * 100 : null;
       summary.return_pct_net = dep.initial_capital ? (summary.total_pnl_net / dep.initial_capital) * 100 : null;
+      summary.return_pct_net_slip = dep.initial_capital ? (summary.total_pnl_net_slip / dep.initial_capital) * 100 : null;
       dep._uxActive = summary;
       this._activeSummaryCache.set(dep.id, { ts: Date.now(), value: summary });
     });
@@ -599,8 +622,25 @@ function pnlClass(n) {
 // view's own load() after flipping this, so every page picks the new
 // preference up on its own next render rather than needing to patch
 // numbers in place.
+// Three steps since slippage was added (app/slippage.py): 'gross',
+// 'charges' (minus estimated charges), 'all' (minus charges AND
+// estimated slippage). Old two-state preference ('includeCharges')
+// is read once as 'charges'.
+const PNL_MODES = ['gross', 'charges', 'all'];
+function pnlMode() {
+  const m = localStorage.getItem('pnlMode');
+  if (PNL_MODES.includes(m)) return m;
+  return localStorage.getItem('includeCharges') === 'true' ? 'charges' : 'gross';
+}
 function includeCharges() {
-  return localStorage.getItem('includeCharges') === 'true';
+  return pnlMode() !== 'gross';
+}
+function includeSlippage() {
+  return pnlMode() === 'all';
+}
+// Key suffix of the figure the current mode renders: '' / '_net' / '_net_slip'.
+function pnlSuffix() {
+  return { gross: '', charges: '_net', all: '_net_slip' }[pnlMode()];
 }
 
 // Picks whichever of a P&L-bearing row's two keys the toggle currently
@@ -612,6 +652,7 @@ function includeCharges() {
 // "—".
 function pnlPreferred(row, grossKey, netKey) {
   if (!row) return null;
+  if (includeSlippage() && row[`${netKey}_slip`] != null) return row[`${netKey}_slip`];
   if (includeCharges() && row[netKey] != null) return row[netKey];
   return row[grossKey] != null ? row[grossKey] : null;
 }
@@ -1020,6 +1061,7 @@ function groupPositionsIntoUnits(allPositions, granularity) {
     return allPositions.map(p => ({
       opened_at: p.opened_at, closed_at: p.closed_at, status: p.status,
       realized_pnl: p.realized_pnl || 0, realized_pnl_net: p.realized_pnl_net || 0,
+      realized_pnl_net_slip: p.realized_pnl_net_slip || 0,
       position_ids: [p.id],
     }));
   }
@@ -1038,6 +1080,7 @@ function groupPositionsIntoUnits(allPositions, granularity) {
     // the same way as realized_pnl itself, off each position's own
     // realized_pnl_net (routers/deployments.py's get_positions).
     realized_pnl_net: rows.reduce((s, p) => s + (p.realized_pnl_net || 0), 0),
+    realized_pnl_net_slip: rows.reduce((s, p) => s + (p.realized_pnl_net_slip || 0), 0),
     position_ids: rows.map(p => p.id),
   }));
 }
@@ -1058,7 +1101,7 @@ function groupPositionsIntoUnits(allPositions, granularity) {
 function computeUnitStats(units) {
   const closedUnits = units.filter(u => u.status === 'closed');
   const openUnits = units.filter(u => u.status === 'open');
-  const pnlKey = includeCharges() ? 'realized_pnl_net' : 'realized_pnl';
+  const pnlKey = `realized_pnl${pnlSuffix()}`;
   const pnls = closedUnits.map(u => u[pnlKey]).filter(v => v != null);
   const wins = pnls.filter(v => v > 0);
   const grossWin = pnls.filter(v => v > 0).reduce((a, b) => a + b, 0);

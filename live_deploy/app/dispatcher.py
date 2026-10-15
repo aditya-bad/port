@@ -179,6 +179,10 @@ class LiveDataDispatcher:
         # the PREVIOUS session's price — this is how a strategy tells that
         # apart from a genuinely current one. Absent for ltp-mode ticks.
         self.last_price_times: dict[int, datetime] = {}
+        # instrument_token -> (5-level depth dict, UTC receipt time) from
+        # the latest full-mode tick that carried a non-empty book. Used
+        # only to estimate slippage (app/slippage.py), never to fill.
+        self.last_depths: dict[int, tuple[dict, datetime]] = {}
 
         self._pending_initial_token = initial_access_token
 
@@ -578,6 +582,12 @@ class LiveDataDispatcher:
                 traded_at = t.get("last_trade_time") or t.get("exchange_timestamp")
                 if traded_at is not None:
                     self.last_price_times[token] = traded_at
+            depth = t.get("depth")
+            if token is not None and depth and any(
+                (lv.get("quantity") or 0) > 0
+                for lv in (depth.get("buy") or []) + (depth.get("sell") or [])
+            ):
+                self.last_depths[token] = (depth, self.last_tick_at)
         if self._loop is not None and self._loop.is_running():
             asyncio.run_coroutine_threadsafe(
                 self.broadcaster.broadcast(ticks), self._loop

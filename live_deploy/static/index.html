@@ -3456,7 +3456,7 @@ function toggleTheme() {
 // zero per-page special-casing -- this app's scale makes a full
 // refetch on a toggle flip cheap enough not to matter.
 function toggleCharges() {
-  localStorage.setItem('includeCharges', (!includeCharges()).toString());
+  localStorage.setItem('pnlMode', PNL_MODES[(PNL_MODES.indexOf(pnlMode()) + 1) % PNL_MODES.length]);
   UIKit.applyChargesButtonLabel();
   router();
 }
@@ -3722,6 +3722,11 @@ window.LivePnl = {
       basis.set(p.id, {
         token: p.instrument_token, avg: p.avg_entry_price, qty: p.qty,
         side: p.side, deployment_id: p.deployment_id,
+        // Slippage needs the order book, which only the server sees, so
+        // the live figure carries the server's last projected slippage
+        // for this position as a fixed amount (refreshed on every reload).
+        slip: p.unrealized_pnl_net != null && p.unrealized_pnl_net_slip != null
+          ? p.unrealized_pnl_net - p.unrealized_pnl_net_slip : 0,
       });
       if (!idsByToken.has(p.instrument_token)) idsByToken.set(p.instrument_token, new Set());
       idsByToken.get(p.instrument_token).add(p.id);
@@ -3752,7 +3757,8 @@ window.LivePnl = {
       const price = b && prices.get(b.token);
       if (!b || price == null) return null;
       const gross = b.side === 'long' ? (price - b.avg) * b.qty : (b.avg - price) * b.qty;
-      return includeCharges() ? gross - chargesFor(positionId) : gross;
+      if (!includeCharges()) return gross;
+      return gross - chargesFor(positionId) - (includeSlippage() ? b.slip : 0);
     }
     // Optional deploymentId filters the total to just that deployment's
     // own positions -- omit it for a portfolio-wide total across all of

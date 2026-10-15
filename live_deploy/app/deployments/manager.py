@@ -43,6 +43,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from ..db import queries
+from ..slippage import resolve_book_price
 from ..strategies.registry import get_strategy_class, is_registered
 from .runner import DeploymentRunner
 from .schemas import DeploymentCreate
@@ -306,6 +307,10 @@ class DeploymentManager:
                 await queries.force_close_position(
                     self.pool, deployment_id, pos, price,
                     datetime.now(timezone.utc), reason="force_close_on_stop",
+                    book_price=await resolve_book_price(
+                        self.dispatcher, int(pos["instrument_token"]),
+                        "sell" if pos["side"] == "long" else "buy", float(pos["qty"]),
+                    ),
                 )
 
         runner = self.runners.pop(str(deployment_id), None)
@@ -363,6 +368,10 @@ class DeploymentManager:
             await queries.force_close_position(
                 self.pool, deployment_id, pos, price,
                 datetime.now(timezone.utc), reason="flatten_all",
+                book_price=await resolve_book_price(
+                    self.dispatcher, int(pos["instrument_token"]),
+                    "sell" if pos["side"] == "long" else "buy", float(pos["qty"]),
+                ),
             )
 
         if row["status"] == "active":

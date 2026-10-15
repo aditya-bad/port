@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 
 from ..charges import estimate_options_charges
+from ..slippage import projected_slippage
 from ..db import queries
 from ..deployments.schemas import (
     AggregatePositionOut, PnlDigestRow, PnlReportOut, PortfolioSnapshotOut, RecentTradeOut,
@@ -126,6 +127,7 @@ async def fetch_positions_open(pool, dispatcher) -> list[dict]:
                 else (avg - price) * qty
             buy_price, sell_price = (avg, price) if d["side"] == "long" else (price, avg)
             d["unrealized_pnl_net"] = d["unrealized_pnl"] - estimate_options_charges(buy_price, sell_price, qty)
+            d["unrealized_pnl_net_slip"] = d["unrealized_pnl_net"] - projected_slippage(d, dispatcher)
         out.append(d)
     return out
 
@@ -162,8 +164,10 @@ async def list_all_positions(request: Request, status: str | None = "open"):
                     else (avg - price) * qty
                 buy_price, sell_price = (avg, price) if d["side"] == "long" else (price, avg)
                 d["unrealized_pnl_net"] = d["unrealized_pnl"] - estimate_options_charges(buy_price, sell_price, qty)
+                d["unrealized_pnl_net_slip"] = d["unrealized_pnl_net"] - projected_slippage(d, dispatcher)
         else:
             d["realized_pnl_net"] = float(d["realized_pnl"]) - float(d["estimated_charges"])
+            d["realized_pnl_net_slip"] = d["realized_pnl_net"] - float(d["estimated_slippage"])
         out.append(d)
     return out
 
@@ -267,12 +271,13 @@ async def pnl_report(request: Request, period: str = "day", offset: int = 0):
 
     summary = await queries.pnl_summary_for_range(pool, start, end)
     if period == "all":
-        prev_realized_pnl = prev_realized_pnl_net = None
+        prev_realized_pnl = prev_realized_pnl_net = prev_realized_pnl_net_slip = None
     else:
         prev_start, prev_end, _ = period_bounds(period, offset + 1)
         prev_summary = await queries.pnl_summary_for_range(pool, prev_start, prev_end)
         prev_realized_pnl = prev_summary["realized_pnl"]
         prev_realized_pnl_net = prev_summary["realized_pnl_net"]
+        prev_realized_pnl_net_slip = prev_summary["realized_pnl_net_slip"]
     by_strategy = await queries.pnl_by_strategy_for_range(pool, start, end)
     by_deployment = await queries.pnl_by_deployment_for_range(pool, start, end)
 
@@ -282,6 +287,7 @@ async def pnl_report(request: Request, period: str = "day", offset: int = 0):
         **summary,
         "prev_realized_pnl": prev_realized_pnl,
         "prev_realized_pnl_net": prev_realized_pnl_net,
+        "prev_realized_pnl_net_slip": prev_realized_pnl_net_slip,
         "by_strategy": [dict(r) for r in by_strategy],
         "by_deployment": [dict(r) for r in by_deployment],
     }

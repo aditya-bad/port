@@ -24,6 +24,7 @@ from typing import Callable, Optional
 import asyncpg
 
 from ..db import queries
+from ..slippage import resolve_book_price
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger("live_deploy.runner")
@@ -554,9 +555,11 @@ class DeploymentRunner:
             # tz (verified: on an IST-tz machine, naive 10:00:09 ->
             # 04:30:09 UTC -> redisplays as the true 10:00:09 IST).
             executed_at = executed_at.astimezone(timezone.utc)
+        book_price = await resolve_book_price(self.dispatcher, instrument_token, action, qty)
         result = await queries.record_fill(
             self.pool, self.deployment_id, symbol, instrument_token, action,
             qty, price, executed_at, reason=reason, metadata=metadata,
+            book_price=book_price,
         )
 
         # Refresh from the DB rather than replicating averaging/closing

@@ -27,6 +27,7 @@ from uuid import UUID
 import asyncpg
 
 from ..charges import estimate_options_charges
+from ..slippage import fill_slippage, realized_slippage
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -533,17 +534,23 @@ async def realized_pnl_total(pool: asyncpg.Pool, deployment_id: UUID) -> float:
         return float(val)
 
 
+# Fixed SQL fragment (never user input) appended to a net-of-charges
+# expression to also deduct slippage.
+_SLIP = " - estimated_slippage"
+
+
 # Net-of-estimated-charges twins of the two functions above -- the
 # "with brokerage" global toggle's backing data. See app/charges.py for
 # what estimated_charges is/how it's computed, and migration 0016.
 # Added rather than changing the two functions above in place so every
 # OTHER existing caller (e.g. DeploymentManager's snapshot logic, which
 # only ever wants the gross figure) is completely unaffected.
-async def realized_pnl_by_deployment_net(pool: asyncpg.Pool) -> dict[str, float]:
+async def realized_pnl_by_deployment_net(pool: asyncpg.Pool, with_slippage: bool = False) -> dict[str, float]:
+    """`with_slippage` also deducts estimated_slippage (app/slippage.py)."""
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
-            SELECT deployment_id, COALESCE(SUM(realized_pnl - estimated_charges), 0) AS total
+            f"""
+            SELECT deployment_id, COALESCE(SUM(realized_pnl - estimated_charges{_SLIP if with_slippage else ''}), 0) AS total
             FROM positions
             WHERE status = 'closed'
             GROUP BY deployment_id
@@ -552,11 +559,11 @@ async def realized_pnl_by_deployment_net(pool: asyncpg.Pool) -> dict[str, float]
         return {str(r["deployment_id"]): float(r["total"]) for r in rows}
 
 
-async def realized_pnl_total_net(pool: asyncpg.Pool, deployment_id: UUID) -> float:
+async def realized_pnl_total_net(pool: asyncpg.Pool, deployment_id: UUID, with_slippage: bool = False) -> float:
     async with pool.acquire() as conn:
         val = await conn.fetchval(
-            """
-            SELECT COALESCE(SUM(realized_pnl - estimated_charges), 0) FROM positions
+            f"""
+            SELECT COALESCE(SUM(realized_pnl - estimated_charges{_SLIP if with_slippage else ''}), 0) FROM positions
             WHERE deployment_id = $1 AND status = 'closed'
             """,
             deployment_id,
@@ -587,8 +594,14 @@ async def record_fill(
     executed_at: datetime,
     reason: Optional[str] = None,
     metadata: Optional[dict] = None,
+    book_price: Optional[float] = None,
 ) -> dict[str, Any]:
     """
+    `book_price`: what this fill would have got against the live order
+    book (app/slippage.py), stored on the lot; the (LTP - book) cost is
+    added to the position's estimated_slippage. None = no book known,
+    recorded as NULL / zero slippage. Never changes the fill itself.
+
     Record one paper fill, atomically: opens a new position, adds a lot
     (averaging) to an existing same-direction position, or fully closes
     an opposite-direction position — then always inserts the lot row and
@@ -605,6 +618,7 @@ async def record_fill(
     if qty <= 0:
         raise ValueError(f"qty must be positive, got {qty}")
     metadata = metadata or {}
+    slippage = fill_slippage(action, price, book_price, qty)
 
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -640,12 +654,13 @@ async def record_fill(
                     """
                     INSERT INTO positions
                         (deployment_id, symbol, instrument_token, side,
-                         status, qty, avg_entry_price, opened_at, metadata)
-                    VALUES ($1, $2, $3, $4, 'open', $5, $6, $7, $8)
+                         status, qty, avg_entry_price, opened_at, metadata,
+                         estimated_slippage)
+                    VALUES ($1, $2, $3, $4, 'open', $5, $6, $7, $8, $9)
                     RETURNING *
                     """,
                     deployment_id, symbol, instrument_token, side,
-                    qty, price, executed_at, metadata,
+                    qty, price, executed_at, metadata, slippage,
                 )
                 position_id = position["id"]
 
@@ -658,8 +673,9 @@ async def record_fill(
                     new_avg = (float(existing["qty"]) * float(existing["avg_entry_price"])
                               + qty * price) / new_qty
                     await conn.execute(
-                        "UPDATE positions SET qty = $2, avg_entry_price = $3 WHERE id = $1",
-                        existing["id"], new_qty, new_avg,
+                        "UPDATE positions SET qty = $2, avg_entry_price = $3, "
+                        "estimated_slippage = estimated_slippage + $4 WHERE id = $1",
+                        existing["id"], new_qty, new_avg, slippage,
                     )
                     position_id = existing["id"]
 
@@ -692,10 +708,11 @@ async def record_fill(
                         """
                         UPDATE positions
                         SET status = 'closed', qty = 0, realized_pnl = $2,
-                            estimated_charges = $3, closed_at = $4
+                            estimated_charges = $3, closed_at = $4,
+                            estimated_slippage = estimated_slippage + $5
                         WHERE id = $1
                         """,
-                        existing["id"], realized_pnl, estimated_charges, executed_at,
+                        existing["id"], realized_pnl, estimated_charges, executed_at, slippage,
                     )
                     position_id = existing["id"]
 
@@ -703,12 +720,12 @@ async def record_fill(
                 """
                 INSERT INTO position_lots
                     (position_id, deployment_id, action, qty, price,
-                     executed_at, reason, metadata)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                     executed_at, reason, metadata, book_price)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING id
                 """,
                 position_id, deployment_id, action, qty, price,
-                executed_at, reason, metadata,
+                executed_at, reason, metadata, book_price,
             )
 
             # Cash: a buy spends cash, a sell (short entry OR long exit) receives it.
@@ -731,13 +748,14 @@ async def record_fill(
 
 async def force_close_position(
     pool: asyncpg.Pool, deployment_id: UUID, position: asyncpg.Record,
-    price: float, executed_at: datetime, reason: str,
+    price: float, executed_at: datetime, reason: str, book_price: Optional[float] = None,
 ) -> dict[str, Any]:
     """Convenience wrapper — close an existing open position at `price`."""
     action = "sell" if position["side"] == "long" else "buy"
     return await record_fill(
         pool, deployment_id, position["symbol"], position["instrument_token"],
         action, float(position["qty"]), price, executed_at, reason=reason,
+        book_price=book_price,
     )
 
 
@@ -1186,6 +1204,7 @@ async def list_pnl_digest(
                     (date_trunc($1, p.closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
                     SUM(p.realized_pnl) AS realized_pnl,
                     SUM(p.realized_pnl - p.estimated_charges) AS realized_pnl_net,
+                    SUM(p.realized_pnl - p.estimated_charges - p.estimated_slippage) AS realized_pnl_net_slip,
                     COUNT(*) AS positions_closed,
                     COUNT(*) FILTER (WHERE p.realized_pnl > 0) AS wins,
                     COUNT(*) FILTER (WHERE p.realized_pnl < 0) AS losses
@@ -1207,6 +1226,7 @@ async def list_pnl_digest(
                 COALESCE(closes.period_start, fills.period_start) AS period_start,
                 COALESCE(closes.realized_pnl, 0)::float8 AS realized_pnl,
                 COALESCE(closes.realized_pnl_net, 0)::float8 AS realized_pnl_net,
+                COALESCE(closes.realized_pnl_net_slip, 0)::float8 AS realized_pnl_net_slip,
                 COALESCE(closes.positions_closed, 0) AS positions_closed,
                 COALESCE(closes.wins, 0) AS wins,
                 COALESCE(closes.losses, 0) AS losses,
@@ -1477,7 +1497,8 @@ async def get_positional_episode_mtm_rows(
         positions = await conn.fetch(
             """
             SELECT id, opened_at, closed_at, status, realized_pnl::float8 AS realized_pnl,
-                   estimated_charges::float8 AS estimated_charges
+                   estimated_charges::float8 AS estimated_charges,
+                   estimated_slippage::float8 AS estimated_slippage
             FROM positions
             WHERE deployment_id = $1
             ORDER BY opened_at ASC
@@ -1523,6 +1544,9 @@ async def get_positional_episode_mtm_rows(
                 "period_end": ep["end"],
                 "realized_pnl": sum(r["realized_pnl"] for r in ep["rows"]),
                 "realized_pnl_net": sum(r["realized_pnl"] - r["estimated_charges"] for r in ep["rows"]),
+                "realized_pnl_net_slip": sum(
+                    r["realized_pnl"] - r["estimated_charges"] - realized_slippage(r) for r in ep["rows"]
+                ),
                 "positions_closed": len(closed_rows),
                 "wins": sum(1 for r in closed_rows if r["realized_pnl"] > 0),
                 "losses": sum(1 for r in closed_rows if r["realized_pnl"] < 0),
@@ -1593,6 +1617,7 @@ async def list_pnl_digest_for_deployment(
                     (date_trunc($1, closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
                     SUM(realized_pnl) AS realized_pnl,
                     SUM(realized_pnl - estimated_charges) AS realized_pnl_net,
+                    SUM(realized_pnl - estimated_charges - estimated_slippage) AS realized_pnl_net_slip,
                     COUNT(*) AS positions_closed,
                     COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
                     COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses
@@ -1612,6 +1637,7 @@ async def list_pnl_digest_for_deployment(
                 COALESCE(closes.period_start, fills.period_start) AS period_start,
                 COALESCE(closes.realized_pnl, 0)::float8 AS realized_pnl,
                 COALESCE(closes.realized_pnl_net, 0)::float8 AS realized_pnl_net,
+                COALESCE(closes.realized_pnl_net_slip, 0)::float8 AS realized_pnl_net_slip,
                 COALESCE(closes.positions_closed, 0) AS positions_closed,
                 COALESCE(closes.wins, 0) AS wins,
                 COALESCE(closes.losses, 0) AS losses,
@@ -1658,6 +1684,7 @@ async def list_pnl_digest_for_range(
                     (date_trunc($1, p.closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
                     SUM(p.realized_pnl) AS realized_pnl,
                     SUM(p.realized_pnl - p.estimated_charges) AS realized_pnl_net,
+                    SUM(p.realized_pnl - p.estimated_charges - p.estimated_slippage) AS realized_pnl_net_slip,
                     COUNT(*) AS positions_closed,
                     COUNT(*) FILTER (WHERE p.realized_pnl > 0) AS wins,
                     COUNT(*) FILTER (WHERE p.realized_pnl < 0) AS losses
@@ -1680,6 +1707,7 @@ async def list_pnl_digest_for_range(
                 COALESCE(closes.period_start, fills.period_start) AS period_start,
                 COALESCE(closes.realized_pnl, 0)::float8 AS realized_pnl,
                 COALESCE(closes.realized_pnl_net, 0)::float8 AS realized_pnl_net,
+                COALESCE(closes.realized_pnl_net_slip, 0)::float8 AS realized_pnl_net_slip,
                 COALESCE(closes.positions_closed, 0) AS positions_closed,
                 COALESCE(closes.wins, 0) AS wins,
                 COALESCE(closes.losses, 0) AS losses,
@@ -1710,6 +1738,7 @@ async def list_pnl_digest_for_deployment_range(
                     (date_trunc($1, closed_at AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') AS period_start,
                     SUM(realized_pnl) AS realized_pnl,
                     SUM(realized_pnl - estimated_charges) AS realized_pnl_net,
+                    SUM(realized_pnl - estimated_charges - estimated_slippage) AS realized_pnl_net_slip,
                     COUNT(*) AS positions_closed,
                     COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
                     COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses
@@ -1729,6 +1758,7 @@ async def list_pnl_digest_for_deployment_range(
                 COALESCE(closes.period_start, fills.period_start) AS period_start,
                 COALESCE(closes.realized_pnl, 0)::float8 AS realized_pnl,
                 COALESCE(closes.realized_pnl_net, 0)::float8 AS realized_pnl_net,
+                COALESCE(closes.realized_pnl_net_slip, 0)::float8 AS realized_pnl_net_slip,
                 COALESCE(closes.positions_closed, 0) AS positions_closed,
                 COALESCE(closes.wins, 0) AS wins,
                 COALESCE(closes.losses, 0) AS losses,
@@ -1797,7 +1827,8 @@ async def pnl_summary_for_range(
         pnl_row = await conn.fetchrow(
             """
             SELECT COALESCE(SUM(p.realized_pnl), 0)::float8 AS realized_pnl,
-                   COALESCE(SUM(p.realized_pnl - p.estimated_charges), 0)::float8 AS realized_pnl_net
+                   COALESCE(SUM(p.realized_pnl - p.estimated_charges), 0)::float8 AS realized_pnl_net,
+                   COALESCE(SUM(p.realized_pnl - p.estimated_charges - p.estimated_slippage), 0)::float8 AS realized_pnl_net_slip
             FROM positions p
             JOIN deployments d ON d.id = p.deployment_id
             WHERE p.status = 'closed' AND p.closed_at >= $1 AND p.closed_at < $2
@@ -1843,6 +1874,7 @@ async def pnl_summary_for_range(
     return {
         "realized_pnl": pnl_row["realized_pnl"],
         "realized_pnl_net": pnl_row["realized_pnl_net"],
+        "realized_pnl_net_slip": pnl_row["realized_pnl_net_slip"],
         "positions_closed": positions_closed,
         "wins": wins,
         "losses": losses,
@@ -1870,6 +1902,7 @@ async def pnl_by_strategy_for_range(
                 d.strategy_name,
                 SUM(p.realized_pnl)::float8 AS realized_pnl,
                 SUM(p.realized_pnl - p.estimated_charges)::float8 AS realized_pnl_net,
+                SUM(p.realized_pnl - p.estimated_charges - p.estimated_slippage)::float8 AS realized_pnl_net_slip,
                 COUNT(*) AS positions_closed
             FROM positions p
             JOIN deployments d ON d.id = p.deployment_id
@@ -1901,6 +1934,7 @@ async def pnl_by_deployment_for_range(
                 d.strategy_name,
                 SUM(p.realized_pnl)::float8 AS realized_pnl,
                 SUM(p.realized_pnl - p.estimated_charges)::float8 AS realized_pnl_net,
+                SUM(p.realized_pnl - p.estimated_charges - p.estimated_slippage)::float8 AS realized_pnl_net_slip,
                 COUNT(*) AS positions_closed
             FROM positions p
             JOIN deployments d ON d.id = p.deployment_id
@@ -1948,15 +1982,20 @@ async def list_strategy_leaderboard(pool: asyncpg.Pool) -> list[asyncpg.Record]:
                 d.strategy_name,
                 SUM(p.realized_pnl)::float8 AS realized_pnl,
                 SUM(p.realized_pnl - p.estimated_charges)::float8 AS realized_pnl_net,
+                SUM(p.realized_pnl - p.estimated_charges - p.estimated_slippage)::float8 AS realized_pnl_net_slip,
                 COUNT(*) AS positions_closed,
                 COUNT(*) FILTER (WHERE p.realized_pnl > 0) AS wins,
                 COUNT(*) FILTER (WHERE p.realized_pnl < 0) AS losses,
                 COUNT(*) FILTER (WHERE p.realized_pnl - p.estimated_charges > 0) AS wins_net,
+                COUNT(*) FILTER (WHERE p.realized_pnl - p.estimated_charges - p.estimated_slippage > 0) AS wins_net_slip,
                 COUNT(*) FILTER (WHERE p.realized_pnl - p.estimated_charges < 0) AS losses_net,
+                COUNT(*) FILTER (WHERE p.realized_pnl - p.estimated_charges - p.estimated_slippage < 0) AS losses_net_slip,
                 COALESCE(SUM(p.realized_pnl) FILTER (WHERE p.realized_pnl > 0), 0)::float8 AS gross_win,
                 COALESCE(SUM(p.realized_pnl) FILTER (WHERE p.realized_pnl < 0), 0)::float8 AS gross_loss,
                 COALESCE(SUM(p.realized_pnl - p.estimated_charges) FILTER (WHERE p.realized_pnl - p.estimated_charges > 0), 0)::float8 AS gross_win_net,
+                COALESCE(SUM(p.realized_pnl - p.estimated_charges - p.estimated_slippage) FILTER (WHERE p.realized_pnl - p.estimated_charges - p.estimated_slippage > 0), 0)::float8 AS gross_win_net_slip,
                 COALESCE(SUM(p.realized_pnl - p.estimated_charges) FILTER (WHERE p.realized_pnl - p.estimated_charges < 0), 0)::float8 AS gross_loss_net,
+                COALESCE(SUM(p.realized_pnl - p.estimated_charges - p.estimated_slippage) FILTER (WHERE p.realized_pnl - p.estimated_charges - p.estimated_slippage < 0), 0)::float8 AS gross_loss_net_slip,
                 COUNT(DISTINCT d.id) AS deployments_count
             FROM positions p
             JOIN deployments d ON d.id = p.deployment_id

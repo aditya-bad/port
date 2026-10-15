@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Request
 
 from ..db import queries
+from ..slippage import realized_slippage
 
 router = APIRouter(tags=["aggregate"])
 _IST = ZoneInfo("Asia/Kolkata")
@@ -69,6 +70,7 @@ def _active_rows(
         today_realized_net = sum(
             float(r["realized_pnl"] or 0) - float(r["estimated_charges"] or 0) for r in today_closed
         )
+        today_realized_net_slip = today_realized_net - sum(realized_slippage(r) for r in today_closed)
 
         result: dict[str, Any] = {
             "deployment_id": str(dep_id),
@@ -79,11 +81,14 @@ def _active_rows(
             "started_at": _iso(day_start),
             "realized_pnl": today_realized if mode != "positional" else 0.0,
             "realized_pnl_net": today_realized_net if mode != "positional" else 0.0,
+            "realized_pnl_net_slip": today_realized_net_slip if mode != "positional" else 0.0,
             "today_realized_pnl": today_realized,
             "today_realized_pnl_net": today_realized_net,
+            "today_realized_pnl_net_slip": today_realized_net_slip,
             "open_positions": len(open_rows),
             "last_cycle_pnl": None,
             "last_cycle_pnl_net": None,
+            "last_cycle_pnl_net_slip": None,
             "last_cycle_opened_at": None,
             "last_cycle_closed_at": None,
             "last_action_at": None,
@@ -112,6 +117,9 @@ def _active_rows(
                     float(row["realized_pnl"] or 0) - float(row["estimated_charges"] or 0)
                     for ep in open_episodes for row in ep["rows"]
                 )
+                result["realized_pnl_net_slip"] = result["realized_pnl_net"] - sum(
+                    realized_slippage(row) for ep in open_episodes for row in ep["rows"]
+                )
             else:
                 result["active"] = False
                 result["started_at"] = None
@@ -121,6 +129,9 @@ def _active_rows(
                     result["last_cycle_pnl"] = sum(float(r["realized_pnl"] or 0) for r in last["rows"])
                     result["last_cycle_pnl_net"] = sum(
                         float(r["realized_pnl"] or 0) - float(r["estimated_charges"] or 0) for r in last["rows"]
+                    )
+                    result["last_cycle_pnl_net_slip"] = result["last_cycle_pnl_net"] - sum(
+                        realized_slippage(r) for r in last["rows"]
                     )
                     result["last_cycle_opened_at"] = _iso(last["start"])
                     result["last_cycle_closed_at"] = _iso(last["end"])

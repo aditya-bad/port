@@ -165,12 +165,12 @@ const Portfolio = {
       el.innerHTML = emptyHtml('No closed positions recorded yet — this fills in once a strategy has actually closed a trade.');
       return;
     }
-    const net = includeCharges();
+    const sfx = pnlSuffix();
     const body = rows.map(r => {
-      const wins = net ? r.wins_net : r.wins;
-      const losses = net ? r.losses_net : r.losses;
-      const grossWin = net ? r.gross_win_net : r.gross_win;
-      const grossLoss = net ? r.gross_loss_net : r.gross_loss;
+      const wins = r[`wins${sfx}`];
+      const losses = r[`losses${sfx}`];
+      const grossWin = r[`gross_win${sfx}`];
+      const grossLoss = r[`gross_loss${sfx}`];
       const decided = wins + losses;
       const winRate = decided > 0 ? ((wins / decided) * 100).toFixed(1) + '%' : '—';
       // Same profit-factor convention Detail's own Stats tab computes

@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .aggregate import year_bounds
 from ..charges import estimate_options_charges
+from ..slippage import projected_slippage
 from ..db import queries
 from ..deployments.schemas import (
     AdjustmentHistogramOut, DeploymentCreate, DeploymentOut, DeploymentUpdate,
@@ -106,14 +107,17 @@ async def _enrich_pnl_many(pool, dispatcher, rows: list[dict]) -> None:
     exact same open_positions rows, so one fetch covers both)."""
     realized_map = await queries.realized_pnl_by_deployment(pool)
     realized_net_map = await queries.realized_pnl_by_deployment_net(pool)
+    realized_net_slip_map = await queries.realized_pnl_by_deployment_net(pool, with_slippage=True)
     open_positions = await queries.list_all_positions(pool, status="open")
     unrealized_map: dict[str, float] = {}
     unrealized_charges_map: dict[str, float] = {}
+    unrealized_slip_map: dict[str, float] = {}
     cost_basis_map: dict[str, float] = {}
     for p in open_positions:
         dep_id = str(p["deployment_id"])
         unrealized_map[dep_id] = unrealized_map.get(dep_id, 0.0) + _mark_to_market(p, dispatcher)
         unrealized_charges_map[dep_id] = unrealized_charges_map.get(dep_id, 0.0) + _projected_charges(p, dispatcher)
+        unrealized_slip_map[dep_id] = unrealized_slip_map.get(dep_id, 0.0) + projected_slippage(p, dispatcher)
         cost_basis_map[dep_id] = cost_basis_map.get(dep_id, 0.0) + _open_cost_basis(p)
     for row in rows:
         dep_id = str(row["id"])
@@ -121,6 +125,10 @@ async def _enrich_pnl_many(pool, dispatcher, rows: list[dict]) -> None:
         row["realized_pnl_net"] = round(realized_net_map.get(dep_id, 0.0), 2)
         row["unrealized_pnl"] = round(unrealized_map.get(dep_id, 0.0), 2)
         row["unrealized_pnl_net"] = round(unrealized_map.get(dep_id, 0.0) - unrealized_charges_map.get(dep_id, 0.0), 2)
+        row["realized_pnl_net_slip"] = round(realized_net_slip_map.get(dep_id, 0.0), 2)
+        row["unrealized_pnl_net_slip"] = round(
+            row["unrealized_pnl_net"] - unrealized_slip_map.get(dep_id, 0.0), 2,
+        )
         row["open_cost_basis"] = round(cost_basis_map.get(dep_id, 0.0), 2)
 
 
@@ -186,6 +194,12 @@ async def _enrich_pnl_one(pool, dispatcher, deployment_id: UUID, row: dict) -> N
     row["unrealized_pnl"] = round(sum(_mark_to_market(p, dispatcher) for p in open_positions), 2)
     unrealized_charges = sum(_projected_charges(p, dispatcher) for p in open_positions)
     row["unrealized_pnl_net"] = round(row["unrealized_pnl"] - unrealized_charges, 2)
+    row["realized_pnl_net_slip"] = round(
+        await queries.realized_pnl_total_net(pool, deployment_id, with_slippage=True), 2,
+    )
+    row["unrealized_pnl_net_slip"] = round(
+        row["unrealized_pnl_net"] - sum(projected_slippage(p, dispatcher) for p in open_positions), 2,
+    )
     row["open_cost_basis"] = round(sum(_open_cost_basis(p) for p in open_positions), 2)
 
 
@@ -353,8 +367,10 @@ async def get_positions(deployment_id: UUID, request: Request, status: str | Non
                     else (avg - price) * qty
                 buy_price, sell_price = (avg, price) if d["side"] == "long" else (price, avg)
                 d["unrealized_pnl_net"] = d["unrealized_pnl"] - estimate_options_charges(buy_price, sell_price, qty)
+                d["unrealized_pnl_net_slip"] = d["unrealized_pnl_net"] - projected_slippage(d, dispatcher)
         else:
             d["realized_pnl_net"] = float(d["realized_pnl"]) - float(d["estimated_charges"])
+            d["realized_pnl_net_slip"] = d["realized_pnl_net"] - float(d["estimated_slippage"])
         out.append(d)
     return out
 

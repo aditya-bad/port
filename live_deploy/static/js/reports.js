@@ -192,7 +192,7 @@ const Reports = {
   renderStats(r) {
     const el = document.getElementById('reportsStats');
     const realizedPnl = pnlPreferred(r, 'realized_pnl', 'realized_pnl_net');
-    const prevRealizedPnl = includeCharges() ? r.prev_realized_pnl_net : r.prev_realized_pnl;
+    const prevRealizedPnl = r[`prev_realized_pnl${pnlSuffix()}`];
     // prev_realized_pnl is null only for period="all" -- there is no
     // "previous all-time period" to diff against (see aggregate.py's
     // pnl_report), so the delta row shows a plain note there instead
@@ -414,6 +414,7 @@ const Reports = {
       // page's own context, so "whichever one was selected when I
       // clicked Export" would be a silent, easy-to-miss ambiguity.
       { key: 'realized_pnl_net', label: 'Realized PnL (with brokerage)' },
+      { key: 'realized_pnl_net_slip', label: 'Realized PnL (with brokerage + slippage)' },
       { key: 'positions_closed', label: 'Positions Closed' },
       { key: 'wins', label: 'Wins' },
       { key: 'losses', label: 'Losses' },
