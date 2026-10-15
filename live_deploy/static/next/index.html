@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>live_deploy Desk</title>
+  <meta name="description" content="Paper-trading desk for live_deploy strategies">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.json">
+  <script>
+    // Theme before first paint (no flash). 'system' = no attribute.
+    try {
+      const t = localStorage.getItem('nx.theme');
+      if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      localStorage.setItem('uiExperience', 'next');
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="/next/desk.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <header class="topbar" id="topbar"></header>
+    <main class="main" id="main" tabindex="-1"></main>
+    <nav class="bottom-nav" id="bottomNav" aria-label="Primary"></nav>
+  </div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <div class="tip" id="tip" role="tooltip"></div>
+  <script src="/js/calculators.js"></script>
+  <script type="module" src="/next/js/app.js"></script>
+</body>
+</html>

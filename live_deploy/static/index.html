@@ -31,6 +31,30 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="live_deploy">
 <script>
+// "New experience" (static/next/, the Desk UI): once someone opts in,
+// later visits to / go straight there, carrying the current page across
+// where the two have an equivalent. "Switch to classic" in the new UI
+// sets this back to 'classic'.
+function nextExperienceHash(hash) {
+  var m = (hash || '').match(/^#\/deployments\/([0-9a-f-]{36})/i);
+  if (m) return '#/s/' + m[1];
+  var map = { '#/dashboard': '#/today', '#/deployments': '#/strategies', '#/reports': '#/performance',
+    '#/portfolio': '#/performance', '#/compare': '#/performance', '#/catalog': '#/deploy', '#/tools': '#/tools', '#/account': '#/settings' };
+  return map[(hash || '').split('?')[0]] || '';
+}
+function openNextExperience() {
+  try { localStorage.setItem('uiExperience', 'next'); } catch (e) {}
+  window.location.href = '/next/' + nextExperienceHash(window.location.hash);
+}
+(function () {
+  try {
+    if (localStorage.getItem('uiExperience') === 'next') {
+      window.location.replace('/next/' + nextExperienceHash(window.location.hash));
+    }
+  } catch (e) {}
+})();
+</script>
+<script>
 // Applied synchronously, before the stylesheet below is parsed and
 // before <body> paints anything — the only way to avoid a flash of
 // the wrong theme on load. Mirrors the persistence half of
@@ -2698,6 +2722,14 @@ table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
     margin-bottom: 0;
   }
 }
+
+/* "Try the new experience" — the opt-in switch to static/next/. */
+.ux-next-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
+  border: 2px solid var(--line); background: var(--ink); color: var(--paper);
+  font: 700 11px var(--font-body); letter-spacing: .04em; text-transform: uppercase; cursor: pointer;
+}
+.ux-next-btn:hover { background: var(--accent); }
 </style>
 </head>
 <body>
