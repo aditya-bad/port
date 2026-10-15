@@ -1170,7 +1170,7 @@ const Detail = {
       <td>${fmtNum(p.qty, 0)}</td><td>${fmtNum(p.entry_price, 2)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price, 2) : '—'}</td>
       <td>${escapeHtml(tAt(p.opened_at))}</td><td>${p.closed_at ? escapeHtml(tAt(p.closed_at)) : 'open'}</td>
       <td class="${pnlClass(p.realized_pnl)}">${p.status === 'closed' ? fmtSignedMoney(p.realized_pnl) : '—'}</td>
-      <td>${{ kite: 'Kite history', marks: 'App marks (5-min)', none: 'Fills only' }[p.price_source]}</td></tr>`).join('');
+      <td>${{ kite: 'Kite history', marks: this._dep.mode === 'intraday' ? 'App marks (1-min)' : 'App marks (5-min)', none: 'Fills only' }[p.price_source]}</td></tr>`).join('');
 
     el.innerHTML = `
       <div class="stat-grid">${tiles}</div>

@@ -12,9 +12,10 @@ assembles:
     its underlying first);
   - each position's option price path: Kite historical data while the
     contract is still listed; Kite has none for expired options, so the
-    fallback is the app's own 5-minute per-position marks
-    (deployment_snapshots.metadata["marks"], recorded from this version
-    onward); with neither, that position is "unknown" between its fills;
+    fallback is the app's own per-leg price marks (position_marks: every
+    minute for intraday, every 5 minutes for positional, recorded from
+    this version onward); with neither, that leg is "unknown" between
+    its fills;
   - the cycle's gross P&L at every point (closed legs at their realized
     P&L, open legs marked to that point's option price), plus, for
     positional deployments, the snapshot-based cycle P&L as a fallback
@@ -274,9 +275,8 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
 
     # Per-position option price paths
     marks_by_pos: dict[str, list[tuple[int, float]]] = {}
-    for s in snapshots:
-        for pid, price in ((s["metadata"] or {}).get("marks") or {}).items():
-            marks_by_pos.setdefault(pid, []).append((_ms(s["snapshot_at"]), float(price)))
+    for m in await queries.list_marks_for_positions(pool, [p["id"] for p in positions], win_start, win_end):
+        marks_by_pos.setdefault(str(m["position_id"]), []).append((_ms(m["marked_at"]), m["price"]))
 
     kite_by_token: dict[int, list[tuple[int, float]]] = {}
     for token in sorted({int(p["instrument_token"]) for p in positions}):
@@ -373,7 +373,7 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
             + ("; the cycle's P&L line uses the 5-minute account snapshots instead." if snapshot_pnl else ".")
         )
     if any(po["price_source"] == "marks" for po in pos_out):
-        notes.append("Some legs use the app's own 5-minute price marks (the contract has expired on Kite).")
+        notes.append("Some legs use the app's own recorded price marks (1-min intraday, 5-min positional) — the contract has expired on Kite.")
 
     # Stats
     in_cycle = [c for c in underlying if _ms(start) - step_ms < c["t"] <= _ms(end)]

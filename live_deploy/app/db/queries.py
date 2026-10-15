@@ -1021,12 +1021,44 @@ async def list_lots_for_positions(pool: asyncpg.Pool, position_ids: list) -> lis
         )
 
 
+async def record_position_marks(pool: asyncpg.Pool, marks: list[tuple]) -> None:
+    """marks: [(position_id, deployment_id, marked_at, price)]. A repeat
+    of the same (position, minute) is ignored."""
+    if not marks:
+        return
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO position_marks (position_id, deployment_id, marked_at, price)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT DO NOTHING
+            """,
+            marks,
+        )
+
+
+async def list_marks_for_positions(
+    pool: asyncpg.Pool, position_ids: list, start: datetime, end: datetime,
+) -> list[asyncpg.Record]:
+    if not position_ids:
+        return []
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT position_id, marked_at, price::float8 AS price
+            FROM position_marks
+            WHERE position_id = ANY($1::uuid[]) AND marked_at BETWEEN $2 AND $3
+            ORDER BY position_id, marked_at
+            """,
+            position_ids, start, end,
+        )
+
+
 async def list_snapshots_between(
     pool: asyncpg.Pool, deployment_id: UUID, start: datetime, end: datetime,
 ) -> list[asyncpg.Record]:
     """Raw ~5-minute snapshot rows (not the one-per-day list_snapshots
-    view) in [start, end] — the Cycles chart reads their total_value and
-    the per-position price marks in metadata."""
+    view) in [start, end] — the Cycles chart's account-level P&L fallback."""
     async with pool.acquire() as conn:
         return await conn.fetch(
             """

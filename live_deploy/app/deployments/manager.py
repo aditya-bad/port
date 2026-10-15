@@ -35,7 +35,7 @@ overlap.
 
 import asyncio
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -56,6 +56,8 @@ logger = logging.getLogger("live_deploy.manager")
 # interval, instead of trusting the host machine's own OS timezone to
 # already be IST.
 _IST = ZoneInfo("Asia/Kolkata")
+# Window for position_marks (marks_loop).
+_MARKS_OPEN, _MARKS_CLOSE = time(9, 15), time(15, 30)
 
 # How often to record an equity-curve point per active deployment. This
 # is for a CHART, not a backtest engine or an audit trail (every fill is
@@ -554,6 +556,46 @@ class DeploymentManager:
         if self.cache is not None:
             await self.cache.refresh_now("portfolio_equity_curve")
 
+    # ── Per-position price marks (Cycle Replay chart) ──────────────────
+
+    async def marks_loop(self) -> None:
+        """Every minute, on the minute, during market hours: records each
+        open leg's last traded price (position_marks) — every minute for
+        intraday deployments, every 5th minute for positional ones. Kite
+        has no history for expired options, so these are what keep a
+        cycle's per-leg P&L curve drawable afterwards."""
+        while True:
+            now = datetime.now(_IST)
+            await asyncio.sleep(60 - now.second - now.microsecond / 1e6 + 0.5)
+            try:
+                await self.record_marks_once(datetime.now(_IST))
+            except Exception:
+                logger.exception("Recording position price marks failed — continuing")
+
+    async def record_marks_once(self, now: datetime) -> int:
+        marked_at = now.replace(second=0, microsecond=0)
+        if marked_at.weekday() >= 5 or not (_MARKS_OPEN <= marked_at.time() <= _MARKS_CLOSE):
+            return 0
+        session_open = datetime.combine(marked_at.date(), _MARKS_OPEN, _IST)
+        rows = []
+        for runner in list(self.runners.values()):
+            if runner.mode != "intraday" and marked_at.minute % 5 != 0:
+                continue
+            for token, pos in runner.open_positions.items():
+                price = self.dispatcher.last_prices.get(token)
+                traded_at = self.dispatcher.last_price_times.get(token)
+                if price is None or pos.get("id") is None:
+                    continue
+                # Skip a price still carrying a previous session's trade
+                # (holiday, not traded yet today) — it isn't today's mark.
+                if traded_at is not None:
+                    t = traded_at.astimezone(_IST) if traded_at.tzinfo else traded_at.replace(tzinfo=_IST)
+                    if t < session_open:
+                        continue
+                rows.append((pos["id"], runner.deployment_id, marked_at, price))
+        await queries.record_position_marks(self.pool, rows)
+        return len(rows)
+
     # ── Post-market state checkpoint (once a day, not on shutdown) ──────
 
     async def post_market_dump_loop(self) -> None:
@@ -695,16 +737,6 @@ class DeploymentManager:
         # there a lingering open position IS an intended part of the
         # account's value, not an artifact of the snapshot simply
         # landing mid-trade.
-        # Per-position price marks for the Cycles chart (routers/cycles.py):
-        # metadata only, never part of total_value. Kept for both modes so
-        # a cycle's per-position P&L history survives its contracts
-        # expiring (Kite has no history for expired options).
-        marks = {}
-        for token, pos in runner.open_positions.items():
-            price = self.dispatcher.last_prices.get(token)
-            if price is not None and pos.get("id") is not None:
-                marks[str(pos["id"])] = price
-
         open_positions_value = 0.0
         if runner.mode == "positional":
             # Mark-to-market off the runner's OWN already-loaded
@@ -723,7 +755,6 @@ class DeploymentManager:
             cash=runner.cash, open_positions_value=open_positions_value,
             total_value=runner.initial_capital + realized + open_positions_value,
             realized_pnl_cumulative=realized,
-            metadata={"marks": marks} if marks else None,
         )
 
     # ── Internal ─────────────────────────────────────────────────────

@@ -370,6 +370,10 @@ async def startup() -> None:
         manager.post_market_dump_loop(), name="post-market-dump-loop",
     )
 
+    # ── Per-leg price marks for the Cycle Replay chart (1-min intraday,
+    # 5-min positional) — see DeploymentManager.marks_loop.
+    app.state.marks_task = asyncio.create_task(manager.marks_loop(), name="position-marks-loop")
+
     logger.info(
         "live_deploy started — %d static token(s), mode=%s, %d deployment(s) resumed, "
         "kite_session=%s",
@@ -410,6 +414,13 @@ async def shutdown() -> None:
     post_market_dump_task.cancel()
     try:
         await post_market_dump_task
+    except asyncio.CancelledError:
+        pass
+
+    marks_task = app.state.marks_task
+    marks_task.cancel()
+    try:
+        await marks_task
     except asyncio.CancelledError:
         pass
 
