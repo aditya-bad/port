@@ -695,6 +695,16 @@ class DeploymentManager:
         # there a lingering open position IS an intended part of the
         # account's value, not an artifact of the snapshot simply
         # landing mid-trade.
+        # Per-position price marks for the Cycles chart (routers/cycles.py):
+        # metadata only, never part of total_value. Kept for both modes so
+        # a cycle's per-position P&L history survives its contracts
+        # expiring (Kite has no history for expired options).
+        marks = {}
+        for token, pos in runner.open_positions.items():
+            price = self.dispatcher.last_prices.get(token)
+            if price is not None and pos.get("id") is not None:
+                marks[str(pos["id"])] = price
+
         open_positions_value = 0.0
         if runner.mode == "positional":
             # Mark-to-market off the runner's OWN already-loaded
@@ -713,6 +723,7 @@ class DeploymentManager:
             cash=runner.cash, open_positions_value=open_positions_value,
             total_value=runner.initial_capital + realized + open_positions_value,
             realized_pnl_cumulative=realized,
+            metadata={"marks": marks} if marks else None,
         )
 
     # ── Internal ─────────────────────────────────────────────────────

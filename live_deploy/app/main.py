@@ -69,6 +69,7 @@ from .routers import notifications as notifications_router
 from .routers import strategies as strategies_router
 from .routers import tags as tags_router
 from .routers import ux_summary as ux_summary_router
+from .routers import cycles as cycles_router
 from .routers.aggregate import (
     fetch_portfolio_equity_curve, fetch_positions_open, fetch_strategy_leaderboard, fetch_trades_recent,
 )
@@ -103,6 +104,7 @@ app.include_router(tags_router.router)
 app.include_router(notifications_router.router)
 app.include_router(admin_router.router)
 app.include_router(ux_summary_router.router)
+app.include_router(cycles_router.router)
 
 # Middleware order matters: add_middleware() makes the MOST RECENTLY
 # added one OUTERMOST (it runs first on the way in, last on the way

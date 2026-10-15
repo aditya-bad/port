@@ -22,7 +22,8 @@ const Detail = {
   _statsTrendPeriod: 'day',   // Analytics tab's Recent Periods bucketing (Step 86) -- same persistence rule as _calendarRange above
   _statsGranularity: 'position',   // Step 103 -- "per position" (episodes, every overlapping leg/adjustment/roll combined) vs "per trade" (raw positions rows); defaults to "position" per explicit user request
 
-  _tabLabel: { overview: 'Overview', analytics: 'Analytics', history: 'History', configuration: 'Configuration' },
+  _tabLabel: { overview: 'Overview', analytics: 'Analytics', cycles: 'Cycle Replay', history: 'History', configuration: 'Configuration' },
+  _cycleKey: null,   // Cycle Replay tab's selected cycle -- reset per deployment in load()
 
   // Reads the tab straight from the URL hash (#/deployments/{id}/{tab})
   // rather than tracking it purely as in-memory state -- switchTab()
@@ -32,7 +33,7 @@ const Detail = {
     const clean = (window.location.hash || '').replace(/^#\/?/, '');
     const parts = clean.split('/');
     if (parts[0] !== 'deployments' || !parts[1]) return { id: null, section: 'overview' };
-    const section = ['overview', 'analytics', 'history', 'configuration'].includes(parts[2]) ? parts[2] : 'overview';
+    const section = ['overview', 'analytics', 'cycles', 'history', 'configuration'].includes(parts[2]) ? parts[2] : 'overview';
     return { id: parts[1], section };
   },
 
@@ -42,6 +43,7 @@ const Detail = {
     this._calendarRange = 'recent';
     this._statsTrendPeriod = 'day';
     this._statsGranularity = 'position';
+    this._cycleKey = null;
     const route = this._route();
     this._tab = route.section;
     document.getElementById('detailHeader').innerHTML = spinnerHtml();
@@ -99,7 +101,7 @@ const Detail = {
   },
 
   renderTabs() {
-    const tabs = ['overview', 'analytics', 'history', 'configuration'];
+    const tabs = ['overview', 'analytics', 'cycles', 'history', 'configuration'];
     const route = this._route();
     this._tab = route.section;
     const el = document.getElementById('detailTabs');
@@ -123,6 +125,7 @@ const Detail = {
     try {
       if (this._tab === 'overview') return await this.renderOverview();
       if (this._tab === 'analytics') return await this.renderAnalytics();
+      if (this._tab === 'cycles') return await this.renderCycles();
       if (this._tab === 'history') return await this.renderHistory();
       if (this._tab === 'configuration') return this.renderConfiguration();
     } catch (e) {
@@ -1052,6 +1055,142 @@ const Detail = {
   _historyTrades: [],
   _historyEvents: [],
   _historyPositions: [],
+
+  // ── Cycle Replay — one chart per cycle (positional episode, or an
+  // intraday trading day): how the underlying moved against the cycle's
+  // P&L, with every entry/adjustment/exit marked and each leg's P&L on
+  // hover. Data: routers/cycles.py; chart: cycle-chart.js. ─────────────
+  async renderCycles() {
+    this._stopLivePositionUpdates();
+    const body = document.getElementById('detailBody');
+    body.innerHTML = spinnerHtml();
+    const cycles = await Api.getCycles(this._id);
+    const unit = this._dep.mode === 'positional' ? 'cycle' : 'trading day';
+    if (!cycles.length) {
+      body.innerHTML = emptyHtml(`No trades yet — each ${unit} this deployment trades will appear here with its own replay chart.`);
+      return;
+    }
+    if (!cycles.some(c => c.key === this._cycleKey)) this._cycleKey = cycles[0].key;
+    this._cycles = cycles;
+    body.innerHTML = `
+      <section class="ux-section">
+        <div class="ux-section-head"><div><h2>Cycle replay</h2>
+          <div class="card-sub">${cycles.length} ${unit}${cycles.length === 1 ? '' : 's'}, newest first. Pick one to see how the underlying moved against its P&amp;L.</div></div></div>
+        <div class="table-wrap ux-cycle-list">${this._cycleListHtml(cycles)}</div>
+      </section>
+      <div id="uxCycleDetail"></div>`;
+    await this.selectCycle(this._cycleKey);
+  },
+
+  _cycleLabel(c) {
+    const start = new Date(c.start);
+    if (this._dep.mode !== 'positional') return fmtDate(c.start);
+    const end = c.end ? fmtDate(c.end) : 'open';
+    return `${fmtDate(start.toISOString())} → ${end}`;
+  },
+
+  _cycleListHtml(cycles) {
+    const rows = cycles.map(c => {
+      const pnl = pnlPreferred(c, 'realized_pnl', 'realized_pnl_net');
+      const dur = (c.end ? new Date(c.end) : new Date()) - new Date(c.start);
+      return `<tr class="ux-cycle-row ${c.key === this._cycleKey ? 'selected' : ''}" data-key="${escapeHtml(c.key)}"
+                  tabindex="0" onclick="Detail.selectCycle(this.dataset.key)"
+                  onkeydown="if(event.key==='Enter'){Detail.selectCycle(this.dataset.key)}">
+        <td>${escapeHtml(this._cycleLabel(c))}</td>
+        <td><span class="tag tag-${c.status === 'open' ? 'active' : 'stopped'}">${c.status}</span></td>
+        <td>${fmtDuration(dur)}</td>
+        <td>${c.positions}</td>
+        <td>${c.adjustments}</td>
+        <td class="${pnlClass(pnl)}"><b>${c.status === 'open' && !c.fills ? '—' : fmtSignedMoney(pnl)}</b>${c.status === 'open' ? ' <small class="card-sub">realized so far</small>' : ''}</td>
+      </tr>`;
+    }).join('');
+    return `<table class="ux-no-enhance"><thead><tr><th>${this._dep.mode === 'positional' ? 'Cycle' : 'Day'}</th><th>Status</th><th>Duration</th><th>Legs</th><th>Adjustments</th><th>Realized P&amp;L</th></tr></thead><tbody>${rows}</tbody></table>`;
+  },
+
+  async selectCycle(key) {
+    this._cycleKey = key;
+    document.querySelectorAll('.ux-cycle-row').forEach(r => r.classList.toggle('selected', r.dataset.key === key));
+    const el = document.getElementById('uxCycleDetail');
+    if (!el) return;
+    el.innerHTML = `<div class="empty"><span class="spinner"></span> Loading the underlying's and each leg's price history from Kite…</div>`;
+    let data;
+    try {
+      data = await Api.getCycleChart(this._id, key);
+    } catch (e) {
+      el.innerHTML = emptyHtml(`Could not load this cycle's chart — ${escapeHtml(e.message || String(e))}`);
+      return;
+    }
+    if (this._cycleKey !== key) return;   // a newer selection superseded this one
+    this._renderCycleDetail(el, data);
+  },
+
+  _renderCycleDetail(el, data) {
+    const s = data.stats;
+    const c = this._cycles.find(x => x.key === this._cycleKey) || {};
+    const u = s.underlying;
+    const finalPnl = data.cycle.status === 'closed'
+      ? pnlPreferred(s, 'realized_pnl', 'realized_pnl_net')
+      : [...data.series.pnl].reverse().find(v => v != null);
+    const tAt = ms => (ms ? new Date(ms).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' }) : '');
+    const tile = (label, value, sub) => `<div class="stat-card"><div class="stat-label">${label}</div><div class="stat-value">${value}</div>${sub ? `<div class="stat-sub">${sub}</div>` : ''}</div>`;
+    const tiles = [
+      tile(data.cycle.status === 'closed' ? 'Cycle P&amp;L' : 'Cycle P&amp;L (live, gross)',
+        `<span class="${pnlClass(finalPnl)}">${fmtSignedMoney(finalPnl)}</span>`,
+        `${s.positions} leg${s.positions === 1 ? '' : 's'} · ${s.adjustments} adjustment${s.adjustments === 1 ? '' : 's'} · ${fmtDuration(s.duration_minutes * 60000)}`),
+      u ? tile(`${escapeHtml(data.underlying_symbol || 'Underlying')} move`,
+        `<span class="${pnlClass(u.change)}">${u.change >= 0 ? '+' : ''}${fmtNum(u.change, 2)}</span>`,
+        `${fmtNum(u.open, 2)} → ${fmtNum(u.close, 2)} (${u.change_pct > 0 ? '+' : ''}${fmtPct(u.change_pct)})`) : '',
+      u ? tile('Underlying range', `${fmtNum(u.high - u.low, 2)} pts`,
+        `High ${fmtNum(u.high, 2)} · ${tAt(u.high_t)}<br>Low ${fmtNum(u.low, 2)} · ${tAt(u.low_t)}`) : '',
+      s.max_pnl != null ? tile('Best / worst point', `<span class="pos">${fmtSignedMoney(s.max_pnl)}</span>`,
+        `Best ${tAt(s.max_pnl_t)}<br>Worst <span class="${pnlClass(s.min_pnl)}">${fmtSignedMoney(s.min_pnl)}</span> · ${tAt(s.min_pnl_t)}`) : '',
+    ].join('');
+
+    const legend = `
+      <div class="cc-legend">
+        <span><i class="cc-key line underlying"></i>${escapeHtml(data.underlying_symbol || 'Underlying')} price</span>
+        <span><i class="cc-key line pnl"></i>Cycle P&amp;L (gross, green above zero / red below)</span>
+        <span><i class="cc-key dash"></i>Leg strikes, while held</span>
+        <span><i class="cc-key shape entry"></i>Entry</span>
+        <span><i class="cc-key shape adjustment"></i>Adjustment</span>
+        <span><i class="cc-key shape exit"></i>Exit</span>
+        ${data.snapshot_pnl.length && data.series.pnl.some(v => v == null) ? '<span><i class="cc-key dash snapshot"></i>P&amp;L from 5-min account snapshots</span>' : ''}
+        <label class="cc-toggle"><input type="checkbox" ${this._cycleStrikes === false ? '' : 'checked'} onchange="Detail._cycleStrikes = this.checked; CycleChart.setShowStrikes(this.checked)"> Show strikes</label>
+      </div>`;
+    const notes = [data.underlying_error, ...data.notes].filter(Boolean)
+      .map(n => `<div class="table-note">${escapeHtml(n)}</div>`).join('');
+
+    const evRows = data.events.map(ev => `<tr>
+      <td>${escapeHtml(tAt(ev.t))}</td>
+      <td><span class="cc-ev-tag ${ev.kind}">${ev.kind}</span></td>
+      <td>${ev.fills.map(f => `${f.opening ? (f.action === 'sell' ? 'Sold' : 'Bought') : (f.action === 'buy' ? 'Bought back' : 'Sold out')} ${escapeHtml(f.symbol)} @ ${fmtNum(f.price, 2)}`).join('<br>')}</td>
+      <td>${escapeHtml(ev.reason || '—')}</td></tr>`).join('');
+    const legRows = data.positions.map(p => `<tr>
+      <td>${escapeHtml(p.symbol)}</td><td>${p.side}</td><td>${p.strike != null ? fmtNum(p.strike, 2) : '—'}</td>
+      <td>${fmtNum(p.qty, 0)}</td><td>${fmtNum(p.entry_price, 2)}</td><td>${p.exit_price != null ? fmtNum(p.exit_price, 2) : '—'}</td>
+      <td>${escapeHtml(tAt(p.opened_at))}</td><td>${p.closed_at ? escapeHtml(tAt(p.closed_at)) : 'open'}</td>
+      <td class="${pnlClass(p.realized_pnl)}">${p.status === 'closed' ? fmtSignedMoney(p.realized_pnl) : '—'}</td>
+      <td>${{ kite: 'Kite history', marks: 'App marks (5-min)', none: 'Fills only' }[p.price_source]}</td></tr>`).join('');
+
+    el.innerHTML = `
+      <div class="stat-grid">${tiles}</div>
+      <section class="ux-section">
+        <div class="ux-section-head"><div><h2>${escapeHtml(this._cycleLabel(c))}</h2>
+          <div class="card-sub">Hover, tap or use ←/→ on the chart for the underlying, the cycle's P&amp;L and every leg's P&amp;L at that moment. ${data.window.interval} candles.</div></div></div>
+        ${legend}
+        <div class="cc-wrap" id="uxCycleChart"></div>
+        ${notes}
+      </section>
+      <section class="ux-section">
+        <div class="ux-section-head"><h2>Entries, adjustments &amp; exits</h2></div>
+        <div class="table-wrap"><table><thead><tr><th>When (IST)</th><th>Type</th><th>Fills</th><th>Reason</th></tr></thead><tbody>${evRows || '<tr><td colspan="4">No fills</td></tr>'}</tbody></table></div>
+      </section>
+      <section class="ux-section">
+        <div class="ux-section-head"><div><h2>Legs</h2><div class="card-sub">Realized P&amp;L is gross; the cycle's net figures follow the P&amp;L toggle in the cycle list above.</div></div></div>
+        <div class="table-wrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Strike</th><th>Qty</th><th>Entry</th><th>Exit</th><th>Opened</th><th>Closed</th><th>Realized</th><th>Price data</th></tr></thead><tbody>${legRows}</tbody></table></div>
+      </section>`;
+    CycleChart.render(document.getElementById('uxCycleChart'), data, { showStrikes: this._cycleStrikes !== false });
+  },
 
   async renderHistory() {
     this._stopLivePositionUpdates();

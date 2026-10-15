@@ -209,6 +209,17 @@ const Api = {
   // opt-in per strategy (see StrategyBase's own get_status_fields/
   // ADJUSTMENT_GROUP_BY docstrings) -- callers check `source`/
   // `supported` and render nothing when a strategy has neither.
+  // Cycle Replay tab -- routers/cycles.py.
+  async getCycles(id) {
+    const r = await fetch(`/deployments/${id}/cycles`);
+    if (!r.ok) throw new Error(`Could not load cycles (${r.status})`);
+    return r.json();
+  },
+  async getCycleChart(id, key) {
+    const r = await fetch(`/deployments/${id}/cycles/${encodeURIComponent(key)}/chart`);
+    if (!r.ok) throw new Error(`Could not load this cycle's chart (${r.status})`);
+    return r.json();
+  },
   async getStrategyStatus(id) {
     const r = await fetch(`/deployments/${id}/strategy-status`);
     if (!r.ok) throw new Error(`Could not load strategy status (${r.status})`);

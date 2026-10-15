@@ -1004,6 +1004,41 @@ async def record_snapshot(
         )
 
 
+async def list_lots_for_positions(pool: asyncpg.Pool, position_ids: list) -> list[asyncpg.Record]:
+    """Every fill of the given positions, oldest first (Cycles chart)."""
+    if not position_ids:
+        return []
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT pl.*, p.symbol, p.side
+            FROM position_lots pl
+            JOIN positions p ON p.id = pl.position_id
+            WHERE pl.position_id = ANY($1::uuid[])
+            ORDER BY pl.executed_at, pl.id
+            """,
+            position_ids,
+        )
+
+
+async def list_snapshots_between(
+    pool: asyncpg.Pool, deployment_id: UUID, start: datetime, end: datetime,
+) -> list[asyncpg.Record]:
+    """Raw ~5-minute snapshot rows (not the one-per-day list_snapshots
+    view) in [start, end] — the Cycles chart reads their total_value and
+    the per-position price marks in metadata."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT snapshot_at, total_value::float8 AS total_value, metadata
+            FROM deployment_snapshots
+            WHERE deployment_id = $1 AND snapshot_at BETWEEN $2 AND $3
+            ORDER BY snapshot_at
+            """,
+            deployment_id, start, end,
+        )
+
+
 async def list_snapshots(
     pool: asyncpg.Pool, deployment_id: UUID, limit: int = 1000,
 ) -> list[asyncpg.Record]:
@@ -1390,8 +1425,17 @@ def _group_into_episodes(positions: list, closing_reason_of: Optional[dict] = No
     closing_reason_of = closing_reason_of or {}
     episodes: list[dict] = []
     for p in positions:
+        # A leg opened while another is still open (strictly before the
+        # episode's latest close) is the same bet regardless of how that
+        # later leg eventually closes -- hard_stop only vetoes the
+        # tolerance BRIDGE across a flat gap. (It used to veto real
+        # overlap too, splitting every mid-cycle roll off into its own
+        # episode whenever the cycle later ended on checkpoint/stop.)
+        # Strict `<`: a re-entry at the exact instant of a stop/checkpoint
+        # close is a new cycle, not an overlap.
         if episodes and (
             episodes[-1]["end"] is None
+            or p["opened_at"] < episodes[-1]["end"]
             or (
                 not episodes[-1].get("hard_stop")
                 and p["opened_at"] <= episodes[-1]["end"] + _EPISODE_GAP_TOLERANCE

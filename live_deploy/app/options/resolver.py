@@ -658,6 +658,15 @@ class OptionsResolver:
 
         return (not reasons), "; ".join(reasons)
 
+    async def get_historical_candles(
+        self, instrument_token: int, start: datetime, end: datetime, interval: str,
+    ) -> list[dict]:
+        """kite.historical_data through the shared throttle. Kite returns
+        nothing (or an error) for expired option contracts; raises on API
+        failure, [] when it simply has no data."""
+        kite = self._kite()
+        return await self._kite_call(kite.historical_data, instrument_token, start, end, interval) or []
+
     async def get_quotes(self, keys: list[str]) -> dict:
         """Batched kite.quote() over `EXCHANGE:TRADINGSYMBOL` keys (chunked
         under quote()'s instrument cap). Raises on API failure."""
