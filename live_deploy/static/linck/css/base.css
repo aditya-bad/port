@@ -1,0 +1,125 @@
+/* Base: reset, layout variables, breakpoints, type scale. */
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; min-height: 100vh;
+  background: var(--paper); color: var(--ink);
+  font-family: var(--f-body); font-size: 15px; line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  padding-bottom: var(--pb);
+}
+a { color: inherit; text-underline-offset: 3px; }
+a:hover { color: var(--wt); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { background: none; border: 0; padding: 0; cursor: pointer; text-align: inherit; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid currentColor; outline-offset: -1px; }
+:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+svg { display: block; }
+[hidden] { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+:root {
+  --px: 40px;          /* page side padding */
+  --pb: 0px;           /* room for the phone bottom bar */
+  --h1: 40px;
+  --hdr: 64px;         /* header height */
+  --strip: 38px;       /* index strip height */
+  --mtop: 100px;       /* dialog top offset */
+  --g-hero: minmax(0, 1fr) 480px;
+  --g-two: minmax(0, 1.2fr) minmax(0, 1fr);
+  --g-side: minmax(0, 1.35fr) minmax(0, 1fr);
+  --g-lane: 310px minmax(0, 1fr) 120px 110px;
+  --lane-off: 310px;
+  --lane-rest: 540px;   /* name + today + action columns: lane-off + 230px */
+  --g-3: repeat(3, minmax(0, 1fr));
+  --g-4: repeat(4, minmax(0, 1fr));
+  --g-5: repeat(5, minmax(0, 1fr));
+  --g-6: repeat(6, minmax(0, 1fr));
+  --g-set: 220px minmax(0, 1fr);
+  --g-tool: 400px minmax(0, 1fr);
+  --g-wiz: 300px minmax(0, 1fr);
+  --odo: 132px;
+  --odo-f: 150px;
+}
+
+/* Breakpoints (see the spec's Layout section):
+ *  ≤1520  P&L basis and theme move into More
+ *  ≤1320  Reports, Strategies, Tools move into More
+ *  ≤1180  hero stacks, Close everything and Edit settings move into menus
+ *  ≤900   phone: bottom bar, stacked grids, cards for wide tables */
+.only-mid, .only-phone { display: none !important; }
+@media (max-width: 1520px) {
+  .hide-1520 { display: none !important; }
+  .only-mid { display: inline-flex !important; }
+}
+@media (max-width: 1320px) { .hide-1320 { display: none !important; } }
+@media (max-width: 1180px) {
+  :root { --g-hero: minmax(0, 1fr); }
+  .hide-1180 { display: none !important; }
+}
+@media (max-width: 900px) {
+  :root {
+    --px: 16px; --pb: 72px; --h1: 30px; --mtop: 40px;
+    --g-two: minmax(0, 1fr); --g-side: minmax(0, 1fr);
+    --g-lane: 122px minmax(0, 1fr) 84px 0px; --lane-off: 122px; --lane-rest: 206px;
+    --g-3: minmax(0, 1fr); --g-4: repeat(2, minmax(0, 1fr)); --g-5: repeat(2, minmax(0, 1fr)); --g-6: repeat(2, minmax(0, 1fr));
+    --g-set: minmax(0, 1fr); --g-tool: minmax(0, 1fr); --g-wiz: minmax(0, 1fr);
+    --odo: 66px; --odo-f: 76px;
+  }
+  .hide-phone { display: none !important; }
+  .only-mid { display: none !important; }
+  .only-phone { display: flex !important; }
+}
+
+/* Type */
+.t-h1 { font-family: var(--f-display); font-weight: 700; font-size: var(--h1); letter-spacing: -.035em; line-height: 1; margin: 0; text-wrap: balance; }
+.t-h2 { font-family: var(--f-display); font-weight: 700; font-size: 30px; letter-spacing: -.03em; line-height: 1.1; margin: 0; text-wrap: balance; }
+.t-h3 { font-family: var(--f-display); font-weight: 700; font-size: 22px; letter-spacing: -.01em; line-height: 1.2; margin: 0; }
+.t-h4 { font-family: var(--f-display); font-weight: 700; font-size: 20px; margin: 0; }
+.mono { font-family: var(--f-mono); font-weight: 500; }
+.mute { color: var(--mute); }
+.small { font-size: 13px; }
+.tiny { font-size: 12px; }
+.label { font-size: 13px; font-weight: 600; color: var(--mute); }
+.b { font-weight: 700; }
+.right { text-align: right; }
+.center { text-align: center; }
+.nowrap { white-space: nowrap; }
+.ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.pretty { text-wrap: pretty; }
+.pos { color: var(--g); }
+.neg { color: var(--r); }
+.flat { color: var(--mute); }
+.warn { color: var(--wt); }
+
+/* Layout helpers */
+.page { padding: 30px var(--px) var(--px); }
+.pad-x { padding-left: var(--px); padding-right: var(--px); }
+.row { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.row.base { align-items: baseline; }
+.row.wrap { flex-wrap: wrap; }
+.row.end { align-items: flex-end; }
+.col { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.grow { flex: 1; min-width: 0; }
+.stack { display: flex; flex-direction: column; }
+.grid-two { display: grid; grid-template-columns: var(--g-two); gap: 40px; }
+.grid-side { display: grid; grid-template-columns: var(--g-side); gap: 40px; align-items: start; }
+.scroll-x { overflow-x: auto; min-width: 0; }
+.noscroll { scrollbar-width: none; }
+.noscroll::-webkit-scrollbar { display: none; }
+.rule { border-top: 1.5px solid var(--ink); }
+.rule-b { border-bottom: 1.5px solid var(--ink); }
+.line-b { border-bottom: 1px solid var(--line); }
+
+@keyframes ping { 0% { box-shadow: 0 0 0 0 oklch(0.55 0.15 150 / .6); } 80%, 100% { box-shadow: 0 0 0 9px transparent; } }
+@keyframes grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes growx { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes spin { to { transform: rotate(360deg); } }
+.grow-y { transform-origin: bottom; animation: grow .7s ease both; }
+.grow-x { transform-origin: left; animation: growx .8s ease both; }
+.rise { animation: rise .35s ease both; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

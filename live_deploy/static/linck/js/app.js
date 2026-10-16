@@ -1,0 +1,163 @@
+// Linck boot: header, index strip, phone bar, routing, live updates.
+
+import { api } from './core/api.js';
+import { html, mount, $, on } from './core/dom.js';
+import { inr, pct, price, hhmmss, tone } from './core/format.js';
+import * as prefs from './core/prefs.js';
+import { BASES, basis, setBasis, cycleBasis, onBasis } from './core/basis.js';
+import { parse, go, href } from './core/router.js';
+import { listen } from './core/store.js';
+import * as book from './data/book.js';
+import { INDICES } from './data/config.js';
+import { prices, startTicks, startEvents, pollStatus, primeQuotes, kite } from './data/live.js';
+import { alerts } from './data/alerts.js';
+import { installTooltip } from './ui/tooltip.js';
+import { openDialog, isOpen, closeDialog } from './ui/dialog.js';
+import { say } from './ui/toast.js';
+import { closeEverything, kiteDialog } from './actions.js';
+
+const NAV = [
+  ['desk', 'Desk', ''], ['deployments', 'Deployments', ''], ['leaderboard', 'Leaderboard', ''], ['compare', 'Compare', ''],
+  ['reports', 'Reports', 'hide-1320'], ['strategies', 'Strategies', 'hide-1320'], ['tools', 'Tools', 'hide-1320'],
+];
+const BNAV = [['desk', 'Desk'], ['deployments', 'Deploys'], ['leaderboard', 'Leaders'], ['compare', 'Compare']];
+const IN_MORE = ['reports', 'strategies', 'tools', 'account'];
+
+const app = { route: null, page: null, cleanup: null, me: null };
+
+// ── Header ─────────────────────────────────────────────────────────
+function kiteChip() {
+  const s = kite.state;
+  if (s === 'connected') return html`<button type="button" class="kite-chip" data-act="kite"><i></i>Kite connected</button>`;
+  if (s === 'connecting') return html`<button type="button" class="kite-chip wait" data-act="kite"><i></i>Connecting…</button>`;
+  return html`<button type="button" class="kite-chip off" data-act="kite"><i></i><span class="long">Kite expired · Reconnect</span><span class="short">Reconnect</span></button>`;
+}
+function renderHeader() {
+  const cur = app.route ? app.route.nav : 'desk';
+  const n = alerts().length;
+  const initials = app.me ? app.me.username.slice(0, 2) : '··';
+  mount($('#top'), html`
+    <header class="hdr">
+      <a class="wordmark" href="${href('desk')}" aria-label="Linck, go to the Desk">Linck</a>
+      <nav class="nav hide-phone" aria-label="Main">${NAV.map(([k, l, c]) => html`
+        <a href="${href(k)}" class="${k === cur ? 'on' : ''} ${c}" ${k === cur ? html`aria-current="page"` : ''}>${l}</a>`)}</nav>
+      <span class="spacer"></span>
+      <div class="seg hide-1520" role="group" aria-label="P&L basis">${BASES.map(b => html`
+        <button type="button" class="${b.k === basis() ? 'on' : ''}" aria-pressed="${b.k === basis()}" data-act="basis" data-v="${b.k}" data-tip="${b.long || b.l}\n${b.tip}">${b.l}</button>`)}</div>
+      ${kiteChip()}
+      <button type="button" class="theme-btn hide-1520" data-act="theme" title="Theme"><i></i>${prefs.themeLabel()}</button>
+      <a class="alerts-btn" href="${href('desk')}" title="Things that need you"><i class="${n ? '' : 'zero'}">${n}</i><span class="hide-phone">Alerts</span></a>
+      <button type="button" class="btn btn-sm only-mid" data-act="more">More</button>
+      <button type="button" class="btn btn-sm btn-primary hide-1180 hide-phone" data-act="closeAll">Close everything…</button>
+      <a class="avatar ${cur === 'account' ? 'on' : ''}" href="${href('account')}" title="Account">${initials}</a>
+    </header>
+    <div class="strip-idx" id="strip" aria-label="Indices"></div>`);
+  renderStrip();
+  renderBnav();
+}
+function renderStrip() {
+  const el = $('#strip');
+  if (!el) return;
+  const live = kite.state === 'connected';
+  el.classList.toggle('frozen', !live);
+  const cells = INDICES.map(i => {
+    const t = prices.get(i.token);
+    const ch = t && t.prevClose ? (t.price / t.prevClose - 1) * 100 : null;
+    return html`<span class="ix"><b>${i.n}</b><span>${t ? price(t.price) : '—'}</span><span class="${tone(ch)}">${ch == null ? '' : pct(ch)}</span></span>`;
+  });
+  mount(el, html`${cells}<span class="grow"></span>${live
+    ? html`<span class="state on"><i></i>Live · ${hhmmss(new Date())} IST</span>`
+    : html`<span class="state off"><i></i>Not live · last known prices</span>`}`);
+}
+function renderBnav() {
+  const cur = app.route ? app.route.nav : 'desk';
+  const n = alerts().length;
+  mount($('#bnav'), html`${BNAV.map(([k, l]) => html`
+    <a href="${href(k)}" class="${k === cur ? 'on' : ''}"><span class="n">${k === 'desk' && n ? n : ''}</span>${l}</a>`)}
+    <button type="button" class="${IN_MORE.includes(cur) ? 'on' : ''}" data-act="more"><span class="n"></span>More</button>`);
+}
+
+export function openMore() {
+  const b = BASES.find(x => x.k === basis());
+  openDialog({
+    kicker: 'MENU', title: 'More', cancelLabel: 'Close',
+    menu: [
+      { l: 'Reports', h: 'Statements, account equity, exposure', run: () => go('reports') },
+      { l: 'Strategies', h: 'Catalogue and new deployments', run: () => go('strategies') },
+      { l: 'Tools', h: 'Brokerage, SIP, CAGR, instruments', run: () => go('tools') },
+      { l: 'Account', h: 'Kite, users, appearance, notifications, tags', run: () => go('account') },
+      { l: `Theme: ${prefs.themeLabel()}`, h: 'Switch Paper, Slate, Night', run: () => { prefs.cycleTheme(); openMore(); } },
+      { l: `P&L basis: ${b.long || b.l}`, h: 'Switch Gross, After charges, + Slippage', run: () => { cycleBasis(); openMore(); } },
+      { l: 'Close everything…', h: 'Emergency exit of every open position', run: closeEverything },
+      { l: 'Classic view', h: 'The previous interface, same data', run: toClassic },
+    ],
+  });
+}
+export function toClassic() {
+  try { localStorage.setItem('uiExperience', 'classic'); } catch (e) {}
+  window.location.href = '/';
+}
+
+// ── Pages ──────────────────────────────────────────────────────────
+async function route() {
+  const { route: r, params } = parse();
+  const changed = !app.route || app.route.path !== r.path;
+  app.route = r;
+  if (app.cleanup) { try { app.cleanup(); } catch (e) { /* page already gone */ } app.cleanup = null; }
+  if (isOpen()) closeDialog();
+  const main = $('#main');
+  let mod;
+  try { mod = (await r.load()).default; } catch (e) {
+    mount(main, html`<div class="page"><div class="empty"><b>This page didn’t load</b><span>${e.message}</span></div></div>`);
+    return;
+  }
+  if (app.route !== r) return;   // navigated away while loading
+  app.page = mod;
+  document.title = `${mod.title ? `${typeof mod.title === 'function' ? mod.title(params) : mod.title} · ` : ''}Linck`;
+  try {
+    app.cleanup = mod.render(main, params) || null;
+  } catch (e) {
+    console.error(e);
+    mount(main, html`<div class="page"><div class="empty"><b>Something went wrong on this page</b><span>${e.message}</span></div></div>`);
+  }
+  if (changed) window.scrollTo(0, 0);
+  renderHeader();
+}
+
+// ── Boot ───────────────────────────────────────────────────────────
+async function boot() {
+  prefs.apply();
+  installTooltip();
+  renderHeader();
+  const top = $('#top');
+  const handlers = {
+    basis: d => setBasis(d.v),
+    theme: () => prefs.cycleTheme(),
+    kite: () => kiteDialog(),
+    more: () => openMore(),
+    closeAll: () => closeEverything(),
+  };
+  const click = (e, el) => { const fn = handlers[el.dataset.act]; if (fn) { e.preventDefault(); fn(el.dataset); } };
+  on(top, 'click', '[data-act]', click);
+  on($('#bnav'), 'click', '[data-act]', click);
+
+  window.addEventListener('hashchange', route);
+  onBasis(() => { renderHeader(); route(); });
+  prefs.subscribe(() => renderHeader());
+  listen('status', () => { renderHeader(); });
+  listen('data', () => renderHeader());
+  listen('ticks', () => renderStrip());
+  setInterval(renderStrip, 1000);
+
+  startTicks();
+  startEvents();
+  pollStatus();
+  setInterval(pollStatus, 20000);
+  primeQuotes(INDICES.map(i => i.token));
+  prefs.sync();
+  api.me().then(me => { app.me = me; renderHeader(); }).catch(() => {});
+
+  route();
+  await book.load();
+}
+boot();

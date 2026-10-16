@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Linck</title>
+<meta name="description" content="Live options deployments: the session, positions, leaderboards and reports.">
+<meta name="theme-color" content="#f6f5f0">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icons/icon-192.png">
+<script>
+  // Apply saved appearance before first paint (mirrors js/core/prefs.js).
+  (function () {
+    var p = {};
+    try { p = JSON.parse(localStorage.getItem('linck-prefs') || '{}') || {}; } catch (e) {}
+    var r = document.documentElement, dark = false;
+    try { dark = matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) {}
+    r.setAttribute('data-th', p.theme || (dark ? 'night' : 'paper'));
+    r.setAttribute('data-pos', p.pos || 'green');
+    r.setAttribute('data-hl', p.hl || 'yellow');
+    r.setAttribute('data-ct', p.ct || 'std');
+    r.setAttribute('data-size', p.size || 'std');
+    r.setAttribute('data-font', p.font || 'linck');
+    try { localStorage.setItem('uiExperience', 'linck'); } catch (e) {}
+  })();
+</script>
+<link rel="preload" href="fonts/funnel-sans.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/martian-mono.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/funnel-display.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/components.css">
+<link rel="stylesheet" href="css/shell.css">
+<link rel="stylesheet" href="css/pages.css">
+<script src="/js/calculators.js"></script>
+<script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <a class="sr-only" href="#main">Skip to content</a>
+  <div class="top" id="top"></div>
+  <main id="main" tabindex="-1"></main>
+  <nav class="bnav only-phone" id="bnav" aria-label="Main"></nav>
+  <noscript><p style="padding:24px">Linck needs JavaScript. The classic view is at <a href="/">/</a>.</p></noscript>
+</body>
+</html>

@@ -1,0 +1,46 @@
+/* App frame: sticky header + index strip, phone bottom bar. */
+
+.top { position: sticky; top: 0; z-index: 20; background: var(--paper); }
+.hdr { display: flex; align-items: center; gap: clamp(10px, 1.6vw, 24px); height: var(--hdr); padding: 0 var(--px); border-bottom: 1.5px solid var(--ink); min-width: 0; }
+.wordmark { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.03em; text-decoration: none; flex: none; }
+.wordmark:hover { color: inherit; }
+.nav { display: flex; gap: 20px; flex: none; font-weight: 600; white-space: nowrap; }
+.nav > a { padding: 20px 0 17px; border-bottom: 3px solid transparent; color: var(--mute); text-decoration: none; }
+.nav > a.on { color: var(--ink); border-bottom-color: var(--ink); }
+.nav > a:hover { color: var(--ink); }
+.hdr .spacer { flex: 1; min-width: 0; }
+.hdr .seg > button { padding: 6px 10px; }
+.kite-chip { display: inline-flex; align-items: center; gap: 8px; flex: none; white-space: nowrap; font-size: 13px; font-weight: 700; padding: 7px 12px; border: 1.5px solid var(--line); }
+.kite-chip > i { width: 8px; height: 8px; display: inline-block; border-radius: 50%; background: var(--g); animation: ping 1.6s infinite; }
+.kite-chip.off { background: var(--ys); color: var(--wt); border-color: var(--wr); }
+.kite-chip.off > i { border-radius: 0; background: var(--wr); transform: rotate(45deg); animation: none; }
+.kite-chip.wait > i { background: var(--mute); animation: none; }
+.theme-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; white-space: nowrap; flex: none; }
+.theme-btn > i { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--ink); background: linear-gradient(90deg, var(--ink) 50%, var(--paper) 50%); }
+.alerts-btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; white-space: nowrap; flex: none; }
+.alerts-btn > i { min-width: 22px; height: 22px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; background: var(--y); font-family: var(--f-mono); font-size: 12px; font-style: normal; }
+.alerts-btn > i.zero { background: var(--soft); }
+.avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--soft); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; border: 1.5px solid transparent; flex: none; text-decoration: none; text-transform: uppercase; }
+.avatar.on { border-color: var(--ink); }
+
+.strip-idx { display: flex; height: var(--strip); align-items: center; gap: 40px; overflow-x: auto; padding: 0 var(--px); border-bottom: 1px solid var(--line); font-family: var(--f-mono); font-size: 12px; white-space: nowrap; scrollbar-width: none; }
+.strip-idx::-webkit-scrollbar { display: none; }
+.strip-idx .ix { display: flex; gap: 10px; }
+.strip-idx .ix b { font-weight: 700; }
+.strip-idx.frozen .ix { opacity: .55; }
+.strip-idx .state { display: flex; align-items: center; gap: 8px; font-family: var(--f-body); font-weight: 700; font-size: 13px; }
+.strip-idx .state.off { color: var(--wt); }
+.strip-idx .state.off > i { width: 8px; height: 8px; background: var(--wr); transform: rotate(45deg); display: inline-block; }
+.strip-idx .state.on { color: var(--g); }
+.strip-idx .state.on > i { width: 8px; height: 8px; border-radius: 50%; background: var(--g); display: inline-block; animation: ping 1.6s infinite; }
+
+.bnav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; height: 64px; background: var(--paper); border-top: 1.5px solid var(--ink); }
+.bnav > a, .bnav > button { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font-size: 12px; font-weight: 700; color: var(--mute); border-top: 3px solid transparent; margin-top: -1.5px; text-decoration: none; }
+.bnav > .on { color: var(--ink); border-top-color: var(--ink); }
+.bnav .n { font-family: var(--f-mono); font-size: 11px; min-height: 14px; color: var(--wt); }
+
+@media (max-width: 900px) {
+  .hdr { gap: 10px; }
+  .kite-chip .long { display: none; }
+}
+@media (min-width: 901px) { .kite-chip .short { display: none; } }

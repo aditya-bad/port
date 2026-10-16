@@ -1,0 +1,101 @@
+/* Linck design tokens.
+ *
+ * Every colour is a variable on <html>. Themes and preferences are
+ * attributes on <html> set by js/core/prefs.js:
+ *   data-th    paper | slate | night       (theme)
+ *   data-pos   green | ink                 (profit colour in charts)
+ *   data-hl    yellow | mint | lilac       (highlight colour)
+ *   data-ct    std | high                  (contrast)
+ *   data-size  sm | std | lg               (text size)
+ *   data-font  linck | plain               (typeface)
+ * To add a theme: add a block here and an entry in THEMES in prefs.js.
+ * To add a preference: add its attribute rules here and an entry in
+ * PREFS in prefs.js. Components only ever read the variables.
+ */
+
+@font-face { font-family: 'Funnel Display'; font-weight: 300 800; font-display: swap; src: url(../fonts/funnel-display.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2122, U+2191, U+2193, U+2212, U+2215; }
+@font-face { font-family: 'Funnel Display'; font-weight: 300 800; font-display: swap; src: url(../fonts/funnel-display-ext.woff2) format('woff2'); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1EFF, U+20A0-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'Funnel Sans'; font-weight: 300 800; font-display: swap; src: url(../fonts/funnel-sans.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2122, U+2191, U+2193, U+2212, U+2215; }
+@font-face { font-family: 'Funnel Sans'; font-weight: 300 800; font-display: swap; src: url(../fonts/funnel-sans-ext.woff2) format('woff2'); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1EFF, U+20A0-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: 'Martian Mono'; font-weight: 300 700; font-display: swap; src: url(../fonts/martian-mono.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+2122, U+2191, U+2193, U+2212, U+2215; }
+@font-face { font-family: 'Martian Mono'; font-weight: 300 700; font-display: swap; src: url(../fonts/martian-mono-ext.woff2) format('woff2'); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+1E00-1EFF, U+20A0-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
+
+:root {
+  /* Paper — warm off-white, the default */
+  --ink: oklch(0.2 0.01 90);
+  --paper: oklch(0.968 0.006 90);
+  --card: oklch(0.985 0.004 90);
+  --soft: oklch(0.94 0.008 90);
+  --line: oklch(0.86 0.01 90);
+  --line2: oklch(0.76 0.01 90);
+  --mute: oklch(0.48 0.01 90);
+  --y: oklch(0.88 0.13 95);        /* attention ground */
+  --ys: oklch(0.95 0.05 95);       /* attention tint, selected rows */
+  --wr: oklch(0.62 0.2 40);        /* error marker */
+  --wt: oklch(0.5 0.17 40);        /* error / warning text */
+  --g: oklch(0.5 0.14 150);        /* profit */
+  --r: oklch(0.55 0.2 28);         /* loss */
+  --gs: oklch(0.5 0.14 150 / .12); /* profit fill */
+  --rs: oklch(0.55 0.2 28 / .12);  /* loss fill, drawdown */
+  --b: oklch(0.6 0.13 250);        /* exit / adjust events, series 3 */
+  --c4: oklch(0.55 0.1 180);
+  --c5: oklch(0.5 0.13 330);
+  --bz: oklch(0.72 0.11 55);       /* third place */
+  --pos: var(--ink);               /* profit bars and fills (preference) */
+  --shadow: oklch(0 0 0 / .12);
+  --scrim: oklch(0 0 0 / .5);
+
+  --f-display: 'Funnel Display', 'Funnel Sans', system-ui, sans-serif;
+  --f-body: 'Funnel Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --f-mono: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+
+:root[data-th="slate"] {
+  --ink: oklch(0.22 0.03 255);
+  --paper: oklch(0.972 0.006 240);
+  --card: oklch(0.99 0.003 240);
+  --soft: oklch(0.945 0.01 240);
+  --line: oklch(0.87 0.012 240);
+  --line2: oklch(0.8 0.015 240);
+  --mute: oklch(0.48 0.025 250);
+  --y: oklch(0.86 0.12 85);
+  --ys: oklch(0.95 0.045 85);
+  --b: oklch(0.55 0.15 255);
+}
+
+:root[data-th="night"] {
+  --ink: oklch(0.93 0.008 85);
+  --paper: oklch(0.19 0.008 75);
+  --card: oklch(0.22 0.008 75);
+  --soft: oklch(0.255 0.01 75);
+  --line: oklch(0.32 0.01 75);
+  --line2: oklch(0.42 0.01 75);
+  --mute: oklch(0.7 0.01 85);
+  --y: oklch(0.45 0.1 85);
+  --ys: oklch(0.28 0.05 85);
+  --wr: oklch(0.7 0.18 45);
+  --wt: oklch(0.8 0.14 65);
+  --g: oklch(0.76 0.15 150);
+  --r: oklch(0.72 0.17 28);
+  --gs: oklch(0.76 0.15 150 / .14);
+  --rs: oklch(0.72 0.17 28 / .14);
+  --b: oklch(0.74 0.11 250);
+  --c4: oklch(0.75 0.1 180);
+  --c5: oklch(0.72 0.13 330);
+  --bz: oklch(0.6 0.1 55);
+  --shadow: oklch(0 0 0 / .4);
+  color-scheme: dark;
+}
+
+/* Preferences */
+:root[data-pos="green"] { --pos: var(--g); }
+:root[data-hl="mint"] { --y: oklch(0.86 0.12 165); --ys: oklch(0.95 0.045 165); }
+:root[data-hl="lilac"] { --y: oklch(0.84 0.09 300); --ys: oklch(0.95 0.035 300); }
+:root[data-th="night"][data-hl="mint"] { --y: oklch(0.45 0.09 165); --ys: oklch(0.28 0.04 165); }
+:root[data-th="night"][data-hl="lilac"] { --y: oklch(0.45 0.09 300); --ys: oklch(0.28 0.04 300); }
+:root[data-ct="high"] { --mute: oklch(0.34 0.01 90); --line: oklch(0.74 0.01 90); --line2: oklch(0.6 0.01 90); }
+:root[data-th="night"][data-ct="high"] { --mute: oklch(0.84 0.01 85); --line: oklch(0.45 0.01 75); --line2: oklch(0.58 0.01 75); }
+:root[data-font="plain"] { --f-display: 'Helvetica Neue', Helvetica, Arial, sans-serif; --f-body: 'Helvetica Neue', Helvetica, Arial, sans-serif; }
+:root[data-size="sm"] body { zoom: .92; }
+:root[data-size="lg"] body { zoom: 1.12; }
