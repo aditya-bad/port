@@ -15,11 +15,14 @@ export async function resume(d) {
 export async function flatten(d) {
   const ok = await confirm({
     title: `Close ${d.deployment_name}'s open positions?`,
-    description: 'Every open leg is closed at its last traded price and the deployment is paused, so it doesn’t re-enter straight away. Resume it whenever you’re ready.',
+    description: d.status === 'active'
+      ? 'Every open leg is closed at its last traded price. The deployment keeps running and will enter again whenever its own rules say so.'
+      : 'Every open leg is closed at its last traded price. The deployment stays paused.',
     confirmLabel: 'Close positions', danger: true,
   });
   if (!ok) return false;
-  try { const r = await api.flatten(d.id); toast('Positions closed', r && r.positions_closed != null ? `${r.positions_closed} leg(s) closed · ${d.deployment_name} is paused.` : ''); return true; }
+  const after = d.status === 'active' ? 'still running' : 'still paused';
+  try { const r = await api.flatten(d.id); toast('Positions closed', r && r.positions_closed != null ? `${r.positions_closed} leg(s) closed · ${d.deployment_name} is ${after}.` : ''); return true; }
   catch (e) { toastError(e, 'Couldn’t close positions'); return false; }
 }
 export async function stop(d, hasOpen) {

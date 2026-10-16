@@ -1400,11 +1400,14 @@ const Detail = {
   },
 
   // Closes every currently open position for THIS deployment at the
-  // last known price, without stopping it -- see manager.flatten's own
-  // docstring: pauses (or stays paused) so it can just be Resumed later
-  // with nothing left open, rather than needing force_close + recreate.
+  // last known price, without stopping or pausing it -- see
+  // manager.flatten's own docstring: an active deployment keeps running
+  // (and may re-enter by its own rules), a paused one stays paused.
   async flatten() {
-    if (!confirm(`Close every open position for "${this._dep.deployment_name}" right now, at the last known price? The deployment itself will be paused, not stopped -- you can Resume it once you're ready.`)) return;
+    const keepsRunning = this._dep.status === 'active'
+      ? 'The deployment keeps running and will enter again whenever its own rules say so.'
+      : 'The deployment stays paused.';
+    if (!confirm(`Close every open position for "${this._dep.deployment_name}" right now, at the last known price? ${keepsRunning}`)) return;
     const { ok, data } = await Api.flattenDeployment(this._id);
     if (!ok) { alert(data.detail || 'Could not flatten this deployment.'); return; }
     alert(`Closed ${data.positions_closed} position(s).`);

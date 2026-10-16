@@ -608,10 +608,10 @@ async def stop_deployment(deployment_id: UUID, request: Request, force_close: bo
 async def flatten_deployment(deployment_id: UUID, request: Request):
     """
     Close every open position for THIS ONE deployment, right now, at
-    the last known price -- WITHOUT stopping it (see manager.flatten's
-    own docstring: pauses if it was active, leaves it paused if it
-    already was, so it can just be Resumed later with nothing left
-    open, rather than having to be recreated). The single-deployment
+    the last known price -- WITHOUT stopping or pausing it (see
+    manager.flatten's own docstring: an active deployment keeps running
+    with its strategy rebuilt from the now-flat DB, a paused one stays
+    paused). The single-deployment
     counterpart to /flatten-all below, which does the same thing but
     indiscriminately to every non-stopped deployment -- this exists so
     "get this one out of a stuck position without touching anything

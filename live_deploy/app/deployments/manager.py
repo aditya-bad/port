@@ -326,17 +326,19 @@ class DeploymentManager:
         )
         logger.info("Stopped deployment %s (force_close=%s)", row["deployment_name"], force_close)
 
-    async def flatten(self, deployment_id: UUID) -> int:
+    async def flatten(self, deployment_id: UUID, pause_after: bool = False) -> int:
         """
-        The panic-button primitive: closes every open position for ONE
-        deployment at the last known price, then PAUSES it (not
-        stops) — deliberately in between the two existing primitives,
-        not a variant of either: pause() alone leaves positions open,
-        stop(force_close=True) closes them but permanently stops the
-        deployment (resume() explicitly refuses a 'stopped' one). This
-        is "get out of every position right now, decide what to do
-        about the deployment itself later" — same reversibility as a
-        manual pause, just with nothing left open when you get there.
+        Closes every open position for ONE deployment at the last known
+        price. The deployment keeps its status: an active one stays
+        active — its runner is stopped first (so the strategy can't act
+        mid-close), then restarted once everything is closed, so the
+        strategy rebuilds its in-memory state from the now-flat database
+        exactly as a resume would (it must not keep managing legs that no
+        longer exist). It may re-enter on its next signal, per its own
+        rules. `pause_after=True` (flatten_all, the panic button) leaves
+        it paused instead, so nothing re-enters. If the restart itself
+        fails, the deployment is left paused rather than claiming
+        "active" with no runner.
 
         Works on 'paused' deployments too, not just 'active' ones — a
         paused deployment can absolutely still have open positions
@@ -357,6 +359,12 @@ class DeploymentManager:
         if row["status"] == "stopped":
             return 0
 
+        was_active = row["status"] == "active"
+        if was_active:
+            runner = self.runners.pop(str(deployment_id), None)
+            if runner is not None:
+                await runner.stop()
+
         open_positions = await queries.list_open_positions(self.pool, deployment_id)
         for pos in open_positions:
             price = self.dispatcher.last_prices.get(int(pos["instrument_token"]))
@@ -376,14 +384,29 @@ class DeploymentManager:
                 ),
             )
 
-        if row["status"] == "active":
-            runner = self.runners.pop(str(deployment_id), None)
-            if runner is not None:
-                await runner.stop()
+        if was_active and pause_after:
             await queries.set_status(self.pool, deployment_id, "paused")
             await self._record_event(
                 deployment_id, row["deployment_name"], row["strategy_name"], "paused",
                 metadata={"reason": "flatten_all", "positions_closed": len(open_positions)},
+            )
+        elif was_active:
+            try:
+                await self._start_runner(await queries.get_deployment(self.pool, deployment_id))
+            except Exception:
+                logger.exception(
+                    "Flatten: %s could not be restarted after closing its positions — left paused",
+                    row["deployment_name"],
+                )
+                await queries.set_status(self.pool, deployment_id, "paused")
+                await self._record_event(
+                    deployment_id, row["deployment_name"], row["strategy_name"], "paused",
+                    metadata={"reason": "restart_failed_after_flatten", "positions_closed": len(open_positions)},
+                )
+                return len(open_positions)
+            await self._record_event(
+                deployment_id, row["deployment_name"], row["strategy_name"], "flattened",
+                metadata={"positions_closed": len(open_positions), "still_active": True},
             )
         elif open_positions:
             # Already paused -- no runner/status transition needed, but
@@ -500,7 +523,7 @@ class DeploymentManager:
         errors: list[dict] = []
         for row in targets:
             try:
-                closed = await self.flatten(row["id"])
+                closed = await self.flatten(row["id"], pause_after=True)
             except Exception as e:
                 logger.exception("flatten_all: failed to flatten deployment %s", row["deployment_name"])
                 errors.append({"deployment_name": row["deployment_name"], "error": str(e)})
