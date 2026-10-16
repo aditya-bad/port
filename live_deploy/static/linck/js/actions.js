@@ -13,6 +13,8 @@ import { openDialog } from './ui/dialog.js';
 import { say } from './ui/toast.js';
 
 const after = kinds => book.load(kinds || ['deployments', 'positions', 'session', 'book']);
+// Undo acts on the state after the action, not the objects captured before it.
+const fresh = list => list.map(v => book.find(v.id)).filter(Boolean);
 
 // The one action a row offers, by state.
 export function primary(v) {
@@ -30,7 +32,7 @@ export async function pause(list, { quiet = false } = {}) {
   }
   await after(['deployments']);
   if (!done.length || quiet) return;
-  say(`${done.length === 1 ? done[0].name : plural(done.length, 'deployment')} paused.`, () => resume(done, { quiet: true }));
+  say(`${done.length === 1 ? done[0].name : plural(done.length, 'deployment')} paused.`, () => resume(fresh(done), { quiet: true }));
 }
 export async function resume(list, { quiet = false } = {}) {
   const L = list.filter(v => v.rawStatus === 'paused');
@@ -42,7 +44,7 @@ export async function resume(list, { quiet = false } = {}) {
   await after(['deployments']);
   if (!done.length || quiet) return;
   const who = done.length === 1 ? done[0].name : plural(done.length, 'deployment');
-  say(`${who} resumed.${isLive() ? '' : ' It trades once Kite is connected.'}`, () => pause(done, { quiet: true }));
+  say(`${who} resumed.${isLive() ? '' : ' It trades once Kite is connected.'}`, () => pause(fresh(done), { quiet: true }));
 }
 
 // The exit orders for a set of legs, shorts first (longs last keeps

@@ -74,7 +74,7 @@ export default {
         })}</div>`;
       } else {
         const k = board, r = rank(k, judged), top3 = r.slice(0, 3), mx = Math.max(1e-9, ...r.map(x => Math.abs(val(k, x.m))));
-        const H = ['100%', '74%', '56%'];
+        const H = ['150px', '111px', '84px'];
         const sub = m => ((k === 'ret' || k === 'pnl') ? `R/DD ${K.rdd[1](m)} · ${plural(m.n, 'trade')}` : k === 'win' ? `PF ${K.pf[1](m)} · ${plural(m.n, 'trade')}` : k === 'rdd' ? `return ${pct(m.ret)} · DD ${K.dd[1](m)}` : `return ${pct(m.ret)}`);
         boardHtml = html`<div class="board pad-x"><div class="board-in">
           <div class="board-l">

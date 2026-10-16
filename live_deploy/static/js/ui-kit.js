@@ -199,6 +199,7 @@ UIKit.ensureTopbar = function ensureTopbar() {
       <button class="ux-status-btn" id="uxChargesToggle" title="Click to cycle: Gross → After charges → After charges + slippage" onclick="toggleCharges()"></button>
     </div>
     <div class="ux-topbar-right">
+      <button class="ux-linck-btn" title="The new interface. You can switch back any time from its More menu or Account." onclick="openLinck()">Try Linck</button>
       <button class="ux-icon-btn" title="Notifications" onclick="UIKit.toggleNotificationPanel(event)">🔔<span class="ux-unread-badge" id="uxUnreadBadge" style="display:none;">0</span></button>
       <button class="ux-icon-btn" title="Toggle theme" onclick="toggleTheme()">◐</button>
     </div>`;

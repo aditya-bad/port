@@ -31,9 +31,27 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="live_deploy">
 <script>
-// The "Desk" preview (static/next/) is withdrawn while it's redesigned:
-// no link to it, and anyone who opted in earlier lands back here.
-try { localStorage.removeItem('uiExperience'); } catch (e) {}
+// Linck (static/linck/), the new interface: once someone opts in, later
+// visits to / go straight there, carrying the current page across where
+// the two have an equivalent. Linck's "Classic view" sets this back.
+function linckHash(hash) {
+  var m = (hash || '').match(/^#\/deployments\/([0-9a-f-]{36})/i);
+  if (m) return '#/d/' + m[1];
+  var map = { '#/dashboard': '#/desk', '#/deployments': '#/deployments', '#/compare': '#/compare', '#/reports': '#/reports',
+    '#/portfolio': '#/reports', '#/catalog': '#/strategies', '#/tools': '#/tools', '#/instruments': '#/tools/instruments', '#/account': '#/account' };
+  return map[(hash || '').split('?')[0]] || '';
+}
+function openLinck() {
+  try { localStorage.setItem('uiExperience', 'linck'); } catch (e) {}
+  window.location.href = '/linck/' + linckHash(window.location.hash);
+}
+(function () {
+  try {
+    var x = localStorage.getItem('uiExperience');
+    if (x === 'next') localStorage.removeItem('uiExperience');   // the withdrawn Desk preview
+    if (x === 'linck') window.location.replace('/linck/' + linckHash(window.location.hash));
+  } catch (e) {}
+})();
 </script>
 <script>
 // Applied synchronously, before the stylesheet below is parsed and
@@ -2703,6 +2721,13 @@ table:not(.ux-compare-expanded) tr.ux-compare-secondary { display: none; }
     margin-bottom: 0;
   }
 }
+/* "Try Linck" — the switch to the new interface (static/linck/). */
+.ux-linck-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
+  border: 2px solid var(--line); background: var(--ink); color: var(--paper);
+  font: 700 11px var(--font-body); letter-spacing: .04em; text-transform: uppercase; cursor: pointer;
+}
+.ux-linck-btn:hover { background: var(--accent); }
 </style>
 </head>
 <body>
