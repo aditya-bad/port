@@ -8,7 +8,7 @@ import { html } from './core/dom.js';
 import { inr, plural, tone, price } from './core/format.js';
 import { go } from './core/router.js';
 import * as book from './data/book.js';
-import { kite, loginWithKite, isLive } from './data/live.js';
+import { kite, loginWithKite, isLive, pollStatus } from './data/live.js';
 import { openDialog } from './ui/dialog.js';
 import { say } from './ui/toast.js';
 
@@ -185,37 +185,78 @@ export function closeEverything() {
   });
 }
 
-export function kiteDialog() {
-  if (kite.state === 'connected') {
-    return openDialog({
-      kicker: 'BROKER', tone: 'good', title: 'Kite is connected',
-      lines: ['Prices are streaming and deployments can enter, adjust and exit.', 'Kite logins expire every morning at about 08:00. Reconnect before 09:15 so deployments can enter on time.'],
-      cancelLabel: 'Close',
-    });
+// Kite: one dialog for both states. Two ways in, same as classic:
+// the Zerodha popup, or pasting a request_token (or the whole redirect
+// URL it came back on) — optionally with a one-off API key/secret.
+export function requestTokenFrom(text) {
+  const t = (text || '').trim();
+  const m = /[?&]request_token=([^&#\s]+)/.exec(t);
+  return m ? decodeURIComponent(m[1]) : t;
+}
+export async function submitKiteToken(f) {
+  const request_token = requestTokenFrom(f.token);
+  if (!request_token) throw new Error('Paste the request_token, or the whole URL Zerodha redirected you to.');
+  const body = { request_token };
+  if (f.override) {
+    if (!f.api_key.trim() || !f.api_secret.trim()) throw new Error('Enter both the API key and the API secret, or turn the override off.');
+    body.api_key = f.api_key.trim(); body.api_secret = f.api_secret.trim();
   }
-  openDialog({
-    kicker: 'BROKER', title: 'Connect your Zerodha Kite account',
-    lines: [
-      'You’ll be sent to Zerodha to log in with your Kite ID, password and TOTP. Linck never sees your password.',
-      'Once connected, prices go live and deployments can enter, adjust and exit. The session lasts until about 08:00 tomorrow.',
+  const r = await api.kiteManualLogin(body);
+  await pollStatus();
+  return r;
+}
+export function kitePopup(onDone) {
+  const d = openDialog({
+    kicker: 'BROKER', title: 'Connecting to Kite', spin: 'Waiting for Zerodha to confirm your login…',
+    lines: ['A Zerodha login window opened. Finish logging in there.', 'If your browser blocked the popup, or the window lands on an error page, copy the request_token from its address bar and use “Paste a token” instead.'],
+    cancelLabel: 'Cancel',
+    alt: { label: 'Paste a token', run: () => kiteDialog({ paste: true }) },
+  });
+  return loginWithKite(ok => {
+    d.close();
+    say(ok ? 'Kite connected. Prices are live and deployments resume managing positions.' : 'Kite login didn’t finish. Prices stay frozen.');
+    if (onDone) onDone(ok);
+  }).catch(e => { d.close(); say(`Couldn’t start the Kite login: ${e.message}`); });
+}
+export function kiteDialog({ paste = false } = {}) {
+  const on = kite.state === 'connected';
+  const s = { paste, override: false };
+  return openDialog({
+    kicker: 'BROKER', tone: on ? 'good' : '',
+    title: on ? 'Kite is connected' : 'Connect your Zerodha Kite account',
+    lines: on
+      ? ['Prices are streaming and deployments can enter, adjust and exit.',
+        kite.lastTickAt ? `Last tick ${new Date(kite.lastTickAt).toLocaleTimeString('en-GB', { timeZone: 'Asia/Kolkata' })} IST.` : '',
+        'Kite logins expire every morning at about 08:00. To switch accounts or refresh the session, log in again or paste a new token below.']
+      : ['Log in on Zerodha with your Kite ID, password and TOTP. Linck never sees your password.',
+        kite.error ? `Last error: ${kite.error}` : '',
+        'Once connected, prices go live and deployments can enter, adjust and exit. The session lasts until about 08:00 tomorrow.'],
+    render: st => html`
+      <div class="row wrap" style="gap:8px">
+        <button type="button" class="chip strong ${!s.paste ? 'on' : ''}" data-kmode="popup">Log in on Zerodha</button>
+        <button type="button" class="chip strong ${s.paste ? 'on' : ''}" data-kmode="paste">Paste a request token</button>
+      </div>
+      ${s.paste ? html`<p class="small mute" style="margin:0">Finish Kite’s login in another tab, then paste the <span class="mono">request_token</span> from the address it redirects to. Pasting the whole URL works too.</p>
+        <button type="button" class="check" role="checkbox" aria-checked="${s.override}" data-kover><i></i>Use a different API key and secret, for this login only (never saved)</button>` : ''}`,
+    fields: [
+      { key: 'token', label: 'request_token or redirect URL', placeholder: 'e.g. Xy12AbCdEf… or https://…?request_token=…', show: () => s.paste },
+      { key: 'api_key', label: 'API key', placeholder: 'api_key', show: () => s.paste && s.override },
+      { key: 'api_secret', label: 'API secret', placeholder: 'api_secret', type: 'password', show: () => s.paste && s.override },
     ],
-    okLabel: 'Log in with Kite',
-    onOk: async () => {
-      const d = openDialog({
-        kicker: 'BROKER', title: 'Connecting to Kite', spin: 'Waiting for Zerodha to confirm your login…',
-        lines: ['A Zerodha login window opened. Finish logging in there.'],
-        cancelLabel: 'Cancel',
-      });
-      try {
-        await loginWithKite(ok => {
-          d.close();
-          say(ok ? 'Kite connected. Prices are live and deployments resume managing positions.' : 'Kite login didn’t finish. Prices stay frozen.');
-        });
-      } catch (e) {
-        d.close();
-        say(`Couldn’t start the Kite login: ${e.message}`);
-      }
+    okLabel: () => on ? (s.paste ? 'Reconnect with token' : 'Log in again') : (s.paste ? 'Connect' : 'Log in with Kite'),
+    armed: st => !s.paste || !!st.f.token.trim(),
+    cancelLabel: on ? 'Close' : 'Not now',
+    onClick: (e, st, repaint) => {
+      const m = e.target.closest('[data-kmode]'), o = e.target.closest('[data-kover]');
+      if (m) s.paste = m.dataset.kmode === 'paste';
+      if (o) s.override = !s.override;
+      if (m || o) { repaint(); return true; }
       return false;
+    },
+    onOk: async st => {
+      if (!s.paste) { kitePopup(); return false; }
+      const r = await submitKiteToken({ ...st.f, override: s.override });
+      say(r && r.kite_connected ? 'Kite connected. Prices are live.' : 'Token accepted. Waiting for the price stream to connect…');
     },
   });
 }

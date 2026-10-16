@@ -5,8 +5,11 @@
 // openDialog({
 //   kicker, hot, tone: 'warn'|'good', title, lines: [text],
 //   orders: [{ t, v, tone }], check: { label, value }, chips: { options, value },
-//   input: { label, placeholder, value, mono }, menu: [{ l, h, run }], spin,
-//   okLabel, armed: state => bool, onOk: async state => (true to close),
+//   input: { label, placeholder, value, mono },
+//   fields: [{ key, label, placeholder, type, mono, hint, show: state => bool }]  (values in state.f),
+//   menu: [{ l, h, run }], spin,
+//   okLabel (string or state => string), onClick: (event, state, repaint) for custom controls in render(),
+//   armed: state => bool, onOk: async state => (true to close),
 //   cancelLabel, alt: { label, run }, render: (state) => extra html
 // })
 
@@ -30,6 +33,7 @@ export function openDialog(spec) {
     checked: spec.check ? !!spec.check.value : false,
     pick: spec.chips ? spec.chips.value || null : null,
     busy: false, error: '',
+    f: Object.fromEntries((spec.fields || []).map(x => [x.key, x.value || ''])),
   };
   const scrim = document.createElement('div');
   scrim.className = 'scrim';
@@ -60,14 +64,26 @@ export function openDialog(spec) {
           ${spec.input && html`<label class="col" style="gap:6px"><b class="small">${spec.input.label}</b>
             <input class="input" data-input style="height:44px;${spec.input.mono === false ? '' : 'font-family:var(--f-mono);font-size:15px'}"
               placeholder="${spec.input.placeholder || ''}" value="${state.text}" autocomplete="off" ${spec.input.type ? html`type="${spec.input.type}"` : ''}></label>`}
+          ${(spec.fields || []).filter(x => !x.show || x.show(state)).map(x => html`<label class="col" style="gap:6px"><b class="small">${x.label}</b>
+            <input class="input" data-field="${x.key}" style="height:44px;${x.mono === false ? '' : 'font-family:var(--f-mono);font-size:14px'}"
+              placeholder="${x.placeholder || ''}" value="${state.f[x.key]}" autocomplete="off" spellcheck="false" type="${x.type || 'text'}">
+            ${x.hint && html`<span class="tiny mute">${x.hint}</span>`}</label>`)}
           ${state.error && html`<div class="err" role="alert">${state.error}</div>`}
         </div>
         <footer>
           ${spec.alt && html`<button type="button" class="btn" style="margin-right:auto" data-alt>${spec.alt.label}</button>`}
           <button type="button" class="btn btn-quiet" data-cancel>${spec.cancelLabel || 'Cancel'}</button>
-          ${spec.onOk && html`<button type="button" class="btn btn-primary" data-ok aria-disabled="${!ok}">${state.busy ? 'Working…' : spec.okLabel || 'Confirm'}</button>`}
+          ${spec.onOk && html`<button type="button" class="btn btn-primary" data-ok aria-disabled="${!ok}">${state.busy ? 'Working…' : (typeof spec.okLabel === 'function' ? spec.okLabel(state) : spec.okLabel) || 'Confirm'}</button>`}
         </footer>
       </div>`);
+    scrim.querySelectorAll('[data-field]').forEach(fi => {
+      fi.addEventListener('input', () => {
+        state.f[fi.dataset.field] = fi.value;
+        const btn = scrim.querySelector('[data-ok]');
+        if (btn) btn.setAttribute('aria-disabled', String(!armed()));
+      });
+      fi.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
+    });
     const inp = scrim.querySelector('[data-input]');
     if (inp) {
       inp.addEventListener('input', () => {
@@ -79,6 +95,8 @@ export function openDialog(spec) {
       });
       inp.addEventListener('keydown', e => { if (e.key === 'Enter') submit(); });
       if (keepFocus !== false) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+    } else if (keepFocus !== false && scrim.querySelector('[data-field]')) {
+      scrim.querySelector('[data-field]').focus();
     } else if (keepFocus !== false) {
       const f = scrim.querySelector('[data-ok]:not([aria-disabled="true"])') || scrim.querySelector('[data-cancel]');
       if (f) f.focus();
@@ -99,9 +117,10 @@ export function openDialog(spec) {
     if (e.target === scrim && !state.busy) return closeDialog();
     const t = e.target.closest('button');
     if (!t) return;
+    if (spec.onClick && spec.onClick(e, state, () => paint(false))) return;
     if (t.hasAttribute('data-cancel')) return closeDialog();
     if (t.hasAttribute('data-ok')) return submit();
-    if (t.hasAttribute('data-alt')) { closeDialog(); return spec.alt.run(); }
+    if (t.hasAttribute('data-alt')) { if (spec.alt.keep) return spec.alt.run(state, () => paint(false)); closeDialog(); return spec.alt.run(); }
     if (t.hasAttribute('data-check')) { state.checked = !state.checked; return paint(false); }
     if (t.dataset.pick) { state.pick = t.dataset.pick; state.text = ''; return paint(false); }
     if (t.dataset.menu != null) { closeDialog(); return spec.menu[+t.dataset.menu].run(); }

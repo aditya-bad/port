@@ -63,6 +63,8 @@
 .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; cursor: pointer; white-space: nowrap; }
 .check > i { width: 14px; height: 14px; border: 1.5px solid var(--ink); flex: none; display: inline-block; }
 .check[aria-checked="true"] > i { background: var(--ink); }
+.dialog .check { white-space: normal; align-items: flex-start; text-align: left; }
+.dialog .check > i { margin-top: 2px; }
 .box { width: 14px; height: 14px; border: 1.5px solid var(--ink); display: inline-block; cursor: pointer; flex: none; }
 .box.on { background: var(--ink); }
 

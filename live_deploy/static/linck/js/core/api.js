@@ -41,6 +41,7 @@ export const api = {
   createUser: (username, password) => post('/auth/users', { username, password }),
   kiteLoginUrl: () => req('/kite/login-url'),
   kiteStatus: () => req('/kite/status'),
+  kiteManualLogin: body => post('/kite/manual-login', body),
 
   // deployments (v1)
   deployments: () => req('/deployments'),

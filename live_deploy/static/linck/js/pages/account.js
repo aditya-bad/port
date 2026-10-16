@@ -48,7 +48,7 @@ export default {
             <div class="kite-card">
               <div class="row kite-card-head ${live ? 'good' : ''}"><span class="dot ${live ? 'live' : 'off'}"></span>
                 <h3 class="t-h3 grow">${live ? 'Kite connected' : kite.state === 'connecting' ? 'Connecting…' : 'Kite session expired'}</h3>
-                ${live ? '' : html`<button type="button" class="btn btn-primary" data-act="kite">Reconnect Kite</button>`}</div>
+                <button type="button" class="btn ${live ? '' : 'btn-primary'}" data-act="kite">${live ? 'Reconnect or paste token' : 'Connect Kite'}</button></div>
               <div class="kv-grid" style="grid-template-columns:140px 1fr;padding:16px 20px;gap:8px 12px">
                 <span class="mute">Session</span><b>${live ? 'Valid until about 08:00 tomorrow' : 'Expired. Log in again to resume trading.'}</b>
                 <span class="mute">Live data</span><b>${live ? `Streaming${subs != null ? `, ${plural(subs, 'instrument')}` : ''}` : 'Not streaming. Prices are frozen.'}</b>

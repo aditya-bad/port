@@ -32,6 +32,15 @@ function kiteChip() {
   if (s === 'connecting') return html`<button type="button" class="kite-chip wait" data-act="kite"><i></i>Connecting…</button>`;
   return html`<button type="button" class="kite-chip off" data-act="kite"><i></i><span class="long">Kite expired · Reconnect</span><span class="short">Reconnect</span></button>`;
 }
+// P&L basis is always one tap away: full labels on wide screens, the
+// short stamps on laptops and tablets, one cycling chip on phones.
+function basisControl() {
+  const cur = basis(), b = BASES.find(x => x.k === cur);
+  const seg = (cls, lab) => html`<div class="seg basis-seg ${cls}" role="group" aria-label="P&L basis">${BASES.map(x => html`
+    <button type="button" class="${x.k === cur ? 'on' : ''}" aria-pressed="${x.k === cur}" data-act="basis" data-v="${x.k}" data-tip="${x.long || x.l}\n${x.tip}">${lab(x)}</button>`)}</div>`;
+  return html`${seg('hide-1520', x => x.l)}${seg('only-mid', x => x.stamp)}
+    <button type="button" class="basis-chip only-phone" data-act="basisNext" aria-label="P&L basis: ${b.long || b.l}. Tap to switch." data-tip="${b.long || b.l}\n${b.tip}\nTap to switch">${b.stamp}<i aria-hidden="true">⇄</i></button>`;
+}
 function renderHeader() {
   const cur = app.route ? app.route.nav : 'desk';
   const n = alerts().length;
@@ -42,8 +51,7 @@ function renderHeader() {
       <nav class="nav hide-phone" aria-label="Main">${NAV.map(([k, l, c]) => html`
         <a href="${href(k)}" class="${k === cur ? 'on' : ''} ${c}" ${k === cur ? html`aria-current="page"` : ''}>${l}</a>`)}</nav>
       <span class="spacer"></span>
-      <div class="seg hide-1520" role="group" aria-label="P&L basis">${BASES.map(b => html`
-        <button type="button" class="${b.k === basis() ? 'on' : ''}" aria-pressed="${b.k === basis()}" data-act="basis" data-v="${b.k}" data-tip="${b.long || b.l}\n${b.tip}">${b.l}</button>`)}</div>
+      ${basisControl()}
       ${kiteChip()}
       <button type="button" class="theme-btn hide-1520" data-act="theme" title="Theme"><i></i>${prefs.themeLabel()}</button>
       <a class="alerts-btn" href="${href('desk')}" title="Things that need you"><i class="${n ? '' : 'zero'}">${n}</i><span class="hide-phone">Alerts</span></a>
@@ -132,6 +140,7 @@ async function boot() {
   const top = $('#top');
   const handlers = {
     basis: d => setBasis(d.v),
+    basisNext: () => { cycleBasis(); const b = BASES.find(x => x.k === basis()); say(`P&L now shown ${b.k === 'gross' ? 'gross, before charges' : b.k === 'charges' ? 'after charges' : 'after charges and slippage'}.`); },
     theme: () => prefs.cycleTheme(),
     kite: () => kiteDialog(),
     more: () => openMore(),
