@@ -3,7 +3,7 @@
 
 import { api } from '../core/api.js';
 import { html, raw, mount, $, $$, actions, setText, setTone } from '../core/dom.js';
-import { inr, inrS, price, hhmm, hhmmss, dLong, sessionFrac, sessionLeft, isSessionOpen, plural, tone, toneVar, ist, OPEN_MIN, SESSION_MIN } from '../core/format.js';
+import { shortSymbol, inr, inrS, price, hhmm, hhmmss, dLong, sessionFrac, sessionLeft, isSessionOpen, plural, tone, toneVar, ist, OPEN_MIN, SESSION_MIN } from '../core/format.js';
 import { current as basisNow } from '../core/basis.js';
 import { ui, listen } from '../core/store.js';
 import { go, href } from '../core/router.js';
@@ -141,7 +141,7 @@ function lanesBlock(list, frac) {
     <div class="pad-x" style="padding-bottom:30px">
       <div class="lane-axis">
         <b class="small">${plural(total, 'deployment')}</b>
-        <div class="axis">${HOURS.map((t, i) => html`<span style="left:${i * 60 / 375 * 100}%">${t}</span>`)}
+        <div class="axis">${HOURS.map((t, i) => html`<span class="${i % 3 ? 'hide-phone' : ''}" style="left:${i * 60 / 375 * 100}%">${t}</span>`)}
           ${isSessionOpen() ? html`<span class="now-chip" style="left:${frac * 100}%">${hhmm(new Date())}</span>` : ''}</div>
         <b class="small right">Today</b><span></span>
       </div>
@@ -189,7 +189,7 @@ function positionsBlock(list, T) {
       <div class="sect ruled"><h3 class="t-h3">Open positions</h3><span class="mute">${plural(T.legs, 'leg')}, grouped by deployment</span><span class="grow"></span>
         <span class="mono ${tone(T.unreal)}" id="unrTot">${inr(T.unreal)}</span></div>
       ${withLegs.length ? html`
-        <div class="tr th legs-grid"><span></span><span>Instrument</span><span class="right">Qty</span><span class="right">Entry</span><span class="right">LTP</span><span class="right">P&L</span></div>
+        <div class="tr th legs-grid"><span class="hide-phone"></span><span>Instrument</span><span class="right">Qty</span><span class="right hide-phone">Entry</span><span class="right">LTP</span><span class="right">P&L</span></div>
         ${withLegs.slice(0, 8).map(v => {
           const x = book.live(v);
           return html`
@@ -197,8 +197,8 @@ function positionsBlock(list, T) {
               <span class="tiny b warn">${v.status === 'error' ? 'ERROR' : v.rawStatus === 'paused' ? 'PAUSED' : ''}</span><span class="grow"></span>
               <span class="mono small ${tone(x.unreal)}" data-grp="${v.id}">${inr(x.unreal)}</span></a>
             ${v.legs.map(p => { const pnl = book.legPnl(p); return html`
-              <div class="tr legs-grid leg"><span class="b mute">${p.side === 'short' ? 'S' : 'B'}</span><span class="ell">${p.symbol}</span>
-                <span class="right">${Number(p.qty)}</span><span class="right mute">${price(p.avg_entry_price)}</span>
+              <div class="tr legs-grid leg"><span class="b mute hide-phone">${p.side === 'short' ? 'S' : 'B'}</span><span class="ell"><b class="only-phone-in mute">${p.side === 'short' ? 'S ' : 'B '}</b><span class="hide-phone">${p.symbol}</span><span class="only-phone-in">${shortSymbol(p.symbol)}</span></span>
+                <span class="right">${Number(p.qty)}</span><span class="right mute hide-phone">${price(p.avg_entry_price)}</span>
                 <span class="right" data-ltp="${p.id}">${price(book.legPrice(p))}</span><span class="right ${tone(pnl)}" data-pnl="${p.id}">${inr(pnl)}</span></div>`; })}`;
         })}
         ${withLegs.length > 8 ? html`<a class="linkish" style="display:inline-block;padding-top:12px" href="${href('deployments')}">+ ${plural(withLegs.length - 8, 'more deployment')} holding positions</a>` : ''}`

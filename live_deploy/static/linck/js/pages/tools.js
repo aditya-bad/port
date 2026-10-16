@@ -109,11 +109,11 @@ export default {
         <div class="row wrap"><input class="input" style="width:420px;max-width:100%;height:42px" type="search" placeholder="Search NIFTY 26NOV 25000 CE, RELIANCE…" value="${q}" data-iq aria-label="Search instruments">
           <span class="mute small">${subs ? `${plural(subs.length, 'instrument')} streaming` : ''}</span></div>
         ${searchErr ? html`<div class="err">${searchErr}</div>` : ''}
-        <div class="tr th inst-grid"><span>Instrument</span><span>Type</span><span>Exchange</span><span class="right">Live prices</span></div>
+        <div class="tr th inst-grid"><span>Instrument</span><span class="hide-phone">Type</span><span class="hide-phone">Exchange</span><span class="right">Live prices</span></div>
         ${subs === null || searching ? loading(4) : list.length ? list.slice(0, 40).map(i => {
           const on = subset.has(i.token), used = held.has(i.token);
-          return html`<div class="tr inst-grid"><span class="mono small">${i.sym}</span><span class="small mute">${i.type}</span><span class="small mute">${i.ex}</span>
-            <span class="row" style="justify-content:flex-end;gap:8px"><span class="tiny mute">${used ? 'held by a deployment' : i.fixed ? 'used by the app' : ''}</span>
+          return html`<div class="tr inst-grid"><span class="mono small ell">${i.sym}</span><span class="small mute hide-phone">${i.type}</span><span class="small mute hide-phone">${i.ex}</span>
+            <span class="row" style="justify-content:flex-end;gap:8px"><span class="tiny mute hide-phone">${used ? 'held by a deployment' : i.fixed ? 'used by the app' : ''}</span>
               <button type="button" class="toggle sm" role="switch" aria-checked="${on}" aria-label="Stream ${i.sym}" data-act="sub" data-t="${i.token}" data-s="${i.sym}"
                 ${(on && (used || i.fixed)) ? html`aria-disabled="true" data-reason="${i.sym} is ${used ? 'used by open positions' : 'used by the app'} and can’t be unsubscribed."` : ''}></button></span></div>`;
         }) : empty('', q.length >= 2 ? 'No instruments match.' : 'Nothing subscribed.')}

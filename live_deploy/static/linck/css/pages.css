@@ -37,7 +37,8 @@
 .lane.att { background: var(--ys); }
 .lanes.compact .lane { min-height: 44px; }
 .lane-name { display: flex; flex-direction: column; gap: 1px; padding: 6px 14px 6px 0; min-width: 0; text-decoration: none; }
-.lane-name .tiny { padding-left: 17px; text-wrap: pretty; }
+.lane-name { overflow: hidden; }
+.lane-name .tiny { padding-left: 17px; text-wrap: pretty; overflow-wrap: anywhere; }
 .lane-name b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lane-plot { position: relative; height: 62px; }
 .lanes.compact .lane-plot { height: 44px; }
@@ -234,7 +235,7 @@ a.cell-name:hover b { text-decoration: underline; }
 .mcell.best .mono { font-weight: 700; }
 
 /* ── Reports ────────────────────────────────────────────────── */
-.stmt { grid-template-columns: minmax(0, 1fr) 140px 140px 140px 80px; min-width: 620px; text-decoration: none; }
+.stmt { grid-template-columns: minmax(160px, 1fr) 140px 140px 140px 80px; min-width: 720px; text-decoration: none; }
 .contrib { display: grid; grid-template-columns: minmax(0, 180px) minmax(0, 1fr) 96px; gap: 10px; align-items: center; min-height: 34px; border-bottom: 1px solid var(--line); text-decoration: none; }
 .contrib:hover { background: var(--soft); }
 .capbar { display: flex; height: 34px; border: 1.5px solid var(--ink); }
@@ -270,14 +271,15 @@ a.cell-name:hover b { text-decoration: underline; }
 
 /* ── Tools ──────────────────────────────────────────────────── */
 .tools-grid { display: grid; grid-template-columns: var(--g-tool); gap: 56px; align-items: start; }
-.tbig { font-family: var(--f-display); font-weight: 700; font-size: 84px; letter-spacing: -.05em; line-height: 1; }
+.tbig { font-family: var(--f-display); font-weight: 700; font-size: 84px; letter-spacing: -.05em; line-height: 1.12; padding-top: 10px; }
 .tout { display: grid; grid-template-columns: var(--g-3); border-top: 1.5px solid var(--ink); }
 .tout > div { padding: 12px 16px 12px 0; }
 .tbars { display: flex; gap: 6px; height: 220px; align-items: flex-end; border-bottom: 1.5px solid var(--ink); }
 .tbars > div { flex: 1; height: 100%; position: relative; }
 .tbars > div > i { position: absolute; left: 0; right: 0; bottom: 0; display: block; }
 .inst-grid { grid-template-columns: minmax(0, 1fr) 100px 90px 200px; }
-@media (max-width: 900px) { .tbig { font-size: 52px; } .inst-grid { grid-template-columns: minmax(0, 1fr) 0 0 150px; } }
+.inst-grid > .right { min-width: 0; }
+@media (max-width: 900px) { .tbig { font-size: 52px; } .inst-grid { grid-template-columns: minmax(0, 1fr) 60px; } }
 
 /* ── Account ────────────────────────────────────────────────── */
 .kite-card { border: 1.5px solid var(--ink); }
@@ -291,3 +293,13 @@ a.cell-name:hover b { text-decoration: underline; }
 .theme-prev > i { height: 6px; width: 60%; display: block; }
 .seg .sw { width: 10px; height: 10px; display: inline-block; margin-right: 6px; vertical-align: -1px; }
 @media (max-width: 900px) { .themes { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+/* Phone tables: fold side into the symbol, drop Entry */
+.only-phone-in { display: none; }
+@media (max-width: 900px) {
+  .only-phone-in { display: inline; }
+  .legs-grid { grid-template-columns: minmax(0, 1fr) 40px 76px 86px; min-width: 0; }
+  .leg-group { min-width: 0; }
+  .hold-grid { grid-template-columns: minmax(0, 1fr) 40px 76px 86px; min-width: 0; font-size: 12px; }
+  .lane-name .tiny { padding-left: 0; }
+}

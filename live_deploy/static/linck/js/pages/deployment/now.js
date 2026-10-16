@@ -3,7 +3,7 @@
 
 import { api } from '../../core/api.js';
 import { html, mount, $, setText, setTone } from '../../core/dom.js';
-import { inr, price, dStamp, hhmm, plural, tone } from '../../core/format.js';
+import { shortSymbol, inr, price, dStamp, hhmm, plural, tone } from '../../core/format.js';
 import { pnlOf } from '../../core/basis.js';
 import { listen } from '../../core/store.js';
 import * as book from '../../data/book.js';
@@ -48,10 +48,10 @@ export default {
             <div class="scroll-x">
               ${sect('Holding now', v.legs.length ? plural(v.legs.length, 'leg') : 'no open legs', html`<span class="mono ${tone(x.unreal)}" data-unr>${inr(x.unreal)}</span>`)}
               ${v.legs.length ? html`
-                <div class="tr th hold-grid"><span>Instrument</span><span>Side</span><span class="right">Qty</span><span class="right">Entry</span><span class="right">LTP</span><span class="right">P&L</span></div>
+                <div class="tr th hold-grid"><span>Instrument</span><span class="hide-phone">Side</span><span class="right">Qty</span><span class="right hide-phone">Entry</span><span class="right">LTP</span><span class="right">P&L</span></div>
                 ${v.legs.map(p => { const pnl = book.legPnl(p); return html`
-                  <div class="tr hold-grid mono"><span class="ell">${p.symbol}</span><span class="b" style="font-family:var(--f-body)">${p.side === 'short' ? 'Short' : 'Long'}</span>
-                    <span class="right">${Number(p.qty)}</span><span class="right mute">${price(p.avg_entry_price)}</span>
+                  <div class="tr hold-grid mono"><span class="ell"><b class="only-phone-in mute" style="font-family:var(--f-body)">${p.side === 'short' ? 'S ' : 'L '}</b><span class="hide-phone">${p.symbol}</span><span class="only-phone-in">${shortSymbol(p.symbol)}</span></span><span class="b hide-phone" style="font-family:var(--f-body)">${p.side === 'short' ? 'Short' : 'Long'}</span>
+                    <span class="right">${Number(p.qty)}</span><span class="right mute hide-phone">${price(p.avg_entry_price)}</span>
                     <span class="right" data-ltp="${p.id}">${price(book.legPrice(p))}</span><span class="right ${tone(pnl)}" data-pnl="${p.id}">${inr(pnl)}</span></div>`; })}`
                 : empty('', v.rawStatus === 'stopped' ? 'Stopped and flat.' : `Flat. Waiting for the next entry${v.raw.config && v.raw.config.entry_time ? ` at ${v.raw.config.entry_time}` : ''}.`)}
             </div>

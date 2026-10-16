@@ -57,6 +57,11 @@ export function num(v, dp = 2) {
   const n = Number(v);
   return (n < 0 ? MINUS : '') + Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: dp, minimumFractionDigits: dp });
 }
+// NIFTY26NOV25600CE → "25600 CE · 26NOV" (strike first, for narrow screens)
+export function shortSymbol(sym) {
+  const m = /^([A-Z&]+?)(\d{2}(?:[A-Z]{3}|[1-9OND]\d{2}))(\d+(?:\.\d+)?)(CE|PE)$/.exec(sym || '');
+  return m ? `${m[3]} ${m[4]} · ${m[2]}` : sym;
+}
 export const tone = v => (!isNum(v) ? 'flat' : v > 0.5 ? 'pos' : v < -0.5 ? 'neg' : 'flat');
 export const toneVar = v => ({ pos: 'var(--g)', neg: 'var(--r)', flat: 'var(--mute)' }[tone(v)]);
 export const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;

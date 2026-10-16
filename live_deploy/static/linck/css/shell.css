@@ -1,6 +1,6 @@
 /* App frame: sticky header + index strip, phone bottom bar. */
 
-.top { position: sticky; top: 0; z-index: 20; background: var(--paper); }
+.appbar { position: sticky; top: 0; z-index: 20; background: var(--paper); }
 .hdr { display: flex; align-items: center; gap: clamp(10px, 1.6vw, 24px); height: var(--hdr); padding: 0 var(--px); border-bottom: 1.5px solid var(--ink); min-width: 0; }
 .wordmark { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.03em; text-decoration: none; flex: none; }
 .wordmark:hover { color: inherit; }

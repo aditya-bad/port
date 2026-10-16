@@ -50,9 +50,13 @@ export function openWizard({ strategy, copy } = {}) {
     Object.assign(w, { step: 1, name: `${copy.name} copy`, mode: copy.modeKey, idx: indexByName(copy.index) ? copy.index : w.idx, cap: String(copy.cap), copy: copy.name });
   } else if (strategy) { pick(strategy); w.step = 1; }
 
-  const close = () => { off(); el.remove(); document.body.style.overflow = ''; document.removeEventListener('keydown', onKey); };
+  const close = () => {
+    off(); el.remove(); document.body.style.overflow = '';
+    document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', close);
+  };
   const onKey = e => { if (e.key === 'Escape' && !w.busy) close(); };
   document.addEventListener('keydown', onKey);
+  window.addEventListener('hashchange', close);   // Back / any navigation closes it
 
   function errs() {
     const all = book.deployments();
