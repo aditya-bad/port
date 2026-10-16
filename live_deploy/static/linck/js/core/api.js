@@ -14,7 +14,7 @@ async function req(path, { method = 'GET', body } = {}) {
     throw new Error('Can’t reach the server. It may be restarting; try again in a moment.');
   }
   if (r.status === 401) {
-    window.location.href = '/';   // classic login screen, then back here
+    window.location.href = `/linck/${window.location.hash}`;   // Linck's sign-in, then back here
     throw new Error('Signed out');
   }
   const text = await r.text();

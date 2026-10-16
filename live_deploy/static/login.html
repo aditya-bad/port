@@ -23,6 +23,8 @@
 // already chose a theme post-login, honor it here too, before the
 // stylesheet below is parsed.
 (function () {
+  // Linck users get Linck's own sign-in (static/linck/login/).
+  try { if (localStorage.getItem('uiExperience') === 'linck') { location.replace('/linck/'); return; } } catch (e) {}
   var saved = localStorage.getItem('theme');
   if (saved === 'light' || saved === 'dark') {
     document.documentElement.setAttribute('data-theme', saved);

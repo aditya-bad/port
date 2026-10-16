@@ -246,6 +246,12 @@ export function kiteDialog({ paste = false } = {}) {
     okLabel: () => on ? (s.paste ? 'Reconnect with token' : 'Log in again') : (s.paste ? 'Connect' : 'Log in with Kite'),
     armed: st => !s.paste || !!st.f.token.trim(),
     cancelLabel: on ? 'Close' : 'Not now',
+    alt: on ? null : {
+      label: 'Market holiday',
+      run: async () => {
+        try { await api.muteToday(); say('Marked as a market holiday. Kite reminders are muted until 07:00 tomorrow; undo it from Account.'); } catch (e) { say(e.message); }
+      },
+    },
     onClick: (e, st, repaint) => {
       const m = e.target.closest('[data-kmode]'), o = e.target.closest('[data-kover]');
       if (m) s.paste = m.dataset.kmode === 'paste';

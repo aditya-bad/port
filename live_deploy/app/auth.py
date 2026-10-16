@@ -89,6 +89,13 @@ ALLOWLIST = frozenset({"/kite/callback", "/auth/login"})
 _PWA_PUBLIC_PATHS = frozenset({"/manifest.json", "/sw.js"})
 _PWA_PUBLIC_PREFIX = "/icons/"
 
+# Linck's sign-in screen (static/linck/login/) and the stylesheets and
+# fonts it shares with the rest of Linck. Same reasoning as the PWA
+# assets above: generic look-and-feel, nothing about a deployment, a
+# trade or a user. Linck's app code (/linck/js/) stays behind login.
+_LINCK_PUBLIC_PREFIXES = ("/linck/css/", "/linck/fonts/", "/linck/login/")
+_LINCK_ROOTS = frozenset({"/linck", "/linck/", "/linck/index.html"})
+
 # Paths a plain browser client genuinely can't attach a custom header to
 # — used to widen _query_api_key_ok's exception below beyond WebSocket
 # connections (its original and, until now, only reason to exist).
@@ -212,12 +219,19 @@ class AuthMiddleware:
         self.app = app
         self.secret = secret
         self.login_html_path = static_dir / "login.html"
+        self.linck_login_path = static_dir / "linck" / "login" / "index.html"
 
     def _login_html(self) -> str:
         try:
             return self.login_html_path.read_text()
         except OSError:
             return _FALLBACK_LOGIN_HTML
+
+    def _linck_login_html(self) -> str:
+        try:
+            return self.linck_login_path.read_text()
+        except OSError:
+            return self._login_html()
 
     async def _session_ok(self, conn: HTTPConnection) -> bool:
         user_id = conn.session.get("user_id")
@@ -295,6 +309,10 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        if scope["path"].startswith(_LINCK_PUBLIC_PREFIXES) and ".." not in scope["path"]:
+            await self.app(scope, receive, send)
+            return
+
         conn = HTTPConnection(scope, receive)
         if await self._is_authorized(conn):
             await self.app(scope, receive, send)
@@ -312,6 +330,9 @@ class AuthMiddleware:
             # URL, which would itself need to be on the allowlist
             # (keeping the allowlist at exactly the two paths above).
             response = HTMLResponse(self._login_html(), status_code=401)
+        elif scope["path"] in _LINCK_ROOTS:
+            # Same idea for Linck: its own sign-in screen in place of the app.
+            response = HTMLResponse(self._linck_login_html(), status_code=401)
         else:
             response = JSONResponse(
                 {"detail": "Unauthorized — provide a valid session cookie or X-API-Key header"},

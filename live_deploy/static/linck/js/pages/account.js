@@ -111,10 +111,10 @@ export default {
       kite: () => kiteDialog(),
       theme: d => { prefs.set('theme', d.v); paint(); },
       pref: d => { prefs.set(d.k, d.v); paint(); },
-      logout: async () => { await api.logout().catch(() => {}); window.location.href = '/'; },
+      logout: async () => { await api.logout().catch(() => {}); window.location.href = '/linck/'; },
       logoutAll: () => openDialog({
         kicker: 'CONFIRM', title: 'Sign out everywhere?', lines: ['Ends every session for your user, including this one. You’ll need to sign in again on each device.'],
-        okLabel: 'Sign out everywhere', onOk: async () => { await api.logoutEverywhere(); window.location.href = '/'; },
+        okLabel: 'Sign out everywhere', onOk: async () => { await api.logoutEverywhere(); window.location.href = '/linck/'; },
       }),
       password: () => {
         let oldPw = '';

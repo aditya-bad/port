@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in · Linck</title>
+<meta name="theme-color" content="#f6f5f0">
+<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
+<link rel="icon" href="/icons/icon-192.png">
+<script>
+  // Served in place of the app at /linck/ until you sign in (app/auth.py).
+  // Same appearance prefs as the app, applied before first paint.
+  (function () {
+    var p = {};
+    try { p = JSON.parse(localStorage.getItem('linck-prefs') || '{}') || {}; } catch (e) {}
+    var r = document.documentElement, dark = false;
+    try { dark = matchMedia('(prefers-color-scheme: dark)').matches; } catch (e) {}
+    r.setAttribute('data-th', p.theme || (dark ? 'night' : 'paper'));
+    r.setAttribute('data-pos', p.pos || 'green');
+    r.setAttribute('data-hl', p.hl || 'yellow');
+    r.setAttribute('data-ct', p.ct || 'std');
+    r.setAttribute('data-size', p.size || 'std');
+    r.setAttribute('data-font', p.font || 'linck');
+  })();
+</script>
+<link rel="preload" href="/linck/fonts/funnel-sans.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/linck/fonts/funnel-display.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="/linck/css/tokens.css">
+<link rel="stylesheet" href="/linck/css/base.css">
+<link rel="stylesheet" href="/linck/css/components.css">
+<link rel="stylesheet" href="/linck/login/login.css">
+<script type="module" src="/linck/login/login.js"></script>
+</head>
+<body>
+  <div class="auth">
+    <div class="auth-main">
+      <div class="row"><span class="auth-mark">Linck</span><span class="grow"></span>
+        <button type="button" class="theme-btn" id="theme"><i></i><span></span></button></div>
+      <div class="auth-mid"><div class="auth-box rise" id="box"></div></div>
+      <div class="auth-foot"><span>Paper trading against live Zerodha prices.</span><span>Not affiliated with Zerodha. Trading involves risk.</span>
+        <a href="/" id="classic">Classic view</a></div>
+    </div>
+    <aside class="auth-side hide-phone" id="side" aria-label="Market"></aside>
+  </div>
+  <noscript><p style="padding:24px">Linck needs JavaScript. The classic sign-in is at <a href="/">/</a>.</p></noscript>
+</body>
+</html>
