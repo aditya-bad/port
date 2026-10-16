@@ -1,7 +1,9 @@
 // Every endpoint Linck calls, behind one fetch wrapper. v1 endpoints are
 // the ones the classic UI uses; /v2 ones are additive (app/v2/).
 
-async function req(path, { method = 'GET', body } = {}) {
+// passwordCheck: the endpoint answers a wrong re-entered password with 401;
+// that's an error to show, not a sign that the session ended.
+async function req(path, { method = 'GET', body, passwordCheck = false } = {}) {
   const opts = { method, headers: {}, credentials: 'same-origin' };
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
@@ -13,7 +15,7 @@ async function req(path, { method = 'GET', body } = {}) {
   } catch (e) {
     throw new Error('Can’t reach the server. It may be restarting; try again in a moment.');
   }
-  if (r.status === 401) {
+  if (r.status === 401 && !passwordCheck) {
     window.location.href = `/linck/${window.location.hash}`;   // Linck's sign-in, then back here
     throw new Error('Signed out');
   }
@@ -29,6 +31,7 @@ async function req(path, { method = 'GET', body } = {}) {
 }
 const enc = encodeURIComponent;
 const post = (path, body) => req(path, { method: 'POST', body });
+const postPw = (path, body) => req(path, { method: 'POST', body, passwordCheck: true });
 
 export const api = {
   // session
@@ -36,8 +39,11 @@ export const api = {
   me: () => req('/auth/me'),
   logout: () => post('/auth/logout'),
   logoutEverywhere: () => post('/auth/logout-everywhere'),
-  changePassword: (old_password, new_password) => post('/auth/change-password', { old_password, new_password }),
+  changePassword: (old_password, new_password) => postPw('/auth/change-password', { old_password, new_password }),
   users: () => req('/auth/users'),
+  auditLog: (offset = 0, limit = 50) => req(`/auth/audit-log?offset=${offset}&limit=${limit}`),
+  redeploy: (password, confirm) => postPw('/admin/redeploy', { password, confirm }),
+  clearAll: (password, confirm) => postPw('/deployments/clear-all', { password, confirm }),
   createUser: (username, password) => post('/auth/users', { username, password }),
   kiteLoginUrl: () => req('/kite/login-url'),
   kiteStatus: () => req('/kite/status'),
@@ -54,6 +60,8 @@ export const api = {
   remove: id => post(`/deployments/${id}/delete`),
   positions: (id, status = 'all') => req(`/deployments/${id}/positions?status=${status}`),
   lots: (id, limit = 200) => req(`/deployments/${id}/trades?limit=${limit}`),
+  digest: (id, period = 'day', limit = 30) => req(`/deployments/${id}/pnl-digest?period=${period}&limit=${limit}`),
+  adjustmentHistogram: id => req(`/deployments/${id}/adjustment-histogram`),
   events: (id, limit = 200) => req(`/deployments/${id}/events?limit=${limit}`),
   strategyStatus: id => req(`/deployments/${id}/strategy-status`),
   cycles: id => req(`/deployments/${id}/cycles`),
@@ -63,6 +71,9 @@ export const api = {
 
   // catalogue, tags, instruments, notifications (v1)
   presets: name => req(`/strategies/${enc(name)}/presets`),
+  savePreset: (name, preset_name, config) => post(`/strategies/${enc(name)}/presets`, { preset_name, config }),
+  deletePreset: (name, id) => req(`/strategies/${enc(name)}/presets/${enc(id)}`, { method: 'DELETE' }),
+  setStrategyEnabled: (name, enabled) => req(`/strategies/${enc(name)}/enabled`, { method: 'PUT', body: { enabled } }),
   tags: () => req('/tags'),
   createTag: name => post('/tags', { name }),
   deleteTag: id => req(`/tags/${id}`, { method: 'DELETE' }),

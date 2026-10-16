@@ -150,7 +150,7 @@ a.cell-name:hover b { text-decoration: underline; }
 .cbar { position: relative; height: 12px; }
 .cbar > i { position: absolute; top: 0; bottom: 0; display: block; }
 .cbar > i.zero { top: -5px; bottom: -5px; width: 1.5px; background: var(--ink); }
-.br-row { display: grid; grid-template-columns: 90px minmax(0, 1fr) 120px; gap: 10px; align-items: center; min-height: 38px; border-bottom: 1px solid var(--line); }
+.br-row { display: grid; grid-template-columns: 110px minmax(0, 1fr) 120px; gap: 10px; align-items: center; min-height: 38px; border-bottom: 1px solid var(--line); }
 .day-grid { grid-template-columns: 110px 60px 110px 70px 90px minmax(0, 1fr); min-width: 720px; min-height: 38px; }
 .cyc-grid { grid-template-columns: 150px 92px minmax(220px, 1fr) 104px 64px 150px 130px; gap: 14px; min-width: 1000px; min-height: 54px; }
 .tr.th.cyc-grid { min-height: 34px; }
@@ -261,7 +261,8 @@ a.cell-name:hover b { text-decoration: underline; }
 .wiz-str { padding: 18px 18px 18px 14px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; text-align: left; }
 .wiz-str:hover { background: var(--soft); }
 .wiz-str.on { background: var(--ys); }
-.review-row { display: grid; grid-template-columns: 200px 1fr 60px; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.review-row { display: grid; grid-template-columns: minmax(80px, 200px) minmax(0, 1fr) 60px; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.review-row > b { overflow-wrap: anywhere; min-width: 0; }
 .start-opt { padding: 14px; border: 1.5px solid var(--line); display: flex; flex-direction: column; gap: 2px; text-align: left; }
 .start-opt.on { border-color: var(--ink); background: var(--ys); }
 @media (max-width: 900px) {
@@ -303,3 +304,19 @@ a.cell-name:hover b { text-decoration: underline; }
   .hold-grid { grid-template-columns: minmax(0, 1fr) 40px 76px 86px; min-width: 0; font-size: 12px; }
   .lane-name .tiny { padding-left: 0; }
 }
+
+/* Wizard presets */
+.preset-bar { border: 1.5px solid var(--line); padding: 12px 14px; margin-bottom: 22px; }
+.preset-chip { display: inline-flex; align-items: center; gap: 8px; padding-right: 6px; }
+.preset-chip > button { font-weight: 700; }
+.preset-chip > button.mute:hover { color: var(--r); }
+
+/* Account: activity log */
+.audit { max-height: 420px; overflow-y: auto; border-bottom: 1px solid var(--line); }
+.audit-row { display: grid; grid-template-columns: 112px 80px minmax(0, 1fr) 36px; gap: 10px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.audit-row:last-child { border-bottom: 0; }
+@media (max-width: 900px) { .audit-row { grid-template-columns: 100px minmax(0, 1fr) 36px; } .audit-row > b { display: none; } }
+
+/* Daily stats / cycles: M2M best and worst */
+.mtm-grid { display: grid; grid-template-columns: minmax(130px, 1.4fr) repeat(3, minmax(80px, 1fr)) minmax(80px, 1fr); gap: 10px; align-items: center; min-width: 520px; }
+@media (max-width: 900px) { .mtm-grid { grid-template-columns: minmax(110px, 1.3fr) repeat(3, minmax(70px, 1fr)); min-width: 0; } }

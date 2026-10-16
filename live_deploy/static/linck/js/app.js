@@ -33,13 +33,14 @@ function kiteChip() {
   return html`<button type="button" class="kite-chip off" data-act="kite"><i></i><span class="long">Kite expired · Reconnect</span><span class="short">Reconnect</span></button>`;
 }
 // P&L basis is always one tap away: full labels on wide screens, the
-// short stamps on laptops and tablets, one cycling chip on phones.
+// short stamps on laptops, one cycling chip on tablets and phones
+// (breakpoints in shell.css).
 function basisControl() {
   const cur = basis(), b = BASES.find(x => x.k === cur);
   const seg = (cls, lab) => html`<div class="seg basis-seg ${cls}" role="group" aria-label="P&L basis">${BASES.map(x => html`
     <button type="button" class="${x.k === cur ? 'on' : ''}" aria-pressed="${x.k === cur}" data-act="basis" data-v="${x.k}" data-tip="${x.long || x.l}\n${x.tip}">${lab(x)}</button>`)}</div>`;
-  return html`${seg('hide-1520', x => x.l)}${seg('only-mid', x => x.stamp)}
-    <button type="button" class="basis-chip only-phone" data-act="basisNext" aria-label="P&L basis: ${b.long || b.l}. Tap to switch." data-tip="${b.long || b.l}\n${b.tip}\nTap to switch">${b.stamp}<i aria-hidden="true">⇄</i></button>`;
+  return html`${seg('basis-full', x => x.l)}${seg('basis-stamps', x => x.stamp)}
+    <button type="button" class="basis-chip" data-act="basisNext" aria-label="P&L basis: ${b.long || b.l}. Tap to switch." data-tip="${b.long || b.l}\n${b.tip}\nTap to switch">${b.stamp}<i aria-hidden="true">⇄</i></button>`;
 }
 function renderHeader() {
   const cur = app.route ? app.route.nav : 'desk';

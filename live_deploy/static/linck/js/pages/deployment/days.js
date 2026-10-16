@@ -2,11 +2,12 @@
 
 import { html, mount, actions } from '../../core/dom.js';
 import { inr, pct, dShort, WEEKDAYS, ist, fromDay, plural, tone } from '../../core/format.js';
-import { pnlOf } from '../../core/basis.js';
+import { pnlOf, pick } from '../../core/basis.js';
+import { api } from '../../core/api.js';
 import { ui } from '../../core/store.js';
 import * as book from '../../data/book.js';
 import { upDownBars, centreBar } from '../../ui/charts.js';
-import { chips, utabs, empty } from '../../ui/components.js';
+import { chips, utabs, empty, loading } from '../../ui/components.js';
 
 const cyst = ui('cycles', { f: 'all', s: 'new' });
 const fd = d => dShort(d);
@@ -139,12 +140,51 @@ function positional(v) {
     </div>`;
 }
 
+// Best and worst mark-to-market reached inside each day (intraday) or
+// each cycle (positional), from GET /deployments/{id}/pnl-digest.
+function mtmTable(v, rows) {
+  const pos = v.modeKey !== 'intraday';
+  const title = pos ? 'Recent cycles, best and worst point' : 'Recent days, best and worst point';
+  const sub = pos ? 'how far each cycle swung while it was open' : 'how far each day swung before it closed';
+  if (rows === null) return html`<div><div class="sect"><h3 class="t-h3">${title}</h3></div>${loading(4)}</div>`;
+  if (!rows.length) return '';
+  return html`<div class="scroll-x">
+    <div class="sect"><h3 class="t-h3">${title}</h3><span class="mute small">${sub}</span></div>
+    <div class="tr th mtm-grid"><span>${pos ? 'Cycle' : 'Day'}</span><span class="right">M2M best</span><span class="right">M2M worst</span><span class="right">Realized</span><span class="right hide-phone">Trades</span></div>
+    ${rows.slice(0, 30).map(r => { const p = pick(r, 'realized_pnl'); return html`<div class="tr mtm-grid mono small">
+      ${pos ? html`<span class="col" style="gap:0"><span>${fd(r.period_start)}</span><span class="tiny mute">→ ${r.period_end ? fd(r.period_end) : 'still open'}</span></span>` : html`<span class="nowrap">${WEEKDAYS[ist(r.period_start).wd]} ${fd(r.period_start)}</span>`}
+      <span class="right ${tone(r.max_profit)}">${r.max_profit == null ? '—' : inr(r.max_profit)}</span>
+      <span class="right ${tone(r.max_loss)}">${r.max_loss == null ? '—' : inr(r.max_loss)}</span>
+      <span class="right ${tone(p)}">${inr(p)}</span>
+      <span class="right mute hide-phone">${r.positions_closed}${r.wins + r.losses ? ` · ${r.wins}W ${r.losses}L` : ''}</span></div>`; })}
+    <p class="tiny mute" style="margin:8px 0 0">M2M best and worst are gross, from the strategy’s 5-minute marks. Realized follows the P&L basis.</p>
+  </div>`;
+}
+// How many adjustments a day or cycle needed (strategies that adjust).
+function adjHist(h) {
+  if (!h || !h.supported || !h.buckets.length) return '';
+  const mx = Math.max(1, ...h.buckets.map(b => b.units)), unit = h.group_by === 'cycle_id' ? 'cycle' : 'day';
+  const total = h.buckets.reduce((a, b) => a + b.units, 0);
+  return html`<div>
+    <div class="sect"><h3 class="t-h3">Adjustments per ${unit}</h3><span class="mute small">${plural(total, unit)} so far</span></div>
+    ${h.buckets.map(b => html`<div class="br-row" data-tip="${b.label}\n${plural(b.units, unit)}  ${Math.round(b.units / total * 100)}%">
+      <b class="small">${/^\d+$/.test(b.label) ? plural(+b.label, "adjustment") : b.label}</b><span class="meter"><i class="grow-x" style="width:${b.units / mx * 100}%;background:var(--b)"></i></span>
+      <span class="mono tiny right">${plural(b.units, unit)}</span></div>`)}
+  </div>`;
+}
+
 export default {
   render(el, v0) {
+    let digest = null, hist = null;
     function paint() {
       const v = book.find(v0.id) || v0;
-      mount(el, html`<div class="pad-x tab-body stack" style="gap:30px">${v.modeKey === 'intraday' ? intraday(v) : positional(v)}</div>`);
+      mount(el, html`<div class="pad-x tab-body stack" style="gap:30px">${v.modeKey === 'intraday' ? intraday(v) : positional(v)}
+        <div class="grid-side">${mtmTable(v, digest)}${adjHist(hist)}</div></div>`);
     }
+    Promise.all([
+      api.digest(v0.id, 'day', 30).then(r => { digest = r || []; }).catch(() => { digest = []; }),
+      api.adjustmentHistogram(v0.id).then(r => { hist = r; }).catch(() => { hist = null; }),
+    ]).then(paint);
     const off = actions(el, {
       cyf: d => { cyst.set({ f: d.v }); paint(); },
       cys: d => { cyst.set({ s: d.v }); paint(); },

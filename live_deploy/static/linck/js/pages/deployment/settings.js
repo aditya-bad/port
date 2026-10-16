@@ -56,6 +56,9 @@ export default {
               <div class="sect ruled"><h3 class="t-h3">Deployment</h3></div>
               <div class="pref-row"><div class="col grow" style="gap:0"><b>Name</b><span class="tiny mute">Shown on the Desk, in alerts and in push notifications</span></div>
                 <div class="row" style="gap:6px"><input class="input" style="width:220px" value="${d.name}" data-name aria-label="Deployment name"><button type="button" class="btn btn-sm" data-act="rename">Rename</button></div></div>
+              <div class="pref-row" style="align-items:flex-start;flex-wrap:wrap"><div class="col grow" style="gap:0;min-width:200px"><b>Notes</b><span class="tiny mute">Why it exists, what you’re testing. Shown under its name.</span></div>
+                <div class="col" style="gap:6px;flex:1;min-width:220px"><textarea class="input" rows="3" style="height:auto;padding:8px 12px;resize:vertical" data-notes aria-label="Notes">${d.raw.notes || ''}</textarea>
+                  <button type="button" class="btn btn-sm" style="align-self:flex-end" data-act="notes">Save notes</button></div></div>
               <div class="pref-row"><div class="col grow" style="gap:0"><b>Push notifications</b><span class="tiny mute">A push to your devices for each entry and exit</span></div>
                 ${toggle(d.raw.notifications_enabled !== false, 'notif', {}, 'Push notifications')}</div>
               <div class="pref-row"><div class="col grow" style="gap:0"><b>Count in reports</b><span class="tiny mute">Include it in Reports and account totals</span></div>
@@ -101,6 +104,10 @@ export default {
           say('Settings saved. They take effect when you resume it.');
         } catch (e) { say(`Couldn’t save: ${e.message}`); }
         saving = false; paint();
+      },
+      notes: async () => {
+        const t = ($('[data-notes]', el).value || '').trim();
+        try { await api.update(v().id, { notes: t }); await book.load(['deployments']); say(t ? 'Notes saved.' : 'Notes cleared.'); } catch (e) { say(e.message); }
       },
       rename: async () => {
         const name = $('[data-name]', el).value.trim();

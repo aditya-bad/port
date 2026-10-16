@@ -1,10 +1,10 @@
 /* App frame: sticky header + index strip, phone bottom bar. */
 
 .appbar { position: sticky; top: 0; z-index: 20; background: var(--paper); }
-.hdr { display: flex; align-items: center; gap: clamp(10px, 1.6vw, 24px); height: var(--hdr); padding: 0 var(--px); border-bottom: 1.5px solid var(--ink); min-width: 0; }
+.hdr { display: flex; align-items: center; gap: clamp(10px, 1.15vw, 24px); height: var(--hdr); padding: 0 var(--px); border-bottom: 1.5px solid var(--ink); min-width: 0; }
 .wordmark { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.03em; text-decoration: none; flex: none; }
 .wordmark:hover { color: inherit; }
-.nav { display: flex; gap: 20px; flex: none; font-weight: 600; white-space: nowrap; }
+.nav { display: flex; gap: clamp(14px, 1.2vw, 20px); flex: none; font-weight: 600; white-space: nowrap; }
 .nav > a { padding: 20px 0 17px; border-bottom: 3px solid transparent; color: var(--mute); text-decoration: none; }
 .nav > a.on { color: var(--ink); border-bottom-color: var(--ink); }
 .nav > a:hover { color: var(--ink); }
@@ -39,13 +39,15 @@
 .bnav > .on { color: var(--ink); border-top-color: var(--ink); }
 .bnav .n { font-family: var(--f-mono); font-size: 11px; min-height: 14px; color: var(--wt); }
 
-@media (max-width: 900px) {
-  .hdr { gap: 10px; }
-  .kite-chip .long { display: none; }
-}
-@media (min-width: 901px) { .kite-chip .short { display: none; } }
+@media (max-width: 900px) { .hdr { gap: 10px; } }
+/* Below 1520 the basis stamps take the room the long Kite label had. */
+@media (max-width: 1520px) { .kite-chip .long { display: none; } }
+@media (min-width: 1521px) { .kite-chip .short { display: none; } }
 
-/* P&L basis on phones: one chip that cycles Gross → Net → Net+slip */
+/* P&L basis: full labels > 1520, stamps 1181–1520, one cycling chip ≤ 1180 */
+.hdr .basis-stamps, .hdr .basis-chip { display: none; }
+@media (max-width: 1520px) { .hdr .basis-full { display: none; } .hdr .basis-stamps { display: inline-flex; } }
+@media (max-width: 1180px) { .hdr .basis-stamps { display: none; } .hdr .basis-chip { display: inline-flex; } }
 .basis-chip { align-items: center; gap: 5px; flex: none; white-space: nowrap; font-family: var(--f-mono); font-size: 11px; font-weight: 700; letter-spacing: .02em; padding: 6px 8px; border: 1.5px solid var(--ink); }
 .basis-chip > i { font-style: normal; font-family: var(--f-body); color: var(--mute); }
-.hdr .basis-seg.only-mid > button { font-family: var(--f-mono); font-size: 11px; letter-spacing: .02em; padding: 6px 8px; }
+.hdr .basis-stamps > button { font-family: var(--f-mono); font-size: 11px; letter-spacing: .02em; padding: 6px 8px; }

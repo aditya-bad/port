@@ -37,7 +37,8 @@ export function openWizard({ strategy, copy } = {}) {
   document.body.appendChild(el);
   document.body.style.overflow = 'hidden';
 
-  const w = { step: 0, strat: null, name: '', mode: 'positional', idx: 'NIFTY', cap: '500000', cfg: {}, start: 'paused', copy: null, busy: false, error: '' };
+  const w = { step: 0, strat: null, name: '', mode: 'positional', idx: 'NIFTY', cap: '500000', cfg: {}, start: 'paused', copy: null, busy: false, error: '',
+    notes: '', presets: null, presetsFor: null, psave: null, pdel: null, perr: '' };
   const pick = (name, cfg) => {
     const s = book.strategy(name);
     w.strat = name;
@@ -73,7 +74,38 @@ export function openWizard({ strategy, copy } = {}) {
     return [!!w.strat, !e.nameErr && !e.capErr, !Object.keys(e.fieldErr).length, true][w.step];
   }
 
+  // Saved presets for this strategy (same store as classic's Deploy modal).
+  function loadPresets() {
+    if (!w.strat || w.presetsFor === w.strat) return;
+    const name = w.strat;
+    w.presetsFor = name; w.presets = null;
+    api.presets(name).then(r => { if (w.strat === name) { w.presets = r || []; paint(); } })
+      .catch(() => { if (w.strat === name) { w.presets = []; paint(); } });
+  }
+  function currentConfig() {
+    const e = errs();
+    return supportsIndex(e.s) ? withIndex({ ...w.cfg, ...toConfig(e.fields, w.cfg) }, w.idx) : toConfig(e.fields, w.cfg);
+  }
+  function presetBar() {
+    const P = w.presets;
+    return html`<div class="preset-bar" style="max-width:760px">
+      <div class="row wrap" style="gap:8px">
+        <b class="small">Presets</b>
+        ${P === null ? html`<span class="tiny mute">Loading…</span>` : !P.length ? html`<span class="tiny mute">None saved for this strategy yet.</span>` : P.map(x => w.pdel === x.id
+          ? html`<span class="chip on">Delete “${x.preset_name}”? <button type="button" class="b" data-pdel-yes="${x.id}">Delete</button> · <button type="button" data-pdel-no>Keep</button></span>`
+          : html`<span class="chip preset-chip"><button type="button" data-preset="${x.id}" title="Load these settings">${x.preset_name}</button><button type="button" class="mute" data-pdel="${x.id}" aria-label="Delete preset ${x.preset_name}">×</button></span>`)}
+        <span class="grow"></span>
+        ${w.psave === null ? html`<button type="button" class="btn btn-sm" data-psave>Save as preset…</button>` : ''}
+      </div>
+      ${w.psave !== null ? html`<div class="row wrap" style="gap:8px;padding-top:10px">
+        <input class="input" data-w="psave" value="${w.psave}" placeholder="Preset name, e.g. Wide strikes" autocomplete="off" style="flex:1;min-width:180px">
+        <button type="button" class="btn btn-sm btn-primary" data-psave-go>Save</button><button type="button" class="btn btn-sm btn-quiet" data-psave-no>Cancel</button></div>` : ''}
+      ${w.perr ? html`<div class="err" role="alert" style="margin-top:8px">${w.perr}</div>` : ''}
+    </div>`;
+  }
+
   function paint() {
+    if (w.step === 2) loadPresets();
     const e = errs(), s = e.s;
     const ok = canNext();
     const titles = ['Pick a strategy', 'Name and capital', 'Settings', 'Review and deploy'];
@@ -86,6 +118,7 @@ export function openWizard({ strategy, copy } = {}) {
     const block = ok ? '' : ['Pick a strategy to continue.', e.nameErr || e.capErr, 'Fix the highlighted fields.', ''][w.step];
     const review = [
       ['Strategy', s ? `${s.label} · ${s.name}` : w.strat, 0, false], ['Name', w.name, 1, false], ['Mode', w.mode === 'intraday' ? 'Intraday' : 'Positional', 1, false],
+      ...(w.notes.trim() ? [['Notes', w.notes.trim(), 1, false]] : []),
       ...(supportsIndex(s) ? [['Index', w.idx, 1, true]] : []), ['Capital', inr(+w.cap || 0, { sign: false }), 1, true],
       ...e.fields.filter(f => f.type !== 'json').slice(0, 8).map(f => [f.label, f.type === 'bool' ? (w.cfg[f.key] ? 'On' : 'Off') : `${f.prefix || ''}${w.cfg[f.key] ?? '—'}${f.suffix ? ` ${f.suffix}` : ''}`, 2, true]),
     ];
@@ -113,6 +146,8 @@ export function openWizard({ strategy, copy } = {}) {
             <div class="stack" style="gap:22px;max-width:640px">
               <label class="col" style="gap:6px"><b>Name</b><input class="input ${e.nameErr && w.name ? 'bad' : ''}" style="height:44px;font-size:16px" data-w="name" value="${w.name}" placeholder="e.g. Nifty Strangle D" autocomplete="off">
                 <span class="hint ${e.nameErr && w.name ? 'bad' : ''}">${e.nameErr || 'Looks good.'}</span></label>
+              <label class="col" style="gap:6px"><b>Notes <span class="mute" style="font-weight:500">· optional</span></b>
+                <textarea class="input" rows="2" style="height:auto;padding:10px 12px;font-size:15px;resize:vertical" data-w="notes" placeholder="Why it exists, what you’re testing">${w.notes}</textarea></label>
               <div class="col" style="gap:6px"><b>Mode</b><span class="mute">${s ? s.label : 'This strategy'} runs ${w.mode === 'intraday' ? 'intraday: it squares off every day.' : 'positionally: it holds across days until its exit rules fire.'}</span></div>
               ${supportsIndex(s) ? html`<div class="col" style="gap:6px"><b>Index</b><div class="seg lg" role="group">${INDICES.map(i => html`
                 <button type="button" class="${w.idx === i.n ? 'on' : ''}" data-idx="${i.n}">${i.n}</button>`)}</div>
@@ -122,6 +157,7 @@ export function openWizard({ strategy, copy } = {}) {
                   ${[2e5, 5e5, 10e5, 20e5].map(c => html`<button type="button" class="chip" data-cap="${c}">${inrS(c, { sign: false })}</button>`)}</div>
                 <span class="hint ${e.capErr ? 'bad' : ''}">${e.capErr || `${inrS(+w.cap, { sign: false })}. Returns, drawdowns and the leaderboard are measured against this.`}</span></div>
             </div>` : ''}
+          ${w.step === 2 ? presetBar() : ''}
           ${w.step === 2 ? html`<div style="max-width:760px" data-fields>${renderFields(e.fields, w.cfg, { editable: true, errors: e.fieldErr })}</div>` : ''}
           ${w.step === 3 ? html`
             <div class="grid-side" style="gap:48px;max-width:1100px">
@@ -149,8 +185,8 @@ export function openWizard({ strategy, copy } = {}) {
     const e = errs();
     w.busy = true; w.error = ''; paint();
     try {
-      const cfg = supportsIndex(e.s) ? withIndex({ ...w.cfg, ...toConfig(e.fields, w.cfg) }, w.idx) : toConfig(e.fields, w.cfg);
-      const r = await api.create({ deployment_name: w.name.trim(), strategy_name: w.strat, mode: w.mode, initial_capital: +w.cap, config: cfg, start: w.start });
+      const cfg = currentConfig();
+      const r = await api.create({ deployment_name: w.name.trim(), strategy_name: w.strat, mode: w.mode, initial_capital: +w.cap, config: cfg, start: w.start, ...(w.notes.trim() ? { notes: w.notes.trim() } : {}) });
       await book.load(['deployments', 'session']);
       close();
       go(`d/${r.id}`);
@@ -169,6 +205,7 @@ export function openWizard({ strategy, copy } = {}) {
     const t = ev.target.closest('[data-w]');
     if (!t) return;
     w[t.dataset.w] = t.dataset.w === 'cap' ? t.value.replace(/[^\d]/g, '') : t.value;
+    if (t.dataset.w === 'psave' || t.dataset.w === 'notes') return;   // no repaint while typing free text
     const pos = t.selectionStart, k = t.dataset.w;
     paint();
     const n = $(`[data-w="${k}"]`, el);
@@ -184,6 +221,29 @@ export function openWizard({ strategy, copy } = {}) {
       pick(v.strategy, v.raw.config);
       Object.assign(w, { step: 1, name: `${v.name} copy`, mode: v.modeKey, idx: indexByName(v.index) ? v.index : w.idx, cap: String(v.cap), copy: v.name });
       return paint();
+    }
+    if (t.dataset.preset) {
+      const x = (w.presets || []).find(q => q.id === t.dataset.preset);
+      if (x) { const st = book.strategy(w.strat); w.cfg = { ...(st ? st.default_config : {}), ...x.config }; w.perr = ''; say(`Loaded preset “${x.preset_name}”.`); }
+      return paint();
+    }
+    if (t.dataset.pdel) { w.pdel = t.dataset.pdel; return paint(); }
+    if (t.hasAttribute('data-pdel-no')) { w.pdel = null; return paint(); }
+    if (t.dataset.pdelYes) {
+      const id = t.dataset.pdelYes, name = w.strat;
+      api.deletePreset(name, id).then(() => { w.presets = (w.presets || []).filter(q => q.id !== id); w.pdel = null; paint(); say('Preset deleted.'); })
+        .catch(err => { w.perr = err.message; w.pdel = null; paint(); });
+      return;
+    }
+    if (t.hasAttribute('data-psave')) { w.psave = ''; w.perr = ''; paint(); const n = $('[data-w=psave]', el); if (n) n.focus(); return; }
+    if (t.hasAttribute('data-psave-no')) { w.psave = null; w.perr = ''; return paint(); }
+    if (t.hasAttribute('data-psave-go')) {
+      const nm = (w.psave || '').trim();
+      if (!nm) { w.perr = 'Name the preset.'; return paint(); }
+      if (Object.keys(errs().fieldErr).length) { w.perr = 'Fix the highlighted fields before saving.'; return paint(); }
+      api.savePreset(w.strat, nm, currentConfig()).then(r => { w.presets = [...(w.presets || []), r]; w.psave = null; w.perr = ''; paint(); say(`Saved preset “${nm}”.`); })
+        .catch(err => { w.perr = err.message; paint(); });
+      return;
     }
     if (t.dataset.idx) { w.idx = t.dataset.idx; return paint(); }
     if (t.dataset.cap) { w.cap = t.dataset.cap; return paint(); }

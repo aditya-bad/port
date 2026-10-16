@@ -55,6 +55,7 @@ export default {
                 ${v.tags.map(t => html`<button type="button" class="tag" data-act="untag" data-t="${t}" title="Remove tag ${t}">${t} ×</button>`)}
                 <button type="button" class="tag add" data-act="tag">+ Tag</button>
               </div>
+              ${v.raw.notes ? html`<p class="small mute pretty dep-notes" style="margin:0;max-width:760px">${v.raw.notes}</p>` : ''}
             </div>
             <span class="grow"></span>
             <div class="row wrap menu-wrap" style="gap:8px">

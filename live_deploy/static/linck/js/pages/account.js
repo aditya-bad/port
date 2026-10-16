@@ -4,7 +4,7 @@
 
 import { api } from '../core/api.js';
 import { html, mount, $, actions } from '../core/dom.js';
-import { ago, plural } from '../core/format.js';
+import { ago, plural, dStamp } from '../core/format.js';
 import * as prefs from '../core/prefs.js';
 import { ui, listen } from '../core/store.js';
 import { go } from '../core/router.js';
@@ -22,7 +22,7 @@ const b64 = s => { const p = '='.repeat((4 - s.length % 4) % 4); const r = atob(
 export default {
   title: 'Account',
   render(main) {
-    let users = null, me = null, push = { state: 'loading' }, mute = null, subs = null, newTag = '';
+    let users = null, me = null, push = { state: 'loading' }, mute = null, subs = null, newTag = '', audit = null, auditMore = false;
 
     async function loadPush() {
       try {
@@ -71,6 +71,19 @@ export default {
               <div class="pref-row"><div class="col grow" style="gap:0"><b>Every device</b><span class="tiny mute">Ends all sessions, including phones and other browsers</span></div><button type="button" class="btn btn-sm" data-act="logoutAll">Sign out everywhere…</button></div>
               <div class="pref-row"><div class="col grow" style="gap:0"><b>Password</b><span class="tiny mute">At least 8 characters</span></div><button type="button" class="btn btn-sm" data-act="password">Change password…</button></div>
             </div>
+            <div>
+              <div class="sect ruled"><h3 class="t-h3 grow">Activity log</h3><span class="tiny mute">every change made through the app or API</span></div>
+              ${audit === null ? loading(4) : audit.length ? html`<div class="audit">${audit.map(a => html`<div class="audit-row">
+                <span class="mono tiny mute">${dStamp(a.occurred_at)}</span><b class="small">${a.username || 'API key'}</b>
+                <span class="mono tiny ell" title="${a.method} ${a.path}">${a.method} ${a.path}</span>
+                <span class="mono tiny right ${a.status_code >= 400 ? 'neg' : 'mute'}">${a.status_code}</span></div>`)}</div>
+                ${auditMore ? html`<button type="button" class="btn btn-sm" style="margin-top:10px" data-act="auditMore">Show older</button>` : ''}` : empty('', 'Nothing logged yet.')}
+            </div>
+            <div>
+              <div class="sect ruled"><h3 class="t-h3">Server</h3></div>
+              <div class="pref-row"><div class="col grow" style="gap:0"><b>Update and restart</b><span class="tiny mute">Pulls the latest code, rebuilds and restarts. Deployments resume from the database.</span></div><button type="button" class="btn btn-sm" data-act="redeploy">Redeploy…</button></div>
+              <div class="pref-row"><div class="col grow" style="gap:0"><b class="neg">Delete every deployment</b><span class="tiny mute">Removes all deployments with their trades, events and history. Kite, instruments and strategy settings stay. Can’t be undone.</span></div><button type="button" class="btn btn-sm" data-act="clearAll">Delete all…</button></div>
+            </div>
           </div>
           <div class="stack" style="gap:36px">
             <div>
@@ -89,8 +102,8 @@ export default {
                 loading: 'Checking…', unconfigured: 'Not configured on this server (custom_scripts/generate_vapid_keys.py).', unsupported: 'This browser can’t receive push notifications.',
                 denied: 'Blocked in your browser’s site settings. Allow notifications there, then reload.', on: 'On: a push for every entry and exit, even with the app closed.', off: 'Off: turn on to get a push for every entry and exit.',
               }[push.state]}</span></div>${['on', 'off'].includes(push.state) ? toggle(push.state === 'on', 'pushToggle', {}, 'Push on this device') : ''}</div>
-              <div class="pref-row"><div class="col grow" style="gap:0"><b>Mute for today</b><span class="tiny mute">${mute && mute.muted ? 'Muted until the end of today.' : 'Silence every push until tomorrow, for a holiday or a day off'}</span></div>
-                ${mute ? toggle(!!mute.muted, 'mute', {}, 'Mute for today') : ''}</div>
+              <div class="pref-row"><div class="col grow" style="gap:0"><b>Market holiday</b><span class="tiny mute">${mute && mute.muted ? `Kite connection alerts are muted until ${dStamp(mute.muted_until)} IST.` : 'Mute Kite connection alerts until 07:00 tomorrow, for a market holiday or a day off'}</span></div>
+                ${mute ? toggle(!!mute.muted, 'mute', {}, 'Market holiday') : ''}</div>
               ${all.length ? html`<p class="small b" style="margin:16px 0 4px">By deployment</p>${all.filter(v => v.rawStatus !== 'stopped').map(v => html`<div class="pref-row" style="min-height:44px">
                 <span class="grow small">${v.name}</span>${toggle(v.raw.notifications_enabled !== false, 'depNotif', { id: v.id, sm: true }, `Push for ${v.name}`)}</div>`)}` : ''}
             </div>
@@ -106,7 +119,37 @@ export default {
         </div>`);
     }
 
+    // Password + typed phrase, both checked by the server (same as classic).
+    const guarded = ({ kicker, title, lines, phrase, okLabel, run }) => openDialog({
+      kicker, hot: true, title, lines,
+      fields: [{ key: 'pw', label: 'App password', type: 'password', mono: false }],
+      input: { label: `Type ${phrase} to arm`, placeholder: phrase },
+      armed: st => st.text.trim() === phrase && !!st.f.pw,
+      okLabel, onOk: st => run(st.f.pw, st.text.trim()),
+    });
     const off = actions(main, {
+      auditMore: async () => {
+        try { const r = await api.auditLog(audit.length, 50); audit = audit.concat(r); auditMore = r.length === 50; } catch (e) { say(e.message); }
+        paint();
+      },
+      redeploy: () => guarded({
+        kicker: 'SERVER', title: 'Update and restart the server?',
+        lines: ['Pulls the latest code, rebuilds and restarts. Linck is unreachable for a minute or two, then reloads by itself. Running deployments pick up where they left off.'],
+        phrase: 'REDEPLOY', okLabel: 'Redeploy',
+        run: async (pw, phrase) => {
+          await api.redeploy(pw, phrase);
+          say('Redeploy started. Waiting for the new version…');
+          setTimeout(function wait() {
+            fetch('/health', { credentials: 'same-origin' }).then(r => (r.ok ? window.location.reload() : setTimeout(wait, 3000))).catch(() => setTimeout(wait, 3000));
+          }, 6000);
+        },
+      }),
+      clearAll: () => guarded({
+        kicker: 'IRREVERSIBLE', title: `Delete all ${plural(book.deployments().length, 'deployment')}?`,
+        lines: ['Stops every runner, then deletes every deployment with its positions, trades, events and snapshots. Open positions are not closed with exit orders; they are simply removed.', 'Kite, subscribed instruments and strategy settings are kept.'],
+        phrase: 'DELETE ALL', okLabel: 'Delete everything',
+        run: async (pw, phrase) => { const r = await api.clearAll(pw, phrase); await book.load(); say(`${plural(r.deleted, 'deployment')} deleted.`); },
+      }),
       classic: () => toClassic(),
       kite: () => kiteDialog(),
       theme: d => { prefs.set('theme', d.v); paint(); },
@@ -185,6 +228,7 @@ export default {
     paint();
     Promise.all([
       api.users().then(r => { users = r; }).catch(() => { users = []; }),
+      api.auditLog(0, 50).then(r => { audit = r; auditMore = r.length === 50; }).catch(() => { audit = []; }),
       api.me().then(r => { me = r; }).catch(() => {}),
       loadPush(),
       api.muteStatus().then(r => { mute = r; }).catch(() => {}),

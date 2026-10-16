@@ -38,7 +38,7 @@ export default {
         && (skip === 'idx' || s.idx === 'all' || v.index === s.idx)
         && (skip === 'tag' || s.tag === 'all' || v.tags.includes(s.tag))
         && (strat === 'all' || v.strategy === strat)
-        && (!q || `${v.name} ${v.strategy} ${v.strategyLabel} ${v.tags.join(' ')}`.toLowerCase().includes(q));
+        && (!q || `${v.name} ${v.strategy} ${v.strategyLabel} ${v.tags.join(' ')} ${v.raw.notes || ''}`.toLowerCase().includes(q));
     }
     function group(all, s, key, label, opts) {
       const field = { st: 'status', mode: 'modeKey', idx: 'index' }[key];
@@ -81,7 +81,7 @@ export default {
           <button type="button" class="btn btn-primary" data-act="new">New deployment</button>
         </div>
         <div class="pad-x filters">
-          <input class="input search" type="search" value="${s.q}" placeholder="Search name, strategy or tag" aria-label="Search deployments" data-search>
+          <input class="input search" type="search" value="${s.q}" placeholder="Search name, strategy, tag or notes" aria-label="Search deployments" data-search>
           <button type="button" class="btn btn-sm only-phone" data-act="showF" aria-expanded="${!!s.showF}">Filters${activeF(s) ? ` · ${activeF(s)}` : ''}</button>
           <div class="filter-groups ${s.showF ? 'open' : ''}">
           ${group(all, s, 'st', 'Status', [['all', 'All'], ['active', 'Active'], ['paused', 'Paused'], ['error', 'Error'], ['stopped', 'Stopped']])}

@@ -6,6 +6,9 @@ Linck is the new interface, served at `/linck/`. It's plain ES modules with no b
 
 ```
 index.html            shell; applies saved appearance before first paint
+login/                sign-in and the Connect Kite step. Served in place of index.html
+                      at /linck/ until you sign in (app/auth.py). Public, so self-contained:
+                      it can't import from js/, which stays behind login
 css/tokens.css        every colour, font and theme/preference rule
 css/base.css          reset, layout variables, breakpoints, type scale
 css/components.css    buttons, chips, status markers, tables, dialogs, toasts, tooltip
@@ -22,6 +25,10 @@ js/actions.js         every deployment action and its confirmation
 js/pages/             one module per page; deployment/ has one module per tab
 ```
 
+## Signing in
+
+Signed-out visits to `/linck/` get `login/index.html`. Linck's CSS, fonts and `login/` are the only public Linck paths. After a password sign-in, the Connect Kite step appears when Kite isn't connected on a weekday that isn't marked as a holiday. It offers four ways forward: log in on Zerodha (popup), paste a `request_token` or the redirect URL (`POST /kite/manual-login`, with an optional one-off API key and secret), mark today as a market holiday (`POST /notifications/mute-today`), or skip. The same Kite options are in the header's Kite dialog at any time. Classic's sign-in page forwards Linck users here.
+
 ## Making changes
 
 - **Add a theme.** Add a `:root[data-th="name"] { … }` block to `css/tokens.css` and an entry to `THEMES` in `js/core/prefs.js`. Account › Appearance lists it automatically.
@@ -29,6 +36,7 @@ js/pages/             one module per page; deployment/ has one module per tab
 - **Change a colour.** Edit the token. Components only read tokens.
 - **Add a page.** Add a line to `ROUTES` in `js/core/router.js` and create a module in `js/pages/` that exports `{ title, render(main, params) → cleanup }`.
 - **Add a deployment tab.** Add it to `TABS` in `js/pages/deployment/index.js` and create a module that exports `render(el, v) → cleanup`.
+- **Add a field to a dialog.** `openDialog({ fields: [{ key, label, type, show: state => bool }] })`; values arrive in `state.f`. `okLabel` can be a function of state, and `onClick(e, state, repaint)` handles custom controls rendered by `render(state)`.
 - **Add an attention rule** (the Desk's "things need you" list). Append it to `RULES` in `js/data/alerts.js`.
 - **Describe strategy settings.** Edit `STRATEGIES` / `FIELDS` in `app/v2/catalog.py`. Keys that aren't listed still render, with inferred labels.
 - **Change thresholds** (young, quiet, losing streak, Desk lane count) or index tokens. Edit `js/data/config.js`.
