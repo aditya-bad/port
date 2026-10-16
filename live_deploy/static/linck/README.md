@@ -36,6 +36,7 @@ Signed-out visits to `/linck/` get `login/index.html`. Linck's CSS, fonts and `l
 - **Change a colour.** Edit the token. Components only read tokens.
 - **Add a page.** Add a line to `ROUTES` in `js/core/router.js` and create a module in `js/pages/` that exports `{ title, render(main, params) → cleanup }`.
 - **Add a deployment tab.** Add it to `TABS` in `js/pages/deployment/index.js` and create a module that exports `render(el, v) → cleanup`.
+- **Session sheet** (`js/pages/deployment/session.js`): click a day on Daily stats or a cycle on Cycles to open it full screen. It draws the underlying above the combined P&L, with markers and every leg and order, from `GET /deployments/{id}/cycles/{key}/chart`. It shows whatever interval the server recorded or picked (1-minute intraday, 5-minute positional marks); there's no timeframe picker.
 - **Add a field to a dialog.** `openDialog({ fields: [{ key, label, type, show: state => bool }] })`; values arrive in `state.f`. `okLabel` can be a function of state, and `onClick(e, state, repaint)` handles custom controls rendered by `render(state)`.
 - **Add an attention rule** (the Desk's "things need you" list). Append it to `RULES` in `js/data/alerts.js`.
 - **Describe strategy settings.** Edit `STRATEGIES` / `FIELDS` in `app/v2/catalog.py`. Keys that aren't listed still render, with inferred labels.

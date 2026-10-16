@@ -4,6 +4,7 @@ import { html, mount, actions } from '../../core/dom.js';
 import { inr, pct, dShort, WEEKDAYS, ist, fromDay, plural, tone } from '../../core/format.js';
 import { pnlOf, pick } from '../../core/basis.js';
 import { api } from '../../core/api.js';
+import { openSession } from './session.js';
 import { ui } from '../../core/store.js';
 import * as book from '../../data/book.js';
 import { upDownBars, centreBar } from '../../ui/charts.js';
@@ -60,9 +61,9 @@ function intraday(v) {
         `${bestDow.l} is the strongest day on average and ${worstDow.l} the weakest${worstDow.p < 0 ? `, losing ${inr(worstDow.p)} on a typical ${worstDow.l}.` : '.'}`)}
     </div>
     <div class="scroll-x">
-      <div class="sect"><h3 class="t-h3">Every trading day</h3><span class="mute small">newest first</span></div>
+      <div class="sect"><h3 class="t-h3">Every trading day</h3><span class="mute small">newest first · click a day for its chart, legs and orders</span></div>
       <div class="tr th day-grid"><span>Date</span><span>Day</span><span class="right">P&L</span><span class="right">Trades</span><span class="right">Return</span><span>How it ended</span></div>
-      ${days.slice(0, 40).map(x => html`<div class="tr day-grid small"><span class="mono">${fd(x.d)}</span><span class="mute">${WEEKDAYS[ist(x.d).wd]}</span>
+      ${days.slice(0, 40).map(x => html`<div class="tr day-grid small click" data-act="sess" data-at="${+x.d}" role="button" tabindex="0" aria-label="Open ${fd(x.d)}"><span class="mono">${fd(x.d)}</span><span class="mute">${WEEKDAYS[ist(x.d).wd]}</span>
         <span class="num ${tone(x.p)}">${inr(x.p)}</span><span class="num">${x.n}</span><span class="num ${tone(x.p)}">${pct(x.p / v.cap * 100)}</span><span class="mute">${[...x.rs].join(', ')}</span></div>`)}
       ${days.length > 40 ? html`<p class="small mute">Showing the latest 40 of ${days.length} days. Export the full list from Trades.</p>` : ''}
     </div>`;
@@ -107,7 +108,7 @@ function positional(v) {
         adjd.length && un.length ? `Adjusted cycles win ${wr(adjd)} of the time against ${wr(un)} for untouched ones.${avgWorst != null ? ` The average cycle dips to ${inr(avgWorst)} before it closes.` : ''}` : '')}
     </div>
     <div class="scroll-x">
-      <div class="sect"><h3 class="t-h3">Every cycle</h3><span class="mute small">One row per position, from entry to final exit. Hover a row for the numbers.</span></div>
+      <div class="sect"><h3 class="t-h3">Every cycle</h3><span class="mute small">One row per position, from entry to final exit. Click a row for its chart, legs and orders.</span></div>
       <div class="row wrap" style="gap:14px;padding-bottom:12px">
         <div class="chips">${chips([['all', 'All'], ['win', 'Winners'], ['loss', 'Losers'], ['adj', 'Adjusted']].map(([k, l]) => [k, l, cyc.filter(c => ok(c, k)).length]), s.f, 'cyf')}</div>
         <span class="grow"></span><span class="tiny mute">Sort</span>${utabs([['new', 'Newest'], ['best', 'Best'], ['worst', 'Worst'], ['long', 'Longest']], s.s, 'cys')}
@@ -122,7 +123,7 @@ function positional(v) {
       <div class="tr th cyc-grid"><span>Cycle</span><span>Held</span><span>Journey: worst point, then close</span><span class="right">Worst point</span><span class="center">Adj.</span><span class="right">Result</span><span>Exit</span></div>
       ${CL.slice(0, 40).map(c => {
         const dl = ((c.worst ?? 0) - lo) / sp * 100, pw = Math.abs(c.p) / sp * 100;
-        return html`<div class="tr hover cyc-grid" data-tip="Cycle ${c.i + 1}\nOpened  ${fd(c.o)}\nClosed  ${fd(c.c)}\nWorst point  ${c.worst == null ? '—' : inr(c.worst)}\nResult  ${inr(c.p)}\nAdjustments  ${c.adj}">
+        return html`<div class="tr hover click cyc-grid" data-act="sess" data-at="${+c.o}" role="button" tabindex="0" data-tip="Cycle ${c.i + 1}\nOpened  ${fd(c.o)}\nClosed  ${fd(c.c)}\nWorst point  ${c.worst == null ? '—' : inr(c.worst)}\nResult  ${inr(c.p)}\nAdjustments  ${c.adj}">
           <span class="col" style="gap:0"><b class="mono small">#${c.i + 1}</b><span class="tiny mute nowrap">${fd(c.o)} → ${fd(c.c)}</span></span>
           <span class="col" style="gap:5px"><span class="mono small">${plural(c.held, 'day')}</span><span class="meter" style="height:3px"><i style="width:${c.held / hmx * 100}%;background:var(--mute)"></i></span></span>
           <span class="journey">
@@ -187,6 +188,7 @@ export default {
     ]).then(paint);
     const off = actions(el, {
       cyf: d => { cyst.set({ f: d.v }); paint(); },
+      sess: d => openSession(book.find(v0.id) || v0, d.at),
       cys: d => { cyst.set({ s: d.v }); paint(); },
     });
     paint();

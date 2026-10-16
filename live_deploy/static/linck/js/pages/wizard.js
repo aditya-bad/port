@@ -4,7 +4,7 @@
 
 import { api } from '../core/api.js';
 import { html, mount, $ } from '../core/dom.js';
-import { inr, inrS } from '../core/format.js';
+import { inr, inrS, plural } from '../core/format.js';
 import { go } from '../core/router.js';
 import * as book from '../data/book.js';
 import { isLive } from '../data/live.js';
@@ -104,6 +104,9 @@ export function openWizard({ strategy, copy } = {}) {
     </div>`;
   }
 
+  // Half a step for being on it, the whole step once it can move on.
+  const pctDone = () => Math.round((w.step + (canNext() ? 1 : 0.5)) / STEPS.length * 100);
+
   function paint() {
     if (w.step === 2) loadPresets();
     const e = errs(), s = e.s;
@@ -125,14 +128,25 @@ export function openWizard({ strategy, copy } = {}) {
     mount(el, html`
       <aside class="wiz-rail hide-phone">
         <div class="wordmark" style="padding-bottom:20px">New deployment</div>
-        ${STEPS.map((l, i) => html`<button type="button" class="wiz-step ${i === w.step ? 'on' : ''}" data-step="${i}" ${i < w.step ? '' : 'disabled'}>
-          <span class="mono">${i < w.step ? '✓' : i + 1}</span><span class="col" style="gap:0"><b>${l}</b><span class="tiny mute">${[s ? s.label : '', w.name, w.step > 2 ? 'set' : '', ''][i]}</span></span></button>`)}
+        <div class="wiz-steps">${STEPS.map((l, i) => {
+          const state = i < w.step ? 'done' : i === w.step ? 'on' : 'next';
+          const fill = i < w.step ? 100 : i === w.step && ok ? 50 : 0;
+          const lots = w.cfg.lots_per_trade;
+          const hint = [s ? s.label : 'Not picked yet', w.name || (i <= w.step ? 'Name, index, capital' : ''),
+            w.step > 2 ? `${e.fields.length} settings${lots ? ` · ${plural(+lots, 'lot')}` : ''}` : i <= w.step ? 'Entry, exits, limits' : '',
+            i === w.step ? 'Check and deploy' : ''][i];
+          return html`<button type="button" class="wiz-step ${state}" data-step="${i}" ${i < w.step ? '' : 'disabled'} ${i === w.step ? html`aria-current="step"` : ''}>
+            <span class="wiz-dot"><span class="mono">${i < w.step ? '✓' : i + 1}</span>${i < STEPS.length - 1 ? html`<span class="wiz-line"><i style="height:${fill}%"></i></span>` : ''}</span>
+            <span class="col wiz-lab" style="gap:0"><b>${l}</b><span class="tiny mute ell">${hint}</span></span></button>`;
+        })}</div>
         <span class="grow"></span>
         <button type="button" class="b mute" data-close>Cancel and discard</button>
       </aside>
       <div class="wiz-main">
+        <div class="wiz-prog" role="progressbar" aria-label="Progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pctDone()}"><i data-prog style="width:${pctDone()}%"></i>${STEPS.map(() => html`<span></span>`)}</div>
         <div class="wiz-body">
-          <div class="row only-phone" style="justify-content:space-between;padding-bottom:12px"><span class="tiny mute b">Step ${w.step + 1} of 4 · ${STEPS[w.step]}</span><button type="button" class="b mute" data-close>Cancel</button></div>
+          <div class="wiz-stepline"><span>STEP ${w.step + 1} OF 4<span class="only-phone-in"> · ${STEPS[w.step].toUpperCase()}</span></span><i></i><span data-pct>${pctDone()}% done</span>
+            <span class="grow"></span><button type="button" class="b mute only-phone-in" data-close style="letter-spacing:0;font-family:var(--f-body)">Cancel</button></div>
           <h1 class="t-h1" style="font-size:36px;padding-bottom:6px">${titles[w.step]}</h1>
           <p class="mute" style="margin:0 0 24px;max-width:720px">${subs[w.step]}</p>
           ${w.step === 0 ? html`
@@ -200,6 +214,10 @@ export function openWizard({ strategy, copy } = {}) {
   function refreshFooter() {
     const ok = canNext(), btn = $('[data-next]', el);
     if (btn) { btn.classList.toggle('btn-primary', ok); btn.setAttribute('aria-disabled', String(!ok)); }
+    const bar = $('[data-prog]', el), lab = $('[data-pct]', el), line = $('.wiz-step.on .wiz-line > i', el);
+    if (bar) bar.style.width = `${pctDone()}%`;
+    if (lab) lab.textContent = `${pctDone()}% done`;
+    if (line) line.style.height = ok ? '50%' : '0%';
   }
   const onInput = ev => {
     const t = ev.target.closest('[data-w]');
