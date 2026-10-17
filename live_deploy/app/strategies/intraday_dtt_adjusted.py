@@ -550,7 +550,18 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             # row, since a CLOSED position's own qty column reads 0 (see
             # positions.qty's own "current open qty, zeroed on close"
             # semantics), not what it actually traded at.
-            self.entry_qty = self.lots_per_trade * await self.resolver.get_lot_size(self.options_underlying)
+            try:
+                self.entry_qty = self.lots_per_trade * await self.resolver.get_lot_size(self.options_underlying)
+            except Exception:
+                # No Kite session yet (a restart before the morning
+                # login): an open leg's own qty is the same value. Raising
+                # here used to stop the runner from starting at all,
+                # leaving its legs unmanaged -- no force exit that day.
+                self.entry_qty = float(open_legs[0][1]["qty"])
+                logger.warning(
+                    "%s: lot size unavailable on resume (no Kite session?) — using the open leg's qty %.0f",
+                    runner.deployment_name, self.entry_qty,
+                )
             # entry_spot isn't on the leg dict -- pull it from whichever
             # original fill's metadata still exists (open leg preferred,
             # else the closed-today record).
@@ -637,6 +648,13 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
     async def _maybe_enter(self, runner, ts) -> None:
         if self.entered_today or self.legs["CE"] or self.legs["PE"]:
             return
+        if runner.open_positions:
+            # Flat by our own tracking but the database still holds
+            # positions (left over from a close that failed earlier):
+            # close them before any fresh entry, never trade on top.
+            await runner.close_open_positions(ts, "untracked_close")
+            if runner.open_positions:
+                return
         t = ts.time()
         if t < self.entry_time:
             return
@@ -1032,18 +1050,21 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             }
 
         pos = runner.open_positions.get(cheapest["token"])
-        self.legs[side].remove(cheapest)
         if pos is not None:
+            # Forgotten only after the close succeeds (see _flatten_all).
             result = await runner.buy(
                 cheapest["symbol"], cheapest["token"], float(pos["qty"]), price, ts,
                 reason=reason,
                 metadata=build_trade_meta(
                     trigger=reason, action=f"buy_close_{side}",
-                    trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
+                    trigger_values=trigger_values,
+                    resulting_state=_legs_snapshot({k: [l for l in v if l is not cheapest] for k, v in self.legs.items()}),
                 ),
             )
             if result.get("realized_pnl") is not None:
                 self.realized_pnl_today += result["realized_pnl"]
+        self.legs[side].remove(cheapest)
+        if pos is not None:
             await runner.notify_execution(
                 "exit", f"{reason}: closed {cheapest['symbol']}@{price:.2f} ({side} side)",
                 metadata={"side": side},
@@ -1058,7 +1079,15 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
     # ── Full flatten: force-exit / break-even / profit-target ──────────
 
     async def _flatten_all(self, runner, ts, reason: str, trigger_values: dict) -> None:
+        # Each leg is closed on its own and only forgotten once it has
+        # actually closed: a close that raises keeps its leg tracked, so
+        # the next tick retries it, and never stops the other legs from
+        # closing. (Previously a leg was dropped from self.legs BEFORE
+        # its buy; if the buy raised, that leg stayed open in the
+        # database with nothing tracking it, and was carried into the
+        # next day.)
         had_legs = bool(self.legs["CE"] or self.legs["PE"])
+        failed = []
         for side in ("CE", "PE"):
             for leg in list(self.legs[side]):
                 price = runner.dispatcher.last_prices.get(leg["token"])
@@ -1070,18 +1099,35 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                         runner.deployment_name, leg["symbol"], reason, price,
                     )
                 pos = runner.open_positions.get(leg["token"])
-                self.legs[side].remove(leg)
                 if pos is not None:
-                    result = await runner.buy(
-                        leg["symbol"], leg["token"], float(pos["qty"]), price, ts, reason=reason,
-                        metadata=build_trade_meta(
-                            trigger=reason, action=f"buy_close_{side}",
-                            trigger_values=trigger_values, resulting_state=_legs_snapshot(self.legs),
-                        ),
-                    )
+                    try:
+                        result = await runner.buy(
+                            leg["symbol"], leg["token"], float(pos["qty"]), price, ts, reason=reason,
+                            metadata=build_trade_meta(
+                                trigger=reason, action=f"buy_close_{side}",
+                                trigger_values=trigger_values,
+                                resulting_state=_legs_snapshot({k: [l for l in v if l is not leg] for k, v in self.legs.items()}),
+                            ),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "%s: could not close %s on flatten (%s) — keeping it tracked, retrying next tick",
+                            runner.deployment_name, leg["symbol"], reason,
+                        )
+                        failed.append(leg["symbol"])
+                        continue
                     if result.get("realized_pnl") is not None:
                         self.realized_pnl_today += result["realized_pnl"]
+                self.legs[side].remove(leg)
                 runner.dispatcher.release_instruments([leg["token"]])
+        # Anything still open that the strategy wasn't tracking (every
+        # position this deployment holds is one of its legs) closes too.
+        swept = await runner.close_open_positions(ts, f"{reason}_sweep")
+        failed += swept["failed"]
+        if failed:
+            await runner.record_strategy_error(
+                f"{reason}: {len(failed)} leg(s) could not be closed yet ({', '.join(failed)}); retrying",
+            )
         if had_legs:
             await runner.notify_execution(
                 "exit", f"{reason}: flattened everything", metadata=trigger_values,

@@ -898,6 +898,13 @@ class StrangleMonthlyV2Strategy(StrategyBase):
     async def _maybe_enter(self, runner, ts) -> None:
         if self.legs["CE"] or self.legs["PE"]:
             return
+        if runner.open_positions:
+            # Flat by our own tracking but the database still holds
+            # positions (left over from a close that failed earlier):
+            # close them before any fresh entry, never trade on top.
+            await runner.close_open_positions(ts, "untracked_close")
+            if runner.open_positions:
+                return
         t = ts.time()
         is_very_first_entry = not self.entered_ever
         if not (is_very_first_entry and self.enter_immediately_on_deploy):
@@ -1151,7 +1158,9 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             # empty and let the NEXT tick's _maybe_enter pick this up
             # once entry_time is reached (labelled
             # "reentry_after_checkpoint_target" via _last_flatten_trigger).
-            if ts.time() >= self.entry_time:
+            # Only once actually flat: a leg that failed to close stays
+            # tracked and is retried first (via _maybe_manage next tick).
+            if ts.time() >= self.entry_time and not runner.open_positions:
                 await self._enter(runner, ts, trigger="checkpoint_target")
             return
 
@@ -1309,7 +1318,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
     # ── Section 4 / general: full flatten ───────────────────────────────
 
     async def _flatten_all(self, runner, ts, trigger: str, trigger_values: dict) -> None:
+        # Each leg closes on its own: one that raises stays tracked (and
+        # is retried next tick) without stopping the others. Then any
+        # position still open that wasn't tracked -- a short or a hedge
+        # orphaned by an earlier failure -- is closed too, so a full
+        # flatten really leaves the deployment flat.
+        failed = []
         for side in ("CE", "PE"):
+            keep = []
             for leg in list(self.legs[side]):
                 price = runner.dispatcher.last_prices.get(leg["token"])
                 if price is None:
@@ -1319,8 +1335,26 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                         "at entry_price %.2f (zero P&L on this leg)",
                         runner.deployment_name, leg["symbol"], trigger, price,
                     )
-                await self._close_leg(runner, ts, side, leg, trigger, trigger_values, _skip_list_remove=True)
-            self.legs[side] = []
+                try:
+                    await self._close_leg(runner, ts, side, leg, trigger, trigger_values, _skip_list_remove=True)
+                except Exception:
+                    logger.exception(
+                        "%s: could not close %s on flatten (%s) — keeping it tracked, retrying next tick",
+                        runner.deployment_name, leg["symbol"], trigger,
+                    )
+                    if leg["token"] in runner.open_positions:
+                        keep.append(leg)
+                        failed.append(leg["symbol"])
+            self.legs[side] = keep
+        tracked = {leg["token"] for side_legs in self.legs.values() for leg in side_legs}
+        orphans = {tok for tok in runner.open_positions if tok not in tracked}
+        if orphans:
+            swept = await runner.close_open_positions(ts, f"{trigger}_sweep", tokens=orphans)
+            failed += swept["failed"]
+        if failed:
+            await runner.record_strategy_error(
+                f"{trigger}: {len(failed)} leg(s) could not be closed yet ({', '.join(failed)}); retrying",
+            )
         # Remembered so `_maybe_enter`'s NEXT auto-re-entry (contract-
         # expiry-backstop and convergence-stop both go flat with no
         # direct follow-up _enter() call, unlike the checkpoint path,

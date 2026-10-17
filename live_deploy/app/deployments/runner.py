@@ -20,6 +20,7 @@ import asyncio
 import logging
 from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -113,6 +114,11 @@ class DeploymentRunner:
         self._queue: Optional[asyncio.Queue] = None
         self._task: Optional[asyncio.Task] = None
         self._running = False
+
+        # Intraday safety net (see _intraday_guard): the configured
+        # square-off time, if any, and when the last sweep was tried.
+        self._square_off_at: Optional[time] = _parse_hhmm(self.config.get("force_exit_time"))
+        self._last_sweep_try: Optional[datetime] = None
 
     @property
     def tokens(self) -> set[int]:
@@ -256,6 +262,11 @@ class DeploymentRunner:
             "metadata": metadata or {},
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
+
+    async def record_strategy_error(self, message: str, metadata: Optional[dict] = None) -> None:
+        """For a strategy to flag a problem it handled itself (shows in
+        the deployment's Activity and as an alert), without raising."""
+        await self._record_event("strategy_error", message=message, metadata=metadata)
 
     async def notify_execution(self, side: str, message: str, metadata: Optional[dict] = None) -> None:
         """
@@ -498,6 +509,10 @@ class DeploymentRunner:
                         )
                         continue
                     try:
+                        await self._intraday_guard(t)
+                    except Exception:
+                        logger.exception("%s: intraday guard raised — continuing", self.deployment_name)
+                    try:
                         await self.strategy.on_tick(self, t)
                     except Exception:
                         logger.exception(
@@ -510,6 +525,113 @@ class DeploymentRunner:
                         )
         except asyncio.CancelledError:
             raise
+
+    # ── Intraday safety net ───────────────────────────────────────────
+    #
+    # An intraday deployment must be flat at its square-off time and
+    # must never carry a leg into the next session. Each strategy closes
+    # its own legs at force_exit_time, but only the legs it is tracking
+    # in memory; a leg it lost track of (a close that raised mid-
+    # flatten, a restart after the close, a day rollover that reset its
+    # leg list) stayed open in the database with nothing left to close
+    # it. This guard checks the database's view (open_positions) on
+    # every live tick, before the strategy sees the tick:
+    #   1. any position opened on an EARLIER trading day is closed now
+    #      ("carried_over_close"), before the new day's entry logic runs;
+    #   2. once the tick time is _SWEEP_GRACE past force_exit_time
+    #      (the strategy gets the first chance to exit on its own), any
+    #      position still open is closed ("square_off_sweep").
+    # Positional deployments are untouched: holding overnight is the point.
+
+    _SWEEP_GRACE = timedelta(seconds=60)
+    _SWEEP_RETRY = timedelta(seconds=30)
+    _IST = ZoneInfo("Asia/Kolkata")
+
+    async def _intraday_guard(self, tick: dict) -> None:
+        if self.mode != "intraday" or not self.open_positions:
+            return
+        ts = tick.get("exchange_timestamp")
+        if ts is None:
+            return
+        carried = [
+            pos for pos in self.open_positions.values()
+            if pos.get("opened_at") is not None and pos["opened_at"].astimezone(self._IST).date() < ts.date()
+        ]
+        if carried:
+            await self.close_open_positions(ts, "carried_over_close", tokens={int(p["instrument_token"]) for p in carried})
+        if self._square_off_at is None or not self.open_positions:
+            return
+        due = datetime.combine(ts.date(), self._square_off_at) + self._SWEEP_GRACE
+        if ts < due:
+            return
+        now = datetime.now()
+        if self._last_sweep_try is not None and now - self._last_sweep_try < self._SWEEP_RETRY:
+            return
+        self._last_sweep_try = now
+        await self.close_open_positions(ts, "square_off_sweep")
+
+    async def _exit_price(self, pos: dict) -> tuple[float, str]:
+        """Best available price to close `pos` at: the live tick cache,
+        else one quote, else its own average entry (zero P&L, logged)."""
+        token = int(pos["instrument_token"])
+        price = self.dispatcher.last_prices.get(token)
+        if price is not None:
+            return float(price), "live"
+        try:
+            from ..options import OptionsResolver   # lazy: options imports the dispatcher layer
+            quotes = await asyncio.wait_for(OptionsResolver(self.dispatcher).get_quotes([str(token)]), 5)
+            q = next((q for q in quotes.values() if q.get("instrument_token") == token), None)
+            if q and q.get("last_price"):
+                return float(q["last_price"]), "quote"
+        except Exception:
+            pass
+        logger.warning(
+            "%s: no price for %s — closing at its average entry %.2f (zero P&L on this leg)",
+            self.deployment_name, pos["symbol"], float(pos["avg_entry_price"]),
+        )
+        return float(pos["avg_entry_price"]), "entry"
+
+    async def close_open_positions(
+        self, executed_at: Optional[datetime], reason: str, tokens: Optional[set[int]] = None,
+    ) -> dict:
+        """Close every open position (or just `tokens`), each on its own:
+        one failure is logged and recorded and never stops the rest.
+        Shorts are bought back before longs are sold, so a hedge is
+        never removed while its short is still open. Returns
+        {"closed": [symbols], "failed": [symbols]}."""
+        targets = [
+            pos for tok, pos in list(self.open_positions.items())
+            if tokens is None or tok in tokens
+        ]
+        targets.sort(key=lambda p: 0 if p["side"] == "short" else 1)
+        closed, failed = [], []
+        for pos in targets:
+            token = int(pos["instrument_token"])
+            if token not in self.open_positions:
+                continue   # closed meanwhile
+            price, source = await self._exit_price(pos)
+            action = self.buy if pos["side"] == "short" else self.sell
+            try:
+                await action(
+                    pos["symbol"], token, float(pos["qty"]), price, executed_at, reason=reason,
+                    metadata={"trigger": reason, "action": "close", "price_source": source},
+                )
+                closed.append(pos["symbol"])
+            except Exception as e:
+                logger.exception("%s: %s could not close %s", self.deployment_name, reason, pos["symbol"])
+                failed.append(pos["symbol"])
+                await self._record_event(
+                    "strategy_error", message=f"{reason}: could not close {pos['symbol']} ({e})",
+                    metadata={"reason": reason, "symbol": pos["symbol"]},
+                )
+        if closed:
+            logger.warning("%s: %s closed %s", self.deployment_name, reason, ", ".join(closed))
+            await self._record_event(
+                reason, message=f"{reason}: closed {len(closed)} position(s) the strategy had left open",
+                metadata={"closed": closed, "failed": failed},
+            )
+            await self.notify_execution("exit", f"{reason}: closed {', '.join(closed)}", metadata={"reason": reason})
+        return {"closed": closed, "failed": failed}
 
     # ── Trade execution — the only DB writes a strategy triggers ──────
 
@@ -588,3 +710,14 @@ class DeploymentRunner:
         if self._on_fill:
             self._on_fill()
         return result
+
+
+def _parse_hhmm(value) -> Optional[time]:
+    """"15:00" -> time(15, 0); None or anything unparsable -> None."""
+    if not value:
+        return None
+    try:
+        h, m = str(value).split(":")[:2]
+        return time(int(h), int(m))
+    except (TypeError, ValueError):
+        return None
