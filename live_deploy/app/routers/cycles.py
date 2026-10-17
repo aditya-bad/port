@@ -104,6 +104,60 @@ async def _historical(resolver: OptionsResolver, token: int, start: datetime, en
     return candles
 
 
+def _session_minutes(start: datetime, end: datetime) -> int:
+    """Trading minutes (weekdays, 09:15-15:29 IST) in [start, end)."""
+    n, day = 0, start.astimezone(_IST).date()
+    while day <= end.astimezone(_IST).date():
+        if day.weekday() < 5:
+            o = max(start, datetime.combine(day, _SESSION_OPEN, _IST))
+            c = min(end, datetime.combine(day, _SESSION_CLOSE, _IST))
+            if c > o:
+                n += int((c - o).total_seconds() // 60)
+        day += timedelta(days=1)
+    return n
+
+
+def _bucket(rows, interval: str) -> list[dict]:
+    """1-minute candles -> `interval` candles, anchored at 09:15 like
+    Kite's own (t = bucket start, epoch ms)."""
+    step = _INTERVAL_SECONDS[interval] // 60
+    out: dict[int, dict] = {}
+    for r in rows:
+        m = r["minute"].astimezone(_IST)
+        open_ = datetime.combine(m.date(), _SESSION_OPEN, _IST)
+        k = int(((m - open_).total_seconds() // 60) // step * step)
+        t = _ms(open_ + timedelta(minutes=k))
+        c = out.get(t)
+        if c is None:
+            out[t] = {"t": t, "o": r["o"], "h": r["h"], "l": r["l"], "c": r["c"]}
+        else:
+            c["h"], c["l"], c["c"] = max(c["h"], r["h"]), min(c["l"], r["l"]), r["c"]
+    return [out[t] for t in sorted(out)]
+
+
+async def _underlying_candles(pool, resolver, token: int, start: datetime, end: datetime, interval: str):
+    """(candles, source, error). Our own recorded 1-minute candles when
+    they cover the window (>= 90% of its trading minutes); else Kite's
+    historical API; else whatever we recorded, partial. Raises nothing."""
+    rows = await queries.list_index_candles(pool, token, start, end)
+    expected = _session_minutes(start, min(end, datetime.now(timezone.utc)))
+    if rows and expected and len(rows) >= 0.9 * expected:
+        return _bucket(rows, interval), "recorded", None
+    try:
+        candles = await _historical(resolver, token, start, end, interval)
+        if candles:
+            return candles, "kite", None
+        err = "Kite returned no underlying history for this window."
+    except NoKiteSession:
+        err = "Kite isn't logged in, so the underlying's history can't be fetched. Log in and reload."
+    except Exception as e:
+        logger.exception("Cycles: underlying history failed for token %s", token)
+        err = f"Couldn't fetch the underlying's history ({e})."
+    if rows:
+        return _bucket(rows, interval), "recorded_partial", None
+    return [], None, err
+
+
 async def _load_cycles(pool, dep) -> list[dict]:
     """Every cycle, newest first, each with its own position rows."""
     rows = await queries.list_positions_with_episode(pool, dep["id"], status=None)
@@ -254,24 +308,21 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
     resolver = OptionsResolver(request.app.state.dispatcher)
     notes: list[str] = []
 
-    # Underlying
+    # Underlying: our own recorded candles first, Kite's history if those
+    # don't cover the window (see _underlying_candles).
     underlying: list[dict] = []
     underlying_error = None
+    underlying_source = None
     kite_logged_in = True
     tokens = (dep["config"] or {}).get("instrument_tokens") or []
     if not tokens:
         underlying_error = "No underlying instrument configured for this deployment."
     else:
-        try:
-            underlying = await _historical(resolver, int(tokens[0]), win_start, win_end, interval)
-            if not underlying:
-                underlying_error = "Kite returned no underlying history for this window."
-        except NoKiteSession:
+        underlying, underlying_source, underlying_error = await _underlying_candles(
+            pool, resolver, int(tokens[0]), win_start, win_end, interval,
+        )
+        if underlying_error and "logged in" in underlying_error:
             kite_logged_in = False
-            underlying_error = "Kite isn't logged in, so the underlying's history can't be fetched. Log in and reload."
-        except Exception as e:
-            logger.exception("Cycles: underlying history failed for %s", dep["deployment_name"])
-            underlying_error = f"Couldn't fetch the underlying's history ({e})."
 
     # Per-position option price paths
     marks_by_pos: dict[str, list[tuple[int, float]]] = {}
@@ -408,6 +459,7 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
                   "status": cycle["status"], "mode": dep["mode"]},
         "window": {"start": _ms(win_start), "end": _ms(win_end), "interval": interval},
         "underlying": underlying, "underlying_error": underlying_error,
+        "underlying_source": underlying_source,
         "underlying_symbol": (dep["config"] or {}).get("instrument") or (dep["config"] or {}).get("options_underlying"),
         "positions": pos_out,
         # Each point is evaluated at t + eval_offset_ms (the candle's close).

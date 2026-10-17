@@ -32,5 +32,7 @@ async def health(request: Request):
         "status": "ok" if db_ok else "degraded",
         "database_connected": db_ok,
         "running_deployments": len(manager.runners),
+        # Active in the database but nothing running them (watchdog_loop).
+        "not_running": manager.health_issues,
         **dispatcher.status,
     }

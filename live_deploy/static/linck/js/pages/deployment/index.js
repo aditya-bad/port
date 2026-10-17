@@ -73,7 +73,13 @@ export default {
               ].map(([l, h, a, off]) => html`<button type="button" role="menuitem" data-act="${a}" ${off ? html`aria-disabled="true" data-reason="${h}"` : ''}><b>${l}</b><span>${h}</span></button>`)}</div>` : ''}
             </div>
           </div>
-          ${v.issue ? html`
+          ${v.issue && v.issue.down ? html`
+            <div class="issue">
+              <span class="dia" style="width:12px;height:12px;background:var(--r)"></span>
+              <div class="col grow" style="gap:0"><b>Not running: its strategy won’t enter, adjust or exit</b><span class="small mute">${v.issue.reason}.${v.legs.length ? ` ${plural(v.legs.length, 'leg')} will stay open until it runs again.` : ''}</span></div>
+              <button type="button" class="btn btn-primary" data-act="restart">Restart</button>
+              <button type="button" class="btn" data-act="pauseNow">Pause</button>
+            </div>` : v.issue ? html`
             <div class="issue">
               <span class="dia" style="width:12px;height:12px;background:var(--wr)"></span>
               <div class="col grow" style="gap:0"><b>${v.issue.text}</b><span class="small mute">${v.legs.length ? `${plural(v.legs.length, 'leg')} still open. Check them before it carries on.` : 'No legs are open.'}</span></div>
@@ -116,6 +122,7 @@ export default {
     const offActs = actions(main, {
       primary: () => { const v = vNow(); if (v) A.primary(v)[1](); },
       pauseNow: () => { const v = vNow(); if (v) A.pause([v]); },
+      restart: () => A.restartDeployment(id),
       close: (d, el) => (el.dataset.reason ? say(el.dataset.reason) : A.closeLegs([vNow()])),
       stop: (d, el) => (el.dataset.reason ? say(el.dataset.reason) : A.stop(vNow())),
       edit: () => { menu = false; go(`d/${id}/settings`); },

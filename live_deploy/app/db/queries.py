@@ -1037,6 +1037,41 @@ async def record_position_marks(pool: asyncpg.Pool, marks: list[tuple]) -> None:
         )
 
 
+async def record_index_candles(pool: asyncpg.Pool, candles: list[tuple]) -> None:
+    """candles: [(instrument_token, minute, open, high, low, close)]. A
+    minute already stored (e.g. written just before a restart) is merged:
+    its high/low widen and its close moves to the newer value."""
+    if not candles:
+        return
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO index_candles (instrument_token, minute, open, high, low, close)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (instrument_token, minute) DO UPDATE SET
+                high = GREATEST(index_candles.high, EXCLUDED.high),
+                low = LEAST(index_candles.low, EXCLUDED.low),
+                close = EXCLUDED.close
+            """,
+            candles,
+        )
+
+
+async def list_index_candles(
+    pool: asyncpg.Pool, instrument_token: int, start: datetime, end: datetime,
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT minute, open::float8 AS o, high::float8 AS h, low::float8 AS l, close::float8 AS c
+            FROM index_candles
+            WHERE instrument_token = $1 AND minute >= $2 AND minute < $3
+            ORDER BY minute
+            """,
+            instrument_token, start, end,
+        )
+
+
 async def list_marks_for_positions(
     pool: asyncpg.Pool, position_ids: list, start: datetime, end: datetime,
 ) -> list[asyncpg.Record]:

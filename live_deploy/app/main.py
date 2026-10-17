@@ -375,6 +375,14 @@ async def startup() -> None:
     # ── Per-leg price marks for the Cycle Replay chart (1-min intraday,
     # 5-min positional) — see DeploymentManager.marks_loop.
     app.state.marks_task = asyncio.create_task(manager.marks_loop(), name="position-marks-loop")
+    # ── 1-minute index candles, recorded from live ticks, so charts
+    # don't depend on Kite's historical API — see index_candles_loop.
+    # ── Health watchdog: deployments active but not running, and Kite
+    # not connected by 09:05 on a market day — see watchdog_loop.
+    app.state.watchdog_task = asyncio.create_task(manager.watchdog_loop(), name="health-watchdog")
+    app.state.index_candles_task = asyncio.create_task(
+        manager.index_candles_loop([int(t["instrument_token"]) for t in tokens]), name="index-candles-loop",
+    )
 
     logger.info(
         "live_deploy started — %d static token(s), mode=%s, %d deployment(s) resumed, "
@@ -425,6 +433,16 @@ async def shutdown() -> None:
         await marks_task
     except asyncio.CancelledError:
         pass
+
+    for name in ("index_candles_task", "watchdog_task"):
+        task = getattr(app.state, name, None)
+        if task is None:
+            continue
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     # Stop the aggregate-read cache's background refresh loops before
     # the DB pool closes below — otherwise a loop mid-sleep can wake up

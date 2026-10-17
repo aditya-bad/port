@@ -1,0 +1,135 @@
+"""Index candles recorded by the app (chart source) and the health
+watchdog (deployments active but not running; Kite not connected)."""
+
+import asyncio
+from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
+
+from app.deployments.manager import DeploymentManager, fold_tick
+from app.routers import cycles
+
+IST = ZoneInfo("Asia/Kolkata")
+
+
+def m(h, mi, d=16):
+    return datetime(2026, 10, d, h, mi, tzinfo=IST)
+
+
+def test_fold_tick_builds_ohlc_per_minute():
+    b = {}
+    for p in (100, 104, 98, 101):
+        fold_tick(b, 1, p, m(9, 15))
+    assert b[1] == [m(9, 15), 100, 104, 98, 101]
+    fold_tick(b, 1, 99, m(9, 16))
+    assert b[1] == [m(9, 16), 99, 99, 99, 99]
+
+
+def test_bucket_anchors_at_open_like_kite():
+    rows = [{"minute": m(9, 15 + i), "o": 100 + i, "h": 101 + i, "l": 99 + i, "c": 100.5 + i} for i in range(10)]
+    out = cycles._bucket(rows, "5minute")
+    assert [datetime.fromtimestamp(c["t"] / 1000, IST).strftime("%H:%M") for c in out] == ["09:15", "09:20"]
+    assert out[0]["o"] == 100 and out[0]["h"] == 105 and out[0]["l"] == 99 and out[0]["c"] == 104.5
+
+
+def test_session_minutes_skips_nights_and_weekends():
+    assert cycles._session_minutes(m(9, 15), m(15, 30)) == 375
+    # Fri 16 Oct 15:00 -> Mon 19 Oct 09:45: 30 + 30 minutes
+    assert cycles._session_minutes(m(15, 0), m(9, 45, d=19)) == 60
+
+
+class Pool:
+    def __init__(self, rows):
+        self.rows = rows
+
+
+def run_underlying(rows, kite_result):
+    async def fake_list(pool, token, start, end):
+        return pool.rows
+
+    async def fake_hist(resolver, token, start, end, interval):
+        if isinstance(kite_result, Exception):
+            raise kite_result
+        return kite_result
+
+    orig_list, orig_hist = cycles.queries.list_index_candles, cycles._historical
+    cycles.queries.list_index_candles, cycles._historical = fake_list, fake_hist
+    try:
+        return asyncio.run(cycles._underlying_candles(Pool(rows), None, 256265, m(9, 15), m(10, 15), "minute"))
+    finally:
+        cycles.queries.list_index_candles, cycles._historical = orig_list, orig_hist
+
+
+def minute_rows(n):
+    return [{"minute": m(9, 15) + timedelta(minutes=i), "o": 1, "h": 1, "l": 1, "c": 1} for i in range(n)]
+
+
+def test_recorded_candles_preferred_when_they_cover_the_window():
+    candles, source, err = run_underlying(minute_rows(60), RuntimeError("must not be called"))
+    assert source == "recorded" and len(candles) == 60 and err is None
+
+
+def test_kite_used_when_recording_has_gaps_and_partial_kept_as_last_resort():
+    candles, source, _ = run_underlying(minute_rows(20), [{"t": 1, "o": 1, "h": 1, "l": 1, "c": 1}])
+    assert source == "kite"
+    candles, source, err = run_underlying(minute_rows(20), cycles.NoKiteSession("no session"))
+    assert source == "recorded_partial" and len(candles) == 20 and err is None
+    candles, source, err = run_underlying([], cycles.NoKiteSession("no session"))
+    assert candles == [] and source is None and "logged in" in err
+
+
+def manager(active_rows, running_ids=(), connected=True, needs_login=False):
+    mgr = object.__new__(DeploymentManager)
+    mgr.runners = {i: SimpleNamespace(_task=SimpleNamespace(done=lambda: False)) for i in running_ids}
+    mgr.start_errors, mgr.health_issues, mgr._alerted, mgr._kite_alerted_on = {}, [], set(), None
+    mgr.cache, mgr.push_config = None, {"x": 1}
+    mgr.dispatcher = SimpleNamespace(connected=connected, status={"needs_login": needs_login})
+    mgr.pushes, mgr.events = [], []
+
+    async def push(title, body):
+        mgr.pushes.append(title)
+
+    async def record_event(*a, **k):
+        mgr.events.append(a[3])
+
+    async def fetchval(*a):
+        return 2
+    mgr._push, mgr._record_event = push, record_event
+    mgr.pool = SimpleNamespace(fetchval=fetchval)
+
+    async def list_deployments(pool, status=None):
+        return active_rows
+    import app.deployments.manager as M
+    M.queries.list_deployments = list_deployments
+    return mgr
+
+
+ROW = {"id": "00000000-0000-0000-0000-000000000001", "deployment_name": "DTT A", "strategy_name": "intraday_dtt_adjusted"}
+
+
+def test_watchdog_flags_active_without_runner_and_pushes_once():
+    mgr = manager([ROW])
+    mgr.start_errors[ROW["id"]] = "NoKiteSession: no session"
+    asyncio.run(mgr.check_health_once(m(10, 0)))
+    asyncio.run(mgr.check_health_once(m(10, 1)))
+    assert [x["name"] for x in mgr.health_issues] == ["DTT A"]
+    assert mgr.health_issues[0]["open_positions"] == 2 and "NoKiteSession" in mgr.health_issues[0]["reason"]
+    assert mgr.pushes == ["DTT A isn't running"] and mgr.events == ["not_running"]
+
+
+def test_watchdog_quiet_when_running():
+    mgr = manager([ROW], running_ids=[ROW["id"]])
+    asyncio.run(mgr.check_health_once(m(10, 0)))
+    assert mgr.health_issues == [] and mgr.pushes == []
+
+
+def test_kite_alert_once_on_market_days_after_0905_only():
+    mgr = manager([], connected=False, needs_login=True)
+    asyncio.run(mgr.check_health_once(m(9, 0)))
+    assert mgr.pushes == []
+    asyncio.run(mgr.check_health_once(m(9, 6)))
+    asyncio.run(mgr.check_health_once(m(9, 30)))
+    assert mgr.pushes == ["Kite isn't connected"]
+    sat = manager([], connected=False, needs_login=True)
+    asyncio.run(sat.check_health_once(m(10, 0, d=17)))
+    assert sat.pushes == []

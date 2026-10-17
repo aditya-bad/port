@@ -8,7 +8,7 @@ import { api } from '../core/api.js';
 import { basis, pick, pnlOf, baseOf } from '../core/basis.js';
 import { emit, listen } from '../core/store.js';
 import { debounce } from '../core/dom.js';
-import { prices } from './live.js';
+import { prices, health } from './live.js';
 import { LAB_TAG, YOUNG_DAYS, QUIET_DAYS } from './config.js';
 import { tradeMetrics } from './metrics.js';
 
@@ -138,12 +138,13 @@ function base(d) {
   const created = new Date(d.created_at);
   const ageDays = Math.floor((Date.now() - created) / 864e5);
   const last = trades.length ? new Date(trades[trades.length - 1].closed_at) : null;
-  const issue = d.status === 'active' ? issueOf(id) : null;
+  const down = d.status === 'active' ? health.notRunning.find(x => x.id === id) : null;
+  const issue = down ? { text: 'Not running', reason: down.reason, down: true } : d.status === 'active' ? issueOf(id) : null;
   return {
     id, raw: d, name: d.deployment_name, strategy: d.strategy_name,
     strategyLabel: strat ? strat.label : d.strategy_name,
     mode: d.mode === 'intraday' ? 'Intraday' : 'Positional', modeKey: d.mode,
-    status: issue ? 'error' : d.status, rawStatus: d.status,
+    status: down ? 'down' : issue ? 'error' : d.status, rawStatus: d.status,
     cap: Number(d.initial_capital), tags: d.tags || [], isLab: (d.tags || []).includes(LAB_TAG),
     index: indexOf(d), created, ageDays, young: ageDays < YOUNG_DAYS,
     inReports: d.include_in_reports !== false,
@@ -169,7 +170,7 @@ export function live(v) {
 }
 
 export function deployments() {
-  return memo(`deps:${version}:${basis()}`, () => raw.deployments.map(d => {
+  return memo(`deps:${version}:${basis()}:${health.sig}`, () => raw.deployments.map(d => {
     const v = base(d);
     const m = tradeMetrics(v.trades.map(pnlOf));
     v.streak = m.streak;

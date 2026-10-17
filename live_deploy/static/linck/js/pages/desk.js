@@ -12,7 +12,7 @@ import { kite } from '../data/live.js';
 import { alerts, dismiss, attention } from '../data/alerts.js';
 import { DESK_LANES, STREAK_ALERT } from '../data/config.js';
 import { chips, utabs, marker, empty } from '../ui/components.js';
-import { primary, resume, kiteDialog } from '../actions.js';
+import { primary, resume, kiteDialog, restartDeployment } from '../actions.js';
 
 const st = ui('desk', { f: 'all', sort: 'attn', all: false, lab: false });
 const EV = {
@@ -194,7 +194,7 @@ function positionsBlock(list, T) {
           const x = book.live(v);
           return html`
             <a class="leg-group" href="${href(`d/${v.id}`)}"><b>${v.name}</b>
-              <span class="tiny b warn">${v.status === 'error' ? 'ERROR' : v.rawStatus === 'paused' ? 'PAUSED' : ''}</span><span class="grow"></span>
+              <span class="tiny b warn">${v.status === 'down' ? 'NOT RUNNING' : v.status === 'error' ? 'ERROR' : v.rawStatus === 'paused' ? 'PAUSED' : ''}</span><span class="grow"></span>
               <span class="mono small ${tone(x.unreal)}" data-grp="${v.id}">${inr(x.unreal)}</span></a>
             ${v.legs.map(p => { const pnl = book.legPnl(p); return html`
               <div class="tr legs-grid leg"><span class="b mute hide-phone">${p.side === 'short' ? 'S' : 'B'}</span><span class="ell"><b class="only-phone-in mute">${p.side === 'short' ? 'S ' : 'B '}</b><span class="hide-phone">${p.symbol}</span><span class="only-phone-in">${shortSymbol(p.symbol)}</span></span>
@@ -296,6 +296,7 @@ export default {
         if (ac.type === 'kite') kiteDialog();
         else if (ac.type === 'open') go(`d/${ac.id}${ac.tab ? `/${ac.tab}` : ''}`);
         else if (ac.type === 'resume') { const v = book.find(ac.id); if (v) resume([v]); }
+        else if (ac.type === 'restart') restartDeployment(ac.id);
       },
     });
     api.recentTrades(40).then(r => { recent = r; paint(); }).catch(() => {});

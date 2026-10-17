@@ -60,6 +60,8 @@ export function startEvents() {
 // ── Kite ───────────────────────────────────────────────────────────
 // state: 'connected' | 'connecting' | 'expired'
 export const kite = { state: 'expired', lastTickAt: null, error: null };
+// Deployments active in the database with nothing running them (/health).
+export const health = { notRunning: [], sig: '' };
 let connecting = false;
 export async function pollStatus() {
   try {
@@ -67,6 +69,10 @@ export async function pollStatus() {
     kite.state = h.kite_connected && !h.needs_login ? 'connected' : connecting ? 'connecting' : 'expired';
     kite.lastTickAt = h.last_tick_at || null;
     kite.error = h.last_error || null;
+    const nr = h.not_running || [];
+    const sig = nr.map(x => `${x.id}:${x.open_positions}`).join(',');
+    health.notRunning = nr;
+    if (sig !== health.sig) { health.sig = sig; emit('data'); }
   } catch (e) {
     kite.state = connecting ? 'connecting' : 'expired';
     kite.error = e.message;

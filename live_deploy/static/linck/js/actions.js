@@ -18,6 +18,7 @@ const fresh = list => list.map(v => book.find(v.id)).filter(Boolean);
 
 // The one action a row offers, by state.
 export function primary(v) {
+  if (v.status === 'down') return ['Restart', () => restartDeployment(v.id)];
   if (v.rawStatus === 'active') return v.status === 'error' ? ['Review', () => go(`d/${v.id}`)] : ['Pause', () => pause([v])];
   if (v.rawStatus === 'paused') return ['Resume', () => resume([v])];
   return ['Copy as new', () => copyAsNew(v)];
@@ -265,6 +266,23 @@ export function kiteDialog({ paste = false } = {}) {
       say(r && r.kite_connected ? 'Kite connected. Prices are live.' : 'Token accepted. Waiting for the price stream to connect…');
     },
   });
+}
+
+// Start the strategy of a deployment that's active but not running.
+export async function restartDeployment(id) {
+  const v = book.find(id);
+  try {
+    await api.restart(id);
+    await pollStatus();
+    await book.load(['deployments']);
+    say(`${v ? v.name : 'Deployment'} is running again.`);
+  } catch (e) {
+    openDialog({
+      kicker: 'ERROR', hot: true, title: `${v ? v.name : 'It'} still can’t start`,
+      lines: [e.message, 'Fix the cause (often a setting the strategy rejects, or Kite not logged in), then try again. Pausing it is also safe; its open positions stay as they are.'],
+      cancelLabel: 'Close',
+    });
+  }
 }
 
 export function copyAsNew(v) {

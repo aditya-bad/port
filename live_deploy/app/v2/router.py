@@ -118,3 +118,19 @@ async def create_deployment(payload: CreateIn, request: Request):
         raise HTTPException(400, str(e))
     await _refresh_caches(request)
     return {"id": str(row["id"]), "status": row["status"], "strategy_registered": registered}
+
+
+@router.post("/deployments/{deployment_id}/restart")
+async def restart_deployment(deployment_id: UUID, request: Request):
+    """Start the strategy of a deployment that's active but not running
+    (see DeploymentManager.find_not_running). 409 with the strategy's own
+    error if it still can't start."""
+    manager = request.app.state.deployment_manager
+    try:
+        await manager.restart(deployment_id)
+    except KeyError:
+        raise HTTPException(404, "No such deployment")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    await _refresh_caches(request)
+    return {"ok": True, "running": True}

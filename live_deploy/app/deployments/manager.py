@@ -99,6 +99,15 @@ DEFAULT_SNAPSHOT_INTERVAL_SECONDS = 300.0
 DEFAULT_POST_MARKET_DUMP_TIME = "15:45"
 
 
+def fold_tick(building: dict, token: int, price: float, minute: datetime) -> None:
+    """Fold one tick into its minute's OHLC candle: [minute, o, h, l, c]."""
+    v = building.get(token)
+    if v is None or v[0] != minute:
+        building[token] = [minute, price, price, price, price]
+    else:
+        v[2], v[3], v[4] = max(v[2], price), min(v[3], price), price
+
+
 def _parse_hhmm(value: str) -> tuple[int, int]:
     hour_str, minute_str = value.split(":")
     return int(hour_str), int(minute_str)
@@ -144,6 +153,13 @@ class DeploymentManager:
         # stays testable/constructible without standing up the whole
         # app).
         self.cache = cache
+        # Health (see watchdog_loop): why a deployment's runner last failed
+        # to start, what's currently wrong, and which problems already
+        # got a push (so each one is sent once, not every check).
+        self.start_errors: dict[str, str] = {}
+        self.health_issues: list[dict] = []
+        self._alerted: set[str] = set()
+        self._kite_alerted_on = None
 
     # ── Startup / shutdown ───────────────────────────────────────────
 
@@ -170,7 +186,8 @@ class DeploymentManager:
         for row in rows:
             try:
                 await self._start_runner(row)
-            except Exception:
+            except Exception as e:
+                self.start_errors[str(row["id"])] = f"{type(e).__name__}: {e}"
                 logger.exception(
                     "Failed to resume deployment %s (%s) on startup -- "
                     "left 'active' in the DB but with no runner; fix the "
@@ -619,6 +636,161 @@ class DeploymentManager:
         await queries.record_position_marks(self.pool, rows)
         return len(rows)
 
+    # ── 1-minute index candles (Cycle / Session charts) ────────────────
+
+    async def index_candles_loop(self, static_tokens: list[int]) -> None:
+        """Builds a 1-minute OHLC candle per index from the live ticks
+        (the always-subscribed indices plus every running deployment's
+        underlying) and stores it once the minute closes. Charts read
+        these before asking Kite's historical API. Market hours only;
+        a tick still carrying an earlier day's trade (holiday, pre-open
+        snapshot) is ignored."""
+        q = await self.broadcaster.subscribe()
+        building: dict[int, list] = {}   # token -> [minute, o, h, l, c]
+        try:
+            while True:
+                try:
+                    ticks = await asyncio.wait_for(q.get(), timeout=5)
+                except asyncio.TimeoutError:
+                    ticks = []
+                try:
+                    now = datetime.now(_IST)
+                    minute = now.replace(second=0, microsecond=0)
+                    done = [tok for tok, v in building.items() if v[0] < minute]
+                    if done:
+                        await queries.record_index_candles(
+                            self.pool, [(tok, *building.pop(tok)) for tok in done],
+                        )
+                    if not ticks or now.weekday() >= 5 or not (_MARKS_OPEN <= now.time() < _MARKS_CLOSE):
+                        continue
+                    watch = set(static_tokens)
+                    for runner in self.runners.values():
+                        toks = runner.config.get("instrument_tokens") or []
+                        if toks:
+                            watch.add(int(toks[0]))
+                    for t in ticks if isinstance(ticks, list) else []:
+                        tok, price = t.get("instrument_token"), t.get("last_price")
+                        if tok not in watch or not price:
+                            continue
+                        traded = t.get("last_trade_time") or t.get("exchange_timestamp")
+                        if traded is not None and traded.date() != now.date():
+                            continue
+                        fold_tick(building, tok, float(price), minute)
+                except Exception:
+                    logger.exception("Recording index candles failed — continuing")
+        finally:
+            await self.broadcaster.unsubscribe(q)
+
+    # ── Health watchdog: active but not running; Kite not connected ────
+
+    def _is_running(self, deployment_id: str) -> bool:
+        runner = self.runners.get(deployment_id)
+        return runner is not None and runner._task is not None and not runner._task.done()
+
+    async def find_not_running(self) -> list[dict]:
+        """Deployments the database says are active but that have no
+        live runner: their strategy isn't entering, adjusting or exiting
+        anything. Usually a start that failed (start_errors says why)."""
+        out = []
+        for row in await queries.list_deployments(self.pool, status="active"):
+            did = str(row["id"])
+            if self._is_running(did):
+                continue
+            n_open = await self.pool.fetchval(
+                "SELECT count(*) FROM positions WHERE deployment_id = $1 AND status = 'open'", row["id"],
+            )
+            runner = self.runners.get(did)
+            reason = self.start_errors.get(did) or (
+                "its runner stopped unexpectedly" if runner is not None else "it was never started"
+            )
+            out.append({
+                "id": did, "name": row["deployment_name"], "strategy": row["strategy_name"],
+                "open_positions": int(n_open or 0), "reason": reason,
+            })
+        return out
+
+    async def restart(self, deployment_id: UUID) -> None:
+        """Start the runner of an active deployment that isn't running.
+        Raises ValueError with the strategy's own error if it fails again."""
+        row = await queries.get_deployment(self.pool, deployment_id)
+        if row is None:
+            raise KeyError(f"No such deployment: {deployment_id}")
+        if row["status"] != "active":
+            raise ValueError(f"Deployment is {row['status']!r}; resume it instead")
+        did = str(deployment_id)
+        if self._is_running(did):
+            return
+        stale = self.runners.pop(did, None)
+        if stale is not None:
+            try:
+                await stale.stop()
+            except Exception:
+                pass
+        try:
+            await self._start_runner(row)
+        except Exception as e:
+            self.start_errors[did] = f"{type(e).__name__}: {e}"
+            raise ValueError(f"Still can't start: {self.start_errors[did]}") from e
+        await self._record_event(deployment_id, row["deployment_name"], row["strategy_name"], "restarted")
+        self.health_issues = [x for x in self.health_issues if x["id"] != did]
+        self._alerted.discard(did)
+
+    async def _push(self, title: str, body: str) -> None:
+        if self.push_config is None:
+            return
+        from .. import notifications   # deferred, same as DeploymentRunner.notify_execution
+        try:
+            await notifications.send_push_for_all(self.pool, self.push_config, title, body)
+        except Exception:
+            logger.exception("Watchdog push failed")
+
+    async def watchdog_loop(self, interval_seconds: float = 30.0) -> None:
+        """Every 30s: refresh health_issues (shown by GET /health and the
+        UI) and push once for each new problem:
+          - a deployment that's active but not running;
+          - on a market day, Kite still not connected at 09:05 (skipped
+            on days marked as a market holiday)."""
+        while True:
+            try:
+                await self.check_health_once(datetime.now(_IST))
+            except Exception:
+                logger.exception("Watchdog check failed — continuing")
+            await asyncio.sleep(interval_seconds)
+
+    async def check_health_once(self, now: datetime) -> None:
+        issues = await self.find_not_running()
+        self.health_issues = issues
+        current = {x["id"] for x in issues}
+        for x in issues:
+            if x["id"] in self._alerted:
+                continue
+            self._alerted.add(x["id"])
+            legs = f" It holds {x['open_positions']} open position(s) that nothing will exit." if x["open_positions"] else ""
+            await self._push(f"{x['name']} isn't running", f"Marked active but its strategy isn't running ({x['reason']}).{legs} Open it and press Restart.")
+            await self._record_event(UUID(x["id"]), x["name"], x["strategy"], "not_running", message=x["reason"])
+        self._alerted &= current
+
+        connected = bool(getattr(self.dispatcher, "connected", False)) and not self.dispatcher.status.get("needs_login")
+        market_day = now.weekday() < 5
+        if connected or not market_day or not (time(9, 5) <= now.time() < time(15, 30)):
+            return
+        if self._kite_alerted_on == now.date():
+            return
+        muted = None
+        if self.cache is not None:
+            try:
+                muted = await self.cache.get("notification_mute_until")
+            except Exception:
+                muted = None
+        if muted is not None and datetime.now(timezone.utc) < muted:
+            return
+        self._kite_alerted_on = now.date()
+        n = len(self.runners)
+        await self._push(
+            "Kite isn't connected",
+            f"It's {now:%H:%M} and Kite isn't logged in — {n} running deployment(s) can't trade until you connect.",
+        )
+
     # ── Post-market state checkpoint (once a day, not on shutdown) ──────
 
     async def post_market_dump_loop(self) -> None:
@@ -810,6 +982,7 @@ class DeploymentManager:
         )
         await runner.start()
         self.runners[str(row["id"])] = runner
+        self.start_errors.pop(str(row["id"]), None)
         return runner
 
     async def _record_event(

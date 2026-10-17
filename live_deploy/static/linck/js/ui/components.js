@@ -7,6 +7,7 @@ export const STATUS = {
   active: { label: 'Active', cls: '' },
   paused: { label: 'Paused', cls: 'st-paused' },
   error: { label: 'Error', cls: 'st-error' },
+  down: { label: 'Not running', cls: 'st-error' },
   stopped: { label: 'Stopped', cls: 'st-stopped' },
 };
 export const status = (st, label) => {

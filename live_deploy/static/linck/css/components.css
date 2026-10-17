@@ -156,6 +156,8 @@ select.input { padding-right: 6px; }
 /* Banners */
 .banner { display: flex; align-items: center; gap: 18px; padding: 14px var(--px); background: var(--ys); border-bottom: 1px solid var(--line); }
 .issue { display: flex; align-items: center; gap: 16px; padding: 14px 18px; background: var(--ys); border: 1.5px solid var(--wr); }
+.issue > .col { overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 900px) { .issue { flex-wrap: wrap; } .issue > .col { flex-basis: calc(100% - 30px); } }
 .note-box { display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: var(--soft); border: 1px solid var(--line); }
 .verdict { padding: 16px 20px; background: var(--y); font-family: var(--f-display); font-weight: 600; font-size: 22px; letter-spacing: -.015em; text-wrap: pretty; }
 

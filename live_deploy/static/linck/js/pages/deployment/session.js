@@ -111,7 +111,7 @@ function chart(m, sym, ch) {
       <span><i class="d" style="background:var(--b)"></i>${m.intra ? 'Adjustment / re-entry' : 'Adjustment'}</span>
       <span><i class="d" style="background:${lineC}"></i>Exit</span>
       ${m.seps.length ? html`<span><i style="width:0;height:12px;border-left:1px dashed var(--line2)"></i>New trading day</span>` : ''}
-      <span class="grow"></span><span>${INTERVAL[ch.window.interval] || ch.window.interval} data, as recorded</span>
+      <span class="grow"></span><span>${INTERVAL[ch.window.interval] || ch.window.interval} data · index ${({ recorded: 'recorded by the app', recorded_partial: 'recorded by the app (gaps)', kite: 'from Kite history' })[ch.underlying_source] || 'unavailable'}</span>
     </div>`;
 }
 

@@ -2,7 +2,7 @@
 // that name the problem and offer the one action that fixes it. Items
 // disappear when resolved. Add a rule by appending to RULES.
 
-import { kite } from './live.js';
+import { kite, health } from './live.js';
 import { deployments } from './book.js';
 import { STREAK_ALERT } from './config.js';
 import { ui } from '../core/store.js';
@@ -11,6 +11,13 @@ import { plural } from '../core/format.js';
 const dismissed = ui('alerts', { off: {} });
 
 export const RULES = [
+  // Active but nothing is running its strategy: no entries, no exits.
+  () => health.notRunning.map(x => ({
+    key: `down:${x.id}`, kind: 'error', id: x.id,
+    title: `${x.name} isn't running`,
+    body: `Marked active, but its strategy isn't running, so it won't enter, adjust or exit${x.open_positions ? `. ${plural(x.open_positions, 'open position')} will stay open` : ''}. Reason: ${x.reason}.`,
+    act: 'Restart', action: { type: 'restart', id: x.id },
+  })),
   () => (kite.state === 'connected' ? [] : [{
     key: 'kite', kind: 'kite',
     title: kite.state === 'connecting' ? 'Connecting to Kite…' : 'Kite session expired',
@@ -48,6 +55,6 @@ export function dismiss(a) {
 }
 // How much a deployment needs you, for sorting the Desk.
 export function attention(v) {
-  return (v.status === 'error' ? 8 : 0) + (v.rawStatus === 'paused' && v.legs.length ? 4 : 0)
+  return (v.status === 'error' || v.status === 'down' ? 8 : 0) + (v.rawStatus === 'paused' && v.legs.length ? 4 : 0)
     + (v.streak >= STREAK_ALERT ? 2 : 0) + (v.quiet ? 1 : 0);
 }

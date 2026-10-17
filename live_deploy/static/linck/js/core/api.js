@@ -97,4 +97,5 @@ export const api = {
   savePrefs: patch => req('/v2/preferences', { method: 'PUT', body: patch }),
   closeEverything: () => post('/v2/close-everything', { confirm: 'CLOSE ALL' }),
   create: body => post('/v2/deployments', body),
+  restart: id => post(`/v2/deployments/${enc(id)}/restart`),
 };
