@@ -99,6 +99,17 @@ zero writes.
   instead -- same as the other scripts below, `custom_scripts/` is
   already baked into the image for exactly this case.
 
+- **`fix_carried_intraday_legs.py`** — finds every leg of an intraday
+  deployment that wasn't closed on the day it opened (lost at the
+  force-exit, carried into the next session), with the events logged
+  that afternoon so you can see why. Read-only by default. `--fix`
+  closes still-open ones and re-prices late closes to the option's own
+  price at force_exit_time on the opening day (Kite 1-minute history,
+  else the app's recorded marks; skipped if neither), correcting P&L,
+  charges and cash, then reloads touched deployments. `--since` and
+  `--deployment` narrow it. Safe to re-run. Supersedes
+  `backfill_missed_force_exit.py` (open legs only, 5-minute candle).
+
 - **`slippage_report.py`** — read-only audit of the estimated slippage
   recorded alongside every fill (migration 0017, `app/slippage.py`;
   fills themselves stay at LTP). Per deployment: how many fills had an
