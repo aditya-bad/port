@@ -65,7 +65,7 @@ def group_fills(lots: list) -> list[dict[str, Any]]:
             g["reasons"].add(lot["reason"])
     out = []
     for g in groups:
-        kind = "fill" if not g["close"] else "exit" if not g["open"] else "adjust"
+        kind = "rollout" if "eod_rollout" in g["reasons"] else "fill" if not g["close"] else "exit" if not g["open"] else "adjust"
         out.append({"t": _ms(g["first"]), "kind": kind, "fills": g["n"], "reason": ", ".join(sorted(g["reasons"]))})
     return out
 

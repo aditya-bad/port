@@ -16,7 +16,7 @@ import { primary, resume, kiteDialog, restartDeployment } from '../actions.js';
 
 const st = ui('desk', { f: 'all', sort: 'attn', all: false, lab: false });
 const EV = {
-  fill: ['Fill', 'var(--ink)'], exit: ['Exit', 'var(--b)'], adjust: ['Adjust', 'var(--b)'],
+  fill: ['Fill', 'var(--ink)'], exit: ['Exit', 'var(--b)'], adjust: ['Adjust', 'var(--b)'], rollout: ['EOD roll-out', 'var(--c5)'],
   error: ['Error', 'var(--wr)'], pause: ['Pause', 'var(--wr)'], stop: ['Stop', 'var(--wr)'], close: ['Closed', 'var(--wr)'],
 };
 const HOURS = ['09:15', '10:15', '11:15', '12:15', '13:15', '14:15', '15:15'];
@@ -218,7 +218,7 @@ function activityBlock(list, recent) {
   }
   (recent || []).forEach(f => {
     const r = f.reason || '';
-    const kind = !r || /entry|open/i.test(r) ? 'fill' : /roll|adjust|hedge/i.test(r) ? 'adjust' : 'exit';
+    const kind = /eod_rollout/.test(r) ? 'rollout' : !r || /entry|open/i.test(r) ? 'fill' : /roll|adjust|hedge/i.test(r) ? 'adjust' : 'exit';
     items.push({ t: new Date(f.executed_at).getTime(), kind,
       id: f.deployment_id, name: f.deployment_name, x: `${f.action.toUpperCase()} ${Number(f.qty)} ${f.symbol} @ ${price(f.price)}` });
   });

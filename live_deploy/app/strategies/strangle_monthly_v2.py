@@ -289,6 +289,19 @@ Section 6 can grow a side's leg count any more (see Section 5's own
 1 leg now is `convergence_mode=active_management`'s own delegated
 growth post-convergence (Section 7).
 
+EOD ROLL-OUT (`eod_rollout_instead_of_straddle`, default True; this
+section only — Section 5's intraday rolls are unchanged): if the
+replacement above would reach or cross the TESTED (bigger) side's
+strike — which the strike-cross cap below would turn into a straddle
+right before the overnight gap — the untested side is left alone and
+the TESTED side's leg nearest the market (highest premium) is rolled
+OUT instead: closed, and re-sold further away at a premium sized so the
+untested side's current total is the band midpoint (87.5% by default)
+of the tested side's new total. The position goes overnight as a
+balanced strangle, not a straddle; the roll is a net debit. Fills carry
+reason "eod_rollout" and show as their own event type ("EOD roll-out")
+in the cycle chart, the Linck session sheet, lanes and timelines.
+
 ──────────────────────────────────────────────────────────────────────
 STRIKE-CROSS CAP (CONFIRMED requirement, applies to BOTH Section 5 and
 Section 6, every roll, for as long as this is still a strangle)
@@ -682,6 +695,7 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
         "strike_liquidity_tolerance_pct": 0.05,
         "eod_check_time": "15:13",
         "eod_gap_floor": 0.80,
+        "eod_rollout_instead_of_straddle": True,
         "convergence_mode": "fixed_stop",
         "convergence_stop_pct": 0.10,
         "max_adjustments": 2,
@@ -839,6 +853,9 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         if self.max_adjustments < 1:
             raise ValueError(f"max_adjustments must be >= 1, got {self.max_adjustments}")
         self.force_close_at_contract_expiry = bool(cfg.get("force_close_at_contract_expiry", True))
+        # See _eod_check: at 15:13, never turn the strangle into a straddle
+        # right before the overnight gap; roll the tested side out instead.
+        self.eod_rollout_instead_of_straddle = bool(cfg.get("eod_rollout_instead_of_straddle", True))
         self.lots_per_trade = int(cfg.get("lots_per_trade") or 1)
         if self.lots_per_trade < 1:
             raise ValueError(f"lots_per_trade must be >= 1, got {self.lots_per_trade}")
@@ -1648,6 +1665,17 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         remaining_sum = sum(prices[l["token"]] for l in side_legs if l is not cheapest)
         new_leg_target = band_target_total - remaining_sum
 
+        # EOD ROLL-OUT: if moving the untested side in would reach the
+        # tested side's strike (the strike-cross cap would then snap it
+        # into a straddle), roll the TESTED side out instead, so the
+        # position goes into the overnight gap as a strangle. EOD only:
+        # Section 5's intraday rolls still converge as before.
+        if self.eod_rollout_instead_of_straddle and await self._eod_roll_would_converge(
+            smaller_side, bigger_side, cheapest, new_leg_target,
+        ):
+            await self._eod_rollout(runner, ts, prices, bigger_side, smaller_sum, band_mid, trigger_values)
+            return
+
         # Same reversed hedge-before-short ordering as Section 5's roll
         # -- this is ALSO a replace (close then open).
         old_hedge = self.hedges.get(cheapest["token"])
@@ -1659,6 +1687,53 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         )
 
     # ── Section 7: convergence detection + active-management delegation ─
+
+    async def _eod_roll_would_converge(self, side: str, tested_side: str, cheapest: dict, target: float) -> bool:
+        """Would the normal EOD replacement on `side` reach or cross the
+        tested side's strike? Resolves the same strike _open_leg would
+        (same premium target, window and exclusions). Any lookup failure
+        answers False, keeping the usual roll."""
+        opposite = self.legs[tested_side]
+        if len(opposite) != 1:
+            return False
+        exclude = {l["strike"] for l in self.legs[side] if l is not cheapest}
+        try:
+            leg = await self.resolver.get_leg_by_premium(
+                self.instrument, self.contract_expiry, side, max(target, 0.5),
+                strike_window=self.adjustment_strike_window, exclude_strikes=exclude,
+            )
+        except Exception:
+            logger.exception("EOD roll-out: couldn't resolve the replacement strike — rolling as usual")
+            return False
+        opp = opposite[0]["strike"]
+        return leg.strike >= opp if side == "PE" else leg.strike <= opp
+
+    async def _eod_rollout(
+        self, runner, ts, prices: dict[int, float], tested_side: str, untested_sum: float,
+        band_mid: float, trigger_values: dict,
+    ) -> None:
+        """Close the tested side's leg nearest the market (highest premium)
+        and re-sell further out, sized so the untested side's current total
+        is band_mid (87.5% by default) of the tested side's new total."""
+        legs = self.legs[tested_side]
+        nearest = max(legs, key=lambda l: (prices[l["token"]], -l["seq"]))
+        remaining = sum(prices[l["token"]] for l in legs if l is not nearest)
+        new_target = untested_sum / band_mid - remaining
+        tv = {**trigger_values, "rolled_side": tested_side, "closed_premium": prices[nearest["token"]],
+              "new_target_premium": round(new_target, 2),
+              "why": "moving the untested side in would have created a straddle before the overnight gap"}
+        logger.info(
+            "%s: EOD roll-out — rolling the tested %s side out (%s @ %.2f -> target %.2f) "
+            "instead of converging into a straddle", runner.deployment_name, tested_side,
+            nearest["symbol"], prices[nearest["token"]], new_target,
+        )
+        old_hedge = self.hedges.get(nearest["token"])
+        point_distance = old_hedge["point_distance"] if old_hedge else None
+        await self._close_leg(runner, ts, tested_side, nearest, "eod_rollout", tv)
+        await self._open_leg(
+            runner, ts, tested_side, new_target, "eod_rollout", tv,
+            reversed_hedge_order=True, hedge_point_distance=point_distance, prices=prices,
+        )
 
     def _check_convergence(self, trigger: str, prices: dict) -> None:
         if self.converged:

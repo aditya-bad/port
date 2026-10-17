@@ -218,6 +218,10 @@ def _group_events(lots: list, cycle: dict) -> list[dict]:
             ev["kind"] = "exit"
         else:
             ev["kind"] = "adjustment"
+        # Its own type: the strangle's EOD roll-out (tested side rolled out
+        # instead of converging into a straddle overnight).
+        if any(f["reason"] == "eod_rollout" for f in ev["fills"]):
+            ev["kind"] = "rollout"
         reasons = sorted({f["reason"] for f in ev["fills"] if f["reason"]})
         ev["reason"] = ", ".join(reasons)
         del ev["_first"], ev["_last"]
@@ -269,7 +273,8 @@ async def list_cycles(deployment_id: UUID, request: Request):
         out.append({
             "key": c["key"], "start": c["start"], "end": c["end"], "status": c["status"],
             "positions": len(c["positions"]), "fills": len(cycle_lots),
-            "adjustments": sum(1 for e in events if e["kind"] == "adjustment"),
+            "adjustments": sum(1 for e in events if e["kind"] in ("adjustment", "rollout")),
+            "rollouts": sum(1 for e in events if e["kind"] == "rollout"),
             "realized_pnl": round(c["realized_pnl"], 2),
             "realized_pnl_net": round(c["realized_pnl_net"], 2),
             "realized_pnl_net_slip": round(c["realized_pnl_net_slip"], 2),
@@ -431,7 +436,8 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
     stats: dict = {
         "duration_minutes": round((end - start).total_seconds() / 60),
         "positions": len(pos_out), "fills": len(lots),
-        "adjustments": sum(1 for e in events if e["kind"] == "adjustment"),
+        "adjustments": sum(1 for e in events if e["kind"] in ("adjustment", "rollout")),
+        "rollouts": sum(1 for e in events if e["kind"] == "rollout"),
         "realized_pnl": round(cycle["realized_pnl"], 2),
         "realized_pnl_net": round(cycle["realized_pnl_net"], 2),
         "realized_pnl_net_slip": round(cycle["realized_pnl_net_slip"], 2),

@@ -1162,7 +1162,7 @@ const Detail = {
 
     const evRows = data.events.map(ev => `<tr>
       <td>${escapeHtml(tAt(ev.t))}</td>
-      <td><span class="cc-ev-tag ${ev.kind}">${ev.kind}</span></td>
+      <td><span class="cc-ev-tag ${ev.kind}">${ev.kind === 'rollout' ? 'EOD roll-out' : ev.kind}</span></td>
       <td>${ev.fills.map(f => `${f.opening ? (f.action === 'sell' ? 'Sold' : 'Bought') : (f.action === 'buy' ? 'Bought back' : 'Sold out')} ${escapeHtml(f.symbol)} @ ${fmtNum(f.price, 2)}`).join('<br>')}</td>
       <td>${escapeHtml(ev.reason || '—')}</td></tr>`).join('');
     const legRows = data.positions.map(p => `<tr>

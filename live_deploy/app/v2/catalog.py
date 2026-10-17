@@ -60,6 +60,7 @@ FIELDS: dict[str, dict[str, Any]] = {
     "adjustment_band_min": {"label": "Adjustment band low", "help": "Lower edge of the replacement premium band"},
     "adjustment_band_max": {"label": "Adjustment band high", "help": "Upper edge of the replacement premium band"},
     "adjustment_strike_window": {"label": "Strike window", "help": "Strikes searched either side for a replacement leg"},
+    "eod_rollout_instead_of_straddle": {"label": "EOD roll-out", "help": "At the 15:13 check, roll the tested side out instead of converging into a straddle overnight"},
     "enable_hedging": {"label": "Protective hedges", "help": "Buy wings against the short legs"},
     "enter_immediately_on_deploy": {"label": "Enter on deploy", "help": "First entry ignores entry time"},
     "catch_up_late_entry": {"label": "Catch up late entry", "help": "Enter after entry time if started late"},

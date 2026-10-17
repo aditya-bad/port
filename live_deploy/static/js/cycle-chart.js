@@ -167,6 +167,7 @@ const CycleChart = {
     const SHAPES = {
       entry: (x, y) => `<path class="cc-mk entry" d="M${x},${y - 6}L${x + 6},${y + 5}L${x - 6},${y + 5}Z"/>`,
       adjustment: (x, y) => `<path class="cc-mk adjustment" d="M${x},${y - 6}L${x + 6},${y}L${x},${y + 6}L${x - 6},${y}Z"/>`,
+      rollout: (x, y) => `<path class="cc-mk rollout" d="M${x - 5},${y - 5}L${x + 5},${y - 5}L${x + 5},${y + 5}L${x - 5},${y + 5}Z"/>`,
       exit: (x, y) => `<path class="cc-mk exit" d="M${x - 6},${y - 5}L${x + 6},${y - 5}L${x},${y + 6}Z"/>`,
     };
     st.eventIdx = [];
@@ -312,7 +313,7 @@ const CycleChart = {
     }).join('');
     const more = rows.length > shown.length ? `<div class="cc-tip-muted">+${rows.length - shown.length} more legs</div>` : '';
     const evs = st.eventIdx.filter(e => e.i === i).map(e =>
-      `<div class="cc-tip-event ${e.ev.kind}">${escapeHtml(e.ev.kind)}${e.ev.reason ? ` — ${escapeHtml(e.ev.reason)}` : ''}</div>`).join('');
+      `<div class="cc-tip-event ${e.ev.kind}">${escapeHtml(e.ev.kind === 'rollout' ? 'EOD roll-out' : e.ev.kind)}${e.ev.reason ? ` — ${escapeHtml(e.ev.reason)}` : ''}</div>`).join('');
     const html = `
       <div class="cc-tip-time">${escapeHtml(when)} IST</div>
       ${evs}

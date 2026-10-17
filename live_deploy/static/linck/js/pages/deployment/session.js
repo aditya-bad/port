@@ -17,6 +17,11 @@ import { pick, basis } from '../../core/basis.js';
 import { registerScrub } from '../../ui/tooltip.js';
 import { empty, loading } from '../../ui/components.js';
 
+// Event types: label and colour. 'rollout' is the strangle's EOD roll-out.
+const KINDS = { entry: ['Entry', 'var(--ink)'], adjustment: ['Adjustment', 'var(--b)'], rollout: ['EOD roll-out', 'var(--c5)'], exit: ['Exit', null] };
+const kindLabel = k => (KINDS[k] || KINDS.adjustment)[0];
+// The reason after the label, minus what the label already says.
+const reasonOf = e => (e.reason || '').split(', ').filter(r => r && r !== 'eod_rollout').join(', ');
 const INTERVAL = { minute: '1-minute', '5minute': '5-minute', '15minute': '15-minute', '60minute': 'hourly' };
 const listCache = new Map();    // deployment id -> cycles list
 const chartCache = new Map();   // `${id}:${key}` -> chart (closed cycles only)
@@ -47,7 +52,9 @@ function model(v, row, ch) {
   const finalGross = Number(row.realized_pnl) || 0;
   const events = (ch.events || []).map(e => ({ ...e, k: near(T, e.t) }));
   const entries = events.filter(e => e.kind === 'entry').length;
-  const nAdj = intra ? Math.max(0, entries - 1) + events.filter(e => e.kind === 'adjustment').length : events.filter(e => e.kind === 'adjustment').length;
+  const isAdj = e => e.kind === 'adjustment' || e.kind === 'rollout';
+  const nAdj = intra ? Math.max(0, entries - 1) + events.filter(isAdj).length : events.filter(isAdj).length;
+  const nRoll = events.filter(e => e.kind === 'rollout').length;
   const when = k => (intra ? hhmm(T[k]) : `${WEEKDAYS[ist(T[k]).wd]} ${ist(T[k]).d} ${MONTHS[ist(T[k]).mo]} ${hhmm(T[k])}`);
   const seps = intra ? [] : T.map((t, k) => (k && dayOf(t) !== dayOf(T[k - 1]) ? k : null)).filter(k => k != null);
   const X = k => (N > 1 ? k / (N - 1) : 0);
@@ -61,7 +68,7 @@ function model(v, row, ch) {
   }
   const mv = U.length ? U[ex] - U[e0] : null;
   const kept = pk[0] > 0 && finalGross > 0 ? Math.round(finalGross / pk[0] * 100) : null;
-  return { intra, T, N, U, P, e0, ex, pk, wk, red, final, finalGross, events, nAdj, when, seps, X, ticks, mv, kept, start, end };
+  return { intra, T, N, U, P, e0, ex, pk, wk, red, final, finalGross, events, nAdj, nRoll, when, seps, X, ticks, mv, kept, start, end };
 }
 
 function chart(m, sym, ch) {
@@ -78,8 +85,8 @@ function chart(m, sym, ch) {
   const z = pY(0);
   const pFill = pk.length ? `${pPath} L${x(pk[pk.length - 1][1])} ${z.toFixed(1)} L${x(pk[0][1])} ${z.toFixed(1)} Z` : '';
   const lineC = toneVar(m.finalGross);
-  const evC = e => (e.kind === 'entry' ? 'var(--ink)' : e.kind === 'adjustment' ? 'var(--b)' : lineC);
-  const evL = e => `${e.kind === 'entry' ? 'Entry' : e.kind === 'adjustment' ? 'Adjustment' : 'Exit'}${e.reason ? ` · ${e.reason}` : ''}`;
+  const evC = e => (KINDS[e.kind] && KINDS[e.kind][1]) || lineC;
+  const evL = e => `${kindLabel(e.kind)}${reasonOf(e) ? ` · ${reasonOf(e)}` : ''}`;
   const pc = k => `${X(k) * 100}%`;
   const tipAt = k => [m.when(k), U.length ? `${sym}  ${price(U[k])}` : null,
     U.length && k >= m.e0 ? `From entry  ${U[k] - U[m.e0] >= 0 ? '+' : '−'}${Math.abs(U[k] - U[m.e0]).toFixed(1)} pts` : null,
@@ -109,6 +116,7 @@ function chart(m, sym, ch) {
       <span><i style="width:18px;height:10px;background:var(--soft)"></i>Position open</span>
       <span><i class="d" style="background:var(--ink)"></i>Entry</span>
       <span><i class="d" style="background:var(--b)"></i>${m.intra ? 'Adjustment / re-entry' : 'Adjustment'}</span>
+      ${m.events.some(e => e.kind === 'rollout') ? html`<span><i class="d" style="background:var(--c5)"></i>EOD roll-out</span>` : ''}
       <span><i class="d" style="background:${lineC}"></i>Exit</span>
       ${m.seps.length ? html`<span><i style="width:0;height:12px;border-left:1px dashed var(--line2)"></i>New trading day</span>` : ''}
       <span class="grow"></span><span>${INTERVAL[ch.window.interval] || ch.window.interval} data · index ${({ recorded: 'recorded by the app', recorded_partial: 'recorded by the app (gaps)', kite: 'from Kite history' })[ch.underlying_source] || 'unavailable'}</span>
@@ -125,7 +133,7 @@ function body(v, row, ch, i, L) {
     [`${sym} move`, m.mv == null ? '—' : `${m.mv >= 0 ? '+' : '−'}${Math.abs(m.mv).toFixed(0)} pts`, m.mv == null ? 'no underlying history' : `${pct(m.mv / m.U[m.e0] * 100)} entry to exit`, ''],
     ['Kept of peak', m.kept == null ? '—' : `${m.kept}%`, m.finalGross <= 0 ? (m.pk[0] > 0 ? `peak was ${inr(m.pk[0])}, closed below ₹0` : 'never in profit') : `gave back ${inr(Math.max(0, m.pk[0] - m.finalGross), { sign: false })}`, ''],
     ['Time in red', `${Math.round(m.red * 100)}%`, 'of the time it was open', ''],
-    [m.intra ? 'Re-entries' : 'Adjustments', String(m.nAdj), m.nAdj ? 'blue markers on the chart' : 'ran untouched', ''],
+    [m.intra ? 'Re-entries' : 'Adjustments', String(m.nAdj), m.nAdj ? `${m.nRoll ? `incl. ${plural(m.nRoll, 'EOD roll-out')} · ` : ''}markers on the chart` : 'ran untouched', ''],
   ];
   const note = `${m.wk[0] < 0 && Math.abs(m.wk[0]) > Math.abs(m.finalGross) * 0.5 && m.U.length ? `The worst point came at ${m.when(m.wk[1])}, with ${sym} ${Math.abs(m.U[m.wk[1]] - m.U[m.e0]).toFixed(0)} points from entry. ` : ''}${
     m.kept != null && m.kept < 60 ? `It closed with ${m.kept}% of its peak.` : m.finalGross < 0 && m.pk[0] > -Infinity ? `It closed ${inr(m.pk[0] - m.finalGross, { sign: false })} below its best point.` : row.status === 'open' ? 'Still open; the chart runs to now.' : 'It closed near its best point.'}`;
@@ -172,8 +180,8 @@ function body(v, row, ch, i, L) {
       <div>
         <h2 class="t-h3" style="padding-bottom:10px">Orders and events</h2>
         <div class="ss-orders">${m.events.length ? m.events.map(e => html`<div>
-          <i style="background:${e.kind === 'entry' ? 'var(--ink)' : e.kind === 'adjustment' ? 'var(--b)' : toneVar(m.finalGross)}"></i>
-          <span class="col" style="gap:2px;min-width:0"><b>${e.kind === 'entry' ? 'Entry' : e.kind === 'adjustment' ? 'Adjustment' : 'Exit'}${e.reason ? html` <span class="mute" style="font-weight:500">· ${e.reason}</span>` : ''}</b>
+          <i style="background:${(KINDS[e.kind] && KINDS[e.kind][1]) || toneVar(m.finalGross)}"></i>
+          <span class="col" style="gap:2px;min-width:0"><b>${kindLabel(e.kind)}${reasonOf(e) ? html` <span class="mute" style="font-weight:500">· ${reasonOf(e)}</span>` : ''}</b>${e.kind === 'rollout' ? html`<span class="small mute">Tested side rolled out instead of converging into a straddle overnight</span>` : ''}
             ${e.fills.map(f => html`<span class="small mute">${f.action.toUpperCase()} ${Number(f.qty)} ${f.symbol} @ ${price(f.price)}</span>`)}</span>
           <span class="col" style="gap:2px;align-items:flex-end"><span class="mono tiny">${m.when(e.k)}</span>${m.U.length ? html`<span class="mono tiny mute">${sym} ${price(m.U[e.k])}</span>` : ''}</span></div>`) : empty('', 'No fills recorded.')}</div>
       </div>

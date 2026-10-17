@@ -22,7 +22,7 @@ function timeline(lots, start, v) {
   }
   const rows = groups.map((g, i) => {
     const reasons = [...new Set(g.fills.map(f => f.reason).filter(Boolean))].join(', ');
-    const kind = i === 0 ? 'Entry' : /exit|stop|target|checkpoint|flatten|close/i.test(reasons) ? 'Exit' : 'Adjust';
+    const kind = i === 0 ? 'Entry' : /eod_rollout/.test(reasons) ? 'EOD roll-out' : /exit|stop|target|checkpoint|flatten|close/i.test(reasons) ? 'Exit' : 'Adjust';
     const text = g.fills.map(f => `${f.action === 'sell' ? 'Sold' : 'Bought'} ${Number(f.qty)} ${f.symbol} @ ${price(f.price)}`).join('; ');
     return { t: dStamp(g.t), k: kind, x: text, why: reasons };
   }).reverse();
@@ -58,7 +58,7 @@ export default {
             <div>
               ${sect(v.legs.length ? 'This cycle' : 'Last cycle')}
               ${tl === null ? loading(3) : tl.length ? tl.map(r => html`
-                <div class="tr cycle-grid small"><span class="mono tiny mute">${r.t}</span><b>${r.k}</b>
+                <div class="tr cycle-grid small"><span class="mono tiny mute">${r.t}</span><b style="${r.k === 'EOD roll-out' ? 'color:var(--c5)' : ''}">${r.k}</b>
                   <span class="mono tiny mute pretty">${r.x}${r.why ? html`<br><span class="b" style="font-family:var(--f-body)">${r.why}</span>` : ''}</span>
                   <span class="mono tiny right ${r.tone || ''}">${r.val || ''}</span></div>`) : empty('', 'No cycle yet.')}
             </div>

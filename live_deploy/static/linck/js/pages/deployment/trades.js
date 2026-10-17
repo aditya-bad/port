@@ -15,7 +15,7 @@ import { say } from '../../ui/toast.js';
 
 const st = ui('trades', { f: 'all', sk: 'date', sd: -1 });
 const pnlGross = t => Number(t.pnl);
-const KIND = { entry: ['Entry', 'var(--ink)'], adjustment: ['Adjustment', 'var(--b)'], exit: ['Exit', 'var(--b)'] };
+const KIND = { entry: ['Entry', 'var(--ink)'], adjustment: ['Adjustment', 'var(--b)'], rollout: ['EOD roll-out', 'var(--c5)'], exit: ['Exit', 'var(--b)'] };
 
 export default {
   render(el, v0) {
