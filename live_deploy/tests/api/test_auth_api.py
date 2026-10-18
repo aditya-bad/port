@@ -118,3 +118,50 @@ def test_manifest_launches_linck_and_keeps_the_app_identity(app_client):
     assert {"any", "maskable"} <= purposes
     for icon in m["icons"]:
         assert app_client.get(icon["src"]).status_code == 200
+
+
+# ── Session cookie flags, by how the app is reached ───────────────────
+
+@pytest.mark.parametrize("host,secure", [
+    ("localhost:8000", False), ("127.0.0.1", False),
+    ("100.101.102.103:8000", False),        # Tailscale: plain http over the tailnet
+    ("trade.example.com", True), ("192.168.1.5", True),
+])
+def test_session_cookie_is_secure_except_on_localhost_and_tailscale(app_client, host, secure):
+    r = app_client.post("/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD},
+                        headers={"host": host})
+    assert r.status_code == 200
+    cookie = r.headers["set-cookie"].lower()
+    assert ("secure" in cookie) is secure, cookie
+    assert "httponly" in cookie and "samesite=lax" in cookie
+    app_client.cookies.clear()
+
+
+def test_inactive_user_cannot_sign_in(client):
+    from tests.conftest import sql
+    client.post("/auth/users", json={"username": "gone", "password": "gone-pass-123"})
+    sql(client, "UPDATE users SET is_active = false WHERE username = 'gone'")
+    client.post("/auth/logout")
+    assert login(client, "gone", "gone-pass-123").status_code == 401
+
+
+def test_a_tampered_session_cookie_is_refused(client):
+    good = client.cookies.get("session")
+    client.cookies.clear()
+    client.cookies.set("session", good[:-4] + "AAAA")
+    assert client.get("/auth/me").status_code == 401
+
+
+def test_audit_log_records_unparsed_bodies_and_redacts_nested_secrets(client):
+    client.post("/notifications/unsubscribe", content=b"not json", headers={"content-type": "application/json"})
+    client.post("/kite/manual-login", json={"request_token": "x", "api_key": "k", "api_secret": "TOPSECRET"})
+    rows = client.get("/auth/audit-log").json()
+    by_path = {r["path"]: r for r in rows}
+    assert by_path["/notifications/unsubscribe"]["request_body"] == {"_unparsed": True}
+    assert "TOPSECRET" not in str(by_path["/kite/manual-login"]["request_body"])
+    assert all(r["username"] == "admin" for r in rows)
+
+
+def test_reads_are_not_audited(client):
+    client.get("/deployments")
+    assert [r["path"] for r in client.get("/auth/audit-log").json()] == ["/auth/login"], "only the sign-in itself"
