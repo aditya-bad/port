@@ -26,6 +26,11 @@
     r.setAttribute('data-ct', p.ct || 'std');
     r.setAttribute('data-size', p.size || 'std');
     r.setAttribute('data-font', p.font || 'linck');
+    // Installed app, classic was the last choice: classic's own sign-in.
+    try {
+      var app = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+      if (app && localStorage.getItem('uiExperience') === 'classic') location.replace('/');
+    } catch (e) {}
   })();
 </script>
 <link rel="preload" href="/linck/fonts/funnel-sans.woff2" as="font" type="font/woff2" crossorigin>

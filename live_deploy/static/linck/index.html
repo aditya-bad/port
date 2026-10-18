@@ -26,7 +26,14 @@
     r.setAttribute('data-ct', p.ct || 'std');
     r.setAttribute('data-size', p.size || 'std');
     r.setAttribute('data-font', p.font || 'linck');
-    try { localStorage.setItem('uiExperience', 'linck'); } catch (e) {}
+    // The installed app always launches here (manifest start_url). If
+    // classic was the last choice, honour it; classic's Try Linck sets
+    // 'linck' before coming back, so switching still works both ways.
+    try {
+      var app = (window.matchMedia && matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+      if (app && localStorage.getItem('uiExperience') === 'classic') { location.replace('/'); return; }
+      localStorage.setItem('uiExperience', 'linck');
+    } catch (e) {}
   })();
 </script>
 <link rel="preload" href="fonts/funnel-sans.woff2" as="font" type="font/woff2" crossorigin>
