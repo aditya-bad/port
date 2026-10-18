@@ -123,6 +123,12 @@ async def login(payload: LoginIn, request: Request):
     # (change-password, logout-everywhere) actually revoke THIS session
     # too, not just future ones.
     request.session["session_version"] = user["session_version"]
+    # The middleware checks that version against a cached map refreshed
+    # every 10s; a user added since the last refresh isn't in it yet and
+    # their first requests would be refused.
+    cache = request.app.state.cache
+    if (await cache.get("user_session_versions")).get(str(user["id"])) != user["session_version"]:
+        await cache.refresh_now("user_session_versions")
     await queries.update_user_last_login(pool, user["id"])
     logger.info("Login successful: %s", user["username"])
     return {"ok": True, "username": user["username"]}
@@ -207,6 +213,7 @@ async def create_user(payload: CreateUserIn, request: Request):
     if existing:
         raise HTTPException(409, f"Username '{payload.username}' already exists")
     user = await queries.create_user(pool, payload.username, hash_password(payload.password))
+    await request.app.state.cache.refresh_now("user_session_versions")
     logger.info("User created: %s", user["username"])
     return _user_out(user)
 

@@ -17,3 +17,4 @@ __pycache__/
 # its generated logs/sockets/pidfile.
 logs/*
 !logs/.gitkeep
+.coverage

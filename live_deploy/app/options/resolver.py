@@ -75,7 +75,7 @@ from typing import Iterable, Optional, Union
 
 from kiteconnect.exceptions import KiteException
 
-from .client import get_kite_connect
+from .client import NoKiteSession, get_kite_connect
 from .models import OptionLeg
 
 logger = logging.getLogger("live_deploy.options")
@@ -1042,6 +1042,8 @@ class OptionsResolver:
         for exchange in exchanges:
             try:
                 cache = await self._ensure_instruments(exchange)
+            except NoKiteSession:
+                raise   # not logged in: every exchange would fail; the caller says so (400)
             except Exception:
                 logger.exception(
                     "search_instruments: failed to fetch %s instrument master — "

@@ -1,0 +1,327 @@
+"""Everything outside deployments and /v2: health, notifications and
+mute, strategies (enable, presets), tags, Kite login, instruments, the
+portfolio reads, cycles and their charts, and the redeploy guard."""
+
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from tests.conftest import ADMIN_PASSWORD, add_fill, make_deployment, sql
+
+IST = ZoneInfo("Asia/Kolkata")
+TODAY = datetime.now(IST).date()
+
+
+def last_weekday(before):
+    d = before - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
+
+
+PAST = last_weekday(TODAY)
+
+
+def at(day, hhmm):
+    h, m = map(int, hhmm.split(":"))
+    return datetime.combine(day, time(h, m), IST)
+
+
+# ── Health ────────────────────────────────────────────────────────────
+
+def test_health_reports_db_and_runners(client):
+    h = client.get("/health").json()
+    assert h["status"] == "ok" and h["database_connected"] is True
+    assert h["running_deployments"] == 0 and h["not_running"] == []
+    assert "needs_login" in h
+    make_deployment(client, start="now")
+    assert client.get("/health").json()["running_deployments"] == 1
+
+
+def test_health_needs_a_session(app_client):
+    assert app_client.get("/health").status_code == 401
+
+
+# ── Notifications ─────────────────────────────────────────────────────
+
+def test_vapid_key_is_null_when_push_isnt_configured(client):
+    assert client.get("/notifications/vapid-public-key").json() == {"public_key": None}
+
+
+def test_subscribe_is_an_upsert_and_unsubscribe_is_idempotent(client):
+    sub = {"endpoint": "https://push.example/abc", "keys": {"p256dh": "k", "auth": "a"}}
+    assert client.post("/notifications/subscribe", json=sub).status_code == 204
+    assert client.post("/notifications/subscribe", json=sub).status_code == 204
+    assert len(sql(client, "SELECT 1 FROM push_subscriptions")) == 1
+    assert client.post("/notifications/unsubscribe", json={"endpoint": sub["endpoint"]}).status_code == 204
+    assert client.post("/notifications/unsubscribe", json={"endpoint": sub["endpoint"]}).status_code == 204
+    assert sql(client, "SELECT 1 FROM push_subscriptions") == []
+    assert client.post("/notifications/subscribe", json={"endpoint": "x"}).status_code == 422
+
+
+def test_mute_today_until_7am_tomorrow_and_unmute(client):
+    assert client.get("/notifications/mute-status").json() == {"muted": False, "muted_until": None}
+    r = client.post("/notifications/mute-today").json()
+    until = datetime.fromisoformat(r["muted_until"]).astimezone(IST)
+    assert r["muted"] is True and until.date() == TODAY + timedelta(days=1) and until.time() == time(7, 0)
+    assert client.get("/notifications/mute-status").json()["muted"] is True
+    assert client.post("/notifications/unmute").json() == {"muted": False, "muted_until": None}
+    assert client.get("/notifications/mute-status").json()["muted"] is False
+
+
+# ── Strategies ────────────────────────────────────────────────────────
+
+def test_strategies_list_and_enable_toggle(client):
+    names = {s["name"] for s in client.get("/strategies").json()}
+    assert "strangle_monthly_v2" in names and "intraday_dtt_simple" in names
+    assert client.put("/strategies/nope/enabled", json={"enabled": False}).status_code == 404
+    assert client.put("/strategies/calendar_btst/enabled", json={"enabled": False}).json() == \
+        {"strategy_name": "calendar_btst", "enabled": False}
+    got = {s["name"]: s["enabled"] for s in client.get("/strategies").json()}
+    assert got["calendar_btst"] is False, "the cached list refreshes straight away"
+
+
+def test_presets_crud(client):
+    base = "/strategies/intraday_dtt_simple/presets"
+    assert client.get(base).json() == []
+    r = client.post(base, json={"preset_name": " Tight ", "config": {"lots_per_trade": 2}})
+    assert r.status_code == 200 and r.json()["preset_name"] == "Tight"
+    pid = r.json()["id"]
+    assert client.post(base, json={"preset_name": "Tight", "config": {}}).status_code == 409
+    assert client.post(base, json={"preset_name": "  ", "config": {}}).status_code == 400
+    assert [p["config"] for p in client.get(base).json()] == [{"lots_per_trade": 2}]
+    assert client.delete(f"/strategies/strangle_monthly_v2/presets/{pid}").status_code == 404, "other strategy's preset"
+    assert client.delete(f"{base}/{pid}").status_code == 200
+    assert client.get(base).json() == []
+
+
+# ── Tags ──────────────────────────────────────────────────────────────
+
+def test_tags_crud_and_delete_strips_them_from_deployments(client):
+    r = client.post("/tags", json={"name": "Live"})
+    assert r.status_code == 201
+    tid = r.json()["id"]
+    assert client.post("/tags", json={"name": "Live"}).status_code == 409
+    assert client.post("/tags", json={"name": " "}).status_code == 400
+    assert client.post("/tags", json={"name": "Excluded From Reports"}).status_code == 400
+    d = make_deployment(client, tags=["Live"])
+    assert client.get(f"/deployments/{d['id']}").json()["tags"] == ["Live"]
+    assert client.delete(f"/tags/{tid}").status_code == 204
+    assert client.delete(f"/tags/{tid}").status_code == 404
+    assert client.get("/tags").json() == []
+    assert client.get(f"/deployments/{d['id']}").json()["tags"] == []
+
+
+# ── Kite login ────────────────────────────────────────────────────────
+
+class FakeKiteConnect:
+    calls = []
+
+    def __init__(self, api_key):
+        self.api_key = api_key
+
+    def login_url(self):
+        return f"https://kite.example/connect/login?api_key={self.api_key}"
+
+    def generate_session(self, request_token, api_secret):
+        FakeKiteConnect.calls.append((self.api_key, request_token, api_secret))
+        if request_token == "bad":
+            raise Exception("Token is invalid or has expired.")
+        return {"access_token": f"access-{request_token}", "login_time": datetime.now(timezone.utc)}
+
+
+@pytest.fixture
+def kite(client, monkeypatch):
+    import app.routers.kite_auth as kite_auth
+    FakeKiteConnect.calls = []
+    reconnects = []
+    monkeypatch.setattr(kite_auth, "KiteConnect", FakeKiteConnect)
+    monkeypatch.setattr(client.app.state.dispatcher, "reconnect", reconnects.append)
+    return reconnects
+
+
+def test_kite_login_url_uses_the_configured_key(client, kite):
+    assert client.get("/kite/login-url").json()["login_url"].endswith("api_key=test-key")
+
+
+def test_kite_manual_login_stores_the_token_and_reconnects(client, kite):
+    r = client.post("/kite/manual-login", json={"request_token": "rt1"})
+    assert r.status_code == 200 and set(r.json()) == {"kite_connected", "needs_login", "last_error"}
+    assert FakeKiteConnect.calls == [("test-key", "rt1", "test-secret")]
+    assert kite == ["access-rt1"]
+    assert sql(client, "SELECT access_token FROM kite_sessions")[0]["access_token"] == "access-rt1"
+
+
+def test_kite_manual_login_override_credentials_are_used_once_and_never_kept(client, kite):
+    assert client.post("/kite/manual-login", json={"request_token": "r", "api_key": "k2"}).status_code == 400
+    r = client.post("/kite/manual-login", json={"request_token": "rt2", "api_key": "k2", "api_secret": "s2"})
+    assert r.status_code == 200
+    assert FakeKiteConnect.calls == [("k2", "rt2", "s2")]
+    assert client.app.state.kite_config["api_key"] == "test-key"
+    rows = client.get("/auth/audit-log").json()
+    assert "s2" not in str([x["request_body"] for x in rows]), "the typed secret isn't in the audit log"
+
+
+def test_kite_manual_login_failure_is_a_400_and_changes_nothing(client, kite):
+    r = client.post("/kite/manual-login", json={"request_token": "bad"})
+    assert r.status_code == 400 and "expired" in r.text
+    assert kite == [] and sql(client, "SELECT 1 FROM kite_sessions") == []
+
+
+def test_kite_callback_success_and_failure_pages(client, kite):
+    r = client.get("/kite/callback?status=success&request_token=rt3")
+    assert r.status_code == 200 and "text/html" in r.headers["content-type"] and kite == ["access-rt3"]
+    assert client.get("/kite/callback?status=cancelled").status_code == 400
+    assert client.get("/kite/callback?status=success&request_token=bad").status_code == 400
+
+
+def test_kite_status(client):
+    s = client.get("/kite/status").json()
+    assert s["kite_connected"] is False
+
+
+# ── Instruments ───────────────────────────────────────────────────────
+
+def test_instruments_list_and_input_checks(client):
+    got = client.get("/instruments").json()
+    assert "subscribed" in got and "tick_mode" in got
+    assert client.get("/instruments/search?q=N").status_code == 400
+    assert client.get("/instruments/search?q=NIFTY").status_code == 400, "no Kite session: a clear 400"
+    assert client.get("/instruments/quotes?tokens=a,b").status_code == 400
+    assert client.get("/instruments/quotes?tokens=").status_code == 400
+    assert client.get("/instruments/quotes?tokens=256265").status_code == 400
+
+
+# ── Portfolio / aggregate ─────────────────────────────────────────────
+
+def seed_two(client):
+    a = make_deployment(client, name="A")
+    b = make_deployment(client, name="B", strategy="intraday_dtt_adjusted")
+    add_fill(client, a["id"], "CE", 1, "sell", 75, 100, at(PAST, "10:00"), reason="entry")
+    add_fill(client, a["id"], "CE", 1, "buy", 75, 80, at(PAST, "11:00"), reason="exit")
+    add_fill(client, b["id"], "PE", 2, "sell", 75, 50, at(TODAY, "09:20"), reason="entry")
+    return a, b
+
+
+def test_aggregate_positions_open_closed_all(client):
+    a, b = seed_two(client)
+    client.app.state.dispatcher.last_prices[2] = 40.0
+    from tests.conftest import refresh
+    refresh(client)
+    [o] = client.get("/positions").json()
+    assert o["deployment_name"] == "B" and o["symbol"] == "PE"
+    closed = client.get("/positions?status=closed").json()
+    assert [c["symbol"] for c in closed] == ["CE"]
+    assert closed[0]["realized_pnl_net"] < float(closed[0]["realized_pnl"]) == pytest.approx(1500)
+    everything = client.get("/positions?status=").json()
+    assert len(everything) == 2
+    live = next(p for p in everything if p["symbol"] == "PE")
+    assert live["unrealized_pnl"] == pytest.approx(750)
+    assert live["unrealized_pnl_net_slip"] <= live["unrealized_pnl_net"] < 750
+
+
+def test_recent_trades_digest_report_leaderboard(client):
+    a, b = seed_two(client)
+    recent = client.get("/trades/recent?limit=10").json()
+    assert len(recent) == 3
+    dig = client.get("/portfolio/pnl-digest?period=day").json()
+    assert sum(float(r["realized_pnl"]) for r in dig) == pytest.approx(1500)
+    assert client.get("/portfolio/pnl-digest?period=decade").status_code == 422
+    rep = client.get("/portfolio/pnl-report?period=all").json()
+    assert rep
+    assert client.get("/portfolio/pnl-report?period=day&offset=-1").status_code == 422
+    assert client.get("/portfolio/pnl-report?period=fortnight").status_code == 422
+    for p in ("day", "week", "month", "year"):
+        assert client.get(f"/portfolio/pnl-report?period={p}&offset=1").status_code == 200, p
+    board = {r["strategy_name"]: r for r in client.get("/portfolio/strategy-leaderboard").json()}
+    assert float(board["intraday_dtt_simple"]["realized_pnl"]) == pytest.approx(1500)
+    assert client.get("/portfolio/equity-curve").status_code == 200
+
+
+def test_excluded_deployment_drops_out_of_reports(client):
+    a, b = seed_two(client)
+    client.patch(f"/deployments/{a['id']}", json={"include_in_reports": False})
+    from tests.conftest import refresh
+    refresh(client)
+    dig = client.get("/portfolio/pnl-digest?period=day").json()
+    assert sum(float(r["realized_pnl"]) for r in dig) == 0
+    names = [r["strategy_name"] for r in client.get("/portfolio/strategy-leaderboard").json()]
+    assert "intraday_dtt_simple" not in names
+
+
+def test_active_periods_summary(client):
+    a, b = seed_two(client)
+    rows = {r["deployment_id"]: r for r in client.get("/portfolio/active-periods").json()}
+    assert set(rows) == {a["id"], b["id"]}
+
+
+# ── Cycles ────────────────────────────────────────────────────────────
+
+def record_session_candles(client, token, day, spot=25000.0):
+    minute = at(day, "09:15")
+    rows = []
+    while minute < at(day, "15:30"):
+        rows.append((token, minute, spot, spot + 5, spot - 5, spot + 1))
+        spot += 1
+        minute += timedelta(minutes=1)
+    from app.db import queries
+    pool = client.app.state.db_pool
+    client.portal.call(lambda: queries.record_index_candles(pool, rows))
+
+
+def test_cycles_list_and_chart_with_recorded_underlying(client):
+    d = make_deployment(client)
+    token = int(client.get(f"/deployments/{d['id']}").json()["config"]["instrument_tokens"][0])
+    add_fill(client, d["id"], "NIFTY25000CE", 11, "sell", 75, 100, at(PAST, "09:30"), reason="entry")
+    add_fill(client, d["id"], "NIFTY25000PE", 12, "sell", 75, 100, at(PAST, "09:30"), reason="entry")
+    add_fill(client, d["id"], "NIFTY25000CE", 11, "buy", 75, 70, at(PAST, "15:15"), reason="exit")
+    add_fill(client, d["id"], "NIFTY25000PE", 12, "buy", 75, 90, at(PAST, "15:15"), reason="exit")
+    record_session_candles(client, token, PAST)
+    [c] = client.get(f"/deployments/{d['id']}/cycles").json()
+    assert c["status"] == "closed" and c["positions"] == 2 and c["fills"] == 4
+    assert c["realized_pnl"] == pytest.approx(3000)
+    ch = client.get(f"/deployments/{d['id']}/cycles/{c['key']}/chart").json()
+    assert ch["underlying_source"] == "recorded" and ch["underlying"]
+    assert ch["cycle"]["mode"] == "intraday"
+    assert {p["symbol"] for p in ch["positions"]} == {"NIFTY25000CE", "NIFTY25000PE"}
+    assert ch["stats"]["realized_pnl"] == pytest.approx(3000)
+    assert ch["stats"]["underlying"]["open"] == pytest.approx(25000 + 15, abs=20)
+    assert client.get(f"/deployments/{d['id']}/cycles/nope/chart").status_code == 404
+
+
+def test_cycle_chart_without_candles_or_kite_explains_why(client):
+    d = make_deployment(client)
+    add_fill(client, d["id"], "X", 11, "sell", 75, 100, at(PAST, "09:30"), reason="entry")
+    add_fill(client, d["id"], "X", 11, "buy", 75, 70, at(PAST, "10:30"), reason="exit")
+    [c] = client.get(f"/deployments/{d['id']}/cycles").json()
+    ch = client.get(f"/deployments/{d['id']}/cycles/{c['key']}/chart").json()
+    assert ch["underlying"] == [] and "logged in" in ch["underlying_error"]
+    assert ch["positions"][0]["price_source"] == "none"
+
+
+def test_cycles_mark_eod_rollouts(client):
+    d = make_deployment(client, name="S", strategy="strangle_monthly_v2", mode="positional")
+    add_fill(client, d["id"], "CE1", 1, "sell", 75, 100, at(PAST, "10:00"), reason="entry")
+    add_fill(client, d["id"], "PE1", 2, "sell", 75, 100, at(PAST, "10:00"), reason="entry")
+    add_fill(client, d["id"], "PE1", 2, "buy", 75, 150, at(PAST, "15:13"), reason="eod_rollout")
+    add_fill(client, d["id"], "PE2", 3, "sell", 75, 100, at(PAST, "15:13"), reason="eod_rollout")
+    [c] = client.get(f"/deployments/{d['id']}/cycles").json()
+    assert c["status"] == "open" and c["rollouts"] == 1 and c["adjustments"] >= 1
+
+
+# ── Admin ─────────────────────────────────────────────────────────────
+
+def test_redeploy_is_guarded(client, tmp_path, monkeypatch):
+    import app.routers.admin as admin
+    trig = tmp_path / "control" / "redeploy.trigger"
+    monkeypatch.setattr(admin, "REDEPLOY_TRIGGER_PATH", trig)
+    assert client.post("/admin/redeploy", json={"password": "x", "confirm": "REDEPLOY"}).status_code == 401
+    assert client.post("/admin/redeploy", json={"password": ADMIN_PASSWORD, "confirm": "redeploy"}).status_code == 400
+    assert client.post("/admin/redeploy", json={"password": ADMIN_PASSWORD, "confirm": "REDEPLOY"}).status_code == 503
+    assert not trig.exists()
+    trig.parent.mkdir()
+    r = client.post("/admin/redeploy", json={"password": ADMIN_PASSWORD, "confirm": "REDEPLOY"})
+    assert r.status_code == 200 and trig.exists()
+    rows = client.get("/auth/audit-log").json()
+    assert ADMIN_PASSWORD not in str([x["request_body"] for x in rows])

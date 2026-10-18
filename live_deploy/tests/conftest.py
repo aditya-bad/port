@@ -165,6 +165,16 @@ def pytest_sessionfinish(session, exitstatus):
             pass
 
 
+_hash_cache = {}
+
+
+def _admin_hash():
+    if "h" not in _hash_cache:   # bcrypt is slow on purpose: hash once per run
+        from app.routers.auth import hash_password
+        _hash_cache["h"] = hash_password(ADMIN_PASSWORD)
+    return _hash_cache["h"]
+
+
 @pytest.fixture
 def app_client(db):
     """The running app (anonymous client). Before each test: runners
@@ -180,11 +190,13 @@ def app_client(db):
         mgr.start_errors.clear()
         mgr.health_issues = []
         mgr._alerted.clear()
+        app.state.v2_book = None
+        app.state.dispatcher.last_prices.clear()
         await truncate_all()
-        from app.routers.auth import hash_password
+        await app.state.db_pool.execute("UPDATE strategy_settings SET enabled = true")
         await app.state.db_pool.execute(
             "UPDATE users SET password_hash = $1, is_active = true WHERE username = 'admin'",
-            hash_password(ADMIN_PASSWORD),
+            _admin_hash(),
         )
         for key in list(app.state.cache._entries):
             try:
@@ -210,6 +222,12 @@ def pushes(app_client):
     return _app_state["pushes"]
 
 
+def sql(client, query, *args):
+    """Run SQL on the app's own pool (seeding snapshots, events...)."""
+    pool = client.app.state.db_pool
+    return client.portal.call(lambda: pool.fetch(query, *args))
+
+
 def call_in_app(client, fn, *args):
     """Run an async function inside the app's event loop (e.g. to drive
     the manager or read app.state)."""
@@ -218,12 +236,20 @@ def call_in_app(client, fn, *args):
 
 # ── Factories ─────────────────────────────────────────────────────────
 
+def default_config(strategy):
+    """The strategy's own default config (what the deploy form starts from)."""
+    import copy
+    from app.strategies.registry import list_strategies
+    return copy.deepcopy(next(s for s in list_strategies() if s["name"] == strategy)["default_config"])
+
+
 def make_deployment(client, name="Test Deployment", strategy="intraday_dtt_simple", mode="intraday",
                     capital=500000, config=None, start="paused", **extra):
     """Creates a deployment through the v2 API (paused by default so no
     runner trades during a test). Returns its JSON."""
     body = {"deployment_name": name, "strategy_name": strategy, "mode": mode,
-            "initial_capital": capital, "config": config if config is not None else {}, "start": start, **extra}
+            "initial_capital": capital, "config": config if config is not None else default_config(strategy),
+            "start": start, **extra}
     r = client.post("/v2/deployments", json=body)
     assert r.status_code == 201, r.text
     return r.json()
@@ -233,3 +259,25 @@ async def fill(pool, dep_id, symbol, token, action, qty, price, at, reason=None,
     from app.db import queries
     return await queries.record_fill(pool, dep_id, symbol, token, action, qty, price, at,
                                      reason=reason, metadata=metadata or {})
+
+
+def add_fill(client, dep_id, symbol, token, action, qty, price, at, reason=None, metadata=None):
+    """Record a fill through the app's own pool, then refresh its caches."""
+    from uuid import UUID
+    pool = client.app.state.db_pool
+    r = client.portal.call(lambda: fill(pool, UUID(str(dep_id)), symbol, token, action, qty, price, at, reason, metadata))
+    refresh(client)
+    return r
+
+
+def refresh(client):
+    cache = client.app.state.cache
+    client.app.state.v2_book = None       # the v2 book's own 15s cache
+
+    async def go():
+        for key in list(cache._entries):
+            try:
+                await cache.refresh_now(key)
+            except Exception:
+                pass
+    client.portal.call(go)
