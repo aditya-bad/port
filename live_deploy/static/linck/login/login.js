@@ -219,6 +219,7 @@ function enter() {
 }
 
 // ── Boot ───────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 paintTheme();
 paintSide();
 setInterval(paintSide, 30000);

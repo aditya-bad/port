@@ -40,7 +40,7 @@ self.addEventListener('push', (event) => {
   // "wake up and check" ping) — fall back to something generic rather
   // than let a malformed/empty payload throw and silently drop the
   // notification entirely.
-  let title = 'live_deploy';
+  let title = 'Linck';
   let body = '';
   try {
     const payload = event.data ? event.data.json() : {};
@@ -52,8 +52,8 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     self.registration.showNotification(title, {
       body,
-      icon: '/icons/icon-192.png',
-      badge: '/icons/icon-192.png',
+      icon: '/icons/linck-192.png',
+      badge: '/icons/linck-badge-96.png',
       tag: 'live-deploy-execution',   // a second notification while the first is still showing REPLACES it rather than stacking -- this is a status ping, not a message thread
     })
   );
@@ -62,14 +62,13 @@ self.addEventListener('push', (event) => {
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   // Focus an already-open tab if one exists, otherwise open a new one
-  // — either way lands on the Deployments list, the most useful place
-  // to land after "something entered/exited."
+  // — a new one opens Linck's Desk, where the entry/exit shows up.
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
       for (const client of clientList) {
         if ('focus' in client) return client.focus();
       }
-      if (self.clients.openWindow) return self.clients.openWindow('/#/deployments');
+      if (self.clients.openWindow) return self.clients.openWindow('/linck/#/desk');
     })
   );
 });

@@ -60,7 +60,7 @@ svg { display: block; }
 }
 @media (max-width: 900px) {
   :root {
-    --px: 16px; --pb: 72px; --h1: 30px; --mtop: 40px;
+    --px: 16px; --pb: calc(72px + env(safe-area-inset-bottom)); --h1: 30px; --mtop: 40px;
     --g-two: minmax(0, 1fr); --g-side: minmax(0, 1fr);
     --g-lane: 138px minmax(0, 1fr) 84px 0px; --lane-off: 138px; --lane-rest: 222px;
     --g-3: minmax(0, 1fr); --g-4: repeat(2, minmax(0, 1fr)); --g-5: repeat(2, minmax(0, 1fr)); --g-6: repeat(2, minmax(0, 1fr));

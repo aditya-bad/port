@@ -15,6 +15,7 @@ import { toggle, empty, loading } from '../ui/components.js';
 import { openDialog } from '../ui/dialog.js';
 import { say } from '../ui/toast.js';
 import { kiteDialog } from '../actions.js';
+import { installState, promptInstall } from '../data/install.js';
 import { toClassic } from '../app.js';
 
 const b64 = s => { const p = '='.repeat((4 - s.length % 4) % 4); const r = atob((s + p).replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from([...r].map(c => c.charCodeAt(0))); };
@@ -97,6 +98,19 @@ export default {
               <p class="tiny mute" style="margin:8px 0 0">Saved to your account, so they follow you to every device.</p>
             </div>
             <div>
+              <div class="sect ruled"><h3 class="t-h3">App</h3></div>
+              ${(() => { const st = installState(); return html`<div class="pref-row" style="align-items:flex-start;flex-wrap:wrap">
+                <div class="col grow" style="gap:2px;min-width:220px"><b>${st === 'installed' ? 'Installed on this device' : 'Install Linck'}</b>
+                  <span class="tiny mute pretty">${{
+                    installed: 'Opens straight to Linck, full screen. It updates itself whenever the server is redeployed.',
+                    prompt: 'Adds Linck to your home screen or dock as its own app, full screen, with push notifications.',
+                    ios: 'In Safari, tap Share, then Add to Home Screen. Open Linck from there to get push notifications (iOS 16.4 or later).',
+                    unavailable: 'Open this page in Chrome on Android or Safari on iPhone to install it. Already installed? Open it from your home screen.',
+                  }[st]}</span></div>
+                ${st === 'prompt' ? html`<button type="button" class="btn btn-primary" data-act="install">Install Linck</button>` : ''}
+              </div>`; })()}
+            </div>
+            <div>
               <div class="sect ruled"><h3 class="t-h3">Push notifications</h3></div>
               <div class="pref-row"><div class="col grow" style="gap:0"><b>This device</b><span class="tiny mute">${{
                 loading: 'Checking…', unconfigured: 'Not configured on this server (custom_scripts/generate_vapid_keys.py).', unsupported: 'This browser can’t receive push notifications.',
@@ -151,6 +165,7 @@ export default {
         run: async (pw, phrase) => { const r = await api.clearAll(pw, phrase); await book.load(); say(`${plural(r.deleted, 'deployment')} deleted.`); },
       }),
       classic: () => toClassic(),
+      install: async () => { const ok = await promptInstall(); say(ok ? 'Linck is installed. Open it from your home screen.' : 'Not installed. You can install it any time from here.'); paint(); },
       kite: () => kiteDialog(),
       theme: d => { prefs.set('theme', d.v); paint(); },
       pref: d => { prefs.set(d.k, d.v); paint(); },
@@ -234,7 +249,7 @@ export default {
       api.muteStatus().then(r => { mute = r; }).catch(() => {}),
       api.instruments().then(r => { subs = (r.subscribed || []).length; }).catch(() => {}),
     ]).then(paint);
-    const offs = [listen('data', paint), listen('status', paint)];
+    const offs = [listen('data', paint), listen('status', paint), listen('install', paint)];
     return () => { off(); offs.forEach(f => f()); };
   },
 };

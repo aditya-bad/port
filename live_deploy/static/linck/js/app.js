@@ -12,6 +12,7 @@ import { INDICES } from './data/config.js';
 import { prices, startTicks, startEvents, pollStatus, primeQuotes, kite } from './data/live.js';
 import { alerts } from './data/alerts.js';
 import { installTooltip } from './ui/tooltip.js';
+import { startInstall } from './data/install.js';
 import { openDialog, isOpen, closeDialog } from './ui/dialog.js';
 import { say } from './ui/toast.js';
 import { closeEverything, kiteDialog } from './actions.js';
@@ -135,6 +136,7 @@ async function route() {
 
 // ── Boot ───────────────────────────────────────────────────────────
 async function boot() {
+  startInstall();
   prefs.apply();
   installTooltip();
   renderHeader();
