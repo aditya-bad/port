@@ -379,8 +379,20 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             self.entered_today = False
             self._late_start_today = False   # a live day-boundary crossing is never "late"
 
+        self._forget_closed_legs(runner)
         await self._maybe_enter(runner, ts)
         await self._maybe_exit(runner, ts)
+
+    def _forget_closed_legs(self, runner) -> None:
+        """Drop a tracked leg whose position is no longer open in the
+        database: closed outside this strategy (the runner's
+        carried_over_close / square_off_sweep, a manual close). Without
+        this the strategy kept believing it held the leg and skipped
+        every entry until its next force exit — a whole trading day."""
+        if self.ce_token is not None and self.ce_token not in runner.open_positions:
+            self.ce_token = self.ce_symbol = self.ce_exchange = self.ce_entry_price = None
+        if self.pe_token is not None and self.pe_token not in runner.open_positions:
+            self.pe_token = self.pe_symbol = self.pe_exchange = self.pe_entry_price = None
 
     # ── Entry ────────────────────────────────────────────────────────────
 
