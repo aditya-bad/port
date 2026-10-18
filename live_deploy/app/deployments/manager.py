@@ -203,7 +203,10 @@ class DeploymentManager:
     async def shutdown_all(self) -> None:
         """Stop every runner task. Deployment status in the DB is untouched."""
         for runner in list(self.runners.values()):
-            await runner.stop()
+            try:
+                await runner.stop()
+            except Exception:
+                logger.exception("Stopping %s failed — continuing with the rest", runner.deployment_name)
         self.runners.clear()
 
     # ── CRUD / control ───────────────────────────────────────────────

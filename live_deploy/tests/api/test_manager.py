@@ -1,0 +1,229 @@
+"""The DeploymentManager inside the running app: startup resume that
+survives a broken deployment, snapshots, price marks, the not-running /
+Kite watchdog and its pushes, and recovery when a restart fails after
+flatten or remove-trades."""
+
+from datetime import datetime, time, timedelta
+from uuid import UUID
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from tests.conftest import add_fill, make_deployment, sql
+
+IST = ZoneInfo("Asia/Kolkata")
+WED = datetime(2026, 10, 14, tzinfo=IST)       # a market day
+
+
+def mgr(client):
+    return client.app.state.deployment_manager
+
+
+def call(client, fn, *args):
+    return client.portal.call(fn, *args)
+
+
+def break_config(client, dep_id):
+    """What a strategy's on_start rejects: no underlying token."""
+    sql(client, "UPDATE deployments SET config = config || '{\"instrument_tokens\": []}'::jsonb WHERE id = $1::uuid", dep_id)
+
+
+def at(day, hhmm):
+    h, m = map(int, hhmm.split(":"))
+    return datetime.combine(day.date(), time(h, m), IST)
+
+
+# ── Startup ───────────────────────────────────────────────────────────
+
+def test_startup_resumes_active_deployments_and_skips_a_broken_one(client):
+    good = make_deployment(client, name="Good", start="now")
+    bad = make_deployment(client, name="Bad", start="now")
+    call(client, mgr(client).shutdown_all)
+    mgr(client).runners.clear()
+    break_config(client, bad["id"])
+    started = call(client, mgr(client).load_active_on_startup)
+    assert started == 1
+    assert good["id"] in mgr(client).runners and bad["id"] not in mgr(client).runners
+    assert "instrument_tokens" in mgr(client).start_errors[bad["id"]]
+    [nr] = call(client, mgr(client).find_not_running)
+    assert nr["id"] == bad["id"] and "instrument_tokens" in nr["reason"]
+
+
+# ── Watchdog ──────────────────────────────────────────────────────────
+
+def test_watchdog_pushes_once_per_problem_and_again_if_it_recurs(client, pushes, monkeypatch):
+    monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
+    d = make_deployment(client, name="Dead", start="now")
+    add_fill(client, d["id"], "CE", 1, "sell", 75, 100, at(WED, "10:00"))
+    runner = mgr(client).runners.pop(d["id"])
+    call(client, runner.stop)
+    evening = at(WED, "18:00")
+    call(client, mgr(client).check_health_once, evening)
+    call(client, mgr(client).check_health_once, evening)
+    assert len(pushes) == 1 and "Dead isn't running" in pushes[0][0]
+    assert "1 open position" in pushes[0][1]
+    events = [e["event_type"] for e in client.get(f"/deployments/{d['id']}/events").json()]
+    assert events.count("not_running") == 1
+    assert client.post(f"/v2/deployments/{d['id']}/restart").status_code == 200
+    call(client, mgr(client).check_health_once, evening)
+    assert mgr(client).health_issues == []
+    runner = mgr(client).runners.pop(d["id"])
+    call(client, runner.stop)
+    call(client, mgr(client).check_health_once, evening)
+    assert len(pushes) == 2, "a new outage alerts again"
+
+
+@pytest.mark.parametrize("when,expect", [
+    (at(WED, "09:04"), 0), (at(WED, "09:05"), 1), (at(WED, "15:29"), 1), (at(WED, "15:30"), 0),
+    (at(WED + timedelta(days=3), "10:00"), 0),     # Saturday
+])
+def test_kite_not_connected_push_only_in_market_hours(client, pushes, monkeypatch, when, expect):
+    monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
+    mgr(client)._kite_alerted_on = None
+    call(client, mgr(client).check_health_once, when)
+    assert len([p for p in pushes if "Kite" in p[0]]) == expect
+
+
+def test_kite_push_once_a_day_and_not_when_muted(client, pushes, monkeypatch):
+    monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
+    mgr(client)._kite_alerted_on = None
+    call(client, mgr(client).check_health_once, at(WED, "09:10"))
+    call(client, mgr(client).check_health_once, at(WED, "09:40"))
+    assert len(pushes) == 1
+    mgr(client)._kite_alerted_on = None
+    client.post("/notifications/mute-today")
+    call(client, mgr(client).check_health_once, at(WED, "10:00"))
+    assert len(pushes) == 1, "a day marked as a holiday is quiet"
+
+
+def test_kite_push_is_skipped_when_connected(client, pushes, monkeypatch):
+    monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
+    mgr(client)._kite_alerted_on = None
+    d = client.app.state.dispatcher
+    monkeypatch.setattr(d, "connected", True)
+    monkeypatch.setattr(d, "_kws", object())
+    call(client, mgr(client).check_health_once, at(WED, "09:10"))
+    assert pushes == []
+
+
+# ── Snapshots and marks ───────────────────────────────────────────────
+
+def test_snapshots_value_positional_legs_at_market_and_intraday_at_cash(client):
+    pos = make_deployment(client, name="P", strategy="strangle_monthly_v2", mode="positional", start="now")
+    intra = make_deployment(client, name="I", start="now")
+    add_fill(client, pos["id"], "CE", 1, "sell", 75, 100, at(WED, "10:00"))
+    add_fill(client, intra["id"], "PE", 2, "sell", 75, 100, at(WED, "10:00"))
+    for d in (pos, intra):
+        call(client, mgr(client).runners[d["id"]]._reload_positions)
+    client.app.state.dispatcher.last_prices.update({1: 80.0, 2: 80.0})
+    call(client, mgr(client).snapshot_all_active)
+    rows = {str(r["deployment_id"]): r for r in sql(client, "SELECT * FROM deployment_snapshots")}
+    assert float(rows[pos["id"]]["open_positions_value"]) == pytest.approx(1500)
+    assert float(rows[pos["id"]]["total_value"]) == pytest.approx(500000 + 1500)
+    assert float(rows[intra["id"]]["open_positions_value"]) == 0
+    assert float(rows[intra["id"]]["total_value"]) == pytest.approx(500000)
+
+
+def test_marks_every_minute_intraday_every_fifth_positional_in_session_only(client):
+    pos = make_deployment(client, name="P", strategy="strangle_monthly_v2", mode="positional", start="now")
+    intra = make_deployment(client, name="I", start="now")
+    add_fill(client, pos["id"], "CE", 1, "sell", 75, 100, at(WED, "10:00"))
+    add_fill(client, intra["id"], "PE", 2, "sell", 75, 100, at(WED, "10:00"))
+    add_fill(client, intra["id"], "OLD", 3, "sell", 75, 100, at(WED, "10:00"))
+    for d in (pos, intra):
+        call(client, mgr(client).runners[d["id"]]._reload_positions)
+    disp = client.app.state.dispatcher
+    disp.last_prices.update({1: 90.0, 2: 95.0, 3: 50.0})
+    disp.last_price_times[3] = datetime(2026, 10, 13, 15, 29)    # yesterday's trade: not today's mark
+    rec = mgr(client).record_marks_once
+    try:
+        assert call(client, rec, at(WED, "10:01")) == 1, "intraday leg only"
+        assert call(client, rec, at(WED, "10:05")) == 2, "positional joins on the 5th minute"
+        assert call(client, rec, at(WED, "09:00")) == 0
+        assert call(client, rec, at(WED, "15:31")) == 0
+        assert call(client, rec, at(WED + timedelta(days=3), "10:05")) == 0
+    finally:
+        disp.last_price_times.pop(3, None)
+
+
+def test_post_market_checkpoint_persists_strategy_state_without_stopping(client):
+    d = make_deployment(client, start="now")
+    mgr(client).runners[d["id"]].strategy.today = WED.date()     # it has seen a session
+    sql(client, "DELETE FROM deployment_state")
+    call(client, mgr(client).dump_state_all_active)
+    assert sql(client, "SELECT 1 FROM deployment_state WHERE deployment_id = $1::uuid", d["id"])
+    assert mgr(client)._is_running(d["id"])
+
+
+# ── Recovery when the restart after an action fails ───────────────────
+
+def test_flatten_of_a_deployment_that_cant_restart_leaves_it_paused(client):
+    d = make_deployment(client, start="now")
+    add_fill(client, d["id"], "CE", 1, "sell", 75, 100, at(WED, "10:00"))
+    break_config(client, d["id"])
+    assert client.post(f"/deployments/{d['id']}/flatten").status_code == 200
+    assert client.get(f"/deployments/{d['id']}").json()["status"] == "paused"
+    assert client.get(f"/deployments/{d['id']}/positions").json() == []
+
+
+def test_remove_trades_that_cant_restart_rolls_back_to_paused(client):
+    d = make_deployment(client, start="now")
+    add_fill(client, d["id"], "CE", 1, "sell", 75, 100, at(WED, "10:00"))
+    break_config(client, d["id"])
+    r = client.post(f"/deployments/{d['id']}/remove-trades")
+    assert r.status_code >= 400
+    assert client.get(f"/deployments/{d['id']}").json()["status"] == "paused"
+    assert client.get(f"/deployments/{d['id']}/positions?status=all").json() == [], "the removal itself stands"
+
+
+def test_remove_trades_refusals(client):
+    d = make_deployment(client)
+    assert client.post(f"/deployments/{d['id']}/remove-trades").status_code == 409, "nothing to remove"
+    client.post(f"/deployments/{d['id']}/stop")
+    assert client.post(f"/deployments/{d['id']}/remove-trades").status_code == 409, "stopped"
+
+
+def test_resume_that_fails_records_why(client):
+    d = make_deployment(client)
+    break_config(client, d["id"])
+    r = client.post(f"/deployments/{d['id']}/resume")
+    assert r.status_code in (400, 409) and "instrument_tokens" in r.text
+    assert client.get(f"/deployments/{d['id']}").json()["status"] == "paused"
+
+
+def test_a_fill_refreshes_the_list_cache(client):
+    d = make_deployment(client, start="now")
+    runner = mgr(client).runners[d["id"]]
+    call(client, lambda: runner.sell("CE", 1, 75, 100.0, datetime.now(IST).replace(tzinfo=None), reason="entry"))
+    call(client, mgr(client)._refresh_cache_after_fill)
+    row = next(x for x in client.get("/deployments").json() if x["id"] == d["id"])
+    assert float(row["current_cash"]) == pytest.approx(500000 + 7500)
+
+
+def test_pause_stops_the_strategy_even_if_saving_its_state_fails(client, monkeypatch):
+    """Regression: a failing state dump used to leave the runner's task
+    running — shown paused, still trading."""
+    d = make_deployment(client, start="now")
+    runner = mgr(client).runners[d["id"]]
+
+    def boom():
+        raise RuntimeError("db hiccup")
+    monkeypatch.setattr(runner.strategy, "get_persistable_state", boom, raising=False)
+    monkeypatch.setattr(runner, "dump_state", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+    task = runner._task
+    assert client.post(f"/deployments/{d['id']}/pause").status_code == 200
+    assert task.done() and runner._task is None and runner._queue is None
+
+
+def test_shutdown_stops_every_runner_even_if_one_fails(client, monkeypatch):
+    a = make_deployment(client, name="A", start="now")
+    b = make_deployment(client, name="B", start="now")
+    ra, rb = mgr(client).runners[a["id"]], mgr(client).runners[b["id"]]
+
+    async def bad_stop():
+        raise RuntimeError("boom")
+    monkeypatch.setattr(ra, "stop", bad_stop)
+    tasks = [rb._task]
+    call(client, mgr(client).shutdown_all)
+    assert mgr(client).runners == {} and all(t.done() for t in tasks)
+    call(client, type(ra).stop, ra)    # the one whose stop was broken

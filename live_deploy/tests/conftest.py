@@ -146,6 +146,8 @@ def _start_app():
 
     async def fake_push(pool, config, title, body):
         pushes.append((title, body))
+    if not hasattr(notifications, "real_send_push_for_all"):
+        notifications.real_send_push_for_all = notifications.send_push_for_all   # for its own tests
     notifications.send_push_for_all = fake_push
     from app.main import app
     app.state.test_pushes = pushes

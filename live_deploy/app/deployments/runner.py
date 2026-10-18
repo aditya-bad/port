@@ -161,8 +161,15 @@ class DeploymentRunner:
     async def stop(self) -> None:
         self._running = False
         if self.strategy is not None:
-            await self.strategy.on_stop(self)
-            await self.dump_state()
+            # A failure here (strategy hook, DB write) must never leave
+            # the task below running: the deployment would show paused
+            # while its strategy kept trading.
+            try:
+                await self.strategy.on_stop(self)
+                await self.dump_state()
+            except Exception:
+                logger.exception("%s: on_stop/state dump failed while stopping — stopping anyway",
+                                 self.deployment_name)
         if self._task is not None:
             self._task.cancel()
             try:
