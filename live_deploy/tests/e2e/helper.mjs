@@ -1,0 +1,41 @@
+// Shared setup for the browser specs: the seeded ids, the base URL, a
+// browser, and a signed-in context.
+import { readFileSync } from 'node:fs';
+import { chromium } from 'playwright';
+
+const meta = JSON.parse(readFileSync(new URL('./.ids.json', import.meta.url), 'utf8'));
+export const IDS = meta.ids;
+export const PASSWORD = meta.password;
+export const BASE = `http://127.0.0.1:${meta.port}`;
+
+export async function browser() {
+  const opts = process.env.E2E_CHROMIUM ? { executablePath: process.env.E2E_CHROMIUM } : {};
+  return chromium.launch(opts);
+}
+
+// A context with its own page-error log; signedIn logs in through the API.
+export async function context(b, { width = 1440, height = 900, signedIn = true } = {}) {
+  const ctx = await b.newContext({ viewport: { width, height } });
+  ctx.errors = [];
+  ctx.on('page', p => p.on('pageerror', e => ctx.errors.push(`${p.url()}: ${e.message}`)));
+  if (signedIn) {
+    const r = await ctx.request.post(`${BASE}/auth/login`, { data: { username: 'admin', password: PASSWORD } });
+    if (!r.ok()) throw new Error(`sign-in failed: ${r.status()}`);
+  }
+  return ctx;
+}
+
+export const api = async (ctx, path) => (await ctx.request.get(BASE + path)).json();
+export const dep = async (ctx, name) => (await api(ctx, '/deployments')).find(d => d.deployment_name === name);
+
+// Waits for a condition the server reports, up to ms.
+export async function until(fn, ms = 5000) {
+  const end = Date.now() + ms;
+  let v;
+  while (Date.now() < end) {
+    v = await fn();
+    if (v) return v;
+    await new Promise(r => setTimeout(r, 150));
+  }
+  return v;
+}

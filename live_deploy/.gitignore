@@ -18,3 +18,10 @@ __pycache__/
 logs/*
 !logs/.gitkeep
 .coverage
+
+# test runs
+tests/e2e/node_modules/
+tests/e2e/package-lock.json
+tests/e2e/.ids.json
+tests/e2e/server.log
+htmlcov/
