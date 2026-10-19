@@ -278,6 +278,19 @@ class DeploymentRunner:
         the deployment's Activity and as an alert), without raising."""
         await self._record_event("strategy_error", message=message, metadata=metadata)
 
+    async def record_decision(
+        self, ts: datetime, rule: str, outcome: str, summary: str, data: Optional[dict] = None,
+    ) -> None:
+        """For a strategy to note a check that didn't trade ("no_action"
+        or "blocked") for Geek mode's Decisions view. Display-only: a
+        failure here is logged and never reaches the strategy."""
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=self._IST)   # tick time: naive IST, see _fill
+        try:
+            await queries.record_decision(self.pool, self.deployment_id, ts, rule, outcome, summary, data)
+        except Exception:
+            logger.exception("%s: could not record decision %s/%s", self.deployment_name, rule, outcome)
+
     async def notify_execution(self, side: str, message: str, metadata: Optional[dict] = None) -> None:
         """
         Call this EXACTLY ONCE per logical strategy execution — an

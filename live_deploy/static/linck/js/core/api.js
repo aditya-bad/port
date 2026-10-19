@@ -68,6 +68,7 @@ export const api = {
   events: (id, limit = 200) => req(`/deployments/${id}/events?limit=${limit}`),
   strategyStatus: id => req(`/deployments/${id}/strategy-status`),
   cycles: id => req(`/deployments/${id}/cycles`),
+  geek: (id, view) => req(`/v2/deployments/${id}/geek/${view}`),
   cycleChart: (id, key) => req(`/deployments/${id}/cycles/${enc(key)}/chart`),
   openPositions: () => req('/positions?status=open'),
   recentTrades: (limit = 60) => req(`/trades/recent?limit=${limit}`),

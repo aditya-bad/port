@@ -196,6 +196,34 @@ def test_remove_trade_scope_erases_the_open_cycle_and_restores_cash(pool_run):
     pool_run(go)
 
 
+def test_remove_trade_scope_also_drops_the_open_cycles_decisions(pool_run):
+    async def go(pool):
+        d = await dep(pool)
+        await trade(pool, d, "OLD", 1, at(13), at(13, 15), 100, 80)
+        await queries.record_decision(pool, d, at(13, 12), "eod_gap_check", "no_action", "old cycle")
+        await trade(pool, d, "NEW", 2, at(14), None)
+        await queries.record_decision(pool, d, at(14, 12), "eod_gap_check", "no_action", "new cycle")
+        scope = await queries.resolve_current_trade_scope(pool, d, None)
+        await queries.remove_trade_scope(pool, d, scope["position_ids"], scope["min_opened_at"])
+        assert [r["summary"] for r in await queries.list_decisions(pool, d)] == ["old cycle"]
+    pool_run(go)
+
+
+def test_decisions_round_trip_newest_first(pool_run):
+    async def go(pool):
+        d = await dep(pool)
+        await queries.record_decision(pool, d, at(10), "a", "no_action", "first", {"x": 1})
+        await queries.record_decision(pool, d, at(11), "b", "blocked", "second")
+        rows = await queries.list_decisions(pool, d)
+        assert [(r["rule"], r["outcome"], r["summary"]) for r in rows] == [
+            ("b", "blocked", "second"), ("a", "no_action", "first")]
+        assert rows[1]["data"] == {"x": 1}
+        assert [r["summary"] for r in await queries.list_decisions(pool, d, since=at(10, 12))] == ["second"]
+        with pytest.raises(Exception):
+            await queries.record_decision(pool, d, at(12), "c", "acted", "trades aren't decisions")
+    pool_run(go)
+
+
 # ── Snapshots, events, marks ──────────────────────────────────────────
 
 def test_snapshots_events_and_marks_round_trip(pool_run):

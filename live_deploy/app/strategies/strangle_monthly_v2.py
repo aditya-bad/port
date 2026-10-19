@@ -633,6 +633,8 @@ OTHER_SIDE = {"CE": "PE", "PE": "CE"}
 _SESSION_OPEN = time(9, 15)
 # How long a trigger refuted by live quotes is treated as not fired.
 _CONFIRM_COOLDOWN = timedelta(seconds=15)
+# A trigger that keeps being refuted is noted in the decision log at most this often.
+_REFUTE_NOTE_EVERY = timedelta(minutes=5)
 
 
 def _naive_ist(dt: datetime) -> datetime:
@@ -768,6 +770,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # See module docstring's "STALE-PRICE GUARD".
         self._confirm_cooldown_until: dict[str, datetime] = {}
         self._stale_logged: set = set()
+        # Geek mode's decision log (runner.record_decision): what to note
+        # next, and when each kind of refute was last noted.
+        self._stale_report: Optional[list] = None
+        self._refute_noted: dict[str, datetime] = {}
+        self._decision_days: set = set()
         # Attributes named EXACTLY as intraday_dtt_adjusted's own methods
         # expect, so those methods can be called unbound against this
         # instance for convergence_mode=active_management — see module
@@ -1112,6 +1119,13 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # STALE-PRICE GUARD layer 1 (see module docstring): no decision
         # until every open short leg has actually traded this session.
         if self._stale_legs(runner, ts):
+            if self._stale_report:
+                await self._decide(
+                    runner, ts, "stale_price_guard", "blocked",
+                    f"Holding all management: {', '.join(self._stale_report)} not traded yet this session",
+                    {"legs": self._stale_report},
+                )
+                self._stale_report = None
             return
 
         # 2 — checkpoint profit target
@@ -1146,6 +1160,13 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             and ts.time() < self.checkpoint_exit_not_before
         )
         confirmed = None
+        if total_cycle_profit >= checkpoint_target and checkpoint_gated:
+            await self._decide_once_a_day(
+                runner, ts, "checkpoint_target", "no_action",
+                f"Checkpoint reached (₹{total_cycle_profit:,.0f} ≥ ₹{checkpoint_target:,.0f}) but exits wait "
+                f"until {self.checkpoint_exit_not_before.strftime('%H:%M')}",
+                {"total_cycle_profit": round(total_cycle_profit, 2), "checkpoint_target": checkpoint_target},
+            )
         if total_cycle_profit >= checkpoint_target and not checkpoint_gated:
             # STALE-PRICE GUARD layer 2: None = refuted by live quotes (or
             # cooling down after a refute) -- fall through as if not hit.
@@ -1252,6 +1273,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # all) post-convergence under fixed_stop/trailing_stop, per the
         # same freeze note above.
         if frozen_post_convergence:
+            if not self._eod_fired_today and t >= self.eod_check_time:
+                self._eod_fired_today = True
+                await self._decide(
+                    runner, ts, "eod_gap_check", "no_action",
+                    f"Skipped: converged into a straddle; only the {self.convergence_mode.replace('_', ' ')} "
+                    "can close it now",
+                    {"convergence_premium": self.convergence_premium},
+                )
             return
         if self.converged and self.convergence_mode == "active_management":
             await self._active_management_tick(runner, ts, prices)
@@ -1275,6 +1304,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             key = (session_open.date(), tuple(sorted(stale)))
             if key not in self._stale_logged:
                 self._stale_logged.add(key)
+                self._stale_report = stale
                 logger.info(
                     "%s: holding all position management — %s not traded yet this "
                     "session (cached price is from a previous session)",
@@ -1326,6 +1356,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             )
             return confirmed
         self._confirm_cooldown_until[name] = ts + _CONFIRM_COOLDOWN
+        noted = self._refute_noted.get(name)
+        if noted is None or ts - noted >= _REFUTE_NOTE_EVERY:
+            self._refute_noted[name] = ts
+            await self._decide(
+                runner, ts, name, "blocked",
+                "Not acted on: live quotes don't confirm the tick prices",
+                {"tick": tick_view, "quote": quote_view},
+            )
         logger.warning(
             "%s: %s fired on tick prices %s but live quotes %s don't confirm it — "
             "not acting (re-checking in %ds)", runner.deployment_name, name,
@@ -1625,6 +1663,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             return s is not None and s[3] < self.eod_gap_floor * s[2]
 
         if not _fires(prices):
+            s = self._side_sums(prices)
+            if s is not None:
+                await self._decide(
+                    runner, ts, "eod_gap_check", "no_action",
+                    f"{s[1]}/{s[0]} {s[3] / s[2]:.2f} ≥ floor {self.eod_gap_floor:.2f}: gap small enough to hold overnight",
+                    {"bigger_side": s[0], "smaller_side": s[1], "bigger_sum": round(s[2], 2),
+                     "smaller_sum": round(s[3], 2), "eod_gap_floor": self.eod_gap_floor},
+                )
             return   # within floor, nothing to do
         # Runs once per day: a refute here means the real gap is within
         # the floor, so there is correctly nothing to do today.
@@ -2106,6 +2152,19 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         )
 
     # ── Trade-reason metadata (Section 12) ──────────────────────────────
+
+    async def _decide(self, runner, ts, rule: str, outcome: str, summary: str, data: Optional[dict] = None) -> None:
+        """A check that didn't trade, for Geek mode's Decisions view
+        (trades explain themselves through their fills' metadata)."""
+        record = getattr(runner, "record_decision", None)
+        if record is not None:
+            await record(ts, rule, outcome, summary, data or {})
+
+    async def _decide_once_a_day(self, runner, ts, rule: str, outcome: str, summary: str, data: Optional[dict] = None) -> None:
+        key = (rule, outcome, ts.date())
+        if key not in self._decision_days:
+            self._decision_days.add(key)
+            await self._decide(runner, ts, rule, outcome, summary, data)
 
     def _trade_meta(
         self, trigger: str, action: str, side: Optional[str], strike: float, fill_price: float,

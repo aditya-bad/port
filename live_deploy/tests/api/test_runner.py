@@ -129,6 +129,21 @@ def test_strategy_errors_are_broadcast_live(client):
     assert ev["deployment_id"] == d["id"] and ev["metadata"] == {"leg": "CE"}
 
 
+def test_record_decision_stores_tick_time_as_ist_and_never_raises(client, monkeypatch):
+    from datetime import datetime
+    from app.db import queries
+    d = make_deployment(client, start="now")
+    r = runner_of(client, d["id"])
+    client.portal.call(r.record_decision, datetime(2026, 10, 14, 15, 13), "eod_gap_check", "no_action", "fine", {"x": 1})
+    rows = client.portal.call(queries.list_decisions, client.app.state.db_pool, r.deployment_id)
+    assert rows[0]["decided_at"].isoformat().endswith("09:43:00+00:00"), "15:13 IST"
+
+    async def boom(*a, **k):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(queries, "record_decision", boom)
+    client.portal.call(r.record_decision, datetime(2026, 10, 14, 15, 14), "x", "blocked", "never raises")
+
+
 # ── Exit pricing ──────────────────────────────────────────────────────
 
 def test_exit_price_live_then_quote_then_entry(client, monkeypatch):

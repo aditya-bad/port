@@ -73,6 +73,7 @@ DEPS = [
 ]
 OPEN_LEGS = {"Nifty Strangle A": 4, "BankNifty DTT Plain": 2, "Bankex Strangle": 2}
 _tok = [600000]
+GEEK_LIVE: list = []      # open geek legs: their last trade time is kept fresh
 
 
 def ntok():
@@ -183,11 +184,168 @@ async def seed():
                 "realized_pnl_cumulative) VALUES ($1,$2,$3,0,$3,0)", ids[name], t, v)
             t += timedelta(minutes=5)
             i += 1
+    ids[GEEK_NAME] = await seed_geek(pool, prices, GEEK_LIVE)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
     (HERE / ".ids.json").write_text(json.dumps({"ids": ids, "password": PASSWORD, "port": PORT}, indent=1))
     return prices
+
+
+# A strangle_monthly_v2 deployment with the history Geek mode reads:
+# fills carrying the strategy's own metadata (cycles, rolls, triggers),
+# 5-minute-style price marks, decisions that didn't trade, and candles
+# for legs rolls closed. Its open cycle is priced live by the loop below.
+GEEK_NAME = "Nifty Monthly Strangle"
+GEEK_CAP = 600_000
+
+
+async def seed_geek(pool, prices, live_times):
+    from app.strategies.registry import list_strategies
+    defaults = next(x for x in list_strategies() if x["name"] == "strangle_monthly_v2")["default_config"]
+    cfg = {**defaults, "instrument_tokens": [TOKEN["NIFTY"]], "instrument": "NIFTY", "convergence_stop_pct": 0.08}
+    d = await queries.create_deployment(pool, GEEK_NAME, "strangle_monthly_v2", "positional", float(GEEK_CAP), cfg)
+    dep = d["id"]
+    await pool.execute("UPDATE deployments SET created_at=$2 WHERE id=$1", dep, TODAY - timedelta(days=80))
+    Q, G = 75, random.Random(5)
+
+    def at(days, hh, mm):
+        return datetime.combine((TODAY - timedelta(days=days)).date(), time(hh, mm), IST)
+
+    def meta(trigger, action, leg, strike, cycle, expiry, role=None, tv=None, tb=None):
+        m = {"trigger": trigger, "action": action, "leg": leg, "strike": strike, "cycle_id": cycle,
+             "contract_expiry": expiry, "trigger_values": tv or {}, "target_basis": tb or {}, "exchange": "NFO"}
+        if role:
+            m["leg_role"] = role
+        return m
+
+    async def f(leg, action, px, when, reason, m):
+        await queries.record_fill(pool, dep, leg["sym"], leg["tok"], action, Q, round(px, 2), when, reason=reason,
+                                  metadata=m, book_price=round(px + (0.2 if action == "buy" else -0.2), 2))
+
+    def new_leg(expiry, strike, ot, px, role):
+        e = datetime.fromisoformat(expiry)
+        return {"sym": f"NIFTY{e.strftime('%y%b').upper()}{strike}{ot}", "tok": ntok(), "strike": strike,
+                "entry": px, "role": role, "opt": ot}
+
+    cycles = [
+        (75, 70, "checkpoint_target", 3150, []),
+        (70, 60, "checkpoint_target", 3080, [(65, 11, 20, "continuous_50pct_trigger", "PE"), (62, 15, 13, "eod_gap_check", "PE")]),
+        (60, 52, "contract_expiry_backstop", 1820, [(56, 15, 13, "eod_gap_check", "CE")]),
+        (52, 49, "checkpoint_target", 3210, []),
+        (49, 40, "convergence_stop", -3852, [(45, 10, 40, "continuous_50pct_trigger", "PE"), (43, 15, 13, "eod_rollout", "CE")]),
+        (40, 30, "checkpoint_target", 3040, [(35, 15, 13, "eod_gap_check", "PE")]),
+        (30, 21, "checkpoint_target", 3120, [(25, 12, 5, "continuous_50pct_trigger", "CE")]),
+        (21, 17, "checkpoint_target", 3186, []),
+        (17, 9, "checkpoint_target", 3060, [(13, 15, 13, "eod_gap_check", "CE")]),
+        (9, None, None, None, [(4, 15, 13, "eod_gap_check", "PE")]),
+    ]
+    marks, prev_close = [], None
+
+    async def price_rolled_away(pending, exits):
+        """A rolled-away leg's price when its replacement closed (or now),
+        chosen so rolls sometimes beat holding and sometimes don't."""
+        for old, close_px, nl in pending:
+            px, when = exits[nl["tok"]]
+            new_pnl = (nl["entry"] - px) * Q
+            held = max(0.5, close_px - (new_pnl - G.uniform(-1200, 1800)) / Q)
+            m = when.replace(second=0, microsecond=0) - timedelta(minutes=1)
+            await queries.upsert_candles(pool, [(old["tok"], m, held, held, held, held, None)], "kite")
+
+    def mark_path(leg, start, end, exit_px):
+        t = start.replace(minute=30) + timedelta(hours=1)
+        span = max(1.0, (end - start).total_seconds())
+        while t < end:
+            if t.weekday() < 5 and time(9, 30) <= t.time() <= time(15, 30):
+                fr = (t - start).total_seconds() / span
+                bump = leg["entry"] * 0.18 * math.sin(math.pi * fr) * (1 if leg["opt"] == "CE" else -1)
+                marks.append((leg["tok"], t, max(1.0, leg["entry"] + (exit_px - leg["entry"]) * fr + bump)))
+            t += timedelta(hours=1)
+
+    for cid, (start, end, why, target, rolls) in enumerate(cycles, start=1):
+        # a checkpoint flattens and re-enters straight away
+        opened = prev_close + timedelta(seconds=5) if prev_close else at(start, 10, 0)
+        expiry = (opened + timedelta(days=42)).date().isoformat()
+        k = 25000 + G.choice([-100, -50, 0, 50, 100])
+        tv = {"day_of_month": opened.day, "rotation_selector": "NEXT_MONTH", "days_to_expiry": 42,
+              "long_days_override": True, "strike_selection_capital_pct": 0.05}
+        tb = {"target_premium": 230.77}
+        reason = "initial_entry" if cid == 1 else "checkpoint_target"
+        legs = {"CE": new_leg(expiry, k + 650, "CE", G.uniform(224, 236), "original"),
+                "PE": new_leg(expiry, k - 600, "PE", G.uniform(224, 236), "original")}
+        for ot, leg in legs.items():
+            await f(leg, "sell", leg["entry"], opened, reason, meta(reason, "open", ot, leg["strike"], cid, expiry, "original", tv, tb))
+        booked, n_adj, pending, exits = 0.0, 0, [], {}
+        for days, hh, mm, trig, side in rolls:
+            when = at(days, hh, mm)
+            other = "PE" if side == "CE" else "CE"
+            old = legs[side]
+            if trig == "eod_rollout":          # the tested (bigger) side rolls out
+                big, small = G.uniform(270, 290), G.uniform(140, 155)
+                close_px, new_px = big, small / 0.875
+                tv2 = {"bigger_side": side, "smaller_side": other, "bigger_sum": round(big, 2), "smaller_sum": round(small, 2),
+                       "eod_gap_floor": 0.8, "rolled_side": side,
+                       "why": "moving the untested side in would have created a straddle before the overnight gap"}
+                step = 200 if side == "CE" else -200
+            else:
+                big = G.uniform(255, 300)
+                small = big * (G.uniform(0.42, 0.49) if trig.startswith("continuous") else G.uniform(0.6, 0.75))
+                close_px, new_px = small, 0.875 * big
+                tv2 = {"bigger_side": other, "smaller_side": side, "bigger_sum": round(big, 2), "smaller_sum": round(small, 2)}
+                tv2.update({"ratio": 0.5} if trig.startswith("continuous") else {"eod_gap_floor": 0.8, "check_time": f"{hh:02d}:{mm:02d}:00"})
+                step = -150 if side == "CE" else 150
+            mark_path(old, at(days + 3, 10, 0) if old["role"] == "original" else when - timedelta(days=2), when, close_px)
+            await f(old, "buy", close_px, when, trig, meta(trig, "close", side, old["strike"], cid, expiry, tv=tv2))
+            exits[old["tok"]] = (close_px, when)
+            booked += (old["entry"] - close_px) * Q
+            n_adj += 1
+            nl = new_leg(expiry, old["strike"] + step, side, new_px, f"adjustment_{n_adj}")
+            await f(nl, "sell", new_px, when + timedelta(seconds=4), trig,
+                    meta(trig, "open", side, nl["strike"], cid, expiry, nl["role"], tv2, {"target_premium": round(new_px, 2)}))
+            legs[side] = nl
+            pending.append((old, close_px, nl))
+        if end is None:
+            # Priced so the cycle sits about a third of the way to its
+            # checkpoint with puts at 70% of calls (the EOD check armed).
+            ce = (booked / Q + legs["CE"]["entry"] + legs["PE"]["entry"] - 1000 / Q) / 1.7
+            now_px = {"CE": round(ce, 2), "PE": round(0.7 * ce, 2)}
+            for ot, leg in legs.items():
+                mark_path(leg, opened if leg["role"] == "original" else at(4, 15, 13), NOW, now_px[ot])
+            prices[legs["CE"]["tok"]], prices[legs["PE"]["tok"]] = now_px["CE"], now_px["PE"]
+            for leg in legs.values():
+                exits[leg["tok"]] = (now_px[leg["opt"]], NOW - timedelta(minutes=1))
+            await price_rolled_away(pending, exits)
+            live_times.extend([legs["CE"]["tok"], legs["PE"]["tok"]])
+            open_cycle_legs = legs
+            continue
+        closed = at(end, 11, 5) if why == "checkpoint_target" else at(end, 9, 20) if why == "contract_expiry_backstop" else at(end, 13, 40)
+        each = (target - booked) / 2 / Q
+        tvx = {"checkpoint_target": {"total_cycle_profit": target, "checkpoint_target": GEEK_CAP * 0.005, "cycle_realized_pnl": round(booked, 2)},
+               "contract_expiry_backstop": {"contract_expiry": expiry},
+               "convergence_stop": {"convergence_premium": 420.0, "combined_now": 455.0, "stop_level": 453.6, "convergence_mode": "fixed_stop"}}[why]
+        for ot, leg in legs.items():
+            px = max(0.5, leg["entry"] - each)
+            mark_path(leg, opened if leg["role"] == "original" else closed - timedelta(days=3), closed, px)
+            await f(leg, "buy", px, closed, why, meta(why, "close", ot, leg["strike"], cid, expiry, tv=tvx))
+            exits[leg["tok"]] = (px, closed)
+        await price_rolled_away(pending, exits)
+        prev_close = closed
+
+    pid = {r["instrument_token"]: r["id"] for r in await pool.fetch(
+        "SELECT id, instrument_token FROM positions WHERE deployment_id=$1", dep)}
+    await queries.record_position_marks(pool, [(pid[t], dep, w, round(px, 2)) for t, w, px in marks if t in pid])
+    for days in (8, 7, 6, 5):
+        await queries.record_decision(pool, dep, at(days, 15, 13), "eod_gap_check", "no_action",
+                                      f"PE/CE 0.{G.randint(82, 93)} ≥ floor 0.80: gap small enough to hold overnight",
+                                      {"eod_gap_floor": 0.8})
+    await queries.record_decision(pool, dep, at(2, 9, 16), "stale_price_guard", "blocked",
+                                  f"Holding all management: {open_cycle_legs['CE']['sym']} not traded yet this session",
+                                  {"legs": [open_cycle_legs["CE"]["sym"]]})
+    await queries.record_decision(pool, dep, at(1, 11, 4), "continuous_50pct_trigger", "blocked",
+                                  "Not acted on: live quotes don't confirm the tick prices",
+                                  {"tick": {open_cycle_legs["PE"]["sym"]: 151.2}, "quote": {open_cycle_legs["PE"]["sym"]: 166.0}})
+    await pool.execute("UPDATE deployments SET status='active' WHERE id=$1", dep)
+    return str(dep)
 
 
 def main():
@@ -227,6 +385,8 @@ def main():
                     d.last_prices[tok] = SPOT[ix] + (k % 11 - 5) * 3.1
                 for tok, px in prices.items():
                     d.last_prices[tok] = round(px * (1 + 0.01 * ((k + tok) % 9 - 4) / 4), 2)
+                for tok in GEEK_LIVE:
+                    d.last_price_times[tok] = datetime.now(IST)
                 await asyncio.sleep(1.0)
         asyncio.create_task(loop())
         print(f"E2E READY {PORT}", flush=True)

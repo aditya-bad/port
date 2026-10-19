@@ -12,6 +12,7 @@ import { periodMetrics, verdictRdd, fmtRatio } from '../../data/metrics.js';
 import { status, tagChip, empty } from '../../ui/components.js';
 import { say } from '../../ui/toast.js';
 import * as A from '../../actions.js';
+import { supports as geekOk, enter as enterGeek } from '../../data/geek.js';
 
 export const TABS = v => [
   ['now', 'Now', () => import('./now.js')],
@@ -64,6 +65,7 @@ export default {
               <button type="button" class="btn" data-act="stop" ${stopped ? html`aria-disabled="true" data-reason="Already stopped."` : ''}>Stop…</button>
               <button type="button" class="btn btn-quiet hide-1180" data-act="edit">Edit settings</button>
               ${!stopped ? html`<button type="button" class="btn btn-quiet" data-act="copy">Copy as new</button>` : ''}
+              ${geekOk(v) ? html`<button type="button" class="btn btn-quiet btn-geek" data-act="geek" title="Everything about this strategy, full screen (G)">Geek mode <kbd class="hide-phone">G</kbd></button>` : ''}
               <button type="button" class="btn btn-quiet" style="font-weight:800" data-act="menu" aria-haspopup="menu" aria-expanded="${menu}" aria-label="More actions">···</button>
               ${menu ? html`<div class="menu" role="menu" style="width:280px">${[
                 ['Add tag…', 'Tags group deployments in lists and filters', 'tag', false],
@@ -132,6 +134,13 @@ export default {
       removeTrade: (d, el) => { menu = false; paintHeader(); if (el.dataset.reason) return say(el.dataset.reason); A.removeTrade(vNow()); },
       delete: (d, el) => { menu = false; paintHeader(); if (el.dataset.reason) return say(el.dataset.reason); A.remove(vNow()); },
       menu: () => { menu = !menu; paintHeader(); },
+      geek: (d, el) => enterGeek(id, el),
+    });
+    const offKey = on(document, 'keydown', 'body', e => {
+      if (e.key !== 'g' && e.key !== 'G') return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select, [contenteditable], .dialog')) return;
+      const v = vNow();
+      if (v && geekOk(v)) { e.preventDefault(); enterGeek(id, $('[data-act="geek"]', main)); }
     });
     function paintHeader() {
       const v = vNow(), h = $('.dep-head', main);
@@ -153,6 +162,6 @@ export default {
         });
       }),
     ];
-    return () => { offActs(); offDoc(); offs.forEach(f => f()); if (tabCleanup) tabCleanup(); };
+    return () => { offActs(); offDoc(); offKey(); offs.forEach(f => f()); if (tabCleanup) tabCleanup(); };
   },
 };

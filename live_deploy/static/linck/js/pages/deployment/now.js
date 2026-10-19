@@ -9,6 +9,22 @@ import { listen } from '../../core/store.js';
 import * as book from '../../data/book.js';
 import { sect, empty, loading } from '../../ui/components.js';
 import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
+import { supports as geekOk } from '../../data/geek.js';
+
+// The strangle's engine at a glance (geek mode has the full view).
+function engineCard(eng) {
+  if (!eng) return html`<div class="eng-card"><div class="eh"><b>Strategy engine</b></div><div class="skel" style="height:150px;margin:12px 16px"></div></div>`;
+  const pctOf = x => `${Math.max(0, Math.min(100, (x || 0) * 100)).toFixed(1)}%`;
+  return html`<div class="eng-card" data-engine>
+    <div class="eh"><b>Strategy engine</b><span class="small mute">what it checks, and how close each rule is</span></div>
+    ${eng.next ? html`<div class="en">${eng.next.text}</div>` : ''}
+    ${(eng.rules || []).map(r => html`<div class="er ${r.state === 'armed' ? 'armed' : ''}"><span>${r.label}</span>
+      <div class="gauge">${r.band ? html`<s style="left:${pctOf(r.band[0])};width:${pctOf(r.band[1] - r.band[0])}"></s>` : ''}<i class="${r.tone === 'pos' ? 'pos' : ''}" style="width:${pctOf(r.fill)}"></i>${r.mark != null ? html`<u style="left:${pctOf(r.mark)}"></u>` : ''}</div>
+      <span class="r">${r.reading}</span></div>`)}
+    <div class="ef"><span class="small mute grow">${eng.running ? 'Live from the running strategy' : 'Not running: no live readings'}</span>
+      <button type="button" class="btn btn-sm" data-act="geek">Open geek mode →</button></div>
+  </div>`;
+}
 
 const GAP = 90 * 1000;
 
@@ -36,8 +52,10 @@ function timeline(lots, start, v) {
 }
 
 export default {
-  render(el, v0) {
-    let lots = null, openPos = null, status = null;
+  // `g` is set when geek mode reuses this tab (it has its own engine view).
+  render(el, v0, g) {
+    let lots = null, openPos = null, status = null, eng = null;
+    const withEngine = !g && geekOk(v0);
     function paint() {
       const v = book.find(v0.id) || v0;
       const x = book.live(v);
@@ -60,6 +78,7 @@ export default {
             </div>
           </div>
           <div>
+            ${withEngine ? engineCard(eng) : ''}
             ${sect('Strategy state', null, html`<span class="tiny mute">${status ? (status.source === 'live' ? 'live from the running strategy' : status.source === 'persisted' ? 'last saved by the strategy' : 'not available') : ''}</span>`)}
             ${status === null ? loading(4) : status.fields && status.fields.length ? status.fields.map(f => html`
               <div class="state-row">
@@ -93,6 +112,16 @@ export default {
     const iv = setInterval(() => api.strategyStatus(v0.id).then(r => { status = r; paint(); }).catch(() => {}), 30000);
     // the Live tag turns stale when ticks stop, even with nothing to repaint
     const iv2 = setInterval(() => { const v = book.find(v0.id); if (v) tickLegs(el, v.legs); }, 5000);
-    return () => { offs.forEach(f => f()); clearInterval(iv); clearInterval(iv2); };
+    let iv3 = null;   // its "Open geek mode" button is handled by the page (data-act="geek")
+    if (withEngine) {
+      const load = () => api.geek(v0.id, 'engine').then(d => {
+        eng = d;
+        const card = $('[data-engine]', el) || $('.eng-card', el);
+        if (card) card.outerHTML = String(engineCard(eng));
+      }).catch(() => {});
+      load();
+      iv3 = setInterval(load, 5000);
+    }
+    return () => { offs.forEach(f => f()); clearInterval(iv); clearInterval(iv2); if (iv3) clearInterval(iv3); };
   },
 };

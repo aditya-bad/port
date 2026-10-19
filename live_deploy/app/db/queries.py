@@ -910,6 +910,11 @@ async def remove_trade_scope(
                 """,
                 deployment_id, [str(pid) for pid in position_ids], min_opened_at,
             )
+            # Checks made while the removed trade was open were about it.
+            await conn.execute(
+                "DELETE FROM strategy_decisions WHERE deployment_id = $1 AND decided_at >= $2",
+                deployment_id, min_opened_at,
+            )
     return {"positions_removed": len(position_ids), "cash_delta": float(cash_delta)}
 
 
@@ -982,6 +987,36 @@ async def list_events(
         )
 
 
+async def record_decision(
+    pool: asyncpg.Pool, deployment_id: UUID, decided_at: datetime, rule: str,
+    outcome: str, summary: str, data: Optional[dict] = None,
+) -> None:
+    """A check that didn't trade (see migration 0023)."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO strategy_decisions (deployment_id, decided_at, rule, outcome, summary, data)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            """,
+            deployment_id, decided_at, rule, outcome, summary, data or {},
+        )
+
+
+async def list_decisions(
+    pool: asyncpg.Pool, deployment_id: UUID, since: Optional[datetime] = None, limit: int = 500,
+) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT decided_at, rule, outcome, summary, data FROM strategy_decisions
+            WHERE deployment_id = $1 AND ($2::timestamptz IS NULL OR decided_at >= $2)
+            ORDER BY decided_at DESC
+            LIMIT $3
+            """,
+            deployment_id, since, limit,
+        )
+
+
 # ═════════════════════════════════════════════════════════════════════
 # SNAPSHOTS (equity curve material)
 # ═════════════════════════════════════════════════════════════════════
@@ -1001,6 +1036,20 @@ async def record_snapshot(
             """,
             deployment_id, snapshot_at, cash, open_positions_value,
             total_value, realized_pnl_cumulative, metadata or {},
+        )
+
+
+async def list_deployment_lots(pool: asyncpg.Pool, deployment_id: UUID) -> list[asyncpg.Record]:
+    """Every fill of a deployment, oldest first, with its position's side."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT l.*, p.side AS position_side, p.symbol, p.instrument_token
+            FROM position_lots l JOIN positions p ON p.id = l.position_id
+            WHERE l.deployment_id = $1
+            ORDER BY l.executed_at, l.id
+            """,
+            deployment_id,
         )
 
 

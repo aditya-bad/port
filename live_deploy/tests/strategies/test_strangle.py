@@ -165,3 +165,88 @@ def test_hedging_buys_a_wing_per_short_and_flattens_with_them(pool_run, monkeypa
         assert not [p for p in await sim.open_positions() if "26NOV24" in p["symbol"]]
         await assert_book_consistent(pool, sim.dep_id)
     pool_run(go)
+
+
+# ── Decision log (Geek mode's Decisions view) ───────────────────────────
+
+async def decisions(sim):
+    from app.db import queries
+    return [dict(r) for r in await queries.list_decisions(sim.pool, sim.dep_id)]
+
+
+def test_eod_check_that_finds_nothing_to_do_is_noted_once_a_day(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        await sim.tick("15:13", spot=25000)
+        await sim.tick("15:20", spot=25000)
+        assert closes(await sim.fills()) == []
+        rows = await decisions(sim)
+        assert [(r["rule"], r["outcome"]) for r in rows] == [("eod_gap_check", "no_action")]
+        assert rows[0]["data"]["eod_gap_floor"] == 0.8
+        assert rows[0]["data"]["smaller_sum"] <= rows[0]["data"]["bigger_sum"]
+        assert "hold overnight" in rows[0]["summary"]
+        assert rows[0]["decided_at"].astimezone(sim.market.now.tzinfo).strftime("%H:%M") == "15:13"
+    pool_run(go)
+
+
+def test_a_trade_is_not_noted_as_a_decision(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        up = await find_spot(sim, lambda p: side_sum(p, "PE") <= 0.48 * side_sum(p, "CE"), step=25)
+        await sim.tick("11:00", spot=up)
+        assert closes(await sim.fills())
+        assert await decisions(sim) == [], "fills explain themselves; the log holds only checks that didn't trade"
+    pool_run(go)
+
+
+def test_checkpoint_held_by_the_time_gate_is_noted_once_a_day(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, S, cfg(S, checkpoint_exit_not_before="12:00"), mode="positional")
+        await sim.tick("10:00", spot=25000)
+        sim.market.vol = 0.13
+        await sim.tick("11:00", spot=25000)
+        await sim.tick("11:30", spot=25000)
+        rows = await decisions(sim)
+        assert [(r["rule"], r["outcome"]) for r in rows] == [("checkpoint_target", "no_action")]
+        assert "12:00" in rows[0]["summary"]
+    pool_run(go)
+
+
+def test_stale_price_hold_is_noted_as_blocked(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        d2 = sim.market.today + timedelta(days=1)
+        stale_token = int(next(p for p in await shorts(sim) if p["symbol"].endswith("CE"))["instrument_token"])
+        sim.market.now = sim.market.now.replace(day=d2.day)
+        orig = sim.dispatcher.publish
+
+        def publish_with_stale_call():
+            orig()
+            sim.dispatcher.last_price_times[stale_token] = sim.dispatcher.last_price_times[stale_token] - timedelta(days=1)
+        sim.dispatcher.publish = publish_with_stale_call
+        await sim.tick(f"{d2} 09:16", spot=25000)
+        await sim.tick(f"{d2} 09:17", spot=25000)
+        rows = await decisions(sim)
+        assert [(r["rule"], r["outcome"]) for r in rows] == [("stale_price_guard", "blocked")], "noted once, not every tick"
+        assert rows[0]["data"]["legs"] and rows[0]["data"]["legs"][0].endswith("CE")
+    pool_run(go)
+
+
+def test_trigger_refuted_by_quotes_is_noted_as_blocked(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        up = await find_spot(sim, lambda p: side_sum(p, "PE") <= 0.45 * side_sum(p, "CE"), step=25)
+        strat = sim.runner.strategy
+        legs = [l for side in strat.legs.values() for l in side]
+
+        async def flat_quotes(keys):   # live quotes say both sides are equal: no roll
+            return {k: {"last_price": 100.0} for k in keys}
+        monkeypatch.setattr(strat.resolver, "get_quotes", flat_quotes)
+        await sim.tick("11:00", spot=up)
+        await sim.tick("11:01", spot=up)
+        assert closes(await sim.fills()) == []
+        rows = await decisions(sim)
+        assert [(r["rule"], r["outcome"]) for r in rows] == [("continuous_50pct_trigger", "blocked")], \
+            "noted at most once per 5 minutes"
+        assert set(rows[0]["data"]["quote"]) == {l["symbol"] for l in legs}
+    pool_run(go)

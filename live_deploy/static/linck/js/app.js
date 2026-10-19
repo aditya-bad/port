@@ -131,6 +131,7 @@ async function route() {
   if (app.cleanup) { try { app.cleanup(); } catch (e) { /* page already gone */ } app.cleanup = null; }
   if (isOpen()) closeDialog();
   const main = $('#main');
+  geekChrome(!!r.geek);
   let mod;
   try { mod = (await r.load()).default; } catch (e) {
     mount(main, html`<div class="page"><div class="empty"><b>This page didn’t load</b><span>${e.message}</span></div></div>`);
@@ -147,6 +148,19 @@ async function route() {
   }
   if (changed) window.scrollTo(0, 0);
   renderHeader();
+}
+
+// Geek mode (js/data/geek.js) owns the whole screen: the header, index
+// strip and phone bar step aside and the page takes the dark palette.
+function geekChrome(on) {
+  const b = document.body, was = b.classList.contains('geek-mode');
+  b.classList.toggle('geek-mode', on);
+  document.documentElement.toggleAttribute('data-geek', on);
+  b.classList.remove('geek-leaving');
+  if (was && !on) {
+    b.classList.add('geek-return');
+    setTimeout(() => b.classList.remove('geek-return'), 600);
+  }
 }
 
 // ── Boot ───────────────────────────────────────────────────────────

@@ -72,6 +72,7 @@ from .routers import ux_summary as ux_summary_router
 from .routers import cycles as cycles_router
 from .routers import candles as candles_router
 from .v2 import router as v2_router
+from .routers import geek as geek_router
 from .routers.aggregate import (
     fetch_portfolio_equity_curve, fetch_positions_open, fetch_strategy_leaderboard, fetch_trades_recent,
 )
@@ -109,6 +110,7 @@ app.include_router(ux_summary_router.router)
 app.include_router(cycles_router.router)
 app.include_router(candles_router.router)
 app.include_router(v2_router.router)
+app.include_router(geek_router.router)
 
 # Middleware order matters: add_middleware() makes the MOST RECENTLY
 # added one OUTERMOST (it runs first on the way in, last on the way

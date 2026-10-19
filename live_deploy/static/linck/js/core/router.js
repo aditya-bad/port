@@ -4,6 +4,7 @@
 export const ROUTES = [
   { path: 'desk', nav: 'desk', load: () => import('../pages/desk.js') },
   { path: 'deployments', nav: 'deployments', load: () => import('../pages/deployments.js') },
+  { path: 'd/:id/geek/:view?', nav: 'deployments', geek: true, load: () => import('../pages/geek/index.js') },
   { path: 'd/:id/:tab?', nav: 'deployments', load: () => import('../pages/deployment/index.js') },
   { path: 'leaderboard', nav: 'leaderboard', load: () => import('../pages/leaderboard.js') },
   { path: 'compare', nav: 'compare', load: () => import('../pages/compare.js') },
