@@ -48,6 +48,9 @@ export const api = {
   kiteLoginUrl: () => req('/kite/login-url'),
   kiteStatus: () => req('/kite/status'),
   kiteManualLogin: body => post('/kite/manual-login', body),
+  // option price history (app/candles.py)
+  backfillStatus: () => req('/candles/backfill'),
+  runBackfill: () => post('/candles/backfill', {}),
 
   // deployments (v1)
   deployments: () => req('/deployments'),

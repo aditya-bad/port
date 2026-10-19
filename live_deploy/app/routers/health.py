@@ -34,5 +34,8 @@ async def health(request: Request):
         "running_deployments": len(manager.runners),
         # Active in the database but nothing running them (watchdog_loop).
         "not_running": manager.health_issues,
+        # The option-history backfill while it runs (else null): Linck's
+        # header shows its progress (app/candles.py).
+        "candle_backfill": getattr(getattr(request.app.state, "candles", None), "progress", None),
         **dispatcher.status,
     }

@@ -381,19 +381,60 @@ def test_held_contracts_are_recorded_live(client):
     assert mgr.watched_tokens() == {7171}, "held option contracts only: the index is never stored"
 
 
-def test_backfill_endpoint_fills_held_instruments_once(client, monkeypatch):
+def _wait_backfill(client):
+    import time as _t
+    for _ in range(100):
+        st = client.get("/candles/backfill").json()
+        if st["running"] is None:
+            return st
+        _t.sleep(0.05)
+    raise AssertionError("backfill never finished")
+
+
+def test_backfill_runs_in_the_background_and_reports_progress(client, monkeypatch):
+    import asyncio
     import app.candles as C
-    asked = []
+    asked, gate = [], {"open": False}
 
     async def history(resolver, token, start, end, interval):
         asked.append(token)
+        while not gate["open"]:                       # hold the run so its progress can be seen
+            await asyncio.sleep(0.01)
         return [{"date": start.replace(tzinfo=IST) + timedelta(minutes=i), "open": 1, "high": 1, "low": 1, "close": 1}
                 for i in range(375)]
     monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", history)
     a, b = make_deployment(client, name="A"), make_deployment(client, name="B")
     for d in (a, b):                                    # two deployments, one contract
         add_fill(client, d["id"], "NIFTY26DEC25000CE", 8181, "sell", 75, 100, at(PAST, "10:00"))
+    add_fill(client, a["id"], "NIFTY26DEC25000PE", 8182, "sell", 75, 100, at(PAST, "10:00"))
     r = client.post("/candles/backfill", json={"day": PAST.isoformat()})
-    assert r.status_code == 200
-    assert asked.count(8181) == 1
-    assert client.post("/candles/backfill", json={"day": PAST.isoformat()}).json()["fetched"] == []
+    assert r.status_code == 202
+    running = r.json()["running"]
+    assert running["day"] == PAST.isoformat() and running["total"] == 2
+    h = client.get("/health").json()["candle_backfill"]
+    assert h is not None and h["total"] == 2, "the header learns of it from /health"
+    assert client.post("/candles/backfill", json={}).status_code == 409, "one run at a time"
+    gate["open"] = True
+    st = _wait_backfill(client)
+    assert asked.count(8181) == 1 and asked.count(8182) == 1
+    last = st["last"]
+    assert last["day"] == PAST.isoformat() and last["instruments"] == 2 and last["fetched"] == 2
+    assert last["rows"] == 750 and last["complete"] is True and last["error"] is None
+    assert st["stored"]["contracts"] == 2 and st["stored"]["minutes"] == 750
+    assert client.get("/health").json()["candle_backfill"] is None
+    # again: nothing left to fetch
+    client.post("/candles/backfill", json={"day": PAST.isoformat()})
+    assert _wait_backfill(client)["last"]["fetched"] == 0
+
+
+def test_backfill_without_kite_is_reported_as_incomplete(client, monkeypatch):
+    import app.candles as C
+
+    async def no_session(*a):
+        raise C.NoKiteSession("no session")
+    monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", no_session)
+    d = make_deployment(client)
+    add_fill(client, d["id"], "NIFTY26DEC25000CE", 8191, "sell", 75, 100, at(PAST, "10:00"))
+    client.post("/candles/backfill", json={"day": PAST.isoformat()})
+    last = _wait_backfill(client)["last"]
+    assert last["complete"] is False and "Kite" in last["error"]

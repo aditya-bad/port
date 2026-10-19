@@ -17,28 +17,6 @@ def _aware(dt: datetime) -> datetime:
     return dt if dt.tzinfo else dt.replace(tzinfo=IST)
 
 
-@router.get("/{instrument_token}")
-async def get_candles(instrument_token: int, start: datetime, end: datetime, request: Request,
-                      interval: str = "minute", fetch: bool = True):
-    """Candles for [start, end) at `interval` (minute, 3/5/10/15/30/60minute,
-    day). Options: rolled up from stored 1-minute rows, missing minutes
-    fetched from Kite first while the contract is listed (fetch=false:
-    stored only). Indices and stocks: straight from Kite. Naive times
-    are IST."""
-    if interval not in INTERVAL_MINUTES and interval != "day":
-        raise HTTPException(400, f"interval must be one of {sorted(INTERVAL_MINUTES) + ['day']}")
-    start, end = _aware(start), _aware(end)
-    if end <= start or end - start > timedelta(days=400):
-        raise HTTPException(400, "end must be after start, at most 400 days apart")
-    contract = await queries.get_contract(request.app.state.db_pool, instrument_token)
-    candles, source, error = await request.app.state.candles.series(
-        instrument_token, start, end, interval, fetch=fetch,
-        symbol=contract["tradingsymbol"] if contract else None,
-    )
-    return {"instrument_token": instrument_token, "interval": interval, "source": source, "error": error,
-            "contract": dict(contract) if contract else None, "candles": candles}
-
-
 @router.get("")
 async def coverage(request: Request, day: Optional[date] = None):
     """What's stored for a trading day: each option contract held that day
@@ -73,9 +51,44 @@ class BackfillIn(BaseModel):
     day: Optional[date] = None
 
 
-@router.post("/backfill")
+@router.get("/backfill")
+async def backfill_status(request: Request):
+    """The daily option backfill: the run in progress, the last one, the
+    next one, and what the store holds."""
+    return await request.app.state.candles.backfill_status()
+
+
+@router.post("/backfill", status_code=202)
 async def backfill(payload: BackfillIn, request: Request):
-    """Fill a day's missing minutes from Kite for every option contract
-    held that day — what runs by itself after every close."""
+    """Start the day's option backfill now (it runs by itself at 15:45),
+    in the background; poll GET /candles/backfill for progress. 409 if
+    one is already running."""
+    svc = request.app.state.candles
+    if svc.progress is not None:
+        raise HTTPException(409, "A backfill is already running")
     day = payload.day or datetime.now(IST).date()
-    return await request.app.state.candles.backfill_day(day)
+    request.app.state.backfill_task = svc.start_backfill(day)
+    return await svc.backfill_status()
+
+
+# Last: "/candles/backfill" must not be taken for an instrument token.
+@router.get("/{instrument_token}")
+async def get_candles(instrument_token: int, start: datetime, end: datetime, request: Request,
+                      interval: str = "minute", fetch: bool = True):
+    """Candles for [start, end) at `interval` (minute, 3/5/10/15/30/60minute,
+    day). Options: rolled up from stored 1-minute rows, missing minutes
+    fetched from Kite first while the contract is listed (fetch=false:
+    stored only). Indices and stocks: straight from Kite. Naive times
+    are IST."""
+    if interval not in INTERVAL_MINUTES and interval != "day":
+        raise HTTPException(400, f"interval must be one of {sorted(INTERVAL_MINUTES) + ['day']}")
+    start, end = _aware(start), _aware(end)
+    if end <= start or end - start > timedelta(days=400):
+        raise HTTPException(400, "end must be after start, at most 400 days apart")
+    contract = await queries.get_contract(request.app.state.db_pool, instrument_token)
+    candles, source, error = await request.app.state.candles.series(
+        instrument_token, start, end, interval, fetch=fetch,
+        symbol=contract["tradingsymbol"] if contract else None,
+    )
+    return {"instrument_token": instrument_token, "interval": interval, "source": source, "error": error,
+            "contract": dict(contract) if contract else None, "candles": candles}

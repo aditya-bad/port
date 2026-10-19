@@ -2,14 +2,14 @@
 
 import { api } from './core/api.js';
 import { html, mount, $, on } from './core/dom.js';
-import { inr, pct, price, hhmmss, tone } from './core/format.js';
+import { inr, pct, price, hhmmss, tone, dayKey, dDay } from './core/format.js';
 import * as prefs from './core/prefs.js';
 import { BASES, basis, setBasis, cycleBasis, onBasis } from './core/basis.js';
 import { parse, go, href } from './core/router.js';
 import { listen } from './core/store.js';
 import * as book from './data/book.js';
 import { INDICES } from './data/config.js';
-import { prices, startTicks, startEvents, pollStatus, primeQuotes, kite } from './data/live.js';
+import { prices, startTicks, startEvents, pollStatus, primeQuotes, kite, backfill } from './data/live.js';
 import { alerts } from './data/alerts.js';
 import { installTooltip } from './ui/tooltip.js';
 import { startInstall } from './data/install.js';
@@ -32,6 +32,20 @@ function kiteChip() {
   if (s === 'connected') return html`<button type="button" class="kite-chip" data-act="kite"><i></i>Kite connected</button>`;
   if (s === 'connecting') return html`<button type="button" class="kite-chip wait" data-act="kite"><i></i>Connecting…</button>`;
   return html`<button type="button" class="kite-chip off" data-act="kite"><i></i><span class="long">Kite expired · Reconnect</span><span class="short">Reconnect</span></button>`;
+}
+// While the daily option-history backfill runs: a slim strip under the
+// header with its progress (the header row itself has no room to spare),
+// linking to Account where the details are.
+function backfillStrip() {
+  const b = backfill.running;
+  if (!b) return '';
+  const pct = b.total ? Math.round(b.done / b.total * 100) : 0;
+  return html`<a class="bf-strip" href="${href('account')}" role="status" aria-live="polite">
+    <span class="bf-fill" style="width:${pct}%"></span>
+    <i class="spin" aria-hidden="true"></i><b>Saving <span class="hide-phone">${b.day === dayKey(new Date()) ? 'today’s' : dDay(`${b.day}T12:00:00+05:30`)} </span>option history</b>
+    <span class="mono">${b.done} of ${b.total || '…'}</span>
+    ${b.current ? html`<span class="mono mute hide-phone ell">${b.current}</span>` : ''}
+    <span class="grow"></span><span class="hide-phone small">Details in Account ›</span></a>`;
 }
 // P&L basis is always one tap away: full labels on wide screens, the
 // short stamps on laptops, one cycling chip on tablets and phones
@@ -61,6 +75,7 @@ function renderHeader() {
       <button type="button" class="btn btn-sm btn-primary hide-1180 hide-phone" data-act="closeAll">Close everything…</button>
       <a class="avatar ${cur === 'account' ? 'on' : ''}" href="${href('account')}" title="Account">${initials}</a>
     </header>
+    ${backfillStrip()}
     <div class="strip-idx" id="strip" aria-label="Indices"></div>`);
   renderStrip();
   renderBnav();

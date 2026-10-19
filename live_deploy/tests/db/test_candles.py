@@ -298,3 +298,37 @@ def test_migration_0022_removes_stored_index_candles_and_keeps_options(pool_run)
         assert left == [31, 32], "options kept (from a position or the contracts table); index and future gone"
         assert [r["instrument_token"] for r in await pool.fetch("SELECT instrument_token FROM contracts")] == [32]
     pool_run(go)
+
+
+
+def test_next_run_is_today_at_1545_until_done_then_the_next_weekday(pool_run):
+    async def go(pool):
+        svc = service(pool)
+        assert C.BACKFILL_AT == time(15, 45)
+        wed = datetime(2026, 10, 14, 11, 0, tzinfo=IST)
+        assert (await svc.backfill_status(at=wed))["next_at"] == "2026-10-14T15:45:00+05:30"
+        await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-14", "complete": True})
+        assert (await svc.backfill_status(at=wed))["next_at"] == "2026-10-15T15:45:00+05:30"
+        await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-14", "complete": False})
+        assert (await svc.backfill_status(at=wed))["next_at"] == "2026-10-14T15:45:00+05:30", "incomplete: still due"
+        fri_done = datetime(2026, 10, 16, 18, 0, tzinfo=IST)
+        await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-16", "complete": True})
+        assert (await svc.backfill_status(at=fri_done))["next_at"] == "2026-10-19T15:45:00+05:30", "skips the weekend"
+        sat = datetime(2026, 10, 17, 10, 0, tzinfo=IST)
+        assert (await svc.backfill_status(at=sat))["next_at"] == "2026-10-19T15:45:00+05:30"
+    pool_run(go)
+
+
+def test_two_backfills_never_run_at_once(pool_run, monkeypatch, frozen_today):
+    k = _mk(monkeypatch, delay=0.02)
+
+    async def go(pool):
+        d = (await queries.create_deployment(pool, "D", "strangle_monthly_v2", "positional", 1e6, {}))["id"]
+        await fill(pool, d, "NIFTY26O2725000CE", 41, "sell", 75, 100, at(DAY, 10, 0))
+        await fill(pool, d, "NIFTY26O2725000PE", 42, "sell", 75, 100, at(DAY, 10, 0))
+        svc = service(pool)
+        r1, r2 = await asyncio.gather(svc.backfill_day(DAY), svc.backfill_day(DAY))
+        assert sorted(c[0] for c in k.calls) == [41, 42], "the second run found everything already fetched"
+        assert sorted([len(r1["fetched"]), len(r2["fetched"])]) == [0, 2]
+        assert svc.progress is None
+    pool_run(go)

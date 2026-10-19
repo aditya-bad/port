@@ -200,13 +200,17 @@ def main():
     # for) is synthesised instead, at whatever interval is asked for.
     async def index_history(self, token, start, end, interval):
         if token not in TOKEN.values():
-            return []
+            # an option contract: a little slow, like Kite, so a backfill's
+            # progress is visible (E2E_HISTORY_DELAY seconds per request)
+            await asyncio.sleep(float(os.environ.get("E2E_HISTORY_DELAY", "1.0")))
         step = {"minute": 1, "5minute": 5, "15minute": 15, "60minute": 60}.get(interval, 1)
         out, t = [], start
         while t <= end:
             if t.weekday() < 5 and time(9, 15) <= t.time() < time(15, 30):
                 e = t.timestamp()
                 v = 25000 + 300 * math.sin(e / 200000.0) + 60 * math.sin(e / 9000.0)
+                if token not in TOKEN.values():
+                    v = 120 + (v - 25000) / 4          # an option's premium, not the index
                 out.append({"date": t, "open": v, "high": v + 3, "low": v - 3, "close": v})
             t += timedelta(minutes=step)
         return out

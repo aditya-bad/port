@@ -46,6 +46,8 @@ IST = ZoneInfo("Asia/Kolkata")
 SESSION_OPEN, SESSION_CLOSE = time(9, 15), time(15, 30)
 INTERVAL_MINUTES = {"minute": 1, "3minute": 3, "5minute": 5, "10minute": 10, "15minute": 15,
                     "30minute": 30, "60minute": 60}
+# The daily backfill: once the close (15:30) has settled.
+BACKFILL_AT = time(15, 45)
 # A day counts as covered at this share of its session minutes (a quiet
 # contract may genuinely not trade every minute).
 COVERED = 0.9
@@ -130,7 +132,11 @@ class CandleService:
         self._kite_lock = asyncio.Lock()          # one history request in flight, app-wide
         self._no_data: dict[tuple[int, date], float] = {}
         self._kite_cache: dict[tuple, tuple[datetime, list]] = {}   # indices/stocks, in memory only
-        self.kite_requests = 0                    # for tests and the status endpoint
+        self.kite_requests = 0
+        # The daily backfill as it runs (backfill_status / GET /health):
+        # None when idle, else {day, total, done, fetched, rows, current, started_at}
+        self.progress: Optional[dict] = None
+        self._backfill_lock = asyncio.Lock()                    # for tests and the status endpoint
 
     # ── Reading ──────────────────────────────────────────────────────
 
@@ -276,31 +282,88 @@ class CandleService:
     async def backfill_day(self, day: date) -> dict:
         """Every option contract held on `day` — each once, whichever
         deployments held it: fill the day's missing minutes from Kite
-        while it still has them. Returns {"instruments": n, "fetched":
-        tokens fetched, "rows": n}."""
+        while it still has them. One run at a time (a second call waits
+        for the first, then finds nothing left to fetch). Progress is in
+        self.progress while it runs; the result is saved as the last run.
+        Returns {"day", "instruments", "fetched", "rows", "seconds", "error"}."""
+        async with self._backfill_lock:
+            return await self._backfill(day)
+
+    async def _backfill(self, day: date) -> dict:
         start = datetime.combine(day, SESSION_OPEN, IST)
         end = datetime.combine(day, SESSION_CLOSE, IST)
-        held = [r for r in await queries.instruments_held_between(self.pool, start, end)
-                if (parse_contract(r["symbol"] or "") or {}).get("instrument_type") in ("CE", "PE")]
-        await self.remember_contracts([(int(r["instrument_token"]), r["symbol"]) for r in held])
-        fetched, rows = [], 0
-        for r in sorted(held, key=lambda r: int(r["instrument_token"])):
-            token, symbol = int(r["instrument_token"]), r["symbol"]
-            before = self.kite_requests
-            try:
-                n = await self.ensure(token, start, end, symbol=symbol)
-            except NoKiteSession:
-                logger.warning("Candle backfill for %s stopped: Kite isn't logged in", day)
-                break
-            except Exception:
-                logger.exception("Candle backfill: %s (%s) failed — continuing", symbol, token)
-                continue
-            if self.kite_requests > before:
-                fetched.append(token)
-            rows += n
-        logger.info("Candle backfill %s: %d option contract(s), %d fetched from Kite, %d minute(s) stored",
-                    day, len(held), len(fetched), rows)
-        return {"instruments": len(held), "fetched": fetched, "rows": rows}
+        started = datetime.now(timezone.utc)
+        self.progress = {"day": day.isoformat(), "total": 0, "done": 0, "fetched": 0, "rows": 0,
+                         "current": None, "started_at": started.isoformat()}
+        fetched, rows, error = [], 0, None
+        try:
+            held = [r for r in await queries.instruments_held_between(self.pool, start, end)
+                    if (parse_contract(r["symbol"] or "") or {}).get("instrument_type") in ("CE", "PE")]
+            self.progress["total"] = len(held)
+            await self.remember_contracts([(int(r["instrument_token"]), r["symbol"]) for r in held])
+            for r in sorted(held, key=lambda r: int(r["instrument_token"])):
+                token, symbol = int(r["instrument_token"]), r["symbol"]
+                self.progress["current"] = symbol
+                before = self.kite_requests
+                try:
+                    n = await self.ensure(token, start, end, symbol=symbol)
+                except NoKiteSession:
+                    error = "Kite isn't logged in"
+                    logger.warning("Candle backfill for %s stopped: Kite isn't logged in", day)
+                    break
+                except Exception as e:
+                    logger.exception("Candle backfill: %s (%s) failed — continuing", symbol, token)
+                    error = f"{symbol}: {e}"
+                    n = 0
+                if self.kite_requests > before:
+                    fetched.append(token)
+                rows += n
+                self.progress.update(done=self.progress["done"] + 1, fetched=len(fetched), rows=rows)
+            total = len(held)
+        except Exception as e:
+            logger.exception("Candle backfill %s failed", day)
+            error, total = str(e), self.progress["total"]
+        finished = datetime.now(timezone.utc)
+        result = {"day": day.isoformat(), "instruments": total, "fetched": fetched, "rows": rows,
+                  "seconds": round((finished - started).total_seconds(), 1), "error": error,
+                  "finished_at": finished.isoformat(), "complete": error is None}
+        try:   # saved before the run stops showing as running, so a reader never sees neither
+            await queries.set_app_scratch(self.pool, "candle_backfill_last", {**result, "fetched": len(fetched)})
+        except Exception:
+            logger.exception("Saving the candle backfill result failed")
+        self.progress = None
+        logger.info("Candle backfill %s: %d option contract(s), %d fetched from Kite, %d minute(s) stored%s",
+                    day, total, len(fetched), rows, f" — {error}" if error else "")
+        return result
+
+    def start_backfill(self, day: date) -> asyncio.Task:
+        """Run backfill_day in the background, marked as running from this
+        moment (so a status read right after already sees it)."""
+        self.progress = {"day": day.isoformat(), "total": 0, "done": 0, "fetched": 0, "rows": 0,
+                         "current": None, "started_at": datetime.now(timezone.utc).isoformat()}
+        return asyncio.create_task(self.backfill_day(day), name="candle-backfill-now")
+
+    async def backfill_status(self, at: Optional[datetime] = None) -> dict:
+        """For the UI: the run in progress (if any), the last run, the next
+        scheduled one, and what the store holds."""
+        now = (at or datetime.now(IST)).astimezone(IST)
+        last = await queries.get_app_scratch(self.pool, "candle_backfill_last")
+        nxt = now.date()
+        done_today = bool(last and last.get("day") == nxt.isoformat() and last.get("complete"))
+        if nxt.weekday() >= 5 or done_today:
+            nxt += timedelta(days=1)
+        while nxt.weekday() >= 5:
+            nxt += timedelta(days=1)
+        async with self.pool.acquire() as conn:
+            stored = await conn.fetchrow(
+                "SELECT count(DISTINCT instrument_token) AS contracts, count(*) AS minutes, min(minute) AS since FROM candles_1m")
+        return {
+            "running": dict(self.progress) if self.progress else None,
+            "last": last,
+            "next_at": datetime.combine(nxt, BACKFILL_AT, IST).isoformat(),
+            "stored": {"contracts": stored["contracts"], "minutes": stored["minutes"],
+                       "since": stored["since"].isoformat() if stored["since"] else None},
+        }
 
     async def remember_contracts(self, items: list[tuple[int, str]]) -> None:
         """Record what each (token, tradingsymbol) is, from the symbol."""

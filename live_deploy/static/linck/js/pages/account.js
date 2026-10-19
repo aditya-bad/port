@@ -4,12 +4,12 @@
 
 import { api } from '../core/api.js';
 import { html, mount, $, actions } from '../core/dom.js';
-import { ago, plural, dStamp } from '../core/format.js';
+import { ago, plural, dStamp, dDay, dayKey, hhmm, num } from '../core/format.js';
 import * as prefs from '../core/prefs.js';
 import { ui, listen } from '../core/store.js';
 import { go } from '../core/router.js';
 import * as book from '../data/book.js';
-import { kite } from '../data/live.js';
+import { kite, backfill } from '../data/live.js';
 import { LAB_TAG } from '../data/config.js';
 import { toggle, empty, loading } from '../ui/components.js';
 import { openDialog } from '../ui/dialog.js';
@@ -24,6 +24,36 @@ export default {
   title: 'Account',
   render(main) {
     let users = null, me = null, push = { state: 'loading' }, mute = null, subs = null, newTag = '', audit = null, auditMore = false;
+    let hist = null, histTimer = null;   // option price history (GET /candles/backfill)
+
+    async function loadHist() {
+      clearTimeout(histTimer);
+      try { hist = await api.backfillStatus(); } catch (e) { hist = { error: e.message }; }
+      paint();
+      // every 2 s while a backfill runs, else every 10 s (a 15:45 run shows up on its own)
+      histTimer = setTimeout(loadHist, hist && hist.running ? 2000 : 10000);
+    }
+    function histBlock() {
+      if (hist === null) return loading(3);
+      if (hist.error) return empty('', hist.error);
+      const r = hist.running, l = hist.last, st = hist.stored;
+      const lakh = n => (n >= 1e5 ? `${num(n / 1e5, 1)} lakh` : n.toLocaleString('en-IN'));
+      const row = (k, v, sub, cls = '') => html`<div class="pref-row"><div class="col grow" style="gap:0"><b>${k}</b>${sub ? html`<span class="tiny mute">${sub}</span>` : ''}</div><span class="mono small right ${cls}">${v}</span></div>`;
+      const pct = r && r.total ? Math.round(r.done / r.total * 100) : 0;
+      return html`
+        ${r ? html`<div class="bf-run" role="status" aria-live="polite">
+            <div class="row" style="gap:10px"><i class="spin" aria-hidden="true"></i><b class="grow">Saving ${r.day === dayKey(new Date()) ? 'today’s' : dDay(`${r.day}T12:00:00+05:30`)} option history</b><span class="mono small">${r.done} of ${r.total || '…'}</span></div>
+            <div class="bf-track"><span style="width:${pct}%"></span></div>
+            <span class="tiny mute">${r.current ? html`Now: <span class="mono">${r.current}</span> · ` : ''}${plural(r.fetched, 'contract')} fetched from Kite · ${lakh(r.rows)} minutes stored · started ${hhmm(r.started_at)}</span>
+          </div>` : ''}
+        ${row('Next run', r ? 'running now' : `${dDay(hist.next_at)}, ${hhmm(hist.next_at)}`, 'Every trading day at 15:45: every option contract held that day, before Kite drops it at expiry')}
+        ${l ? row('Last run', `${dDay(l.finished_at)}, ${hhmm(l.finished_at)}`,
+            l.complete ? `${plural(l.instruments, 'contract')} · ${l.fetched} fetched from Kite · ${lakh(l.rows)} minutes · ${l.seconds}s`
+              : `Stopped: ${l.error}. It retries every minute until it completes.`, l.complete ? '' : 'neg') : row('Last run', 'not yet', '')}
+        ${row('Stored', `${plural(st.contracts, 'contract')}`, st.minutes ? `${lakh(st.minutes)} one-minute candles${st.since ? ` since ${dDay(st.since)}` : ''} · indices come from Kite, not stored` : 'Nothing yet')}
+        <div style="padding-top:12px"><button type="button" class="btn btn-sm" data-act="runHist" ${r ? 'disabled' : ''}>${r ? 'Running…' : 'Run now'}</button>
+          <span class="tiny mute" style="padding-left:10px">Fetches only what isn’t stored. One Kite request at a time.</span></div>`;
+    }
 
     async function loadPush() {
       try {
@@ -79,6 +109,10 @@ export default {
                 <span class="mono tiny ell" title="${a.method} ${a.path}">${a.method} ${a.path}</span>
                 <span class="mono tiny right ${a.status_code >= 400 ? 'neg' : 'mute'}">${a.status_code}</span></div>`)}</div>
                 ${auditMore ? html`<button type="button" class="btn btn-sm" style="margin-top:10px" data-act="auditMore">Show older</button>` : ''}` : empty('', 'Nothing logged yet.')}
+            </div>
+            <div id="history">
+              <div class="sect ruled"><h3 class="t-h3 grow">Option price history</h3><span class="tiny mute">for cycle charts after expiry</span></div>
+              ${histBlock()}
             </div>
             <div>
               <div class="sect ruled"><h3 class="t-h3">Server</h3></div>
@@ -142,6 +176,10 @@ export default {
       okLabel, onOk: st => run(st.f.pw, st.text.trim()),
     });
     const off = actions(main, {
+      runHist: async () => {
+        try { hist = await api.runBackfill(); } catch (e) { say(e.message); }
+        loadHist();
+      },
       auditMore: async () => {
         try { const r = await api.auditLog(audit.length, 50); audit = audit.concat(r); auditMore = r.length === 50; } catch (e) { say(e.message); }
         paint();
@@ -249,7 +287,10 @@ export default {
       api.muteStatus().then(r => { mute = r; }).catch(() => {}),
       api.instruments().then(r => { subs = (r.subscribed || []).length; }).catch(() => {}),
     ]).then(paint);
-    const offs = [listen('data', paint), listen('status', paint), listen('install', paint)];
-    return () => { off(); offs.forEach(f => f()); };
+    loadHist();
+    // the header's status poll saw a backfill start or finish: refresh now
+    const onStatus = () => { if (hist && !hist.error && !!backfill.running !== !!hist.running) loadHist(); else paint(); };
+    const offs = [listen('data', paint), listen('status', onStatus), listen('install', paint)];
+    return () => { off(); offs.forEach(f => f()); clearTimeout(histTimer); };
   },
 };

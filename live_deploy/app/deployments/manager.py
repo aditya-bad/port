@@ -696,24 +696,25 @@ class DeploymentManager:
 
     index_candles_loop = candles_loop   # earlier name
 
-    BACKFILL_AT = time(15, 40)
 
     async def candle_backfill_loop(self, candles) -> None:
-        """Once a trading day, after the close: fill the day's history of
-        every option contract held today from Kite while it still has it
-        — expired contracts can't be fetched later. Also runs right away
-        on a start after the close, in case the app was down at 15:40.
-        Cheap to repeat: covered days are never fetched."""
+        """Once a trading day at 15:45: fill the day's history of every
+        option contract held today from Kite while it still has it —
+        expired contracts can't be fetched later. Also runs right away on
+        a start after 15:45, in case the app was down then. Cheap to
+        repeat: covered days are never fetched."""
+        from ..candles import BACKFILL_AT
         done: Optional[date] = None
         while True:
             now = datetime.now(_IST)
-            if now.weekday() < 5 and now.time() >= self.BACKFILL_AT and done != now.date():
+            if now.weekday() < 5 and now.time() >= BACKFILL_AT and done != now.date():
                 try:
-                    await candles.backfill_day(now.date())
-                    done = now.date()
+                    r = await candles.backfill_day(now.date())
+                    if r.get("complete"):
+                        done = now.date()      # else (Kite logged out mid-way) retried in 5 minutes
                 except Exception:
                     logger.exception("Candle backfill failed — will retry")
-            await asyncio.sleep(300)
+            await asyncio.sleep(60 if done != datetime.now(_IST).date() else 300)
 
     # ── Health watchdog: active but not running; Kite not connected ────
 

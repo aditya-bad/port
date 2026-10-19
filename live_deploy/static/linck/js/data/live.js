@@ -62,6 +62,9 @@ export function startEvents() {
 export const kite = { state: 'expired', lastTickAt: null, error: null };
 // Deployments active in the database with nothing running them (/health).
 export const health = { notRunning: [], sig: '' };
+// The daily option-history backfill while it runs (/health), else null.
+export const backfill = { running: null };
+let fastPoll = null;
 let connecting = false;
 export async function pollStatus() {
   try {
@@ -73,6 +76,9 @@ export async function pollStatus() {
     const sig = nr.map(x => `${x.id}:${x.open_positions}`).join(',');
     health.notRunning = nr;
     if (sig !== health.sig) { health.sig = sig; emit('data'); }
+    backfill.running = h.candle_backfill || null;
+    // follow a running backfill every few seconds, then back to the normal pace
+    if (backfill.running && !fastPoll) fastPoll = setTimeout(() => { fastPoll = null; pollStatus(); }, 4000);
   } catch (e) {
     kite.state = connecting ? 'connecting' : 'expired';
     kite.error = e.message;
