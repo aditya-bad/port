@@ -8,7 +8,14 @@ let b, ctx, p;
 test.before(async () => { b = await browser(); ctx = await context(b); p = await ctx.newPage(); });
 test.after(async () => { await b.close(); });
 
+test('a fresh device opens Linck, not classic', async () => {
+  await p.goto(`${BASE}/`);
+  await p.waitForURL(/\/linck\//);
+  await p.waitForSelector('.hdr .wordmark');
+});
+
 test('classic → Linck desk', async () => {
+  await p.evaluate(() => localStorage.setItem('uiExperience', 'classic'));   // chose Classic view
   await p.goto(`${BASE}/`);
   await p.click('.ux-linck-btn');
   await p.waitForURL(/\/linck\//);

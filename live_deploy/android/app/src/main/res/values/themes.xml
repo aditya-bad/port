@@ -4,11 +4,11 @@
          AndroidManifest.xml) — every actual screen is drawn by
          LiveDeployTheme (ui/theme/Theme.kt) in Compose, not by anything
          declared here. android:windowBackground matches the web app's own
-         light --bg token (#F6F1E4) so the brief window-creation frame
+         light --bg token (#F6F4EE) so the brief window-creation frame
          before Compose takes over isn't a jarring flash of plain white/
          black. -->
     <style name="Theme.LiveDeploy" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">#F6F1E4</item>
-        <item name="android:statusBarColor">#F6F1E4</item>
+        <item name="android:windowBackground">#F6F4EE</item>
+        <item name="android:statusBarColor">#F6F4EE</item>
     </style>
 </resources>

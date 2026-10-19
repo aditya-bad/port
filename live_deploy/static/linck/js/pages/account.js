@@ -9,7 +9,7 @@ import * as prefs from '../core/prefs.js';
 import { ui, listen } from '../core/store.js';
 import { go } from '../core/router.js';
 import * as book from '../data/book.js';
-import { kite, backfill } from '../data/live.js';
+import { kite, backfill, noticeBackfill } from '../data/live.js';
 import { LAB_TAG } from '../data/config.js';
 import { toggle, empty, loading } from '../ui/components.js';
 import { openDialog } from '../ui/dialog.js';
@@ -29,6 +29,7 @@ export default {
     async function loadHist() {
       clearTimeout(histTimer);
       try { hist = await api.backfillStatus(); } catch (e) { hist = { error: e.message }; }
+      if (hist && hist.running) noticeBackfill(hist.running);   // the header strip too, not 20 s later
       paint();
       // every 2 s while a backfill runs, else every 10 s (a 15:45 run shows up on its own)
       histTimer = setTimeout(loadHist, hist && hist.running ? 2000 : 10000);

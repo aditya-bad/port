@@ -67,8 +67,23 @@ test('the market countdown runs to the second', async () => {
   await ctx.close();
 });
 
-test('classic sign-in still works', async () => {
+test('signed out on a fresh device (or an app installed before Linck): Linck sign-in, no classic colours', async () => {
   const ctx = await context(b, { signedIn: false });
+  const p = await ctx.newPage();
+  const seen = [];
+  p.on('framenavigated', f => { if (f === p.mainFrame()) seen.push(f.url()); });
+  await p.goto(`${BASE}/`);
+  await p.waitForURL(/\/linck\//);
+  await p.waitForSelector('input[type=password]');
+  assert.equal(await p.getAttribute('meta[name=theme-color]', 'content'), '#f6f5f0');
+  assert.match(await p.title(), /Linck/);
+  assert.equal((await ctx.request.get(`${BASE}/manifest.json`).then(r => r.json())).start_url, '/linck/');
+  await ctx.close();
+});
+
+test('classic sign-in still works once Classic view is chosen', async () => {
+  const ctx = await context(b, { signedIn: false });
+  await ctx.addInitScript(() => { try { if (!localStorage.getItem('uiExperience')) localStorage.setItem('uiExperience', 'classic'); } catch (e) { /* about:blank */ } });
   const p = await ctx.newPage();
   await p.goto(`${BASE}/`);
   await p.fill('input[type=password]', PASSWORD);

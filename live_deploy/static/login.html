@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script>
+// Linck's own sign-in (static/linck/login/) unless this device chose
+// Linck's "Classic view". Before the rest of <head>: no classic colours first.
+try { if (localStorage.getItem('uiExperience') !== 'classic') location.replace('/linck/' + location.hash); } catch (e) {}
+</script>
 <title>live_deploy — Login</title>
 <!-- Same PWA install tags as index.html (Steps 70-72) -- kept
      consistent here too since an expired session can land a user back
@@ -23,8 +28,6 @@
 // already chose a theme post-login, honor it here too, before the
 // stylesheet below is parsed.
 (function () {
-  // Linck users get Linck's own sign-in (static/linck/login/).
-  try { if (localStorage.getItem('uiExperience') === 'linck') { location.replace('/linck/'); return; } } catch (e) {}
   var saved = localStorage.getItem('theme');
   if (saved === 'light' || saved === 'dark') {
     document.documentElement.setAttribute('data-theme', saved);

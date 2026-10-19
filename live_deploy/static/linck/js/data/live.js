@@ -86,6 +86,14 @@ export async function pollStatus() {
   emit('status', kite);
   return kite;
 }
+// Another view (Account) saw a backfill start before the next /health:
+// show it in the header now and follow it from here.
+export function noticeBackfill(running) {
+  if (!running || backfill.running) return;
+  backfill.running = running;
+  if (!fastPoll) fastPoll = setTimeout(() => { fastPoll = null; pollStatus(); }, 4000);
+  emit('status', kite);
+}
 // Opens Zerodha's login in a new tab and watches for the session.
 export async function loginWithKite(onDone) {
   const { login_url } = await api.kiteLoginUrl();
