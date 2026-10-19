@@ -59,6 +59,21 @@ class Market:
         self.spot = {k: v[6] for k, v in INDEX.items()}
         if spots:
             self.spot.update(spots)
+        # index token -> [(time, price)]: twelve quiet prior sessions at the
+        # starting spot, then every simulated tick, so a strategy seeding
+        # from Kite's history sees the same past on every (re)start
+        self.history: dict[int, list] = {}
+        for name, v in INDEX.items():
+            d, days, rows = today, 0, []
+            while days < 12:
+                d -= timedelta(days=1)
+                if d.weekday() < 5:
+                    days += 1
+                    t0 = datetime.combine(d, datetime.min.time()).replace(hour=9, minute=15)
+                    rows[:0] = [(t0 + timedelta(minutes=m), self.spot[name]) for m in range(375)]
+            self.history[v[0]] = rows
+        if spots:
+            self.spot.update(spots)
         self.rows: dict[str, list[dict]] = {"NFO": [], "BFO": []}
         self.by_token: dict[int, dict] = {}
         self.by_key: dict[str, dict] = {}
@@ -138,6 +153,9 @@ class FakeKite:
         return out
 
     def historical_data(self, token, start, end, interval):
+        hist = self.m.history.get(int(token))
+        if hist:
+            return self._candles(hist, start, end, interval)
         row = self.m.by_token.get(int(token))
         p = self.m.price_of(row) if row else next((self.m.spot[k] for k, v in INDEX.items() if v[0] == int(token)), 100.0)
         step = {"minute": 1, "5minute": 5, "15minute": 15, "60minute": 60}.get(interval, 1)
@@ -146,6 +164,31 @@ class FakeKite:
             out.append({"date": t, "open": p, "high": p, "low": p, "close": p, "volume": 0})
             t += timedelta(minutes=step)
         return out
+
+
+    @staticmethod
+    def _candles(hist, start, end, interval):
+        """OHLC candles from the ticks the simulation actually produced,
+        aligned like Kite's (intraday buckets from 09:15, the current one
+        still forming)."""
+        start, end = (x.replace(tzinfo=None) for x in (start, end))
+        mins = {"minute": 1, "3minute": 3, "5minute": 5, "10minute": 10, "15minute": 15,
+                "30minute": 30, "60minute": 60}.get(interval)
+        buckets: dict = {}
+        for t, p in hist:
+            if not (start <= t <= end):
+                continue
+            if mins is None:      # "day"
+                key = datetime.combine(t.date(), datetime.min.time())
+            else:
+                open_ = t.replace(hour=9, minute=15, second=0, microsecond=0)
+                key = open_ + timedelta(minutes=((t - open_).seconds // 60) // mins * mins) if t >= open_ else t.replace(second=0)
+            c = buckets.get(key)
+            if c is None:
+                buckets[key] = {"date": key, "open": p, "high": p, "low": p, "close": p, "volume": 0}
+            else:
+                c["high"], c["low"], c["close"] = max(c["high"], p), min(c["low"], p), p
+        return [buckets[k] for k in sorted(buckets)]
 
 
 class FakeDispatcher:
@@ -187,8 +230,12 @@ def install(monkeypatch, market: Market) -> FakeKite:
     import app.options.resolver as R
     import app.options.client as C
     kite = FakeKite(market)
-    monkeypatch.setattr(R, "get_kite_connect", lambda d: kite)
-    monkeypatch.setattr(C, "get_kite_connect", lambda d: kite)
+    # every module that imported get_kite_connect by name, so nothing in a
+    # test can ever reach the real Kite
+    import sys
+    for name, mod in list(sys.modules.items()):
+        if name.startswith("app") and getattr(mod, "get_kite_connect", None) is not None:
+            monkeypatch.setattr(mod, "get_kite_connect", lambda d: kite)
     monkeypatch.setattr(R, "_KITE_CALL_MIN_INTERVAL", 0.0)
     # Expiry rotation (THIS_WEEK, ...) is relative to date.today(); pin it
     # to the simulated day so results don't depend on when tests run.
@@ -196,6 +243,10 @@ def install(monkeypatch, market: Market) -> FakeKite:
     monkeypatch.setattr(R.OptionsResolver, "_resolve_from_list",
                         lambda self, expiries, selector, reference_date=None:
                         orig(self, expiries, selector, reference_date or market.today))
+    # Strategies read "now" from app.clock: make it the simulated time.
+    import app.clock as clock
+    from zoneinfo import ZoneInfo
+    monkeypatch.setattr(clock, "now_ist", lambda: market.now.replace(tzinfo=ZoneInfo("Asia/Kolkata")))
     R._INSTRUMENT_CACHE.clear()
     return kite
 
@@ -238,6 +289,7 @@ class Sim:
         sim.dispatcher.publish()
         await sim.runner._reload_positions()
         await sim.strategy.on_start(sim.runner)
+        await sim.runner.checkpoint_state()
         return sim
 
     async def tick(self, at: str | datetime, spot: float | None = None):
@@ -247,9 +299,14 @@ class Sim:
             self.market.spot[self.underlying] = spot
         self.dispatcher.publish()
         tok = INDEX[self.underlying][0]
+        self.market.history.setdefault(tok, []).append((when, self.market.spot[self.underlying]))
         t = {"instrument_token": tok, "last_price": self.market.spot[self.underlying], "exchange_timestamp": when}
-        await self.runner._intraday_guard(t)
-        await self.strategy.on_tick(self.runner, t)
+        await self.runner.process_tick(t)     # exactly what the live tick loop runs
+
+    async def end_of_day(self):
+        """What production runs once after the close (DeploymentManager.
+        post_market_dump_loop): the strategy's post-market checkpoint."""
+        await self.runner.post_market_checkpoint()
 
     async def walk(self, start: str, end: str, every_min: int = 1, spot_fn=None):
         """Tick every `every_min` minutes from start to end (same day)."""
@@ -275,13 +332,15 @@ class Sim:
         return [dict(r) for r in rows if kind is None or r["event_type"] == kind]
 
     async def restart(self):
-        """Simulate an app restart: a fresh strategy instance resumed from the database."""
+        """Simulate a hard crash and restart: no on_stop, no final state
+        save — a fresh strategy instance resumed from the database only."""
         row = await queries.get_deployment(self.pool, self.dep_id)
         self.strategy = type(self.strategy)()
         self.runner = DeploymentRunner(row, self.pool, None, self.dispatcher, self.strategy)
         self.runner._is_stale_tick = lambda t: False
         await self.runner._reload_positions()
         await self.strategy.on_start(self.runner)
+        await self.runner.checkpoint_state()
 
 
 async def leg_prices(sim, spot: float | None = None) -> dict[str, float]:

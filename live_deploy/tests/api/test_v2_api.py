@@ -276,21 +276,19 @@ def test_every_strategy_can_be_created_from_its_defaults(client, strategy):
 # ── Restart ───────────────────────────────────────────────────────────
 
 def _kill_runner(client, dep_id):
-    """The runner dies; the watchdog's next pass notices."""
+    """The runner dies (before the watchdog's next pass)."""
     mgr = client.app.state.deployment_manager
 
     async def go():
         runner = mgr.runners.pop(dep_id)
         await runner.stop()
-        await mgr.check_health_once(datetime.now(IST).replace(tzinfo=None))
     client.portal.call(go)
 
 
 def test_restart_brings_back_a_dead_runner_and_clears_health(client):
     d = make_deployment(client, start="now")
     _kill_runner(client, d["id"])
-    h = client.get("/health").json()
-    assert [x["id"] for x in h["not_running"]] == [d["id"]]
+    assert [x["id"] for x in client.portal.call(client.app.state.deployment_manager.find_not_running)] == [d["id"]]
     r = client.post(f"/v2/deployments/{d['id']}/restart")
     assert r.status_code == 200 and r.json() == {"ok": True, "running": True}
     assert d["id"] in client.app.state.deployment_manager.runners

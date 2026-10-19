@@ -34,6 +34,7 @@ overlap.
 """
 
 import asyncio
+import time as _time
 import logging
 from datetime import datetime, time, timedelta, timezone
 from typing import Optional
@@ -159,6 +160,7 @@ class DeploymentManager:
         self.start_errors: dict[str, str] = {}
         self.health_issues: list[dict] = []
         self._alerted: set[str] = set()
+        self._restart_tried: dict[str, float] = {}   # deployment id -> monotonic time of the last auto-restart
         self._kite_alerted_on = None
 
     # ── Startup / shutdown ───────────────────────────────────────────
@@ -760,8 +762,37 @@ class DeploymentManager:
                 logger.exception("Watchdog check failed — continuing")
             await asyncio.sleep(interval_seconds)
 
+    AUTO_RESTART_EVERY = 60.0   # seconds between automatic restart attempts per deployment
+
+    async def _auto_restart(self, issues: list[dict]) -> list[dict]:
+        """Try to bring every not-running deployment back by itself (at
+        most once a minute each): a start that failed on a passing Kite
+        hiccup, or a runner that died, recovers without anyone pressing
+        Restart. Returns the ones still not running."""
+        still = []
+        for x in issues:
+            did = x["id"]
+            last = self._restart_tried.get(did)
+            if last is not None and _time.monotonic() - last < self.AUTO_RESTART_EVERY:
+                still.append(x)
+                continue
+            self._restart_tried[did] = _time.monotonic()
+            was_alerted = did in self._alerted
+            try:
+                await self.restart(UUID(did))
+            except Exception as e:
+                logger.warning("Auto-restart of %s failed: %s", x["name"], e)
+                x = {**x, "reason": self.start_errors.get(did, x["reason"])}
+                still.append(x)
+                continue
+            logger.info("Auto-restarted %s", x["name"])
+            self._restart_tried.pop(did, None)
+            if was_alerted:
+                await self._push(f"{x['name']} is running again", "Restarted automatically. It picked up its open positions from where it left off.")
+        return still
+
     async def check_health_once(self, now: datetime) -> None:
-        issues = await self.find_not_running()
+        issues = await self._auto_restart(await self.find_not_running())
         self.health_issues = issues
         current = {x["id"] for x in issues}
         for x in issues:
@@ -769,9 +800,14 @@ class DeploymentManager:
                 continue
             self._alerted.add(x["id"])
             legs = f" It holds {x['open_positions']} open position(s) that nothing will exit." if x["open_positions"] else ""
-            await self._push(f"{x['name']} isn't running", f"Marked active but its strategy isn't running ({x['reason']}).{legs} Open it and press Restart.")
+            await self._push(f"{x['name']} isn't running",
+                             f"Marked active but its strategy isn't running ({x['reason']}).{legs} "
+                             "Retrying automatically every minute — or open it and press Restart.")
             await self._record_event(UUID(x["id"]), x["name"], x["strategy"], "not_running", message=x["reason"])
         self._alerted &= current
+        for did in list(self._restart_tried):
+            if did not in current:
+                self._restart_tried.pop(did, None)
 
         connected = bool(getattr(self.dispatcher, "connected", False)) and not self.dispatcher.status.get("needs_login")
         market_day = now.weekday() < 5

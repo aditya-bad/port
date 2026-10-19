@@ -82,6 +82,12 @@ def manager(active_rows, running_ids=(), connected=True, needs_login=False):
     mgr = object.__new__(DeploymentManager)
     mgr.runners = {i: SimpleNamespace(_task=SimpleNamespace(done=lambda: False)) for i in running_ids}
     mgr.start_errors, mgr.health_issues, mgr._alerted, mgr._kite_alerted_on = {}, [], set(), None
+    mgr._restart_tried, mgr.restarts = {}, []
+
+    async def restart(dep_id):          # Kite still down: the strategy can't start
+        mgr.restarts.append(str(dep_id))
+        raise ValueError("Still can't start: NoKiteSession: no session")
+    mgr.restart = restart
     mgr.cache, mgr.push_config = None, {"x": 1}
     mgr.dispatcher = SimpleNamespace(connected=connected, status={"needs_login": needs_login})
     mgr.pushes, mgr.events = [], []
@@ -115,6 +121,7 @@ def test_watchdog_flags_active_without_runner_and_pushes_once():
     assert [x["name"] for x in mgr.health_issues] == ["DTT A"]
     assert mgr.health_issues[0]["open_positions"] == 2 and "NoKiteSession" in mgr.health_issues[0]["reason"]
     assert mgr.pushes == ["DTT A isn't running"] and mgr.events == ["not_running"]
+    assert mgr.restarts == [ROW["id"]], "tried to restart it by itself, once within the minute"
 
 
 def test_watchdog_quiet_when_running():

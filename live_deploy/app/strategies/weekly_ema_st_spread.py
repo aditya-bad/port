@@ -293,6 +293,7 @@ from collections import deque
 from datetime import date, datetime, timedelta, time as dtime
 from typing import Optional
 
+from .. import clock
 from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver, get_kite_connect, options_exchange_for
 from .pivot_supertrend import _IST, _parse_hhmm, CandleAggregator, SuperTrendState, is_stale_candle_close
@@ -376,7 +377,8 @@ def _status_fields(st: SuperTrendState, ema: EMAState, lots_per_trade: Optional[
     return fields
 
 
-async def _fetch_hourly_seed_from_kite(dispatcher, instrument_token: int, lookback_days: int) -> list[dict]:
+async def _fetch_hourly_seed_from_kite(dispatcher, instrument_token: int, lookback_days: int,
+                                       interval_minutes: int = 60) -> tuple[list[dict], Optional[dict]]:
     """Gap-free 1H candles straight from Kite's own historical_data —
     the same "authoritative REST source, immune to WS gaps" principle
     fetch_seed_from_kite (pivot_supertrend.py) already established for
@@ -388,7 +390,7 @@ async def _fetch_hourly_seed_from_kite(dispatcher, instrument_token: int, lookba
     fetch_seed_from_kite, for the caller to handle identically (fall
     through to persisted state / cold start)."""
     kite = get_kite_connect(dispatcher)
-    now = datetime.now(_IST).replace(tzinfo=None)
+    now = clock.now_ist().replace(tzinfo=None)
     start = datetime.combine(now.date() - timedelta(days=lookback_days), dtime(0, 0))
     raw = await asyncio.to_thread(kite.historical_data, instrument_token, start, now, "60minute")
     candles = []
@@ -400,7 +402,12 @@ async def _fetch_hourly_seed_from_kite(dispatcher, instrument_token: int, lookba
             "date": d, "open": float(c["open"]), "high": float(c["high"]),
             "low": float(c["low"]), "close": float(c["close"]),
         })
-    return candles
+    # The last candle may still be forming: it goes to the aggregator
+    # (CandleAggregator.resume), never into the indicators twice.
+    forming = None
+    if candles and candles[-1]["date"] + timedelta(minutes=interval_minutes) > now:
+        forming = candles.pop()
+    return candles, forming
 
 
 @register_strategy(
@@ -548,6 +555,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             self.sold_strike = meta.get("strike")
             expiry_str = meta.get("expiry")
             self.sold_expiry = date.fromisoformat(expiry_str) if expiry_str else None
+            self.position_side = "bearish" if self.sold_option_type == "CE" else "bullish"   # see _enter
             runner.dispatcher.add_instruments([{"instrument_token": token, "symbol": pos["symbol"]}])
         if found_long:
             token, pos = found_long
@@ -580,9 +588,11 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
         # (pivot_supertrend.py) for the identical reasoning, applied
         # here on every on_start, not just a cold deploy.
         try:
-            seed_candles = await _fetch_hourly_seed_from_kite(
+            seed_candles, forming = await _fetch_hourly_seed_from_kite(
                 runner.dispatcher, self.instrument_token, HOURLY_AUTOSEED_LOOKBACK_DAYS,
+                self.candle_interval_minutes,
             )
+            self.aggregator.resume(forming)
             fresh_st = SuperTrendState(period=self.st_period, multiplier=self.st_multiplier, atr_method="wilder")
             fresh_ema = EMAState(period=self.ema_period)
             prev_close = None
@@ -708,8 +718,9 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
         state/lots_per_trade or the open legs themselves -- none of that
         is affected by a recursive-indicator resync."""
         try:
-            seed_candles = await _fetch_hourly_seed_from_kite(
+            seed_candles, _ = await _fetch_hourly_seed_from_kite(
                 runner.dispatcher, self.instrument_token, HOURLY_AUTOSEED_LOOKBACK_DAYS,
+                self.candle_interval_minutes,
             )
         except NoKiteSession:
             logger.warning("%s: post-market checkpoint skipped — no Kite session",
@@ -738,6 +749,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             return
         old_trend = self.st.trend
         self.st = fresh_st
+        self.aggregator.reset()   # its pending candle is already in the replay
         self.ema = fresh_ema
         self._prev_close = prev_close
         logger.info(

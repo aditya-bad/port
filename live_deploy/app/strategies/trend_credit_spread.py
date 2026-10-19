@@ -289,6 +289,7 @@ import logging
 from datetime import date, datetime
 from typing import Optional
 
+from .. import clock
 from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver, options_exchange_for
 from .pivot_supertrend import (
@@ -300,6 +301,7 @@ from .pivot_supertrend import (
     _parse_hhmm,
     apply_seed_to_state,
     fetch_seed_from_kite,
+    resume_today,
     is_stale_candle_close,
     supertrend_from_seed_candles,
     supertrend_status_fields,
@@ -425,7 +427,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             today_str = persisted.get("today")
             if today_str:
                 try:
-                    if date.fromisoformat(today_str) == datetime.now(_IST).date():
+                    if date.fromisoformat(today_str) == clock.now_ist().date():
                         self.trades_today = persisted.get("trades_today", 0)
                 except ValueError:
                     pass
@@ -491,6 +493,8 @@ class TrendCreditSpreadStrategy(StrategyBase):
                 "%s: auto-seeded live from Kite (%d candle(s)) -> trend=%s",
                 runner.deployment_name, len(seed["seed_candles"]), self.st.trend,
             )
+            self.aggregator.resume(seed.get("forming"))
+            resume_today(self, persisted)
             return
         except NoKiteSession:
             logger.warning(
@@ -523,7 +527,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             self.prev_trend = state.get("prev_trend")
             today_str = state.get("today")
             self.today = date.fromisoformat(today_str) if today_str else None
-            if self.today == datetime.now(_IST).date():
+            if self.today == clock.now_ist().date():
                 self.trades_today = state.get("trades_today", 0)
         except (KeyError, TypeError, ValueError):
             logger.exception(
@@ -599,6 +603,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             return
         old_trend = self.st.trend
         self.st = fresh_st
+        self.aggregator.reset()   # its pending candle is already in the replay
         self.prev_trend = fresh_st.trend
         logger.info(
             "%s: post-market checkpoint — resynced SuperTrend from live Kite "

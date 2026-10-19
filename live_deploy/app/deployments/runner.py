@@ -17,6 +17,7 @@ Postgres when a runner starts up IS the current state, no replay needed.
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Optional
@@ -114,6 +115,7 @@ class DeploymentRunner:
         self._queue: Optional[asyncio.Queue] = None
         self._task: Optional[asyncio.Task] = None
         self._running = False
+        self._last_saved_state: Optional[str] = None   # see checkpoint_state
 
         # Intraday safety net (see _intraday_guard): the configured
         # square-off time, if any, and when the last sweep was tried.
@@ -151,6 +153,7 @@ class DeploymentRunner:
         # strategy.
         if self.strategy is not None:
             await self.strategy.on_start(self)
+            await self.checkpoint_state()
         self._task = asyncio.create_task(self._run(), name=f"runner:{self.deployment_name}")
         logger.info(
             "Runner started: %s (%s, %s) — %d open position(s), tokens=%s",
@@ -515,23 +518,63 @@ class DeploymentRunner:
                             datetime.now(), self._stale_tick_reason(t),
                         )
                         continue
-                    try:
-                        await self._intraday_guard(t)
-                    except Exception:
-                        logger.exception("%s: intraday guard raised — continuing", self.deployment_name)
-                    try:
-                        await self.strategy.on_tick(self, t)
-                    except Exception:
-                        logger.exception(
-                            "Strategy on_tick raised for deployment %s — continuing",
-                            self.deployment_name,
-                        )
-                        await self._record_event(
-                            "strategy_error",
-                            message="on_tick raised an exception; see server logs",
-                        )
+                    await self.process_tick(t)
         except asyncio.CancelledError:
             raise
+
+    async def process_tick(self, t: dict) -> None:
+        """One live tick: the intraday safety net, the strategy, then a
+        state checkpoint. Nothing here may raise into the tick loop."""
+        try:
+            await self._intraday_guard(t)
+        except Exception:
+            logger.exception("%s: intraday guard raised — continuing", self.deployment_name)
+        try:
+            await self.strategy.on_tick(self, t)
+        except Exception:
+            logger.exception(
+                "Strategy on_tick raised for deployment %s — continuing",
+                self.deployment_name,
+            )
+            await self._record_event(
+                "strategy_error",
+                message="on_tick raised an exception; see server logs",
+            )
+        await self.checkpoint_state()
+
+    # ── Crash safety: persist strategy state as it changes ────────────
+    #
+    # A strategy's resumable state (StrategyBase.get_persistable_state)
+    # used to be saved only on a clean stop and once after the close. A
+    # crash, an OOM kill or a container restart skipped that, and the
+    # restarted strategy resumed from a stale snapshot — e.g. "not
+    # entered today" and entered a second time. Now it is saved the
+    # moment it changes (compared as JSON, so an unchanged tick costs no
+    # database write), so a restart at any point resumes from the state
+    # as of the last processed tick.
+
+    async def checkpoint_state(self) -> None:
+        if self.strategy is None:
+            return
+        try:
+            state = self.strategy.get_persistable_state()
+        except Exception:
+            logger.exception("%s: get_persistable_state() raised — not checkpointed", self.deployment_name)
+            return
+        if state is None:
+            return
+        try:
+            blob = json.dumps(state, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            logger.exception("%s: strategy state isn't JSON-serializable — not checkpointed", self.deployment_name)
+            return
+        if blob == self._last_saved_state:
+            return
+        try:
+            await queries.save_deployment_state(self.pool, self.deployment_id, json.loads(blob))
+            self._last_saved_state = blob
+        except Exception:
+            logger.exception("%s: saving strategy state failed — will retry on the next tick", self.deployment_name)
 
     # ── Intraday safety net ───────────────────────────────────────────
     #

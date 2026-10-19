@@ -51,26 +51,60 @@ def test_startup_resumes_active_deployments_and_skips_a_broken_one(client):
 
 # ── Watchdog ──────────────────────────────────────────────────────────
 
-def test_watchdog_pushes_once_per_problem_and_again_if_it_recurs(client, pushes, monkeypatch):
+def test_watchdog_brings_a_dead_runner_back_by_itself(client, pushes, monkeypatch):
     monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
     d = make_deployment(client, name="Dead", start="now")
     add_fill(client, d["id"], "CE", 1, "sell", 75, 100, at(WED, "10:00"))
     runner = mgr(client).runners.pop(d["id"])
     call(client, runner.stop)
+    call(client, mgr(client).check_health_once, at(WED, "18:00"))
+    assert mgr(client)._is_running(d["id"]) and mgr(client).health_issues == []
+    assert pushes == [], "recovered on the first pass: nothing to alert about"
+    events = [e["event_type"] for e in client.get(f"/deployments/{d['id']}/events").json()]
+    assert "restarted" in events
+    assert mgr(client).runners[d["id"]].open_positions, "picked its open leg back up"
+
+
+def test_watchdog_alerts_once_keeps_retrying_and_says_when_it_recovers(client, pushes, monkeypatch):
+    monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
+    d = make_deployment(client, name="Broken", start="now")
+    add_fill(client, d["id"], "CE", 1, "sell", 75, 100, at(WED, "10:00"))
+    runner = mgr(client).runners.pop(d["id"])
+    call(client, runner.stop)
+    good = sql(client, "SELECT config FROM deployments WHERE id = $1::uuid", d["id"])[0]["config"]
+    break_config(client, d["id"])
     evening = at(WED, "18:00")
     call(client, mgr(client).check_health_once, evening)
     call(client, mgr(client).check_health_once, evening)
-    assert len(pushes) == 1 and "Dead isn't running" in pushes[0][0]
-    assert "1 open position" in pushes[0][1]
+    assert len(pushes) == 1 and "Broken isn't running" in pushes[0][0]
+    assert "1 open position" in pushes[0][1] and "automatically" in pushes[0][1]
+    assert [x["id"] for x in mgr(client).health_issues] == [d["id"]]
+    assert "instrument_tokens" in mgr(client).health_issues[0]["reason"]
     events = [e["event_type"] for e in client.get(f"/deployments/{d['id']}/events").json()]
     assert events.count("not_running") == 1
-    assert client.post(f"/v2/deployments/{d['id']}/restart").status_code == 200
+    # the cause clears (Kite back, config fixed): the next retry succeeds
+    sql(client, "UPDATE deployments SET config = $2::jsonb WHERE id = $1::uuid", d["id"], good)
+    mgr(client)._restart_tried[d["id"]] -= 120          # a minute and more has passed
     call(client, mgr(client).check_health_once, evening)
-    assert mgr(client).health_issues == []
+    assert mgr(client)._is_running(d["id"]) and mgr(client).health_issues == []
+    assert "Broken is running again" in pushes[-1][0]
+
+
+def test_watchdog_retries_at_most_once_a_minute(client, monkeypatch):
+    d = make_deployment(client, name="Broken", start="now")
     runner = mgr(client).runners.pop(d["id"])
     call(client, runner.stop)
-    call(client, mgr(client).check_health_once, evening)
-    assert len(pushes) == 2, "a new outage alerts again"
+    break_config(client, d["id"])
+    tries = []
+    real = mgr(client).restart
+
+    async def counting(dep_id):
+        tries.append(dep_id)
+        return await real(dep_id)
+    monkeypatch.setattr(mgr(client), "restart", counting)
+    for _ in range(5):
+        call(client, mgr(client).check_health_once, at(WED, "18:00"))
+    assert len(tries) == 1
 
 
 @pytest.mark.parametrize("when,expect", [

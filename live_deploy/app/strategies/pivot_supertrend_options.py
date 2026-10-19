@@ -136,9 +136,10 @@ trade.
 """
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, time as dtime
 from typing import Optional
 
+from .. import clock
 from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver, options_exchange_for
 from .pivot_supertrend import (
@@ -153,6 +154,7 @@ from .pivot_supertrend import (
     apply_seed_to_state,
     compute_pivots,
     fetch_seed_from_kite,
+    resume_today,
     is_stale_candle_close,
     supertrend_from_seed_candles,
     supertrend_status_fields,
@@ -253,13 +255,17 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             today_str = persisted.get("today")
             if today_str:
                 try:
-                    if date.fromisoformat(today_str) == datetime.now(_IST).date():
+                    if date.fromisoformat(today_str) == clock.now_ist().date():
                         self.trades_today = persisted.get("trades_today", 0)
                 except ValueError:
                     pass
 
         self.prev_day_ohlc: Optional[dict] = cfg.get("prev_day_ohlc")
         self.pivots: Optional[dict] = None
+        # The trading day whose OHLC built self.pivots — lets the day
+        # rollover keep pivots the post-market checkpoint already built
+        # from Kite's official daily candle (see _roll_over_day).
+        self.pivots_source_day: Optional[date] = None
 
         self.prev_trend: Optional[str] = None
 
@@ -308,11 +314,18 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         # own docstring for the full reasoning (every on_start, not just
         # a cold deploy; include_today_ohlc=False since today's own
         # pivots always come from the day strictly BEFORE today).
+        # After the close, the session that just ended is the source of
+        # the NEXT session's pivots — the same day the post-market
+        # checkpoint uses, so a restart in the evening agrees with it.
+        now = clock.now_ist()
+        after_close = now.weekday() < 5 and now.time() >= dtime(15, 30)
         try:
-            seed = await fetch_seed_from_kite(runner.dispatcher, self.instrument_token)
+            seed = await fetch_seed_from_kite(runner.dispatcher, self.instrument_token,
+                                              include_today_ohlc=after_close)
             self.st = supertrend_from_seed_candles(seed["seed_candles"], self.atr_method)
             self.prev_trend = self.st.trend
             if seed["prev_day_ohlc"]:
+                self.pivots_source_day = seed.get("prev_day_date")
                 self.prev_day_ohlc = seed["prev_day_ohlc"]
                 self.pivots = compute_pivots(
                     self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
@@ -322,6 +335,8 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 "%s: auto-seeded live from Kite (%d candle(s)) -> trend=%s, pivots=%s",
                 runner.deployment_name, len(seed["seed_candles"]), self.st.trend, bool(self.pivots),
             )
+            self.aggregator.resume(seed.get("forming"))
+            resume_today(self, persisted)
             return
         except NoKiteSession:
             logger.warning(
@@ -375,6 +390,8 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             self.prev_trend = state.get("prev_trend")
             self.prev_day_ohlc = state.get("prev_day_ohlc")
             self.pivots = state.get("pivots")
+            src = state.get("pivots_source_day")
+            self.pivots_source_day = date.fromisoformat(src) if src else None
             today_str = state.get("today")
             self.today = date.fromisoformat(today_str) if today_str else None
             self.today_high = state.get("today_high")
@@ -384,7 +401,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             # its comment) -- restored again here too so this method
             # stays a complete, correct restore on its own, regardless
             # of which call site reaches it.
-            if self.today == datetime.now(_IST).date():
+            if self.today == clock.now_ist().date():
                 self.trades_today = state.get("trades_today", 0)
         except (KeyError, TypeError, ValueError):
             logger.exception(
@@ -414,6 +431,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             "prev_trend": self.prev_trend,
             "prev_day_ohlc": self.prev_day_ohlc,
             "pivots": self.pivots,
+            "pivots_source_day": self.pivots_source_day.isoformat() if self.pivots_source_day else None,
             "today": self.today.isoformat() if self.today else None,
             "today_high": self.today_high,
             "today_low": self.today_low,
@@ -463,10 +481,12 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             return
         old_trend = self.st.trend
         self.st = fresh_st
+        self.aggregator.reset()   # its pending candle is already in the replay
         self.prev_trend = fresh_st.trend
 
         if seed["prev_day_ohlc"]:
             self.prev_day_ohlc = seed["prev_day_ohlc"]
+            self.pivots_source_day = seed.get("prev_day_date")
             self.pivots = compute_pivots(
                 self.prev_day_ohlc["high"], self.prev_day_ohlc["low"],
                 self.prev_day_ohlc["close"], self.pivot_type,
@@ -505,7 +525,13 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         self.today_last_close = completed["close"]
 
     def _roll_over_day(self, runner) -> None:
-        if self.today_high is not None:
+        if self.pivots and self.pivots_source_day == self.today:
+            # Already built from Kite's official candle for the day just
+            # ended (post-market checkpoint, or an evening restart):
+            # better than our own ticks, which can have gaps.
+            pass
+        elif self.today_high is not None:
+            self.pivots_source_day = self.today
             self.prev_day_ohlc = {
                 "high": self.today_high, "low": self.today_low,
                 "close": self.today_last_close,

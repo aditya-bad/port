@@ -144,6 +144,7 @@ from datetime import date, datetime, timedelta, time as dtime
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+from .. import clock
 from ..options import NoKiteSession, get_kite_connect
 
 logger = logging.getLogger("live_deploy.strategies.pivot_supertrend")
@@ -429,9 +430,33 @@ class CandleAggregator:
         self._bucket_start: Optional[datetime] = None
         self._candle: Optional[dict] = None
 
+    def reset(self) -> None:
+        """Forget the candle in progress — after a post-market resync has
+        already replayed it from Kite, completing it again next morning
+        would count it twice."""
+        self._bucket_start = None
+        self._candle = None
+
+    def resume(self, candle: Optional[dict]) -> None:
+        """Continue a candle that was already forming before a restart
+        (fetch_seed_from_kite's "forming"), instead of starting it over
+        from the next tick with its earlier highs/lows lost."""
+        if candle is not None:
+            self._bucket_start = candle["date"]
+            self._candle = dict(candle)
+
     def _floor(self, ts: datetime) -> datetime:
-        minute = (ts.minute // self.interval_minutes) * self.interval_minutes
-        return ts.replace(minute=minute, second=0, microsecond=0)
+        """Bucket start, anchored to the 09:15 open the way Kite's and
+        NSE charts' candles are (09:15-10:15 for hourly, not 09:00-10:00)
+        so candles built from ticks line up with the ones re-fetched from
+        Kite on a restart. Identical to plain clock alignment for any
+        interval that divides 15 (1, 3, 5, 15 minutes)."""
+        open_ = ts.replace(hour=9, minute=15, second=0, microsecond=0)
+        if ts < open_:
+            minute = (ts.minute // self.interval_minutes) * self.interval_minutes
+            return ts.replace(minute=minute, second=0, microsecond=0)
+        mins = int((ts - open_).total_seconds() // 60)
+        return open_ + timedelta(minutes=mins // self.interval_minutes * self.interval_minutes)
 
     def add_tick(self, ts: datetime, price: float) -> Optional[dict]:
         """
@@ -696,21 +721,29 @@ async def fetch_seed_from_kite(
     crash the runner).
     """
     kite = get_kite_connect(dispatcher)   # raises NoKiteSession
-    now = datetime.now(_IST).replace(tzinfo=None)
+    now = clock.now_ist().replace(tzinfo=None)
     today = now.date()
 
     candle_start = datetime.combine(today - timedelta(days=lookback_days), dtime(0, 0))
     raw_candles = await asyncio.to_thread(kite.historical_data, instrument_token, candle_start, now, "5minute")
-    seed_candles = []
+    # Kite's last candle is the one still FORMING. Feeding it to
+    # SuperTrend would count that slot twice: once partial now, again
+    # when the CandleAggregator completes it. It goes to the aggregator
+    # instead (CandleAggregator.resume), so the candle carries on from
+    # every tick Kite saw, including any during a restart.
+    seed_candles, forming = [], None
     for c in raw_candles:
         d = c["date"]
         if d.tzinfo is not None:
             d = d.astimezone(_IST).replace(tzinfo=None)
-        seed_candles.append({
-            "date": d, "high": float(c["high"]), "low": float(c["low"]), "close": float(c["close"]),
-        })
+        candle = {"date": d, "open": float(c.get("open", c["close"])), "high": float(c["high"]),
+                  "low": float(c["low"]), "close": float(c["close"])}
+        if d + timedelta(minutes=5) > now:
+            forming = candle
+        else:
+            seed_candles.append(candle)
 
-    prev_day_ohlc = None
+    prev_day_ohlc, prev_day_date = None, None
     if need_prev_day_ohlc:
         # A few extra days on the daily-candle side so a long weekend or
         # holiday cluster right before "today" still resolves to a real
@@ -724,12 +757,27 @@ async def fetch_seed_from_kite(
                 candidates.append(row)
         if candidates:
             last = candidates[-1]
+            prev_day_date = last["date"].date() if hasattr(last["date"], "date") else last["date"]
             prev_day_ohlc = {
                 "high": round(float(last["high"]), 2), "low": round(float(last["low"]), 2),
                 "close": round(float(last["close"]), 2),
             }
 
-    return {"seed_candles": seed_candles, "prev_day_ohlc": prev_day_ohlc}
+    return {"seed_candles": seed_candles, "prev_day_ohlc": prev_day_ohlc, "prev_day_date": prev_day_date,
+            "forming": forming}
+
+
+def resume_today(strategy, persisted: Optional[dict]) -> None:
+    """After a live re-seed on restart: carry over the parts of today's
+    state the candles can't tell — which day the strategy last rolled to,
+    today's running high/low/last close, and how many trades it already
+    took today — from the strategy's last checkpoint, if that was today."""
+    if not persisted or persisted.get("today") != clock.now_ist().date().isoformat():
+        return
+    strategy.today = date.fromisoformat(persisted["today"])
+    for key in ("today_high", "today_low", "today_last_close", "trades_today"):
+        if key in persisted and hasattr(strategy, key):
+            setattr(strategy, key, persisted[key])
 
 
 def supertrend_from_seed_candles(seed_candles: list[dict], atr_method: str = "wilder") -> "SuperTrendState":

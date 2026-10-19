@@ -3,7 +3,7 @@
 One command tells you whether a change is safe to deploy:
 
 ```bash
-./run_tests.sh          # Python + JS: about 2 minutes
+./run_tests.sh          # Python + JS: about 5 minutes
 ./run_tests.sh --e2e    # plus the browser tests: about 3 more minutes
 ```
 
@@ -42,6 +42,19 @@ never touched:
 | Strategies | `tests/strategies` | Each strategy run through simulated market days with the real runner, resolver and fill engine. Every registered strategy must trade, survive a restart and a missed square-off, and keep a consistent book. DTT and the strangle also have scenario tests (stops, targets, rolls, EOD, checkpoints, expiry). |
 | JS | `tests/js` | Linck's pure modules: number and date formatting (IST, ₹), the P&L basis switch, performance metrics, routing, Kite token parsing. |
 | Browser | `tests/e2e` | Linck and classic in Chromium against a seeded app: sign-in with Connect Kite, pause and undo, closing legs, the deploy wizard, switching back to classic. Every page is also checked at phone, laptop and desktop widths for script errors, sideways scroll, "undefined/NaN" and overlapping text. |
+
+**Crash recovery** (`tests/strategies/test_crash_recovery.py`) holds
+every strategy to two rules:
+- Killed every few minutes (no clean shutdown, no final save) and
+  restarted from the database, it makes exactly the same trades as an
+  uninterrupted run, fill for fill.
+- Killed between two fills of one action (half a straddle sold), it
+  resumes safely: the book stays consistent, intraday is flat at the
+  close, and nothing is left open and forgotten.
+
+A strategy that keeps a new piece of state must add it to
+`get_persistable_state` (saved whenever it changes), or rebuild it
+from its open positions in `on_start`. These tests fail otherwise.
 
 New strategies are picked up automatically by
 `tests/strategies/test_all_strategies_smoke.py` and the API's

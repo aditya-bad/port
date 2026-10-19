@@ -615,6 +615,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
+from .. import clock
 from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver
 from .intraday_dtt_adjusted import IntradayDTTAdjustedStrategy
@@ -2173,7 +2174,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 {"label": "Contract expiry", "value": self.contract_expiry.isoformat() if self.contract_expiry else "—"},
                 {"label": "Legs open", "value": f"{len(self.legs['CE'])} CE / {len(self.legs['PE'])} PE"},
             ]
-        now = datetime.now(_IST)
+        now = clock.now_ist()
         entry_label = self.entry_time.strftime("%H:%M")
         if now.time() < self.entry_time:
             status = f"Waiting for entry time ({entry_label} IST)"
