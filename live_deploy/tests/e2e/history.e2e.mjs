@@ -57,7 +57,9 @@ for (const width of [390, 1366, 1440, 1600]) {
     const p = await ctx.newPage();
     await p.goto(`${BASE}/linck/#/desk`);
     await p.waitForSelector('.bf-strip', { timeout: 10000 });
-    assert.match(await p.innerText('.bf-strip'), /Saving .*option history\s+\d+ of \d+/);
+    const strip = await p.innerText('.bf-strip');
+    assert.match(strip, /Saving .*option history\s+\d+ of \d+/);
+    if (width > 600) assert.doesNotMatch(strip, /today/, 'a run for an earlier day names that day, not "today"');
     const sw = await p.evaluate(() => document.documentElement.scrollWidth);
     assert.ok(sw <= width + 1, `no sideways scroll (${sw})`);
     await ctx.close();

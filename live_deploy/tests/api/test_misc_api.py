@@ -381,6 +381,12 @@ def test_held_contracts_are_recorded_live(client):
     assert mgr.watched_tokens() == {7171}, "held option contracts only: the index is never stored"
 
 
+def test_backfill_status_route_is_not_taken_for_an_instrument_token(client):
+    """Regression: GET /candles/backfill was matched by /candles/{instrument_token} (422)."""
+    r = client.get("/candles/backfill")
+    assert r.status_code == 200 and set(r.json()) >= {"running", "last", "next_at", "stored"}
+
+
 def _wait_backfill(client):
     import time as _t
     for _ in range(100):

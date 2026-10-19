@@ -332,3 +332,38 @@ def test_two_backfills_never_run_at_once(pool_run, monkeypatch, frozen_today):
         assert sorted([len(r1["fetched"]), len(r2["fetched"])]) == [0, 2]
         assert svc.progress is None
     pool_run(go)
+
+
+def test_result_is_saved_before_the_run_stops_showing_as_running(pool_run, monkeypatch, frozen_today):
+    """Regression: progress was cleared before the result was saved, so a
+    status read in between saw neither a running nor a finished run."""
+    _mk(monkeypatch)
+    seen = []
+    real = queries.set_app_scratch
+
+    async def go(pool):
+        svc = service(pool)
+
+        async def spy(pool_, key, value):
+            seen.append(svc.progress is not None)       # still showing as running when the result lands
+            return await real(pool_, key, value)
+        monkeypatch.setattr(queries, "set_app_scratch", spy)
+        d = (await queries.create_deployment(pool, "D", "strangle_monthly_v2", "positional", 1e6, {}))["id"]
+        await fill(pool, d, "NIFTY26O2725000CE", 51, "sell", 75, 100, at(DAY, 10, 0))
+        await svc.backfill_day(DAY)
+        assert seen == [True]
+        assert svc.progress is None
+    pool_run(go)
+
+
+def test_start_backfill_shows_as_running_immediately(pool_run, monkeypatch, frozen_today):
+    _mk(monkeypatch)
+
+    async def go(pool):
+        svc = service(pool)
+        task = svc.start_backfill(DAY)
+        st = await svc.backfill_status()
+        assert st["running"] is not None and st["running"]["day"] == DAY.isoformat()
+        await task
+        assert (await svc.backfill_status())["running"] is None
+    pool_run(go)
