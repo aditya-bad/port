@@ -1,9 +1,11 @@
 """
 live_deploy — custom_scripts/import_candles.py
 
-Loads price history into the app's candle store (candles_1m, see
-app/candles.py), so cycle charts work for contracts the app never
-recorded itself (e.g. expired before this version). Two ways in:
+Loads OPTION contract history into the app's candle store (candles_1m,
+see app/candles.py), so cycle charts work for contracts the app never
+recorded itself (e.g. expired before this version). Only options (CE/PE)
+are stored — Kite keeps index and stock history, but drops a contract's
+at expiry; anything else in a file is skipped. Three ways in:
 
 1. Your own backups (CSV), any number of files or folders:
        python3 custom_scripts/import_candles.py --csv backups/
@@ -23,12 +25,11 @@ recorded itself (e.g. expired before this version). Two ways in:
    longer lists can't be fetched — use backups for those):
        python3 custom_scripts/import_candles.py --kite-since 2026-10-01
 
-3. Kite, for EVERY trade ever made (completed and open) whose contract
-   Kite still lists — expiring on or after --min-expiry (default: today;
-   Kite drops a contract's history once it expires): each contract's
-   whole holding span, and each deployment's index over its trades.
-   Each instrument once, however many trades it had; only days not
-   already stored are fetched:
+3. Kite, for EVERY option trade ever made (completed and open) whose
+   contract Kite still lists — expiring on or after --min-expiry
+   (default: today): each contract's whole holding span, each contract
+   once however many trades it had; only days not already stored are
+   fetched:
        python3 custom_scripts/import_candles.py --all-trades --min-expiry 2026-10-19
 
 Nothing is ever duplicated: one row per instrument per minute. Imported
@@ -127,6 +128,13 @@ async def import_csv(pool, paths: list[Path], dry: bool) -> None:
                 print(f"  ✗ {f.name} · {name}: {gap / 60:g}-minute candles — only 1-minute candles are stored "
                       f"(every other interval is rolled up from them). Skipped.")
                 continue
+            known = sym or await queries.position_symbol(pool, tok) or (
+                (await queries.get_contract(pool, tok)) or {}).get("tradingsymbol")
+            info = parse_contract(known or "")
+            if not info or info["instrument_type"] not in ("CE", "PE"):
+                print(f"  – {f.name} · {name}: not an option contract (or unknown token) — only options are "
+                      f"stored; Kite keeps index and stock history. Skipped.")
+                continue
             if tok is None:
                 tok = await queries.find_contract_token(pool, sym)
                 if tok is None:
@@ -168,29 +176,29 @@ async def import_all_trades(pool, cfg, min_expiry: date, dry: bool) -> None:
     from datetime import timezone
     windows = await queries.instrument_hold_windows(pool)
     plan, skipped = [], []
+    others = 0
     for w in windows:
         sym = w["symbol"]
         info = parse_contract(sym or "")
+        if not info or info["instrument_type"] not in ("CE", "PE"):
+            others += 1            # an index, stock or future: Kite keeps those
+            continue
         contract = await queries.get_contract(pool, int(w["instrument_token"]))
         expiry = contract["expiry"] if contract and contract["expiry"] else (info["expiry"] if info else None)
         if expiry is not None and expiry < min_expiry:
             skipped.append((sym, expiry))
             continue
         plan.append((int(w["instrument_token"]), sym, w["first_open"], w["last_close"], expiry))
-    seen = {p[0] for p in plan}
-    for u in await queries.underlying_trade_windows(pool):
-        if u["instrument_token"] is not None and int(u["instrument_token"]) not in seen:
-            plan.append((int(u["instrument_token"]), None, u["first_open"], u["last_close"], None))
-            seen.add(int(u["instrument_token"]))
-    print(f"{len(windows)} instrument(s) ever traded: {len(skipped)} expired before {min_expiry} (Kite has no "
-          f"history for those — use --csv backups), {len(plan)} to fill (incl. indices).")
+    print(f"{len(windows)} instrument(s) ever traded: {len(plan)} option contract(s) to fill, "
+          f"{len(skipped)} expired before {min_expiry} (Kite has no history for those — use --csv backups)"
+          f"{f', {others} non-option(s) not stored' if others else ''}.")
     for sym, exp in skipped[:10]:
         print(f"  – skip {sym} (expired {exp})")
     if len(skipped) > 10:
         print(f"  – … and {len(skipped) - 10} more")
     if dry:
         for tok, sym, a, b, exp in plan:
-            print(f"  would fill {sym or 'index'} ({tok}): {a.astimezone(IST):%d %b %Y} → {b.astimezone(IST):%d %b %Y}")
+            print(f"  would fill {sym} ({tok}): {a.astimezone(IST):%d %b %Y} → {b.astimezone(IST):%d %b %Y}")
         return
     session = await queries.get_kite_session(pool)
     if not session:
@@ -207,10 +215,10 @@ async def import_all_trades(pool, cfg, min_expiry: date, dry: bool) -> None:
         try:
             n = await svc.ensure(tok, start, end, symbol=sym)
         except Exception as e:
-            print(f"  ✗ {sym or 'index'} ({tok}): {e}")
+            print(f"  ✗ {sym} ({tok}): {e}")
             continue
         total += n
-        print(f"  ✓ {sym or 'index'} ({tok}): {n} minute(s) stored, {svc.kite_requests - before} Kite request(s)")
+        print(f"  ✓ {sym} ({tok}): {n} minute(s) stored, {svc.kite_requests - before} Kite request(s)")
     print(f"Done: {total} minute(s) stored, {svc.kite_requests} Kite request(s).")
 
 

@@ -1,25 +1,29 @@
 """
-live_deploy — price history for every instrument the app holds or
-watches (indices and option/futures contracts), from one store.
+live_deploy — price history for charts. Option contracts are stored;
+indices and stocks are not.
 
-Storage: candles_1m (migration 0021) — one 1-minute OHLC row per
-instrument per minute, nothing else. A contract held by an intraday and
-a positional deployment at once is stored once; 5/15/60-minute candles
-are rolled up from the 1-minute rows when read (rollup()), anchored at
-09:15 like Kite's. Rows come from three places, best replacing worst:
-  - live ticks, consolidated per minute (DeploymentManager.candles_loop)
-    for every index and every contract any deployment holds;
+Why: Kite's historical API keeps serving an index's or a stock's
+history indefinitely, but drops an option contract's history the day it
+expires. So only OPTIONS (CE/PE) are kept, in candles_1m (migration
+0021): one 1-minute OHLC row per contract per minute, nothing else. A
+contract held by an intraday and a positional deployment at once is
+stored once; 5/15/60-minute candles are rolled up from the 1-minute rows
+when read (rollup()), anchored at 09:15 like Kite's. Rows come from:
+  - live ticks of every held contract, consolidated per minute
+    (DeploymentManager.candles_loop);
   - Kite's historical API, filling whatever minutes are missing — on a
-    chart request (series()) while a contract is still listed, and once
-    after every close for everything held that day (backfill_day()), so
-    a contract's history survives its expiry (Kite has none after);
+    chart request (series()) while the contract is still listed, and
+    once after every close for every contract held that day
+    (backfill_day()), so its history survives expiry;
   - backups imported with custom_scripts/import_candles.py.
+Everything else (indices, stocks) is fetched from Kite when a chart asks
+(at the chart's own interval), cached in memory only, never stored.
 
 Kite calls: one history request in flight at a time app-wide, through
 the resolver's process-wide throttle (≈3 requests a second, Kite's
-limit, with 429 back-off); a request for a day already covered is never
-made, a contract past its expiry is never asked for, and an instrument
-Kite had nothing for isn't asked again for an hour.
+limit, with 429 back-off); a stored day is never re-requested, an
+expired contract is never asked for, and an instrument Kite had nothing
+for isn't asked again for an hour.
 """
 
 from __future__ import annotations
@@ -125,6 +129,7 @@ class CandleService:
         self._token_locks: dict[int, asyncio.Lock] = {}
         self._kite_lock = asyncio.Lock()          # one history request in flight, app-wide
         self._no_data: dict[tuple[int, date], float] = {}
+        self._kite_cache: dict[tuple, tuple[datetime, list]] = {}   # indices/stocks, in memory only
         self.kite_requests = 0                    # for tests and the status endpoint
 
     # ── Reading ──────────────────────────────────────────────────────
@@ -135,6 +140,8 @@ class CandleService:
         filled from Kite first when `fetch` and the contract is still
         listed. source: "stored" (covered), "stored_partial" (some days
         incomplete) or None (nothing); error says why data is missing."""
+        if not await self.is_option(token, symbol):
+            return await self._from_kite(token, start, end, interval, fetch)
         err = None
         if fetch:
             try:
@@ -149,6 +156,51 @@ class CandleService:
             return [], None, err or "No price history stored for this instrument and window."
         missing = await self._missing_days(token, start, end)
         return rollup(rows, interval), ("stored_partial" if missing else "stored"), None
+
+    async def is_option(self, token: int, symbol: Optional[str] = None) -> bool:
+        """Only option contracts (CE/PE) are stored. Known from the symbol
+        given, else the contracts table, else any position that held it."""
+        if symbol is None:
+            c = await queries.get_contract(self.pool, token)
+            if c is not None and c["instrument_type"]:
+                return c["instrument_type"] in ("CE", "PE")
+            symbol = await queries.position_symbol(self.pool, token)
+        p = parse_contract(symbol or "")
+        return bool(p and p["instrument_type"] in ("CE", "PE"))
+
+    async def _from_kite(self, token, start, end, interval, fetch) -> tuple[list[dict], Optional[str], Optional[str]]:
+        """An index or a stock: Kite's own history at the chart's interval,
+        cached in memory (finished windows kept, live ones for a minute),
+        never stored."""
+        key = (token, start.isoformat(), end.isoformat(), interval)
+        now = datetime.now(timezone.utc)
+        hit = self._kite_cache.get(key)
+        if hit is not None and (end < now - timedelta(minutes=10) or now - hit[0] < timedelta(seconds=60)):
+            return hit[1], "kite", None
+        if not fetch:
+            return [], None, "Kite isn't logged in, so this history can't be fetched. Log in and reload."
+        try:
+            out = []
+            for a, b in _windows(start, end, interval):
+                async with self._kite_lock:
+                    self.kite_requests += 1
+                    raw = await OptionsResolver(self.dispatcher).get_historical_candles(
+                        token, a.astimezone(IST).replace(tzinfo=None), b.astimezone(IST).replace(tzinfo=None), interval)
+                for c in raw or []:
+                    ts = c["date"]
+                    ts = ts.replace(tzinfo=IST) if ts.tzinfo is None else ts
+                    out.append({"t": _ms(ts), "o": c["open"], "h": c["high"], "l": c["low"], "c": c["close"]})
+        except NoKiteSession:
+            return [], None, "Kite isn't logged in, so this history can't be fetched. Log in and reload."
+        except Exception as e:
+            logger.exception("Candles: Kite history for %s failed", token)
+            return [], None, f"Couldn't fetch the history ({e})."
+        if not out:
+            return [], None, "Kite returned no history for this window."
+        if len(self._kite_cache) >= 500:
+            self._kite_cache.pop(next(iter(self._kite_cache)))
+        self._kite_cache[key] = (now, out)
+        return out, "kite", None
 
     # ── Filling from Kite ────────────────────────────────────────────
 
@@ -179,6 +231,8 @@ class CandleService:
         """Make [start, end) covered, fetching only the days that aren't
         from Kite. Returns the number of minutes stored. Concurrent calls
         for one instrument share the work (the second finds it done)."""
+        if not await self.is_option(token, symbol):
+            return 0               # only option contracts are ever stored
         today = datetime.now(IST).date()
         expiry = await self._expiry(token, symbol)
         lock = self._token_locks.setdefault(token, asyncio.Lock())
@@ -219,20 +273,19 @@ class CandleService:
 
     # ── After the close ──────────────────────────────────────────────
 
-    async def backfill_day(self, day: date, extra_tokens: tuple = ()) -> dict:
-        """Everything held on `day` (each distinct instrument once,
-        whichever deployments held it) plus `extra_tokens` (the indices):
-        fill the day's missing minutes from Kite while it still has them.
-        Returns {"instruments": n, "fetched": tokens fetched, "rows": n}."""
+    async def backfill_day(self, day: date) -> dict:
+        """Every option contract held on `day` — each once, whichever
+        deployments held it: fill the day's missing minutes from Kite
+        while it still has them. Returns {"instruments": n, "fetched":
+        tokens fetched, "rows": n}."""
         start = datetime.combine(day, SESSION_OPEN, IST)
         end = datetime.combine(day, SESSION_CLOSE, IST)
-        held = await queries.instruments_held_between(self.pool, start, end)
+        held = [r for r in await queries.instruments_held_between(self.pool, start, end)
+                if (parse_contract(r["symbol"] or "") or {}).get("instrument_type") in ("CE", "PE")]
         await self.remember_contracts([(int(r["instrument_token"]), r["symbol"]) for r in held])
-        targets = {int(r["instrument_token"]): r["symbol"] for r in held}
-        for t in extra_tokens:
-            targets.setdefault(int(t), None)
         fetched, rows = [], 0
-        for token, symbol in sorted(targets.items()):
+        for r in sorted(held, key=lambda r: int(r["instrument_token"])):
+            token, symbol = int(r["instrument_token"]), r["symbol"]
             before = self.kite_requests
             try:
                 n = await self.ensure(token, start, end, symbol=symbol)
@@ -240,14 +293,14 @@ class CandleService:
                 logger.warning("Candle backfill for %s stopped: Kite isn't logged in", day)
                 break
             except Exception:
-                logger.exception("Candle backfill: %s (%s) failed — continuing", symbol or token, token)
+                logger.exception("Candle backfill: %s (%s) failed — continuing", symbol, token)
                 continue
             if self.kite_requests > before:
                 fetched.append(token)
             rows += n
-        logger.info("Candle backfill %s: %d instrument(s), %d fetched from Kite, %d minute(s) stored",
-                    day, len(targets), len(fetched), rows)
-        return {"instruments": len(targets), "fetched": fetched, "rows": rows}
+        logger.info("Candle backfill %s: %d option contract(s), %d fetched from Kite, %d minute(s) stored",
+                    day, len(held), len(fetched), rows)
+        return {"instruments": len(held), "fetched": fetched, "rows": rows}
 
     async def remember_contracts(self, items: list[tuple[int, str]]) -> None:
         """Record what each (token, tradingsymbol) is, from the symbol."""
@@ -257,6 +310,21 @@ class CandleService:
             if p:
                 rows.append({"instrument_token": token, "tradingsymbol": symbol, **p})
         await queries.upsert_contracts(self.pool, rows)
+
+
+# Kite's longest window per request, by interval.
+_MAX_SPAN = {"minute": 60, "3minute": 100, "5minute": 100, "10minute": 100, "15minute": 200,
+             "30minute": 200, "60minute": 400, "day": 2000}
+
+
+def _windows(start: datetime, end: datetime, interval: str) -> list[tuple[datetime, datetime]]:
+    span = timedelta(days=_MAX_SPAN.get(interval, 60) - 1)
+    out, a = [], start
+    while a < end:
+        b = min(end, a + span)
+        out.append((a, b))
+        a = b
+    return out
 
 
 def _chunks(days: list[date]) -> list[list[date]]:

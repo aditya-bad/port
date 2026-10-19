@@ -31,6 +31,7 @@ def test_imports_one_minute_backups_and_refuses_other_intervals(pool_run, tmp_pa
     async def go(pool):
         d = (await queries.create_deployment(pool, "D", "strangle_monthly_v2", "positional", 1e6, {}))["id"]
         await fill(pool, d, "NIFTY26SEP24000CE", 333, "sell", 75, 5, datetime(2026, 9, 1, 10, 0))
+        await fill(pool, d, "NIFTY26SEP25000PE", 111, "sell", 75, 5, datetime(2026, 9, 1, 10, 0))   # so token 111 is a known option
         await imp.import_csv(pool, [tmp_path], dry=False)
         await imp.import_csv(pool, [tmp_path / "a.csv"], dry=False)          # re-run: no duplicates
         counts = {r["instrument_token"]: r["n"] for r in await pool.fetch(
@@ -71,7 +72,7 @@ def test_all_trades_backfills_every_listed_contract_once(pool_run, monkeypatch, 
         await fill(pool, b, "NIFTY26O0625000PE", 502, "buy", 75, 40, datetime(2026, 10, 1, 11, 0))
         await imp.import_all_trades(pool, {"api_key": "k"}, date(2026, 10, 19), dry=False)
         tokens = sorted({t for t, *_ in asked})
-        assert tokens == [501, 256265], "the listed contract once, the index once; the expired one never"
+        assert tokens == [501], "the listed contract once; the expired one and the index never"
         n501 = await pool.fetchval("SELECT count(*) FROM candles_1m WHERE instrument_token = 501")
         assert n501 == 3 * 375, "12–14 Oct, its whole holding span, one row a minute"
         asked.clear()
@@ -80,3 +81,16 @@ def test_all_trades_backfills_every_listed_contract_once(pool_run, monkeypatch, 
     pool_run(go)
     out = capsys.readouterr().out
     assert "skip NIFTY26O0625000PE" in out
+
+
+
+def test_csv_import_refuses_indices(pool_run, tmp_path, capsys):
+    t0 = datetime(2026, 9, 1, 9, 15)
+    write(tmp_path / "nifty.csv", ["instrument_token", "date", "open", "high", "low", "close"],
+          [(256265, (t0 + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M"), 1, 1, 1, 1) for i in range(30)])
+
+    async def go(pool):
+        await imp.import_csv(pool, [tmp_path], dry=False)
+        assert await pool.fetchval("SELECT count(*) FROM candles_1m") == 0
+    pool_run(go)
+    assert "not an option contract" in capsys.readouterr().out

@@ -4,10 +4,10 @@
 // and every order. Opened from Daily stats or Cycles; Newer / Older step
 // through the rest.
 //
-// Data: GET /deployments/{id}/cycles/{key}/chart. The underlying and
-// every option leg come from the app's 1-minute candle store (recorded
-// live, filled from Kite, kept after expiry), rolled up to the chart's
-// interval; older legs fall back to the app's per-leg marks.
+// Data: GET /deployments/{id}/cycles/{key}/chart. The underlying comes
+// from Kite's history; option legs from the app's 1-minute option store
+// (recorded live, filled from Kite, kept after expiry), rolled up to the
+// chart's interval; older legs fall back to the app's per-leg marks.
 // The interval is whatever the server picked for the window; there's
 // no picker.
 
@@ -135,7 +135,7 @@ function chart(m, sym, ch) {
       ${m.events.some(e => e.kind === 'rollout') ? html`<span><i class="d" style="background:var(--c5)"></i>EOD roll-out</span>` : ''}
       <span><i class="d" style="background:${lineC}"></i>Exit</span>
       ${m.seps.length ? html`<span><i style="width:0;height:12px;border-left:1px dashed var(--line2)"></i>New trading day</span>` : ''}
-      <span class="grow"></span><span>${INTERVAL[ch.window.interval] || ch.window.interval} data · index ${({ stored: 'stored 1-minute history', stored_partial: 'stored history, some gaps' })[ch.underlying_source] || 'unavailable'}</span>
+      <span class="grow"></span><span>${INTERVAL[ch.window.interval] || ch.window.interval} data · index ${({ kite: 'from Kite history', stored: 'stored 1-minute history', stored_partial: 'stored history, some gaps' })[ch.underlying_source] || 'unavailable'}</span>
     </div>`;
 }
 

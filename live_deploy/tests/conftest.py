@@ -195,6 +195,7 @@ def app_client(db):
         app.state.v2_book = None
         app.state.dispatcher.last_prices.clear()
         app.state.candles._no_data.clear()
+        app.state.candles._kite_cache.clear()
         app.state.candles.kite_requests = 0
         await truncate_all()
         await app.state.db_pool.execute("UPDATE strategy_settings SET enabled = true")

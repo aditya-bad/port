@@ -183,15 +183,6 @@ async def seed():
                 "realized_pnl_cumulative) VALUES ($1,$2,$3,0,$3,0)", ids[name], t, v)
             t += timedelta(minutes=5)
             i += 1
-    # 1-minute NIFTY candles for the last two months: the cycle charts' index panel
-    await pool.execute("""
-        INSERT INTO candles_1m (instrument_token, minute, open, high, low, close, source)
-        SELECT 256265, m, v, v + 3, v - 3, v, 'ticks' FROM (
-          SELECT m, 25000 + 300 * sin(extract(epoch FROM m) / 200000.0) + 60 * sin(extract(epoch FROM m) / 9000.0) AS v
-          FROM generate_series(date_trunc('day', now() - interval '60 days'), now(), interval '1 minute') m
-          WHERE extract(isodow FROM m AT TIME ZONE 'Asia/Kolkata') < 6
-            AND (m AT TIME ZONE 'Asia/Kolkata')::time >= '09:15' AND (m AT TIME ZONE 'Asia/Kolkata')::time < '15:30') x
-    """)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -203,6 +194,23 @@ def main():
     prices = asyncio.run(seed())
     import uvicorn
     from app.main import app
+    from app.options.resolver import OptionsResolver
+
+    # Kite isn't logged in here: indices' history (what a chart asks Kite
+    # for) is synthesised instead, at whatever interval is asked for.
+    async def index_history(self, token, start, end, interval):
+        if token not in TOKEN.values():
+            return []
+        step = {"minute": 1, "5minute": 5, "15minute": 15, "60minute": 60}.get(interval, 1)
+        out, t = [], start
+        while t <= end:
+            if t.weekday() < 5 and time(9, 15) <= t.time() < time(15, 30):
+                e = t.timestamp()
+                v = 25000 + 300 * math.sin(e / 200000.0) + 60 * math.sin(e / 9000.0)
+                out.append({"date": t, "open": v, "high": v + 3, "low": v - 3, "close": v})
+            t += timedelta(minutes=step)
+        return out
+    OptionsResolver.get_historical_candles = index_history
 
     @app.on_event("startup")
     async def _prices():

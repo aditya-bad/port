@@ -258,31 +258,27 @@ def test_active_periods_summary(client):
 
 # ── Cycles ────────────────────────────────────────────────────────────
 
-def record_session_candles(client, token, day, spot=25000.0):
-    minute = at(day, "09:15")
-    rows = []
-    while minute < at(day, "15:30"):
-        rows.append((token, minute, spot, spot + 5, spot - 5, spot + 1))
-        spot += 1
-        minute += timedelta(minutes=1)
-    from app.db import queries
-    pool = client.app.state.db_pool
-    client.portal.call(lambda: queries.record_index_candles(pool, rows))
+def test_cycles_list_and_chart_with_recorded_underlying(client, monkeypatch):
+    """Legs from the store; the index straight from Kite (never stored)."""
+    import app.candles as C
 
-
-def test_cycles_list_and_chart_with_recorded_underlying(client):
+    async def history(resolver, token, start, end, interval):
+        assert token == 256265 and interval == "minute"
+        return [{"date": start.replace(tzinfo=IST) + timedelta(minutes=i), "open": 25000 + 15 + i, "high": 25020 + i,
+                 "low": 25010 + i, "close": 25016 + i} for i in range(int((end - start).total_seconds() // 60))]
+    monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", history)
     d = make_deployment(client)
     token = int(client.get(f"/deployments/{d['id']}").json()["config"]["instrument_tokens"][0])
     add_fill(client, d["id"], "NIFTY25000CE", 11, "sell", 75, 100, at(PAST, "09:30"), reason="entry")
     add_fill(client, d["id"], "NIFTY25000PE", 12, "sell", 75, 100, at(PAST, "09:30"), reason="entry")
     add_fill(client, d["id"], "NIFTY25000CE", 11, "buy", 75, 70, at(PAST, "15:15"), reason="exit")
     add_fill(client, d["id"], "NIFTY25000PE", 12, "buy", 75, 90, at(PAST, "15:15"), reason="exit")
-    record_session_candles(client, token, PAST)
     [c] = client.get(f"/deployments/{d['id']}/cycles").json()
     assert c["status"] == "closed" and c["positions"] == 2 and c["fills"] == 4
     assert c["realized_pnl"] == pytest.approx(3000)
     ch = client.get(f"/deployments/{d['id']}/cycles/{c['key']}/chart").json()
-    assert ch["underlying_source"] == "stored" and ch["underlying"]
+    assert ch["underlying_source"] == "kite" and ch["underlying"]
+    assert sql(client, "SELECT 1 FROM candles_1m WHERE instrument_token = 256265") == [], "the index is never stored"
     assert ch["cycle"]["mode"] == "intraday"
     assert {p["symbol"] for p in ch["positions"]} == {"NIFTY25000CE", "NIFTY25000PE"}
     assert ch["stats"]["realized_pnl"] == pytest.approx(3000)
@@ -358,6 +354,8 @@ def test_candles_api_rollup_and_coverage(client):
     from app.db import queries
     pool = client.app.state.db_pool
     day = PAST
+    client.portal.call(lambda: queries.upsert_contracts(pool, [{"instrument_token": 5151, "tradingsymbol": "NIFTY26DEC25100CE",
+                                                                "instrument_type": "CE"}]))
     rows = [(5151, at(day, "09:15") + timedelta(minutes=i), 100, 101, 99, 100 + i, None) for i in range(375)]
     client.portal.call(lambda: queries.upsert_candles(pool, rows, "ticks"))
     r = client.get("/candles/5151", params={"start": at(day, "09:15").isoformat(), "end": at(day, "15:30").isoformat(),
@@ -380,8 +378,7 @@ def test_held_contracts_are_recorded_live(client):
     add_fill(client, d["id"], "NIFTY26O2725000CE", 7171, "sell", 75, 100, at(TODAY, "09:30"))
     mgr = client.app.state.deployment_manager
     client.portal.call(mgr.runners[d["id"]]._reload_positions)
-    watch = mgr.watched_tokens([256265])
-    assert 7171 in watch and 256265 in watch
+    assert mgr.watched_tokens() == {7171}, "held option contracts only: the index is never stored"
 
 
 def test_backfill_endpoint_fills_held_instruments_once(client, monkeypatch):

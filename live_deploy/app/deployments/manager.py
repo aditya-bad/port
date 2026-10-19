@@ -643,21 +643,21 @@ class DeploymentManager:
 
     # ── 1-minute candles (Cycle / Session charts, app/candles.py) ──────
 
-    def watched_tokens(self, static_tokens) -> set[int]:
-        """Everything whose price history the app keeps: the indices, each
-        running deployment's underlying, and every contract any running
-        deployment holds (each once, however many deployments hold it)."""
-        watch = set(int(t) for t in static_tokens)
+    def watched_tokens(self, static_tokens=()) -> set[int]:
+        """The option contracts whose minutes the app stores: every CE/PE
+        any running deployment holds, each once however many hold it.
+        Indices and stocks are never stored — Kite keeps their history
+        (app/candles.py)."""
+        watch: set[int] = set()
         for runner in self.runners.values():
-            toks = runner.config.get("instrument_tokens") or []
-            if toks:
-                watch.add(int(toks[0]))
-            watch.update(int(t) for t in runner.open_positions)
+            for tok, pos in runner.open_positions.items():
+                if str(pos.get("symbol", "")).endswith(("CE", "PE")):
+                    watch.add(int(tok))
         return watch
 
     async def candles_loop(self, static_tokens: list[int]) -> None:
-        """Builds a 1-minute OHLC candle from the live ticks for every
-        watched instrument (watched_tokens) and stores it once the minute
+        """Builds a 1-minute OHLC candle from the live ticks of every held
+        option contract (watched_tokens) and stores it once the minute
         closes, so a contract's chart survives its expiry even though
         Kite then has no history for it. Market hours only; a tick still
         carrying an earlier day's trade (holiday, pre-open snapshot) is
@@ -698,19 +698,18 @@ class DeploymentManager:
 
     BACKFILL_AT = time(15, 40)
 
-    async def candle_backfill_loop(self, candles, static_tokens: list[int]) -> None:
+    async def candle_backfill_loop(self, candles) -> None:
         """Once a trading day, after the close: fill the day's history of
-        every instrument held today (and the indices) from Kite while it
-        still has it — expired contracts can't be fetched later. Also
-        runs right away on a start after the close, in case the app was
-        down at 15:40. Cheap to repeat: covered days are never fetched."""
+        every option contract held today from Kite while it still has it
+        — expired contracts can't be fetched later. Also runs right away
+        on a start after the close, in case the app was down at 15:40.
+        Cheap to repeat: covered days are never fetched."""
         done: Optional[date] = None
         while True:
             now = datetime.now(_IST)
             if now.weekday() < 5 and now.time() >= self.BACKFILL_AT and done != now.date():
                 try:
-                    tokens = self.watched_tokens(static_tokens)
-                    await candles.backfill_day(now.date(), extra_tokens=tuple(tokens))
+                    await candles.backfill_day(now.date())
                     done = now.date()
                 except Exception:
                     logger.exception("Candle backfill failed — will retry")

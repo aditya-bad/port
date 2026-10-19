@@ -1143,6 +1143,13 @@ async def get_contract(pool: asyncpg.Pool, instrument_token: int) -> Optional[as
         return await conn.fetchrow("SELECT * FROM contracts WHERE instrument_token = $1", instrument_token)
 
 
+async def position_symbol(pool: asyncpg.Pool, instrument_token: int) -> Optional[str]:
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT symbol FROM positions WHERE instrument_token = $1 ORDER BY opened_at DESC LIMIT 1",
+            instrument_token)
+
+
 async def find_contract_token(pool: asyncpg.Pool, tradingsymbol: str) -> Optional[int]:
     """A tradingsymbol's token: from contracts, else from any position."""
     async with pool.acquire() as conn:
@@ -1169,23 +1176,6 @@ async def instrument_hold_windows(pool: asyncpg.Pool) -> list[asyncpg.Record]:
             FROM positions
             GROUP BY instrument_token
             ORDER BY min(opened_at)
-            """
-        )
-
-
-async def underlying_trade_windows(pool: asyncpg.Pool) -> list[asyncpg.Record]:
-    """Each deployment's underlying token (config.instrument_tokens[0])
-    with the span its trades covered."""
-    async with pool.acquire() as conn:
-        return await conn.fetch(
-            """
-            SELECT (d.config->'instrument_tokens'->>0)::bigint AS instrument_token,
-                   min(p.opened_at) AS first_open,
-                   CASE WHEN bool_or(p.closed_at IS NULL) THEN now() ELSE max(p.closed_at) END AS last_close
-            FROM positions p JOIN deployments d ON d.id = p.deployment_id
-            WHERE jsonb_typeof(d.config->'instrument_tokens') = 'array'
-              AND d.config->'instrument_tokens'->>0 IS NOT NULL
-            GROUP BY 1
             """
         )
 

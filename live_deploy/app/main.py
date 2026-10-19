@@ -380,15 +380,15 @@ async def startup() -> None:
     # ── Health watchdog: deployments active but not running, and Kite
     # not connected by 09:05 on a market day — see watchdog_loop.
     app.state.watchdog_task = asyncio.create_task(manager.watchdog_loop(), name="health-watchdog")
-    # ── 1-minute candles for every index and held contract: recorded from
-    # live ticks, filled from Kite where missing, backfilled after each
-    # close — one store behind every chart (app/candles.py).
+    # ── 1-minute candles of held option contracts (Kite drops them at
+    # expiry): recorded from live ticks, filled from Kite where missing,
+    # backfilled after each close. Indices/stocks come from Kite live.
     from .candles import CandleService
     app.state.candles = CandleService(db_pool, dispatcher)
     static = [int(t["instrument_token"]) for t in tokens]
     app.state.index_candles_task = asyncio.create_task(manager.candles_loop(static), name="candles-loop")
     app.state.candle_backfill_task = asyncio.create_task(
-        manager.candle_backfill_loop(app.state.candles, static), name="candle-backfill-loop",
+        manager.candle_backfill_loop(app.state.candles), name="candle-backfill-loop",
     )
 
     logger.info(

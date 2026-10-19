@@ -1,5 +1,5 @@
-"""live_deploy — /candles: price history from the one candle store
-(app/candles.py), for any chart that needs it."""
+"""live_deploy — /candles: price history for any chart (app/candles.py):
+option contracts from the store, indices and stocks from Kite."""
 
 from datetime import date, datetime, timedelta
 from typing import Optional
@@ -21,9 +21,10 @@ def _aware(dt: datetime) -> datetime:
 async def get_candles(instrument_token: int, start: datetime, end: datetime, request: Request,
                       interval: str = "minute", fetch: bool = True):
     """Candles for [start, end) at `interval` (minute, 3/5/10/15/30/60minute,
-    day), rolled up from stored 1-minute rows; missing minutes are fetched
-    from Kite first while the instrument is listed (fetch=false: stored
-    only). Naive times are IST."""
+    day). Options: rolled up from stored 1-minute rows, missing minutes
+    fetched from Kite first while the contract is listed (fetch=false:
+    stored only). Indices and stocks: straight from Kite. Naive times
+    are IST."""
     if interval not in INTERVAL_MINUTES and interval != "day":
         raise HTTPException(400, f"interval must be one of {sorted(INTERVAL_MINUTES) + ['day']}")
     start, end = _aware(start), _aware(end)
@@ -40,12 +41,13 @@ async def get_candles(instrument_token: int, start: datetime, end: datetime, req
 
 @router.get("")
 async def coverage(request: Request, day: Optional[date] = None):
-    """What's stored for a trading day: each instrument held that day (and
-    each other instrument with candles) with its minutes and sources."""
+    """What's stored for a trading day: each option contract held that day
+    (and any other stored) with its minutes and sources."""
     day = day or datetime.now(IST).date()
     start, end = datetime.combine(day, SESSION_OPEN, IST), datetime.combine(day, SESSION_CLOSE, IST)
     pool = request.app.state.db_pool
-    held = {int(r["instrument_token"]): r["symbol"] for r in await queries.instruments_held_between(pool, start, end)}
+    held = {int(r["instrument_token"]): r["symbol"] for r in await queries.instruments_held_between(pool, start, end)
+            if str(r["symbol"]).endswith(("CE", "PE"))}
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """
@@ -73,9 +75,7 @@ class BackfillIn(BaseModel):
 
 @router.post("/backfill")
 async def backfill(payload: BackfillIn, request: Request):
-    """Fill a day's missing minutes from Kite for everything held that
-    day plus the indices — what runs by itself after every close."""
+    """Fill a day's missing minutes from Kite for every option contract
+    held that day — what runs by itself after every close."""
     day = payload.day or datetime.now(IST).date()
-    manager = request.app.state.deployment_manager
-    static = list(request.app.state.dispatcher._static_tokens) if hasattr(request.app.state.dispatcher, "_static_tokens") else []
-    return await request.app.state.candles.backfill_day(day, extra_tokens=tuple(manager.watched_tokens(static)))
+    return await request.app.state.candles.backfill_day(day)

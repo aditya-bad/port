@@ -57,6 +57,12 @@ def service(pool):
     return C.CandleService(pool, type("D", (), {"access_token": "t", "api_key": "k"})())
 
 
+async def as_options(pool, *tokens):
+    """Register test tokens as listed option contracts (only options are stored)."""
+    await queries.upsert_contracts(pool, [{"instrument_token": t, "tradingsymbol": f"NIFTY26NOV{20000 + t}CE",
+                                           "expiry": date(2026, 11, 24), "instrument_type": "CE"} for t in tokens])
+
+
 @pytest.fixture
 def frozen_today(monkeypatch):
     """Make 'now' a later day so DAY is fully in the past."""
@@ -123,6 +129,7 @@ def test_fetches_only_what_is_missing_and_never_twice(pool_run, monkeypatch, fro
 
     async def go(pool):
         svc = service(pool)
+        await as_options(pool, 7)
         # the first half of the day was recorded from ticks
         await queries.upsert_candles(pool, [(7, at(DAY, 9, 15) + timedelta(minutes=i), 1, 1, 1, 1, None) for i in range(375)], "ticks")
         candles, src, err = await svc.series(7, at(DAY, 9, 15), at(DAY, 15, 30), "5minute")
@@ -140,6 +147,7 @@ def test_concurrent_requests_share_one_fetch_and_kite_sees_one_at_a_time(pool_ru
 
     async def go(pool):
         svc = service(pool)
+        await as_options(pool, 5, 6, 8, 9)
         w = (at(DAY, 9, 15), at(DAY, 15, 30))
         await asyncio.gather(*(svc.ensure(5, *w) for _ in range(4)), *(svc.ensure(t, *w) for t in (6, 8, 9)))
         assert sorted(c[0] for c in k.calls) == [5, 6, 8, 9], "one request per instrument, however many asked"
@@ -164,6 +172,7 @@ def test_an_instrument_kite_has_nothing_for_is_not_asked_again(pool_run, monkeyp
 
     async def go(pool):
         svc = service(pool)
+        await as_options(pool, 13)
         for _ in range(3):
             await svc.series(13, at(DAY, 9, 15), at(DAY, 15, 30))
         assert len(k.calls) == 1
@@ -174,6 +183,7 @@ def test_long_windows_are_split_into_kite_sized_requests(pool_run, monkeypatch, 
     k = _mk(monkeypatch)
 
     async def go(pool):
+        await as_options(pool, 14)
         await service(pool).ensure(14, at(date(2026, 8, 3), 9, 15), at(DAY, 15, 30))
         assert len(k.calls) >= 3
         for _, s, e in k.calls:
@@ -187,6 +197,7 @@ def test_no_kite_session_reports_and_keeps_what_is_stored(pool_run, monkeypatch,
     monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", no_session)
 
     async def go(pool):
+        await as_options(pool, 15, 16)
         await queries.upsert_candles(pool, [(15, at(DAY, 10, 0), 1, 1, 1, 1, None)], "ticks")
         candles, src, err = await service(pool).series(15, at(DAY, 9, 15), at(DAY, 15, 30))
         assert len(candles) == 1 and src == "stored_partial" and err is None
@@ -210,13 +221,80 @@ def test_backfill_fetches_each_held_instrument_once(pool_run, monkeypatch, froze
         await fill(pool, pos, "NIFTY26O2722000PE", 901, "sell", 75, 50, at(DAY, 9, 30))
         await fill(pool, pos, "NIFTY26O2721000PE", 902, "sell", 75, 50, at(DAY - timedelta(days=5), 9, 30))
         await fill(pool, pos, "NIFTY26O2721000PE", 902, "buy", 75, 40, at(DAY - timedelta(days=4), 9, 30))  # not held today
-        r = await service(pool).backfill_day(DAY, extra_tokens=(256265,))
-        assert sorted(c[0] for c in k.calls) == [900, 901, 256265], "each held instrument once, plus the index"
-        assert r["instruments"] == 3 and r["rows"] == 3 * 375
+        r = await service(pool).backfill_day(DAY)
+        assert sorted(c[0] for c in k.calls) == [900, 901], "each held option contract once"
+        assert r["instruments"] == 2 and r["rows"] == 2 * 375
         c = await queries.get_contract(pool, 900)
         assert c["tradingsymbol"] == sym and c["expiry"] == date(2026, 10, 27) and float(c["strike"]) == 23000
-        again = await service(pool).backfill_day(DAY, extra_tokens=(256265,))
+        again = await service(pool).backfill_day(DAY)
         assert again["fetched"] == [], "a re-run fetches nothing"
         # stored once, readable at any interval
         assert await pool.fetchval("SELECT count(*) FROM candles_1m WHERE instrument_token = 900") == 375
+    pool_run(go)
+
+
+
+# ── Indices and stocks: Kite's, never stored ──────────────────────────
+
+def test_indices_come_from_kite_at_the_chart_interval_and_are_never_stored(pool_run, monkeypatch, frozen_today):
+    asked = []
+
+    async def history(resolver, token, start, end, interval):
+        asked.append((token, interval))
+        return [{"date": start.replace(tzinfo=IST) + timedelta(minutes=15 * i), "open": 1, "high": 2, "low": 0, "close": 1}
+                for i in range(25)]
+    monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", history)
+
+    async def go(pool):
+        svc = service(pool)
+        w = (at(DAY, 9, 15), at(DAY, 15, 30))
+        candles, src, err = await svc.series(256265, *w, "15minute")
+        assert src == "kite" and len(candles) == 25 and err is None
+        assert asked == [(256265, "15minute")], "Kite's own interval: no 1-minute fetch, no rollup"
+        await svc.series(256265, *w, "15minute")
+        assert len(asked) == 1, "a finished window is served from memory"
+        assert await svc.ensure(256265, *w) == 0, "the store refuses a non-option"
+        assert await pool.fetchval("SELECT count(*) FROM candles_1m") == 0, "nothing stored"
+    pool_run(go)
+
+
+def test_index_without_kite_says_so(pool_run, monkeypatch, frozen_today):
+    async def no_session(*a):
+        raise C.NoKiteSession("no session")
+    monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", no_session)
+
+    async def go(pool):
+        candles, src, err = await service(pool).series(256265, at(DAY, 9, 15), at(DAY, 15, 30), "5minute")
+        assert candles == [] and src is None and "logged in" in err
+    pool_run(go)
+
+
+def test_backfill_skips_held_futures_and_stocks(pool_run, monkeypatch, frozen_today):
+    k = _mk(monkeypatch)
+
+    async def go(pool):
+        d = (await queries.create_deployment(pool, "F", "calendar_btst", "positional", 1e7, {}))["id"]
+        await fill(pool, d, "NIFTY26NOVFUT", 990, "buy", 75, 25000, at(DAY, 10, 0))
+        await fill(pool, d, "NIFTY26NOV25000PE", 991, "sell", 75, 100, at(DAY, 10, 0))
+        await service(pool).backfill_day(DAY)
+        assert [c[0] for c in k.calls] == [991]
+    pool_run(go)
+
+
+def test_migration_0022_removes_stored_index_candles_and_keeps_options(pool_run):
+    from pathlib import Path
+    sql = (Path(C.__file__).parent / "db" / "migrations" / "0022_candles_options_only.sql").read_text()
+
+    async def go(pool):
+        d = (await queries.create_deployment(pool, "D", "strangle_monthly_v2", "positional", 1e6, {}))["id"]
+        await fill(pool, d, "NIFTY26NOV25000CE", 31, "sell", 75, 100, at(DAY, 10, 0))
+        await queries.upsert_contracts(pool, [{"instrument_token": 32, "tradingsymbol": "NIFTY26DEC24000PE", "instrument_type": "PE"},
+                                              {"instrument_token": 33, "tradingsymbol": "NIFTY26DECFUT", "instrument_type": "FUT"}])
+        m = at(DAY, 10, 0)
+        for tok in (31, 32, 33, 256265):
+            await queries.upsert_candles(pool, [(tok, m, 1, 1, 1, 1, None)], "ticks")
+        await pool.execute(sql)
+        left = sorted(r["instrument_token"] for r in await pool.fetch("SELECT instrument_token FROM candles_1m"))
+        assert left == [31, 32], "options kept (from a position or the contracts table); index and future gone"
+        assert [r["instrument_token"] for r in await pool.fetch("SELECT instrument_token FROM contracts")] == [32]
     pool_run(go)
