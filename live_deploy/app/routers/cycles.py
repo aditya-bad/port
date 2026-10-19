@@ -7,15 +7,13 @@ adjustment — the same grouping as Stats "per position") or, for an
 intraday deployment, one IST trading day. For a cycle, the chart payload
 assembles:
 
-  - underlying candles: Kite historical data for the deployment's
-    underlying (config.instrument_tokens[0] — every strategy here keeps
-    its underlying first);
-  - each position's option price path: Kite historical data while the
-    contract is still listed; Kite has none for expired options, so the
-    fallback is the app's own per-leg price marks (position_marks: every
-    minute for intraday, every 5 minutes for positional, recorded from
-    this version onward); with neither, that leg is "unknown" between
-    its fills;
+  - underlying candles and each position's option price path, from the
+    app's 1-minute candle store (app/candles.py: recorded from live
+    ticks, filled from Kite while a contract is listed, backfilled after
+    every close, so contracts stay chartable after they expire), rolled
+    up to the chart's interval; for older legs the store doesn't cover,
+    the app's per-leg price marks (position_marks); with neither, that
+    leg is "unknown" between its fills;
   - the cycle's gross P&L at every point (closed legs at their realized
     P&L, open legs marked to that point's option price), plus, for
     positional deployments, the snapshot-based cycle P&L as a fallback
@@ -39,7 +37,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, HTTPException, Request
 
 from ..db import queries
-from ..options import NoKiteSession, OptionsResolver
+from ..candles import rollup, session_minutes
 
 logger = logging.getLogger("live_deploy.cycles")
 
@@ -52,14 +50,6 @@ _SESSION_OPEN, _SESSION_CLOSE = time(9, 15), time(15, 30)
 _EVENT_GAP = timedelta(seconds=90)
 _INTERVAL_SECONDS = {"minute": 60, "5minute": 300, "15minute": 900, "60minute": 3600}
 _MONTHLY_STRIKE_RE = re.compile(r"[A-Z]{3}(\d+(?:\.\d+)?)(CE|PE)$")
-
-# (token, start, end, interval) -> (fetched_at, candles). Windows that
-# ended well in the past never change, so they're kept; live windows are
-# refetched after a minute.
-_HIST_CACHE: dict[tuple, tuple[datetime, list]] = {}
-_HIST_CACHE_MAX = 500
-_LIVE_TTL = timedelta(seconds=60)
-
 
 def _ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
@@ -83,79 +73,9 @@ def _pick_interval(span: timedelta) -> str:
     return "60minute"
 
 
-async def _historical(resolver: OptionsResolver, token: int, start: datetime, end: datetime, interval: str) -> list[dict]:
-    """Candles as [{t, o, h, l, c}] (t = candle start, epoch ms). Raises
-    NoKiteSession / API errors to the caller."""
-    key = (token, start.isoformat(), end.isoformat(), interval)
-    now = datetime.now(timezone.utc)
-    hit = _HIST_CACHE.get(key)
-    if hit is not None and (end < now - timedelta(minutes=10) or now - hit[0] < _LIVE_TTL):
-        return hit[1]
-    raw = await resolver.get_historical_candles(token, start.astimezone(_IST), end.astimezone(_IST), interval)
-    candles = []
-    for c in raw:
-        ts = c["date"]
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=_IST)
-        candles.append({"t": _ms(ts), "o": c["open"], "h": c["high"], "l": c["low"], "c": c["close"]})
-    if len(_HIST_CACHE) >= _HIST_CACHE_MAX:
-        _HIST_CACHE.pop(next(iter(_HIST_CACHE)))
-    _HIST_CACHE[key] = (now, candles)
-    return candles
-
-
-def _session_minutes(start: datetime, end: datetime) -> int:
-    """Trading minutes (weekdays, 09:15-15:29 IST) in [start, end)."""
-    n, day = 0, start.astimezone(_IST).date()
-    while day <= end.astimezone(_IST).date():
-        if day.weekday() < 5:
-            o = max(start, datetime.combine(day, _SESSION_OPEN, _IST))
-            c = min(end, datetime.combine(day, _SESSION_CLOSE, _IST))
-            if c > o:
-                n += int((c - o).total_seconds() // 60)
-        day += timedelta(days=1)
-    return n
-
-
-def _bucket(rows, interval: str) -> list[dict]:
-    """1-minute candles -> `interval` candles, anchored at 09:15 like
-    Kite's own (t = bucket start, epoch ms)."""
-    step = _INTERVAL_SECONDS[interval] // 60
-    out: dict[int, dict] = {}
-    for r in rows:
-        m = r["minute"].astimezone(_IST)
-        open_ = datetime.combine(m.date(), _SESSION_OPEN, _IST)
-        k = int(((m - open_).total_seconds() // 60) // step * step)
-        t = _ms(open_ + timedelta(minutes=k))
-        c = out.get(t)
-        if c is None:
-            out[t] = {"t": t, "o": r["o"], "h": r["h"], "l": r["l"], "c": r["c"]}
-        else:
-            c["h"], c["l"], c["c"] = max(c["h"], r["h"]), min(c["l"], r["l"]), r["c"]
-    return [out[t] for t in sorted(out)]
-
-
-async def _underlying_candles(pool, resolver, token: int, start: datetime, end: datetime, interval: str):
-    """(candles, source, error). Our own recorded 1-minute candles when
-    they cover the window (>= 90% of its trading minutes); else Kite's
-    historical API; else whatever we recorded, partial. Raises nothing."""
-    rows = await queries.list_index_candles(pool, token, start, end)
-    expected = _session_minutes(start, min(end, datetime.now(timezone.utc)))
-    if rows and expected and len(rows) >= 0.9 * expected:
-        return _bucket(rows, interval), "recorded", None
-    try:
-        candles = await _historical(resolver, token, start, end, interval)
-        if candles:
-            return candles, "kite", None
-        err = "Kite returned no underlying history for this window."
-    except NoKiteSession:
-        err = "Kite isn't logged in, so the underlying's history can't be fetched. Log in and reload."
-    except Exception as e:
-        logger.exception("Cycles: underlying history failed for token %s", token)
-        err = f"Couldn't fetch the underlying's history ({e})."
-    if rows:
-        return _bucket(rows, interval), "recorded_partial", None
-    return [], None, err
+# The rollup and session arithmetic live with the candle store.
+_bucket = rollup
+_session_minutes = session_minutes
 
 
 async def _load_cycles(pool, dep) -> list[dict]:
@@ -310,11 +230,12 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
     events = _group_events(lots, cycle)
     snapshots = await queries.list_snapshots_between(pool, deployment_id, win_start, win_end)
 
-    resolver = OptionsResolver(request.app.state.dispatcher)
+    store = request.app.state.candles
     notes: list[str] = []
 
-    # Underlying: our own recorded candles first, Kite's history if those
-    # don't cover the window (see _underlying_candles).
+    # Underlying, then every leg: one store, 1-minute rows rolled up to
+    # the chart's interval, missing minutes fetched from Kite while the
+    # instrument is still listed (app/candles.py).
     underlying: list[dict] = []
     underlying_error = None
     underlying_source = None
@@ -323,8 +244,8 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
     if not tokens:
         underlying_error = "No underlying instrument configured for this deployment."
     else:
-        underlying, underlying_source, underlying_error = await _underlying_candles(
-            pool, resolver, int(tokens[0]), win_start, win_end, interval,
+        underlying, underlying_source, underlying_error = await store.series(
+            int(tokens[0]), win_start, win_end, interval,
         )
         if underlying_error and "logged in" in underlying_error:
             kite_logged_in = False
@@ -334,28 +255,21 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
     for m in await queries.list_marks_for_positions(pool, [p["id"] for p in positions], win_start, win_end):
         marks_by_pos.setdefault(str(m["position_id"]), []).append((_ms(m["marked_at"]), m["price"]))
 
-    kite_by_token: dict[int, list[tuple[int, float]]] = {}
+    stored_by_token: dict[int, list[tuple[int, float]]] = {}
     for token in sorted({int(p["instrument_token"]) for p in positions}):
-        if not kite_logged_in:
-            break
         legs = [p for p in positions if int(p["instrument_token"]) == token]
         t0 = max(win_start, min(p["opened_at"] for p in legs) - timedelta(minutes=1))
         t1 = min(win_end, max((p["closed_at"] or now) for p in legs) + timedelta(minutes=1))
-        try:
-            candles = await _historical(resolver, token, t0, t1, interval)
-            if candles:
-                kite_by_token[token] = [(c["t"], c["c"]) for c in candles]
-        except NoKiteSession:
-            kite_logged_in = False
-        except Exception:
-            logger.info("Cycles: no Kite history for option token %s (likely expired)", token)
+        candles, _, _ = await store.series(token, t0, t1, interval, fetch=kite_logged_in, symbol=legs[0]["symbol"])
+        if candles:
+            stored_by_token[token] = [(c["t"], c["c"]) for c in candles]
 
     pos_out, series_of = [], []
     for p in positions:
         pid = str(p["id"])
         token = int(p["instrument_token"])
-        if token in kite_by_token:
-            source, series = "kite", kite_by_token[token]
+        if token in stored_by_token:
+            source, series = "stored", stored_by_token[token]
         elif pid in marks_by_pos:
             source, series = "marks", marks_by_pos[pid]
         else:
@@ -429,7 +343,8 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
             + ("; the cycle's P&L line uses the 5-minute account snapshots instead." if snapshot_pnl else ".")
         )
     if any(po["price_source"] == "marks" for po in pos_out):
-        notes.append("Some legs use the app's own recorded price marks (1-min intraday, 5-min positional) — the contract has expired on Kite.")
+        notes.append("Some legs use the app's older per-leg price marks (1-min intraday, 5-min positional): "
+                     "they expired before the candle store kept their history.")
 
     # Stats
     in_cycle = [c for c in underlying if _ms(start) - step_ms < c["t"] <= _ms(end)]

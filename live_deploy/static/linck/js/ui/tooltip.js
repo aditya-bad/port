@@ -2,6 +2,9 @@
 //   data-tip="Title\nLabel  value\n..."  on any element
 //   data-scrub="key" on an SVG/line chart, with registerScrub(key, fn)
 //     where fn(fraction 0–1) → { t, ys: [0–1...], cs: [css colour...] }
+//     or, for charts stacked in panels that scrub together (several
+//     elements sharing one key): { t, span: element the guide runs
+//     through, pts: [{ el, y: 0–1 within el, c }] }
 // Desktop follows the pointer; on touch it sits above the finger and
 // line charts scrub on sideways drag.
 
@@ -28,7 +31,7 @@ function hide() {
 }
 function show(e, el) {
   const rect = el.getBoundingClientRect();
-  let text, ys = [], cs = [], gx = null;
+  let text, ys = [], cs = [], gx = null, guideBox = null, pts = null;
   if (el.dataset.scrub) {
     const fn = scrubs.get(el.dataset.scrub);
     if (!fn) return hide();
@@ -37,6 +40,11 @@ function show(e, el) {
     if (!r) return hide();
     text = r.t; ys = r.ys || []; cs = r.cs || [];
     gx = rect.left + f * rect.width;
+    if (r.span) {
+      // one guide through every linked panel, a dot on each panel's line
+      guideBox = r.span.getBoundingClientRect();
+      pts = (r.pts || []).map(p => { const b = p.el.getBoundingClientRect(); return p.y == null ? null : { top: b.top + p.y * b.height, c: p.c }; });
+    }
   } else {
     text = el.getAttribute('data-tip');
     if (!text) return hide();
@@ -50,7 +58,20 @@ function show(e, el) {
   if (y + th > innerHeight - 8) y = e.clientY - th - 14;
   if (y < 8) y = e.clientY + 28;
   tip.style.left = `${x}px`; tip.style.top = `${y}px`;
-  if (gx !== null) {
+  if (gx !== null && pts) {
+    Object.assign(guide.style, { display: 'block', left: `${gx}px`, top: `${guideBox.top}px`, height: `${guideBox.height}px` });
+    while (dots.length < pts.length) {
+      const d = document.createElement('div');
+      d.className = 'tip-dot';
+      document.body.appendChild(d);
+      dots.push(d);
+    }
+    dots.forEach((d, i) => {
+      const p = pts[i];
+      if (!p) { d.style.display = 'none'; return; }
+      Object.assign(d.style, { display: 'block', left: `${gx}px`, top: `${p.top}px`, borderColor: p.c || 'var(--ink)' });
+    });
+  } else if (gx !== null) {
     Object.assign(guide.style, { display: 'block', left: `${gx}px`, top: `${rect.top}px`, height: `${rect.height}px` });
     while (dots.length < ys.length) {
       const d = document.createElement('div');

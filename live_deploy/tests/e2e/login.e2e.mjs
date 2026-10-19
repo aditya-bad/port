@@ -54,6 +54,19 @@ test('on a weekend, sign-in goes straight in without asking for Kite', async () 
   await ctx.close();
 });
 
+test('the market countdown runs to the second', async () => {
+  const ctx = await context(b, { signedIn: false });
+  const p = await ctx.newPage();
+  await p.clock.install({ time: new Date('2026-10-16T12:40:05+05:30') });   // Friday, market open
+  await p.goto(`${BASE}/linck/`);
+  await p.waitForSelector('.mk-big');
+  assert.equal(await p.textContent('.mk-big'), '2h 49m 55s');
+  await p.clock.runFor(3000);
+  assert.equal(await p.textContent('.mk-big'), '2h 49m 52s', 'ticks every second');
+  await p.clock.setFixedTime(new Date('2026-10-16T08:40:00+05:30'));
+  await ctx.close();
+});
+
 test('classic sign-in still works', async () => {
   const ctx = await context(b, { signedIn: false });
   const p = await ctx.newPage();

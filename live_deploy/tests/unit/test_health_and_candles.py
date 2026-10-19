@@ -38,46 +38,6 @@ def test_session_minutes_skips_nights_and_weekends():
     assert cycles._session_minutes(m(15, 0), m(9, 45, d=19)) == 60
 
 
-class Pool:
-    def __init__(self, rows):
-        self.rows = rows
-
-
-def run_underlying(rows, kite_result):
-    async def fake_list(pool, token, start, end):
-        return pool.rows
-
-    async def fake_hist(resolver, token, start, end, interval):
-        if isinstance(kite_result, Exception):
-            raise kite_result
-        return kite_result
-
-    orig_list, orig_hist = cycles.queries.list_index_candles, cycles._historical
-    cycles.queries.list_index_candles, cycles._historical = fake_list, fake_hist
-    try:
-        return asyncio.run(cycles._underlying_candles(Pool(rows), None, 256265, m(9, 15), m(10, 15), "minute"))
-    finally:
-        cycles.queries.list_index_candles, cycles._historical = orig_list, orig_hist
-
-
-def minute_rows(n):
-    return [{"minute": m(9, 15) + timedelta(minutes=i), "o": 1, "h": 1, "l": 1, "c": 1} for i in range(n)]
-
-
-def test_recorded_candles_preferred_when_they_cover_the_window():
-    candles, source, err = run_underlying(minute_rows(60), RuntimeError("must not be called"))
-    assert source == "recorded" and len(candles) == 60 and err is None
-
-
-def test_kite_used_when_recording_has_gaps_and_partial_kept_as_last_resort():
-    candles, source, _ = run_underlying(minute_rows(20), [{"t": 1, "o": 1, "h": 1, "l": 1, "c": 1}])
-    assert source == "kite"
-    candles, source, err = run_underlying(minute_rows(20), cycles.NoKiteSession("no session"))
-    assert source == "recorded_partial" and len(candles) == 20 and err is None
-    candles, source, err = run_underlying([], cycles.NoKiteSession("no session"))
-    assert candles == [] and source is None and "logged in" in err
-
-
 def manager(active_rows, running_ids=(), connected=True, needs_login=False):
     mgr = object.__new__(DeploymentManager)
     mgr.runners = {i: SimpleNamespace(_task=SimpleNamespace(done=lambda: False)) for i in running_ids}

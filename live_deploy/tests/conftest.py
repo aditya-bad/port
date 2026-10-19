@@ -194,6 +194,8 @@ def app_client(db):
         mgr._alerted.clear()
         app.state.v2_book = None
         app.state.dispatcher.last_prices.clear()
+        app.state.candles._no_data.clear()
+        app.state.candles.kite_requests = 0
         await truncate_all()
         await app.state.db_pool.execute("UPDATE strategy_settings SET enabled = true")
         await app.state.db_pool.execute(

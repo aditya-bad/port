@@ -36,7 +36,7 @@ overlap.
 import asyncio
 import time as _time
 import logging
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -641,15 +641,27 @@ class DeploymentManager:
         await queries.record_position_marks(self.pool, rows)
         return len(rows)
 
-    # ── 1-minute index candles (Cycle / Session charts) ────────────────
+    # ── 1-minute candles (Cycle / Session charts, app/candles.py) ──────
 
-    async def index_candles_loop(self, static_tokens: list[int]) -> None:
-        """Builds a 1-minute OHLC candle per index from the live ticks
-        (the always-subscribed indices plus every running deployment's
-        underlying) and stores it once the minute closes. Charts read
-        these before asking Kite's historical API. Market hours only;
-        a tick still carrying an earlier day's trade (holiday, pre-open
-        snapshot) is ignored."""
+    def watched_tokens(self, static_tokens) -> set[int]:
+        """Everything whose price history the app keeps: the indices, each
+        running deployment's underlying, and every contract any running
+        deployment holds (each once, however many deployments hold it)."""
+        watch = set(int(t) for t in static_tokens)
+        for runner in self.runners.values():
+            toks = runner.config.get("instrument_tokens") or []
+            if toks:
+                watch.add(int(toks[0]))
+            watch.update(int(t) for t in runner.open_positions)
+        return watch
+
+    async def candles_loop(self, static_tokens: list[int]) -> None:
+        """Builds a 1-minute OHLC candle from the live ticks for every
+        watched instrument (watched_tokens) and stores it once the minute
+        closes, so a contract's chart survives its expiry even though
+        Kite then has no history for it. Market hours only; a tick still
+        carrying an earlier day's trade (holiday, pre-open snapshot) is
+        ignored."""
         q = await self.broadcaster.subscribe()
         building: dict[int, list] = {}   # token -> [minute, o, h, l, c]
         try:
@@ -668,11 +680,7 @@ class DeploymentManager:
                         )
                     if not ticks or now.weekday() >= 5 or not (_MARKS_OPEN <= now.time() < _MARKS_CLOSE):
                         continue
-                    watch = set(static_tokens)
-                    for runner in self.runners.values():
-                        toks = runner.config.get("instrument_tokens") or []
-                        if toks:
-                            watch.add(int(toks[0]))
+                    watch = self.watched_tokens(static_tokens)
                     for t in ticks if isinstance(ticks, list) else []:
                         tok, price = t.get("instrument_token"), t.get("last_price")
                         if tok not in watch or not price:
@@ -682,9 +690,31 @@ class DeploymentManager:
                             continue
                         fold_tick(building, tok, float(price), minute)
                 except Exception:
-                    logger.exception("Recording index candles failed — continuing")
+                    logger.exception("Recording candles failed — continuing")
         finally:
             await self.broadcaster.unsubscribe(q)
+
+    index_candles_loop = candles_loop   # earlier name
+
+    BACKFILL_AT = time(15, 40)
+
+    async def candle_backfill_loop(self, candles, static_tokens: list[int]) -> None:
+        """Once a trading day, after the close: fill the day's history of
+        every instrument held today (and the indices) from Kite while it
+        still has it — expired contracts can't be fetched later. Also
+        runs right away on a start after the close, in case the app was
+        down at 15:40. Cheap to repeat: covered days are never fetched."""
+        done: Optional[date] = None
+        while True:
+            now = datetime.now(_IST)
+            if now.weekday() < 5 and now.time() >= self.BACKFILL_AT and done != now.date():
+                try:
+                    tokens = self.watched_tokens(static_tokens)
+                    await candles.backfill_day(now.date(), extra_tokens=tuple(tokens))
+                    done = now.date()
+                except Exception:
+                    logger.exception("Candle backfill failed — will retry")
+            await asyncio.sleep(300)
 
     # ── Health watchdog: active but not running; Kite not connected ────
 

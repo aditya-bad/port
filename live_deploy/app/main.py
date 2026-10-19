@@ -70,6 +70,7 @@ from .routers import strategies as strategies_router
 from .routers import tags as tags_router
 from .routers import ux_summary as ux_summary_router
 from .routers import cycles as cycles_router
+from .routers import candles as candles_router
 from .v2 import router as v2_router
 from .routers.aggregate import (
     fetch_portfolio_equity_curve, fetch_positions_open, fetch_strategy_leaderboard, fetch_trades_recent,
@@ -106,6 +107,7 @@ app.include_router(notifications_router.router)
 app.include_router(admin_router.router)
 app.include_router(ux_summary_router.router)
 app.include_router(cycles_router.router)
+app.include_router(candles_router.router)
 app.include_router(v2_router.router)
 
 # Middleware order matters: add_middleware() makes the MOST RECENTLY
@@ -375,13 +377,18 @@ async def startup() -> None:
     # ── Per-leg price marks for the Cycle Replay chart (1-min intraday,
     # 5-min positional) — see DeploymentManager.marks_loop.
     app.state.marks_task = asyncio.create_task(manager.marks_loop(), name="position-marks-loop")
-    # ── 1-minute index candles, recorded from live ticks, so charts
-    # don't depend on Kite's historical API — see index_candles_loop.
     # ── Health watchdog: deployments active but not running, and Kite
     # not connected by 09:05 on a market day — see watchdog_loop.
     app.state.watchdog_task = asyncio.create_task(manager.watchdog_loop(), name="health-watchdog")
-    app.state.index_candles_task = asyncio.create_task(
-        manager.index_candles_loop([int(t["instrument_token"]) for t in tokens]), name="index-candles-loop",
+    # ── 1-minute candles for every index and held contract: recorded from
+    # live ticks, filled from Kite where missing, backfilled after each
+    # close — one store behind every chart (app/candles.py).
+    from .candles import CandleService
+    app.state.candles = CandleService(db_pool, dispatcher)
+    static = [int(t["instrument_token"]) for t in tokens]
+    app.state.index_candles_task = asyncio.create_task(manager.candles_loop(static), name="candles-loop")
+    app.state.candle_backfill_task = asyncio.create_task(
+        manager.candle_backfill_loop(app.state.candles, static), name="candle-backfill-loop",
     )
 
     logger.info(
@@ -434,7 +441,7 @@ async def shutdown() -> None:
     except asyncio.CancelledError:
         pass
 
-    for name in ("index_candles_task", "watchdog_task"):
+    for name in ("index_candles_task", "candle_backfill_task", "watchdog_task"):
         task = getattr(app.state, name, None)
         if task is None:
             continue

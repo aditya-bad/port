@@ -183,6 +183,15 @@ async def seed():
                 "realized_pnl_cumulative) VALUES ($1,$2,$3,0,$3,0)", ids[name], t, v)
             t += timedelta(minutes=5)
             i += 1
+    # 1-minute NIFTY candles for the last two months: the cycle charts' index panel
+    await pool.execute("""
+        INSERT INTO candles_1m (instrument_token, minute, open, high, low, close, source)
+        SELECT 256265, m, v, v + 3, v - 3, v, 'ticks' FROM (
+          SELECT m, 25000 + 300 * sin(extract(epoch FROM m) / 200000.0) + 60 * sin(extract(epoch FROM m) / 9000.0) AS v
+          FROM generate_series(date_trunc('day', now() - interval '60 days'), now(), interval '1 minute') m
+          WHERE extract(isodow FROM m AT TIME ZONE 'Asia/Kolkata') < 6
+            AND (m AT TIME ZONE 'Asia/Kolkata')::time >= '09:15' AND (m AT TIME ZONE 'Asia/Kolkata')::time < '15:30') x
+    """)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)

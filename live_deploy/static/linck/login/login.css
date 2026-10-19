@@ -57,6 +57,6 @@
 .mk-state > i.shut { background: var(--line2); }
 .mk-body { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 18px; }
 .mk-k { font-family: var(--f-mono); font-size: 12px; letter-spacing: .08em; opacity: .7; }
-.mk-big { font-family: var(--f-display); font-weight: 700; font-size: clamp(56px, 7vw, 104px); letter-spacing: -.05em; line-height: .9; }
+.mk-big { font-family: var(--f-display); font-weight: 700; font-size: clamp(44px, 5.4vw, 88px); letter-spacing: -.04em; line-height: .9; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mk-sub { font-size: 17px; opacity: .8; max-width: 420px; text-wrap: pretty; margin: 0; }
 .mk-foot { border-top: 1.5px solid var(--paper); padding-top: 12px; font-size: 13px; opacity: .75; text-wrap: pretty; }

@@ -282,7 +282,7 @@ def test_cycles_list_and_chart_with_recorded_underlying(client):
     assert c["status"] == "closed" and c["positions"] == 2 and c["fills"] == 4
     assert c["realized_pnl"] == pytest.approx(3000)
     ch = client.get(f"/deployments/{d['id']}/cycles/{c['key']}/chart").json()
-    assert ch["underlying_source"] == "recorded" and ch["underlying"]
+    assert ch["underlying_source"] == "stored" and ch["underlying"]
     assert ch["cycle"]["mode"] == "intraday"
     assert {p["symbol"] for p in ch["positions"]} == {"NIFTY25000CE", "NIFTY25000PE"}
     assert ch["stats"]["realized_pnl"] == pytest.approx(3000)
@@ -325,3 +325,78 @@ def test_redeploy_is_guarded(client, tmp_path, monkeypatch):
     assert r.status_code == 200 and trig.exists()
     rows = client.get("/auth/audit-log").json()
     assert ADMIN_PASSWORD not in str([x["request_body"] for x in rows])
+
+
+def test_expired_legs_chart_from_stored_candles_without_kite(client, monkeypatch):
+    """A contract long expired (Kite has nothing) still draws its own
+    price line from the candle store; Kite is never asked for it."""
+    import app.candles as C
+    asked = []
+
+    async def history(resolver, token, start, end, interval):     # Kite logged in, nothing to give
+        asked.append(token)
+        return []
+    monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", history)
+    d = make_deployment(client)
+    sym = "NIFTY26O0625000CE"                       # expired 6 Oct
+    day = last_weekday(TODAY - timedelta(days=14))
+    add_fill(client, d["id"], sym, 4242, "sell", 75, 100, at(day, "10:00"), reason="entry")
+    add_fill(client, d["id"], sym, 4242, "buy", 75, 80, at(day, "11:00"), reason="exit")
+    rows = [(4242, at(day, "09:15") + timedelta(minutes=i), 100 - i / 10, 101, 99, 100 - i / 10, None) for i in range(375)]
+    from app.db import queries
+    pool = client.app.state.db_pool
+    client.portal.call(lambda: queries.upsert_candles(pool, rows, "import"))
+    [c] = client.get(f"/deployments/{d['id']}/cycles").json()
+    ch = client.get(f"/deployments/{d['id']}/cycles/{c['key']}/chart").json()
+    [leg] = ch["positions"]
+    assert leg["price_source"] == "stored"
+    assert 4242 not in asked, "an expired contract is never requested from Kite"
+    assert asked, "the (listed) underlying was asked for"
+
+
+def test_candles_api_rollup_and_coverage(client):
+    from app.db import queries
+    pool = client.app.state.db_pool
+    day = PAST
+    rows = [(5151, at(day, "09:15") + timedelta(minutes=i), 100, 101, 99, 100 + i, None) for i in range(375)]
+    client.portal.call(lambda: queries.upsert_candles(pool, rows, "ticks"))
+    r = client.get("/candles/5151", params={"start": at(day, "09:15").isoformat(), "end": at(day, "15:30").isoformat(),
+                                            "interval": "15minute", "fetch": "false"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "stored" and len(body["candles"]) == 25 and body["candles"][0]["c"] == 114
+    assert client.get("/candles/5151", params={"start": at(day, "09:15").isoformat(), "end": at(day, "15:30").isoformat(),
+                                               "interval": "7minute"}).status_code == 400
+    d = make_deployment(client)
+    add_fill(client, d["id"], "NIFTY26O2725000CE", 6161, "sell", 75, 100, at(day, "10:00"))
+    cov = client.get("/candles", params={"day": day.isoformat()}).json()
+    by = {i["instrument_token"]: i for i in cov["instruments"]}
+    assert by[5151]["minutes"] == 375 and by[5151]["sources"] == ["ticks"] and not by[5151]["held"]
+    assert by[6161]["held"] and by[6161]["minutes"] == 0
+
+
+def test_held_contracts_are_recorded_live(client):
+    d = make_deployment(client, start="now")
+    add_fill(client, d["id"], "NIFTY26O2725000CE", 7171, "sell", 75, 100, at(TODAY, "09:30"))
+    mgr = client.app.state.deployment_manager
+    client.portal.call(mgr.runners[d["id"]]._reload_positions)
+    watch = mgr.watched_tokens([256265])
+    assert 7171 in watch and 256265 in watch
+
+
+def test_backfill_endpoint_fills_held_instruments_once(client, monkeypatch):
+    import app.candles as C
+    asked = []
+
+    async def history(resolver, token, start, end, interval):
+        asked.append(token)
+        return [{"date": start.replace(tzinfo=IST) + timedelta(minutes=i), "open": 1, "high": 1, "low": 1, "close": 1}
+                for i in range(375)]
+    monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", history)
+    a, b = make_deployment(client, name="A"), make_deployment(client, name="B")
+    for d in (a, b):                                    # two deployments, one contract
+        add_fill(client, d["id"], "NIFTY26DEC25000CE", 8181, "sell", 75, 100, at(PAST, "10:00"))
+    r = client.post("/candles/backfill", json={"day": PAST.isoformat()})
+    assert r.status_code == 200
+    assert asked.count(8181) == 1
+    assert client.post("/candles/backfill", json={"day": PAST.isoformat()}).json()["fetched"] == []

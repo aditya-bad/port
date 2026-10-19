@@ -4,9 +4,10 @@
 // and every order. Opened from Daily stats or Cycles; Newer / Older step
 // through the rest.
 //
-// Data: GET /deployments/{id}/cycles/{key}/chart. The underlying comes
-// from Kite's history; option legs from Kite while listed, else the
-// app's own recorded marks (1-minute intraday, 5-minute positional).
+// Data: GET /deployments/{id}/cycles/{key}/chart. The underlying and
+// every option leg come from the app's 1-minute candle store (recorded
+// live, filled from Kite, kept after expiry), rolled up to the chart's
+// interval; older legs fall back to the app's per-leg marks.
 // The interval is whatever the server picked for the window; there's
 // no picker.
 
@@ -85,6 +86,7 @@ function chart(m, sym, ch) {
   const z = pY(0);
   const pFill = pk.length ? `${pPath} L${x(pk[pk.length - 1][1])} ${z.toFixed(1)} L${x(pk[0][1])} ${z.toFixed(1)} Z` : '';
   const lineC = toneVar(m.finalGross);
+  const cid = `ssp${Math.random().toString(36).slice(2, 8)}`;   // clip ids, unique per render
   const evC = e => (KINDS[e.kind] && KINDS[e.kind][1]) || lineC;
   const evL = e => `${kindLabel(e.kind)}${reasonOf(e) ? ` · ${reasonOf(e)}` : ''}`;
   const pc = k => `${X(k) * 100}%`;
@@ -92,8 +94,18 @@ function chart(m, sym, ch) {
     U.length && k >= m.e0 ? `From entry  ${U[k] - U[m.e0] >= 0 ? '+' : '−'}${Math.abs(U[k] - U[m.e0]).toFixed(1)} pts` : null,
     `Combined P&L  ${P[k] != null ? inr(P[k]) : k < m.e0 ? 'not entered' : `closed at ${inr(m.finalGross)}`}`].filter(Boolean).join('\n');
   const idx = f => Math.max(0, Math.min(N - 1, Math.round(f * (N - 1))));
-  registerScrub('ss-u', f => { const k = idx(f); return U.length ? { t: tipAt(k), ys: [uY(U[k]) / 180], cs: ['var(--ink)'] } : null; });
-  registerScrub('ss-p', f => { const k = idx(f); return { t: tipAt(k), ys: P[k] != null ? [pY(P[k]) / 120] : [], cs: [P[k] >= 0 ? 'var(--pos)' : 'var(--r)'] }; });
+  // Both panels scrub together: one guide through the index and the
+  // P&L, a dot on each line, the same moment in the card.
+  registerScrub('ss', f => {
+    const k = idx(f), plot = document.querySelector('.sess .ss-plot');
+    if (!plot) return null;
+    const u = plot.querySelector('.ss-u'), pl = plot.querySelector('.ss-p');
+    return {
+      t: tipAt(k), span: plot,
+      pts: [u && U.length ? { el: u, y: uY(U[k]) / 180, c: 'var(--ink)' } : null,
+            pl && P[k] != null ? { el: pl, y: pY(P[k]) / 120, c: P[k] >= 0 ? 'var(--g)' : 'var(--r)' } : null].filter(Boolean),
+    };
+  });
 
   return html`
     <div class="ss-marks">${m.events.map(e => html`<i style="left:${pc(e.k)};background:${evC(e)}" data-tip="${evL(e)}\n${m.when(e.k)}${U.length ? `\n${sym}  ${price(U[e.k])}` : ''}${P[e.k] != null ? `\nCombined P&L  ${inr(P[e.k])}` : ''}"></i>`)}</div>
@@ -103,13 +115,17 @@ function chart(m, sym, ch) {
       ${m.events.map(e => html`<div class="ss-evl" style="left:${pc(e.k)};border-color:${evC(e)}"></div>`)}
       ${U.length ? html`
         <div class="ss-lab" style="top:4px">${price(uHi)}</div>
-        <svg data-scrub="ss-u" viewBox="0 0 1000 180" preserveAspectRatio="none" class="ss-u" aria-label="${sym} price">${raw(`<path d="${uPath}" fill="none" stroke="var(--ink)" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`)}</svg>`
+        <svg data-scrub="ss" viewBox="0 0 1000 180" preserveAspectRatio="none" class="ss-u" aria-label="${sym} price">${raw(`<path d="${uPath}" fill="none" stroke="var(--ink)" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`)}</svg>`
         : html`<div class="ss-nou">${ch.underlying_error || 'No underlying history for this window.'}</div>`}
       <div class="ss-mid"><span>${sym}${U.length ? ` · low ${price(uLo)}` : ''}</span><span>Combined P&L · high ${inrS(pHi)}</span></div>
-      <svg data-scrub="ss-p" viewBox="0 0 1000 120" preserveAspectRatio="none" class="ss-p" aria-label="Combined P&L">${raw(`
+      <svg data-scrub="ss" viewBox="0 0 1000 120" preserveAspectRatio="none" class="ss-p" aria-label="Combined P&L">${raw(`
+        <defs><clipPath id="${cid}-up"><rect x="0" y="0" width="1000" height="${z.toFixed(1)}"/></clipPath>
+          <clipPath id="${cid}-dn"><rect x="0" y="${z.toFixed(1)}" width="1000" height="${(120 - z).toFixed(1)}"/></clipPath></defs>
         <line x1="0" x2="1000" y1="${z.toFixed(1)}" y2="${z.toFixed(1)}" stroke="var(--line2)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
-        <path d="${pFill}" fill="${lineC}" opacity=".12"/>
-        <path d="${pPath}" fill="none" stroke="${lineC}" stroke-width="2" vector-effect="non-scaling-stroke"/>`)}</svg>
+        <g clip-path="url(#${cid}-up)"><path d="${pFill}" fill="var(--g)" opacity=".14"/>
+          <path d="${pPath}" fill="none" stroke="var(--g)" stroke-width="2" vector-effect="non-scaling-stroke"/></g>
+        <g clip-path="url(#${cid}-dn)"><path d="${pFill}" fill="var(--r)" opacity=".14"/>
+          <path d="${pPath}" fill="none" stroke="var(--r)" stroke-width="2" vector-effect="non-scaling-stroke"/></g>`)}</svg>
     </div>
     <div class="ss-x">${m.ticks.map(t => html`<span style="left:${pc(t.k)}">${t.l}</span>`)}</div>
     <div class="ss-legend">
@@ -119,7 +135,7 @@ function chart(m, sym, ch) {
       ${m.events.some(e => e.kind === 'rollout') ? html`<span><i class="d" style="background:var(--c5)"></i>EOD roll-out</span>` : ''}
       <span><i class="d" style="background:${lineC}"></i>Exit</span>
       ${m.seps.length ? html`<span><i style="width:0;height:12px;border-left:1px dashed var(--line2)"></i>New trading day</span>` : ''}
-      <span class="grow"></span><span>${INTERVAL[ch.window.interval] || ch.window.interval} data · index ${({ recorded: 'recorded by the app', recorded_partial: 'recorded by the app (gaps)', kite: 'from Kite history' })[ch.underlying_source] || 'unavailable'}</span>
+      <span class="grow"></span><span>${INTERVAL[ch.window.interval] || ch.window.interval} data · index ${({ stored: 'stored 1-minute history', stored_partial: 'stored history, some gaps' })[ch.underlying_source] || 'unavailable'}</span>
     </div>`;
 }
 

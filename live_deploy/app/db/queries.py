@@ -1037,38 +1037,138 @@ async def record_position_marks(pool: asyncpg.Pool, marks: list[tuple]) -> None:
         )
 
 
-async def record_index_candles(pool: asyncpg.Pool, candles: list[tuple]) -> None:
-    """candles: [(instrument_token, minute, open, high, low, close)]. A
-    minute already stored (e.g. written just before a restart) is merged:
-    its high/low widen and its close moves to the newer value."""
-    if not candles:
-        return
-    async with pool.acquire() as conn:
-        await conn.executemany(
-            """
-            INSERT INTO index_candles (instrument_token, minute, open, high, low, close)
-            VALUES ($1, $2, $3, $4, $5, $6)
+async def upsert_candles(pool: asyncpg.Pool, rows: list[tuple], source: str) -> int:
+    """rows: [(instrument_token, minute, open, high, low, close, volume|None)]
+    into candles_1m — one row per instrument per minute, whatever the
+    source. Ticks merge into a minute (its high/low widen, its close
+    moves on) but never overwrite a Kite or imported row; Kite and
+    imported rows replace tick-built ones (and Kite replaces imports)."""
+    if not rows:
+        return 0
+    if source == "ticks":
+        sql = """
+            INSERT INTO candles_1m (instrument_token, minute, open, high, low, close, volume, source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 'ticks')
             ON CONFLICT (instrument_token, minute) DO UPDATE SET
-                high = GREATEST(index_candles.high, EXCLUDED.high),
-                low = LEAST(index_candles.low, EXCLUDED.low),
+                high = GREATEST(candles_1m.high, EXCLUDED.high),
+                low = LEAST(candles_1m.low, EXCLUDED.low),
                 close = EXCLUDED.close
-            """,
-            candles,
-        )
+            WHERE candles_1m.source = 'ticks'
+        """
+    else:
+        keep = "('kite')" if source == "import" else "('__none__')"
+        sql = f"""
+            INSERT INTO candles_1m (instrument_token, minute, open, high, low, close, volume, source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, '{source}')
+            ON CONFLICT (instrument_token, minute) DO UPDATE SET
+                open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
+                close = EXCLUDED.close, volume = EXCLUDED.volume, source = EXCLUDED.source
+            WHERE candles_1m.source NOT IN {keep}
+        """
+    rows = [r if len(r) == 7 else (*r, None) for r in rows]
+    async with pool.acquire() as conn:
+        await conn.executemany(sql, rows)
+    return len(rows)
 
 
-async def list_index_candles(
+async def record_index_candles(pool: asyncpg.Pool, candles: list[tuple]) -> None:
+    """Tick-built candles: [(instrument_token, minute, open, high, low, close)].
+    A minute already stored (e.g. written just before a restart) is
+    merged: its high/low widen and its close moves to the newer value."""
+    await upsert_candles(pool, candles, "ticks")
+
+
+async def list_candles(
     pool: asyncpg.Pool, instrument_token: int, start: datetime, end: datetime,
 ) -> list[asyncpg.Record]:
     async with pool.acquire() as conn:
         return await conn.fetch(
             """
-            SELECT minute, open::float8 AS o, high::float8 AS h, low::float8 AS l, close::float8 AS c
-            FROM index_candles
+            SELECT minute, open::float8 AS o, high::float8 AS h, low::float8 AS l, close::float8 AS c,
+                   volume, source
+            FROM candles_1m
             WHERE instrument_token = $1 AND minute >= $2 AND minute < $3
             ORDER BY minute
             """,
             instrument_token, start, end,
+        )
+
+
+list_index_candles = list_candles   # the name the index charts started with
+
+
+async def candle_minutes_per_day(
+    pool: asyncpg.Pool, instrument_token: int, start: datetime, end: datetime,
+) -> dict:
+    """{IST date: stored minutes} — how much of each day is covered."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT (minute AT TIME ZONE 'Asia/Kolkata')::date AS day, count(*) AS n
+            FROM candles_1m
+            WHERE instrument_token = $1 AND minute >= $2 AND minute < $3
+            GROUP BY 1
+            """,
+            instrument_token, start, end,
+        )
+    return {r["day"]: r["n"] for r in rows}
+
+
+async def upsert_contracts(pool: asyncpg.Pool, rows: list[dict]) -> None:
+    """[{instrument_token, tradingsymbol, exchange?, underlying?, expiry?,
+    strike?, instrument_type?}] — known fields fill in, unknown stay."""
+    if not rows:
+        return
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO contracts (instrument_token, tradingsymbol, exchange, underlying, expiry, strike, instrument_type)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (instrument_token) DO UPDATE SET
+                tradingsymbol = EXCLUDED.tradingsymbol,
+                exchange = COALESCE(EXCLUDED.exchange, contracts.exchange),
+                underlying = COALESCE(EXCLUDED.underlying, contracts.underlying),
+                expiry = COALESCE(EXCLUDED.expiry, contracts.expiry),
+                strike = COALESCE(EXCLUDED.strike, contracts.strike),
+                instrument_type = COALESCE(EXCLUDED.instrument_type, contracts.instrument_type),
+                updated_at = now()
+            """,
+            [(r["instrument_token"], r["tradingsymbol"], r.get("exchange"), r.get("underlying"),
+              r.get("expiry"), r.get("strike"), r.get("instrument_type")) for r in rows],
+        )
+
+
+async def get_contract(pool: asyncpg.Pool, instrument_token: int) -> Optional[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow("SELECT * FROM contracts WHERE instrument_token = $1", instrument_token)
+
+
+async def find_contract_token(pool: asyncpg.Pool, tradingsymbol: str) -> Optional[int]:
+    """A tradingsymbol's token: from contracts, else from any position."""
+    async with pool.acquire() as conn:
+        tok = await conn.fetchval(
+            "SELECT instrument_token FROM contracts WHERE tradingsymbol = $1 ORDER BY updated_at DESC LIMIT 1",
+            tradingsymbol)
+        if tok is None:
+            tok = await conn.fetchval(
+                "SELECT instrument_token FROM positions WHERE symbol = $1 ORDER BY opened_at DESC LIMIT 1",
+                tradingsymbol)
+    return int(tok) if tok is not None else None
+
+
+async def instruments_held_between(pool: asyncpg.Pool, start: datetime, end: datetime) -> list[asyncpg.Record]:
+    """Each distinct instrument any deployment held at some point in
+    [start, end): opened before the end, and still open or closed after
+    the start. One row per token, whatever the number of positions."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT DISTINCT ON (instrument_token) instrument_token, symbol
+            FROM positions
+            WHERE opened_at < $2 AND (closed_at IS NULL OR closed_at >= $1)
+            ORDER BY instrument_token, opened_at DESC
+            """,
+            start, end,
         )
 
 

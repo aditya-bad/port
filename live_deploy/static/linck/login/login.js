@@ -32,18 +32,24 @@ async function call(path, body) {
 
 // ── Market clock (IST, NSE 09:15–15:30; holidays aren't modelled) ────
 function market(now = new Date()) {
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
     .formatToParts(now).map(x => [x.type, x.value]));
   const dw = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(p.weekday);
   const m = +p.hour * 60 + +p.minute, op = 555, cl = 930;
-  const hm = x => `${Math.floor(x / 60)}h ${String(x % 60).padStart(2, '0')}m`;
+  // countdown to minute `x` (of the day), to the second
+  const secs = x => x * 60 - (m * 60 + +p.second);
+  const pad = n => String(n).padStart(2, '0');
+  const hm = x => { const t = secs(x); return `${Math.floor(t / 3600)}h ${pad(Math.floor(t / 60) % 60)}m ${pad(t % 60)}s`; };
   const wk = dw >= 1 && dw <= 5;
-  if (wk && m >= op && m < cl) return { wk, cls: 'open', s: 'NSE · Market open', k: 'CLOSES IN', big: hm(cl - m), sub: 'Your deployments are running. Sign in to see where they stand.' };
-  if (wk && m < op) return { wk, cls: 'pre', s: 'NSE · Pre-open', k: 'MARKET OPENS IN', big: hm(op - m), sub: 'Reconnect Kite before 09:15 so deployments enter on time.' };
+  if (wk && m >= op && m < cl) return { wk, cls: 'open', s: 'NSE · Market open', k: 'CLOSES IN', big: hm(cl), sub: 'Your deployments are running. Sign in to see where they stand.' };
+  if (wk && m < op) return { wk, cls: 'pre', s: 'NSE · Pre-open', k: 'MARKET OPENS IN', big: hm(op), sub: 'Reconnect Kite before 09:15 so deployments enter on time.' };
   return { wk, cls: 'shut', s: 'NSE · Market closed', k: 'NEXT SESSION', big: (dw === 5 && m >= cl) || dw === 6 || dw === 0 ? 'Mon 09:15' : 'Tomorrow 09:15', sub: 'Today’s results are in. Sign in for the day’s statement.' };
 }
 function paintSide() {
   const k = market();
+  const big = $('#side .mk-big');
+  // every second only the countdown changes: update it in place
+  if (big && $('#side .mk-k').textContent === k.k) { big.textContent = k.big; return; }
   $('#side').innerHTML = `<div class="auth-side-in">
     <div class="mk-state"><i class="${k.cls}"></i>${k.s}</div>
     <div class="mk-body"><div class="mk-k">${k.k}</div><div class="mk-big">${k.big}</div><p class="mk-sub">${k.sub}</p></div>
@@ -222,5 +228,5 @@ function enter() {
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 paintTheme();
 paintSide();
-setInterval(paintSide, 30000);
+setInterval(paintSide, 1000);
 paint(true);

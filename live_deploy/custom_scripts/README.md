@@ -369,3 +369,11 @@ script's one remaining use case — "force a resync right now, without
 waiting" — is now just Pause then Resume on the deployment (from the
 UI or `POST /deployments/{id}/pause` + `/resume`), which triggers the
 exact same live re-seed `on_start` always does.
+
+## import_candles.py
+
+Loads 1-minute price history into the candle store that every chart reads
+(`candles_1m`): your own CSV backups (`--csv file-or-folder ...`), or Kite
+for everything held on each day since a date (`--kite-since 2026-10-01`).
+Only 1-minute candles are stored; other intervals are rolled up when read.
+Nothing is duplicated, and re-running is safe. Run with `--dry-run` first.
