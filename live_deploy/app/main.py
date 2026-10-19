@@ -73,6 +73,7 @@ from .routers import cycles as cycles_router
 from .routers import candles as candles_router
 from .v2 import router as v2_router
 from .routers import geek as geek_router
+from .cache_headers import NoStaleShellMiddleware
 from .routers.aggregate import (
     fetch_portfolio_equity_curve, fetch_positions_open, fetch_strategy_leaderboard, fetch_trades_recent,
 )
@@ -126,6 +127,7 @@ app.include_router(geek_router.router)
 app.add_middleware(AuthMiddleware, secret=config["app_auth_secret"], static_dir=STATIC_DIR)
 app.add_middleware(AuditLogMiddleware)
 app.add_middleware(HostAwareSessionMiddleware, secret_key=config["app_auth_secret"])
+app.add_middleware(NoStaleShellMiddleware)   # outermost: covers 401 sign-in pages too
 
 
 @app.on_event("startup")

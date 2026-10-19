@@ -15,7 +15,7 @@ try { if (localStorage.getItem('uiExperience') !== 'classic') location.replace('
      own comment for why crossorigin="use-credentials" is required
      (this app is behind login; a bare <link rel="manifest"> fetch
      omits cookies even same-origin). -->
-<link rel="manifest" href="/manifest.json" crossorigin="use-credentials">
+<link rel="manifest" href="/manifest.json?v=linck" crossorigin="use-credentials">
 <meta name="theme-color" content="#1B1130">
 <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="/icons/favicon-16.png">

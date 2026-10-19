@@ -120,6 +120,28 @@ def test_manifest_launches_linck_and_keeps_the_app_identity(app_client):
         assert app_client.get(icon["src"]).status_code == 200
 
 
+def test_the_install_files_are_never_served_stale(app_client, client):
+    """Browsers must re-check the manifest, icons, service worker and
+    pages (a cached old manifest kept installs on the old name, icon and
+    purple splash). Signed out too: install happens from the sign-in."""
+    m = app_client.get("/manifest.json?v=linck")
+    assert m.status_code == 200 and m.json()["name"] == "Linck"
+    for path in ["/manifest.json", "/sw.js", "/icons/linck-512.png", "/", "/linck/"]:
+        assert app_client.get(path).headers.get("cache-control") == "no-cache", path
+    for path in ["/linck/", "/linck/js/app.js", "/linck/css/geek.css", "/"]:
+        assert client.get(path).headers.get("cache-control") == "no-cache", path
+
+
+def test_every_page_asks_for_the_current_manifest():
+    """A new manifest URL makes browsers holding the old file fetch it again."""
+    from pathlib import Path
+    static = Path(__file__).resolve().parents[2] / "static"
+    for page in ["linck/index.html", "linck/login/index.html", "index.html", "login.html"]:
+        text = (static / page).read_text()
+        assert 'href="/manifest.json?v=linck"' in text, page
+        assert 'href="/manifest.json"' not in text, page
+
+
 # ── Session cookie flags, by how the app is reached ───────────────────
 
 @pytest.mark.parametrize("host,secure", [

@@ -397,6 +397,26 @@ def _wait_backfill(client):
     raise AssertionError("backfill never finished")
 
 
+def _start_backfill(client, day):
+    """POST a backfill once the app's own scheduled run (which catches up a
+    missed day at start-up) isn't holding the slot; asserts it was ours."""
+    _wait_backfill(client)
+    r = client.post("/candles/backfill", json={"day": day.isoformat()})
+    assert r.status_code == 202, r.text
+    return r
+
+
+def _running(client, n):
+    """The run's progress once it has counted its contracts."""
+    import time as _t
+    for _ in range(100):
+        st = client.get("/candles/backfill").json()["running"]
+        if st and st["total"] == n:
+            return st
+        _t.sleep(0.05)
+    raise AssertionError("the run never counted its contracts")
+
+
 def test_backfill_runs_in_the_background_and_reports_progress(client, monkeypatch):
     import asyncio
     import app.candles as C
@@ -413,10 +433,10 @@ def test_backfill_runs_in_the_background_and_reports_progress(client, monkeypatc
     for d in (a, b):                                    # two deployments, one contract
         add_fill(client, d["id"], "NIFTY26DEC25000CE", 8181, "sell", 75, 100, at(PAST, "10:00"))
     add_fill(client, a["id"], "NIFTY26DEC25000PE", 8182, "sell", 75, 100, at(PAST, "10:00"))
-    r = client.post("/candles/backfill", json={"day": PAST.isoformat()})
-    assert r.status_code == 202
-    running = r.json()["running"]
-    assert running["day"] == PAST.isoformat() and running["total"] == 2
+    r = _start_backfill(client, PAST)
+    assert r.json()["running"]["day"] == PAST.isoformat(), "marked running from the moment it starts"
+    running = _running(client, 2)
+    assert running["day"] == PAST.isoformat()
     h = client.get("/health").json()["candle_backfill"]
     assert h is not None and h["total"] == 2, "the header learns of it from /health"
     assert client.post("/candles/backfill", json={}).status_code == 409, "one run at a time"
@@ -429,7 +449,7 @@ def test_backfill_runs_in_the_background_and_reports_progress(client, monkeypatc
     assert st["stored"]["contracts"] == 2 and st["stored"]["minutes"] == 750
     assert client.get("/health").json()["candle_backfill"] is None
     # again: nothing left to fetch
-    client.post("/candles/backfill", json={"day": PAST.isoformat()})
+    _start_backfill(client, PAST)
     assert _wait_backfill(client)["last"]["fetched"] == 0
 
 
@@ -441,6 +461,6 @@ def test_backfill_without_kite_is_reported_as_incomplete(client, monkeypatch):
     monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", no_session)
     d = make_deployment(client)
     add_fill(client, d["id"], "NIFTY26DEC25000CE", 8191, "sell", 75, 100, at(PAST, "10:00"))
-    client.post("/candles/backfill", json={"day": PAST.isoformat()})
+    _start_backfill(client, PAST)
     last = _wait_backfill(client)["last"]
     assert last["complete"] is False and "Kite" in last["error"]
