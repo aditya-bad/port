@@ -83,6 +83,7 @@ test('the views show this strategy\'s own analytics', async () => {
   await p.waitForSelector('[data-rule="eod_gap_check"]');
   assert.deepEqual(await p.$$eval('[data-rule]', els => els.map(e => e.dataset.rule)),
     ['contract_expiry_backstop', 'checkpoint_target', 'convergence_stop', 'eod_gap_check', 'continuous_50pct_trigger']);
+  await p.waitForSelector('svg[aria-label^="Smaller side over bigger side"]', { timeout: 8000 });
   await p.goto(`${BASE}/linck/#/d/${ID}/geek/decisions`);
   await p.waitForSelector('.oc.blocked');
   await p.click('[data-act="outcome"][data-k="no_action"]');
@@ -97,4 +98,20 @@ test('the views show this strategy\'s own analytics', async () => {
   await p.waitForSelector('#gkView .gk-tbl .tr:not(.th)');
   assert.match(await p.locator('.gk-tiles').innerText(), /of 9/, 'every roll is scored against holding');
   await ctx.close();
+});
+
+test('geek mode keeps the chosen theme', async () => {
+  for (const theme of ['paper', 'slate', 'night']) {
+    const ctx = await context(b);
+    await ctx.addInitScript(t => localStorage.setItem('linck-prefs', JSON.stringify({ theme: t })), theme);
+    const p = await ctx.newPage();
+    await p.goto(`${BASE}/linck/#/d/${ID}/now`);
+    await p.waitForSelector('.dep-head');
+    const normal = await p.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    await p.goto(`${BASE}/linck/#/d/${ID}/geek`);
+    await p.waitForSelector('.gk .gk-next');
+    const geek = await p.evaluate(() => [getComputedStyle(document.querySelector('.gk')).backgroundColor, document.documentElement.dataset.th]);
+    assert.deepEqual(geek, [normal, theme], `${theme}: same ground as the normal page`);
+    await ctx.close();
+  }
 });

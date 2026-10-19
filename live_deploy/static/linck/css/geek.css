@@ -1,38 +1,15 @@
-/* Geek mode (js/pages/geek/): one deployment, full screen, dark.
- * The app header, index strip and phone bar step aside (body.geek-mode),
- * the page takes its own palette (:root[data-geek], set by app.js for
- * geek routes), and a yellow accent marks what's live or about to act.
- * Entering: the normal page falls away (body.geek-leaving), a dark circle
+/* Geek mode (js/pages/geek/): one deployment, full screen, in the
+ * chosen theme. The app header, index strip and phone bar step aside
+ * (body.geek-mode; :root[data-geek] is set too, for anything that needs
+ * to know), and an accent marks what's live or about to act.
+ * Entering: the normal page falls away (body.geek-leaving), a circle
  * opens from the button (.gk.gk-in), then the bar, menu and panels arrive.
  * Leaving reverses it (.gk.gk-out, then body.geek-return). */
 
-:root[data-geek][data-th] {
-  --ink: oklch(0.93 0.008 85);
-  --paper: oklch(0.17 0.008 75);
-  --card: oklch(0.205 0.008 75);
-  --soft: oklch(0.245 0.01 75);
-  --line: oklch(0.3 0.01 75);
-  --line2: oklch(0.42 0.01 75);
-  --mute: oklch(0.7 0.01 85);
-  --y: oklch(0.45 0.1 85);
-  --ys: oklch(0.28 0.05 85);
-  --wr: oklch(0.7 0.18 45);
-  --wt: oklch(0.8 0.14 65);
-  --g: oklch(0.76 0.15 150);
-  --r: oklch(0.72 0.17 28);
-  --gs: oklch(0.76 0.15 150 / .14);
-  --rs: oklch(0.72 0.17 28 / .14);
-  --b: oklch(0.74 0.11 250);
-  --c4: oklch(0.75 0.1 180);
-  --c5: oklch(0.72 0.13 330);
-  --pos: var(--g);
-  --shadow: oklch(0 0 0 / .4);
-  --acc: oklch(0.86 0.15 95);
-  --accs: oklch(0.86 0.15 95 / .09);
-  color-scheme: dark;
-}
-:root[data-geek][data-th][data-ct="high"] { --mute: oklch(0.84 0.01 85); --line: oklch(0.45 0.01 75); --line2: oklch(0.58 0.01 75); }
-:root { --acc: var(--ink); --accs: var(--ys); }
+/* Geek mode follows the chosen theme (Paper, Slate, Night) like every
+ * other page; it only adds an accent for what's live or about to act. */
+:root { --acc: oklch(0.6 0.13 80); --accs: var(--ys); }
+:root[data-th="night"] { --acc: oklch(0.86 0.15 95); --accs: oklch(0.86 0.15 95 / .09); }
 
 body.geek-mode #top, body.geek-mode #bnav { display: none !important; }
 body.geek-mode { padding-bottom: 0; overflow: hidden; }
@@ -65,7 +42,7 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 }
 
 .gk-top { grid-column: 1 / 3; display: flex; align-items: center; gap: 22px; padding: 0 20px; border-bottom: 1px solid var(--line); white-space: nowrap; min-width: 0; }
-.gk-badge { font-family: var(--f-mono); font-size: 11px; font-weight: 700; letter-spacing: .14em; color: var(--paper); background: var(--acc); padding: 4px 8px; flex: none; }
+.gk-badge { font-family: var(--f-mono); font-size: 11px; font-weight: 700; letter-spacing: .14em; color: var(--ink); background: var(--y); padding: 4px 8px; flex: none; }
 .gk-name { font-family: var(--f-display); font-weight: 700; font-size: 19px; letter-spacing: -.02em; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-decoration: none; }
 .gk-kv { display: flex; flex-direction: column; line-height: 1.15; flex: none; }
 .gk-kv > span { font-size: 10px; color: var(--mute); text-transform: uppercase; letter-spacing: .08em; font-weight: 700; }

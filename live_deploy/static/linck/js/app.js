@@ -151,7 +151,7 @@ async function route() {
 }
 
 // Geek mode (js/data/geek.js) owns the whole screen: the header, index
-// strip and phone bar step aside and the page takes the dark palette.
+// strip and phone bar step aside; the theme stays the one chosen.
 function geekChrome(on) {
   const b = document.body, was = b.classList.contains('geek-mode');
   b.classList.toggle('geek-mode', on);

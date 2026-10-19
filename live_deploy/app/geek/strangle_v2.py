@@ -834,8 +834,8 @@ async def premium(ctx: Ctx) -> dict:
         start = min(p["opened_at"] for p in prs)
         rows = await queries.list_marks_for_positions(ctx.pool, [p["id"] for p in prs], start, now)
         marks: dict = {}
-        for r in rows:
-            marks.setdefault(r["marked_at"], {})[r["position_id"]] = r["price"]
+        for r in rows:   # one snapshot's marks share a minute, if not always the exact instant
+            marks.setdefault(r["marked_at"].replace(second=0, microsecond=0), {})[r["position_id"]] = r["price"]
         by_id = {p["id"]: p for p in prs}
         for t in sorted(marks):
             ce = pe = 0.0

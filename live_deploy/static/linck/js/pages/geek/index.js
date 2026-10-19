@@ -1,5 +1,5 @@
 // Geek mode for one deployment (#/d/:id/geek/:view): the whole screen,
-// dark, only this strategy. A top bar with the live figures and Exit, a
+// in the chosen theme, only this strategy. A top bar with the live figures and Exit, a
 // menu of views (each with a key), and the chosen view. The basics reuse
 // the deployment page's own tabs; the rest are strategy-specific views
 // over /v2/deployments/:id/geek/:view. Read-only: orders stay on the

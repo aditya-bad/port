@@ -253,7 +253,7 @@ async def seed_geek(pool, prices, live_times):
             await queries.upsert_candles(pool, [(old["tok"], m, held, held, held, held, None)], "kite")
 
     def mark_path(leg, start, end, exit_px):
-        t = start.replace(minute=30) + timedelta(hours=1)
+        t = start.replace(minute=30, second=0, microsecond=0) + timedelta(hours=1)
         span = max(1.0, (end - start).total_seconds())
         while t < end:
             if t.weekday() < 5 and time(9, 30) <= t.time() <= time(15, 30):

@@ -11,7 +11,7 @@ const reduced = () => { try { return matchMedia('(prefers-reduced-motion: reduce
 const store = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) { /* private mode */ } };
 const read = k => { try { return sessionStorage.getItem(k); } catch (e) { return null; } };
 
-// The normal page falls away, then the geek route opens a dark circle
+// The normal page falls away, then the geek route opens a circle
 // from `from` (the button pressed).
 export function enter(id, from, view = '') {
   const r = from && from.getBoundingClientRect ? from.getBoundingClientRect() : null;

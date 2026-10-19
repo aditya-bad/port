@@ -307,3 +307,15 @@ def test_a_cycle_never_in_the_red_has_no_worst_dip(pool_run, monkeypatch):
         row = (await G.cycles(await ctx(sim)))["rows"][0]
         assert row["mae"] == 0 and row["mfe"] > 0
     pool_run(go)
+
+
+def test_side_series_pairs_marks_written_seconds_apart(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        legs = await sim.open_positions()
+        base = legs[0]["opened_at"].replace(second=0, microsecond=0) + timedelta(minutes=5)
+        await queries.record_position_marks(pool, [
+            (p["id"], sim.dep_id, base + timedelta(seconds=i * 3), float(p["avg_entry_price"])) for i, p in enumerate(legs)])
+        await sim.tick("10:20", spot=25000)
+        assert len((await G.premium(await ctx(sim)))["series"]) == 1
+    pool_run(go)
