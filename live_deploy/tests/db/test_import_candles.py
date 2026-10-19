@@ -41,3 +41,42 @@ def test_imports_one_minute_backups_and_refuses_other_intervals(pool_run, tmp_pa
     pool_run(go)
     out = capsys.readouterr().out
     assert "5-minute candles — only 1-minute" in out and "unknown tradingsymbol" in out
+
+
+def test_all_trades_backfills_every_listed_contract_once(pool_run, monkeypatch, capsys):
+    from datetime import date, timezone
+    import app.candles as C
+    asked = []
+
+    async def history(resolver, token, start, end, interval):
+        asked.append((token, start.date(), end.date()))
+        out, t = [], start
+        while t <= end:
+            if t.weekday() < 5 and (9, 15) <= (t.hour, t.minute) < (15, 30):
+                out.append({"date": t.replace(tzinfo=C.IST), "open": 1, "high": 1, "low": 1, "close": 1})
+            t += timedelta(minutes=1)
+        return out
+    monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", history)
+
+    async def go(pool):
+        await queries.set_kite_session(pool, "tok", datetime.now(timezone.utc))
+        a = (await queries.create_deployment(pool, "A", "strangle_monthly_v2", "positional", 1e6, {"instrument_tokens": [256265]}))["id"]
+        b = (await queries.create_deployment(pool, "B", "intraday_dtt_simple", "intraday", 1e6, {"instrument_tokens": [256265]}))["id"]
+        live = "NIFTY26NOV25000CE"                       # monthly, listed
+        await fill(pool, a, live, 501, "sell", 75, 100, datetime(2026, 10, 12, 10, 0))
+        await fill(pool, a, live, 501, "buy", 75, 90, datetime(2026, 10, 14, 11, 0))
+        await fill(pool, b, live, 501, "sell", 75, 100, datetime(2026, 10, 13, 10, 0))   # same contract, other deployment
+        await fill(pool, b, live, 501, "buy", 75, 95, datetime(2026, 10, 13, 12, 0))
+        await fill(pool, b, "NIFTY26O0625000PE", 502, "sell", 75, 50, datetime(2026, 10, 1, 10, 0))   # expired 6 Oct
+        await fill(pool, b, "NIFTY26O0625000PE", 502, "buy", 75, 40, datetime(2026, 10, 1, 11, 0))
+        await imp.import_all_trades(pool, {"api_key": "k"}, date(2026, 10, 19), dry=False)
+        tokens = sorted({t for t, *_ in asked})
+        assert tokens == [501, 256265], "the listed contract once, the index once; the expired one never"
+        n501 = await pool.fetchval("SELECT count(*) FROM candles_1m WHERE instrument_token = 501")
+        assert n501 == 3 * 375, "12–14 Oct, its whole holding span, one row a minute"
+        asked.clear()
+        await imp.import_all_trades(pool, {"api_key": "k"}, date(2026, 10, 19), dry=False)
+        assert asked == [], "a re-run finds everything stored and asks Kite for nothing"
+    pool_run(go)
+    out = capsys.readouterr().out
+    assert "skip NIFTY26O0625000PE" in out

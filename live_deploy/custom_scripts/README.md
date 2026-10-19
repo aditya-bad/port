@@ -374,6 +374,8 @@ exact same live re-seed `on_start` always does.
 
 Loads 1-minute price history into the candle store that every chart reads
 (`candles_1m`): your own CSV backups (`--csv file-or-folder ...`), or Kite
-for everything held on each day since a date (`--kite-since 2026-10-01`).
+for everything held on each day since a date (`--kite-since 2026-10-01`), or
+for every trade ever made whose contract Kite still lists
+(`--all-trades --min-expiry 2026-10-19`).
 Only 1-minute candles are stored; other intervals are rolled up when read.
 Nothing is duplicated, and re-running is safe. Run with `--dry-run` first.

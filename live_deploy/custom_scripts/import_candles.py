@@ -23,6 +23,14 @@ recorded itself (e.g. expired before this version). Two ways in:
    longer lists can't be fetched — use backups for those):
        python3 custom_scripts/import_candles.py --kite-since 2026-10-01
 
+3. Kite, for EVERY trade ever made (completed and open) whose contract
+   Kite still lists — expiring on or after --min-expiry (default: today;
+   Kite drops a contract's history once it expires): each contract's
+   whole holding span, and each deployment's index over its trades.
+   Each instrument once, however many trades it had; only days not
+   already stored are fetched:
+       python3 custom_scripts/import_candles.py --all-trades --min-expiry 2026-10-19
+
 Nothing is ever duplicated: one row per instrument per minute. Imported
 rows replace candles the app built from its own ticks, and are replaced
 by Kite's own. Safe to re-run. --dry-run reports without writing.
@@ -156,14 +164,67 @@ async def import_kite(pool, cfg, since: date, dry: bool) -> None:
         day += timedelta(days=1)
 
 
+async def import_all_trades(pool, cfg, min_expiry: date, dry: bool) -> None:
+    from datetime import timezone
+    windows = await queries.instrument_hold_windows(pool)
+    plan, skipped = [], []
+    for w in windows:
+        sym = w["symbol"]
+        info = parse_contract(sym or "")
+        contract = await queries.get_contract(pool, int(w["instrument_token"]))
+        expiry = contract["expiry"] if contract and contract["expiry"] else (info["expiry"] if info else None)
+        if expiry is not None and expiry < min_expiry:
+            skipped.append((sym, expiry))
+            continue
+        plan.append((int(w["instrument_token"]), sym, w["first_open"], w["last_close"], expiry))
+    seen = {p[0] for p in plan}
+    for u in await queries.underlying_trade_windows(pool):
+        if u["instrument_token"] is not None and int(u["instrument_token"]) not in seen:
+            plan.append((int(u["instrument_token"]), None, u["first_open"], u["last_close"], None))
+            seen.add(int(u["instrument_token"]))
+    print(f"{len(windows)} instrument(s) ever traded: {len(skipped)} expired before {min_expiry} (Kite has no "
+          f"history for those — use --csv backups), {len(plan)} to fill (incl. indices).")
+    for sym, exp in skipped[:10]:
+        print(f"  – skip {sym} (expired {exp})")
+    if len(skipped) > 10:
+        print(f"  – … and {len(skipped) - 10} more")
+    if dry:
+        for tok, sym, a, b, exp in plan:
+            print(f"  would fill {sym or 'index'} ({tok}): {a.astimezone(IST):%d %b %Y} → {b.astimezone(IST):%d %b %Y}")
+        return
+    session = await queries.get_kite_session(pool)
+    if not session:
+        sys.exit("No Kite session in the database: log in from the app first.")
+    dispatcher = SimpleNamespace(api_key=cfg["api_key"], access_token=session["access_token"],
+                                 token_labels={}, last_prices={}, last_depths={})
+    svc = CandleService(pool, dispatcher)
+    await svc.remember_contracts([(t, s) for t, s, *_ in plan if s])
+    total = 0
+    for tok, sym, a, b, _ in plan:
+        start = datetime.combine(a.astimezone(IST).date(), SESSION_OPEN, IST)
+        end = min(datetime.combine(b.astimezone(IST).date(), SESSION_CLOSE, IST), datetime.now(timezone.utc))
+        before = svc.kite_requests
+        try:
+            n = await svc.ensure(tok, start, end, symbol=sym)
+        except Exception as e:
+            print(f"  ✗ {sym or 'index'} ({tok}): {e}")
+            continue
+        total += n
+        print(f"  ✓ {sym or 'index'} ({tok}): {n} minute(s) stored, {svc.kite_requests - before} Kite request(s)")
+    print(f"Done: {total} minute(s) stored, {svc.kite_requests} Kite request(s).")
+
+
 async def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--csv", nargs="+", type=Path, help="CSV files or folders of 1-minute candles")
     ap.add_argument("--kite-since", type=date.fromisoformat, help="fill every held instrument from Kite since this date")
+    ap.add_argument("--all-trades", action="store_true", help="fill every traded contract Kite still lists")
+    ap.add_argument("--min-expiry", type=date.fromisoformat, default=None,
+                    help="with --all-trades: skip contracts expiring before this (default today)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
-    if not a.csv and not a.kite_since:
-        ap.error("give --csv and/or --kite-since")
+    if not a.csv and not a.kite_since and not a.all_trades:
+        ap.error("give --csv, --kite-since and/or --all-trades")
     cfg = load_config()
     pool = await create_pool(cfg["database_url"])
     try:
@@ -171,6 +232,8 @@ async def main():
             await import_csv(pool, a.csv, a.dry_run)
         if a.kite_since:
             await import_kite(pool, cfg, a.kite_since, a.dry_run)
+        if a.all_trades:
+            await import_all_trades(pool, cfg, a.min_expiry or datetime.now(IST).date(), a.dry_run)
     finally:
         await close_pool(pool)
 

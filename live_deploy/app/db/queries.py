@@ -1156,6 +1156,40 @@ async def find_contract_token(pool: asyncpg.Pool, tradingsymbol: str) -> Optiona
     return int(tok) if tok is not None else None
 
 
+async def instrument_hold_windows(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    """Every instrument ever traded, once: its symbol and the span it was
+    held across all positions (first open -> last close, or now if any
+    position in it is still open)."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT instrument_token, (array_agg(symbol ORDER BY opened_at DESC))[1] AS symbol,
+                   min(opened_at) AS first_open,
+                   CASE WHEN bool_or(closed_at IS NULL) THEN now() ELSE max(closed_at) END AS last_close
+            FROM positions
+            GROUP BY instrument_token
+            ORDER BY min(opened_at)
+            """
+        )
+
+
+async def underlying_trade_windows(pool: asyncpg.Pool) -> list[asyncpg.Record]:
+    """Each deployment's underlying token (config.instrument_tokens[0])
+    with the span its trades covered."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT (d.config->'instrument_tokens'->>0)::bigint AS instrument_token,
+                   min(p.opened_at) AS first_open,
+                   CASE WHEN bool_or(p.closed_at IS NULL) THEN now() ELSE max(p.closed_at) END AS last_close
+            FROM positions p JOIN deployments d ON d.id = p.deployment_id
+            WHERE jsonb_typeof(d.config->'instrument_tokens') = 'array'
+              AND d.config->'instrument_tokens'->>0 IS NOT NULL
+            GROUP BY 1
+            """
+        )
+
+
 async def instruments_held_between(pool: asyncpg.Pool, start: datetime, end: datetime) -> list[asyncpg.Record]:
     """Each distinct instrument any deployment held at some point in
     [start, end): opened before the end, and still open or closed after
