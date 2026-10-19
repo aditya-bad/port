@@ -88,3 +88,10 @@ test('market session 09:15–15:30 IST, weekdays', () => {
   assert.equal(F.isSessionOpen(new Date('2026-10-17T10:00:00+05:30')), false, 'Saturday');
   assert.equal(F.sessionFrac(new Date('2026-10-18T10:00:00+05:30')), 1, 'Sunday reads as closed');
 });
+
+test('option symbols split into index, strike, type and expiry', () => {
+  assert.deepEqual(F.symbolParts('NIFTY26NOV22400PE'), { und: 'NIFTY', exp: '26NOV', strike: '22400', type: 'PE' });
+  assert.deepEqual(F.symbolParts('BANKNIFTY26O2855000CE'), { und: 'BANKNIFTY', exp: '26O28', strike: '55000', type: 'CE' });
+  assert.equal(F.symbolParts('NIFTY 50'), null);
+  assert.equal(F.symbolParts(undefined), null);
+});

@@ -3,7 +3,7 @@
 
 import { api } from '../core/api.js';
 import { html, raw, mount, $, $$, actions, setText, setTone } from '../core/dom.js';
-import { shortSymbol, inr, inrS, price, hhmm, hhmmss, dLong, sessionFrac, sessionLeft, isSessionOpen, plural, tone, toneVar, ist, OPEN_MIN, SESSION_MIN } from '../core/format.js';
+import { inr, inrS, price, hhmm, hhmmss, dLong, sessionFrac, sessionLeft, isSessionOpen, plural, tone, toneVar, ist, OPEN_MIN, SESSION_MIN } from '../core/format.js';
 import { current as basisNow } from '../core/basis.js';
 import { ui, listen } from '../core/store.js';
 import { go, href } from '../core/router.js';
@@ -12,6 +12,7 @@ import { kite } from '../data/live.js';
 import { alerts, dismiss, attention } from '../data/alerts.js';
 import { DESK_LANES, STREAK_ALERT } from '../data/config.js';
 import { chips, utabs, marker, empty } from '../ui/components.js';
+import { legHead, legRow, liveTag, tickLegs } from '../ui/legs.js';
 import { primary, resume, kiteDialog, restartDeployment } from '../actions.js';
 
 const st = ui('desk', { f: 'all', sort: 'attn', all: false, lab: false });
@@ -187,19 +188,16 @@ function positionsBlock(list, T) {
   return html`
     <div class="col-pad scroll-x">
       <div class="sect ruled"><h3 class="t-h3">Open positions</h3><span class="mute">${plural(T.legs, 'leg')}, grouped by deployment</span><span class="grow"></span>
-        <span class="mono ${tone(T.unreal)}" id="unrTot">${inr(T.unreal)}</span></div>
+        ${liveTag(withLegs.flatMap(v => v.legs))}<span class="mono ${tone(T.unreal)}" id="unrTot">${inr(T.unreal)}</span></div>
       ${withLegs.length ? html`
-        <div class="tr th legs-grid"><span class="hide-phone"></span><span>Instrument</span><span class="right">Qty</span><span class="right hide-phone">Entry</span><span class="right">LTP</span><span class="right">P&L</span></div>
+        ${legHead()}
         ${withLegs.slice(0, 8).map(v => {
           const x = book.live(v);
           return html`
             <a class="leg-group" href="${href(`d/${v.id}`)}"><b>${v.name}</b>
               <span class="tiny b warn">${v.status === 'down' ? 'NOT RUNNING' : v.status === 'error' ? 'ERROR' : v.rawStatus === 'paused' ? 'PAUSED' : ''}</span><span class="grow"></span>
               <span class="mono small ${tone(x.unreal)}" data-grp="${v.id}">${inr(x.unreal)}</span></a>
-            ${v.legs.map(p => { const pnl = book.legPnl(p); return html`
-              <div class="tr legs-grid leg"><span class="b mute hide-phone">${p.side === 'short' ? 'S' : 'B'}</span><span class="ell"><b class="only-phone-in mute">${p.side === 'short' ? 'S ' : 'B '}</b><span class="hide-phone">${p.symbol}</span><span class="only-phone-in">${shortSymbol(p.symbol)}</span></span>
-                <span class="right">${Number(p.qty)}</span><span class="right mute hide-phone">${price(p.avg_entry_price)}</span>
-                <span class="right" data-ltp="${p.id}">${price(book.legPrice(p))}</span><span class="right ${tone(pnl)}" data-pnl="${p.id}">${inr(pnl)}</span></div>`; })}`;
+            ${v.legs.map(legRow)}`;
         })}
         ${withLegs.length > 8 ? html`<a class="linkish" style="display:inline-block;padding-top:12px" href="${href('deployments')}">+ ${plural(withLegs.length - 8, 'more deployment')} holding positions</a>` : ''}`
       : empty('', 'Nothing open right now.')}
@@ -256,6 +254,16 @@ export default {
         <section class="hero" aria-label="Today">${hero(T, all)}${attentionPanel(A)}</section>
         <section aria-label="Session lanes">${lanesBlock(all, frac)}</section>
         <section class="desk-bottom">${positionsBlock(list, T)}${activityBlock(all, recent)}</section>`);
+      clearAxis();
+    }
+    // Hide the hour labels the "now" chip sits on (measured: depends on width).
+    function clearAxis() {
+      const chip = $('.axis .now-chip', main);
+      const r = chip && chip.getBoundingClientRect();
+      $$('.axis > span:not(.now-chip)', main).forEach(l => {
+        const b = l.getBoundingClientRect();
+        l.style.visibility = r && b.width && b.right + 4 > r.left && b.left - 4 < r.right ? 'hidden' : '';
+      });
     }
     function tick() {
       if (!book.isLoaded('deployments')) return;
@@ -273,13 +281,8 @@ export default {
         if (el && v.rawStatus !== 'stopped') { setText(el, inr(x.today)); setTone(el, tone(x.today)); }
         const g = $(`[data-grp="${v.id}"]`, main);
         if (g) { setText(g, inr(x.unreal)); setTone(g, tone(x.unreal)); }
-        v.legs.forEach(p => {
-          const pnl = book.legPnl(p);
-          const a = $(`[data-pnl="${p.id}"]`, main);
-          if (a) { setText(a, inr(pnl)); setTone(a, tone(pnl)); }
-          setText($(`[data-ltp="${p.id}"]`, main), price(book.legPrice(p)));
-        });
       });
+      tickLegs(main, all.flatMap(v => v.legs));
     }
     const offActs = actions(main, {
       kite: () => kiteDialog(),

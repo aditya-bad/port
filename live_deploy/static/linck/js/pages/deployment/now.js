@@ -3,11 +3,12 @@
 
 import { api } from '../../core/api.js';
 import { html, mount, $, setText, setTone } from '../../core/dom.js';
-import { shortSymbol, inr, price, dStamp, hhmm, plural, tone } from '../../core/format.js';
+import { inr, price, dStamp, hhmm, plural, tone } from '../../core/format.js';
 import { pnlOf } from '../../core/basis.js';
 import { listen } from '../../core/store.js';
 import * as book from '../../data/book.js';
 import { sect, empty, loading } from '../../ui/components.js';
+import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
 
 const GAP = 90 * 1000;
 
@@ -46,13 +47,8 @@ export default {
         <div class="pad-x tab-body grid-side">
           <div class="stack" style="gap:28px">
             <div class="scroll-x">
-              ${sect('Holding now', v.legs.length ? plural(v.legs.length, 'leg') : 'no open legs', html`<span class="mono ${tone(x.unreal)}" data-unr>${inr(x.unreal)}</span>`)}
-              ${v.legs.length ? html`
-                <div class="tr th hold-grid"><span>Instrument</span><span class="hide-phone">Side</span><span class="right">Qty</span><span class="right hide-phone">Entry</span><span class="right">LTP</span><span class="right">P&L</span></div>
-                ${v.legs.map(p => { const pnl = book.legPnl(p); return html`
-                  <div class="tr hold-grid mono"><span class="ell"><b class="only-phone-in mute" style="font-family:var(--f-body)">${p.side === 'short' ? 'S ' : 'L '}</b><span class="hide-phone">${p.symbol}</span><span class="only-phone-in">${shortSymbol(p.symbol)}</span></span><span class="b hide-phone" style="font-family:var(--f-body)">${p.side === 'short' ? 'Short' : 'Long'}</span>
-                    <span class="right">${Number(p.qty)}</span><span class="right mute hide-phone">${price(p.avg_entry_price)}</span>
-                    <span class="right" data-ltp="${p.id}">${price(book.legPrice(p))}</span><span class="right ${tone(pnl)}" data-pnl="${p.id}">${inr(pnl)}</span></div>`; })}`
+              ${sect('Holding now', v.legs.length ? plural(v.legs.length, 'leg') : 'no open legs', html`${liveTag(v.legs)} <span class="mono ${tone(x.unreal)}" data-unr>${inr(x.unreal)}</span>`)}
+              ${v.legs.length ? html`${legHead()}${v.legs.map(legRow)}`
                 : empty('', v.rawStatus === 'stopped' ? 'Stopped and flat.' : `Flat. Waiting for the next entry${v.raw.config && v.raw.config.entry_time ? ` at ${v.raw.config.entry_time}` : ''}.`)}
             </div>
             <div>
@@ -90,15 +86,13 @@ export default {
     const offs = [listen('ticks', () => {
       const v = book.find(v0.id);
       if (!v) return;
-      v.legs.forEach(p => {
-        const pnl = book.legPnl(p), a = $(`[data-pnl="${p.id}"]`, el);
-        if (a) { setText(a, inr(pnl)); setTone(a, tone(pnl)); }
-        setText($(`[data-ltp="${p.id}"]`, el), price(book.legPrice(p)));
-      });
+      tickLegs(el, v.legs);
       const u = $('[data-unr]', el), x = book.live(v);
       if (u) { setText(u, inr(x.unreal)); setTone(u, tone(x.unreal)); }
     })];
     const iv = setInterval(() => api.strategyStatus(v0.id).then(r => { status = r; paint(); }).catch(() => {}), 30000);
-    return () => { offs.forEach(f => f()); clearInterval(iv); };
+    // the Live tag turns stale when ticks stop, even with nothing to repaint
+    const iv2 = setInterval(() => { const v = book.find(v0.id); if (v) tickLegs(el, v.legs); }, 5000);
+    return () => { offs.forEach(f => f()); clearInterval(iv); clearInterval(iv2); };
   },
 };

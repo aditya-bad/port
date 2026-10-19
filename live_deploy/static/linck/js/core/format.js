@@ -58,9 +58,15 @@ export function num(v, dp = 2) {
   return (n < 0 ? MINUS : '') + Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: dp, minimumFractionDigits: dp });
 }
 // NIFTY26NOV25600CE → "25600 CE · 26NOV" (strike first, for narrow screens)
+const OPT_RE = /^([A-Z&]+?)(\d{2}(?:[A-Z]{3}|[1-9OND]\d{2}))(\d+(?:\.\d+)?)(CE|PE)$/;
 export function shortSymbol(sym) {
-  const m = /^([A-Z&]+?)(\d{2}(?:[A-Z]{3}|[1-9OND]\d{2}))(\d+(?:\.\d+)?)(CE|PE)$/.exec(sym || '');
+  const m = OPT_RE.exec(sym || '');
   return m ? `${m[3]} ${m[4]} · ${m[2]}` : sym;
+}
+// NIFTY26NOV22400PE → { und: 'NIFTY', exp: '26NOV', strike: '22400', type: 'PE' }; null if not an option.
+export function symbolParts(sym) {
+  const m = OPT_RE.exec(sym || '');
+  return m ? { und: m[1], exp: m[2], strike: m[3], type: m[4] } : null;
 }
 export const tone = v => (!isNum(v) ? 'flat' : v > 0.5 ? 'pos' : v < -0.5 ? 'neg' : 'flat');
 export const toneVar = v => ({ pos: 'var(--g)', neg: 'var(--r)', flat: 'var(--mute)' }[tone(v)]);
