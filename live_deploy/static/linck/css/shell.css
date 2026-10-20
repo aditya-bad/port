@@ -2,15 +2,19 @@
 
 .appbar { position: sticky; top: 0; z-index: 20; background: var(--paper); }
 .hdr { display: flex; align-items: center; gap: clamp(10px, 1.15vw, 24px); height: var(--hdr); padding: 0 var(--px); border-bottom: 1.5px solid var(--ink); min-width: 0; }
-.wordmark { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.03em; text-decoration: none; flex: none; display: inline-flex; align-items: center; gap: 10px; }
+/* The header says Linck in words; the mark is for icons, the boot screen,
+ * sign-in and Geek mode. */
+.wordmark { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.03em; text-decoration: none; flex: none; }
+/* Just above 1180px (where the basis stamps fold into a chip) the header is
+ * at its fullest: a slightly smaller word and tighter spacing keep it on
+ * one line. 1380 leaves room for a desktop scrollbar. */
+@media (min-width: 1181px) and (max-width: 1380px) { .wordmark { font-size: 22px; } .hdr { gap: 12px; } }
+/* Small phones: the same, so it fits down to 320px. */
+@media (max-width: 400px) { .wordmark { font-size: 20px; } }
 /* The ink mark on Paper and Slate, the paper mark on Night (each page renders both). */
 .mark { display: block; flex: none; width: 30px; height: 30px; }
 .mark.mark-paper, :root[data-th="night"] .mark:not(.mark-paper) { display: none; }
 :root[data-th="night"] .mark.mark-paper { display: block; }
-/* Below 1640px the header is full: the mark alone stands for Linck (the link
- * keeps its label). 1640, not 1521 where the long labels come in: those
- * widths include a desktop scrollbar (~15px), so the word didn't fit there. */
-@media (max-width: 1639px) { .wordmark .wm-text { display: none; } }
 
 /* Boot screen: the mark on paper until the first page renders (app.js bootDone).
  * The cursor blinks and the candle prints, as in the icon. */
@@ -39,6 +43,9 @@
 .kite-chip.off { background: var(--ys); color: var(--wt); border-color: var(--wr); }
 .kite-chip.off > i { border-radius: 0; background: var(--wr); transform: rotate(45deg); animation: none; }
 .kite-chip.wait > i { background: var(--mute); animation: none; }
+/* Phones under 360px: the dot alone (the button keeps its label); the Desk's
+ * banner says it in words when Kite is off. */
+@media (max-width: 359px) { .kite-chip { font-size: 0; gap: 0; padding: 9px; } .kite-chip > span { display: none; } }
 .theme-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; white-space: nowrap; flex: none; }
 .theme-btn > i { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--ink); background: linear-gradient(90deg, var(--ink) 50%, var(--paper) 50%); }
 .alerts-btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; white-space: nowrap; flex: none; }

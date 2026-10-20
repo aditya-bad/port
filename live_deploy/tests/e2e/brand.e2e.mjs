@@ -1,5 +1,5 @@
-// The Linck mark where people see it: boot screen, header, sign-in,
-// Geek mode bar, the loaders and the tab icon.
+// The Linck mark where people see it: boot screen, sign-in, Geek mode
+// bar, the loaders and the tab icon. The header says Linck in words.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BASE, IDS, browser, context } from './helper.mjs';
@@ -19,8 +19,8 @@ test('boot screen shows the mark, then gets out of the way', async () => {
   assert.ok(await p.isVisible('#boot'), 'the boot screen covers the first paint');
   await p.waitForSelector('#boot', { state: 'detached', timeout: 10000 });
   await p.waitForSelector('.hdr');
-  assert.ok(await p.isVisible('.hdr .wordmark img.mark'));
-  assert.ok(await loaded(p, '.hdr .wordmark img.mark'), 'header mark loads');
+  assert.equal((await p.textContent('.hdr .wordmark')).trim(), 'Linck', 'the header says Linck');
+  assert.equal(await p.locator('.hdr .wordmark img').count(), 0, 'no mark in the header');
   const fav = await p.$$eval('link[rel=icon]', ls => ls.map(l => l.getAttribute('href')));
   assert.ok(fav.includes('/icons/linck-mark.svg'));
   assert.deepEqual(ctx.errors, []);
@@ -38,7 +38,7 @@ test('a page that fails to load still clears the boot screen', async () => {
 });
 
 for (const th of ['paper', 'slate', 'night']) {
-  test(`mark in the header, boot screen and sign-in (${th})`, async () => {
+  test(`mark on the boot screen and sign-in, the word in the header (${th})`, async () => {
     const ctx = await context(b, { signedIn: false });
     await ctx.addInitScript(t => localStorage.setItem('linck-prefs', JSON.stringify({ theme: t })), th);
     let p = await ctx.newPage();
@@ -64,8 +64,13 @@ for (const th of ['paper', 'slate', 'night']) {
     })).jsonValue();
     assert.equal(tile, th === 'night' ? 'rgb(246, 244, 238)' : 'rgb(29, 27, 22)', 'boot mark tile');
     await p.waitForSelector('.hdr');
-    assert.ok(await p.isVisible(`.hdr ${show}`) && !(await p.isVisible(`.hdr ${hide}`)), `header shows ${show} on ${th}`);
-    assert.ok(await loaded(p, `.hdr ${show}`));
+    // the word, visible at every width the header has, and no mark
+    for (const w of [320, 390, 1024, 1325, 1440, 1530, 1920]) {
+      await p.setViewportSize({ width: w, height: 900 });
+      assert.ok(await p.isVisible('.hdr .wordmark:text-is("Linck")'), `header says Linck at ${w}px on ${th}`);
+      assert.equal(await p.locator('.hdr img.mark').count(), 0);
+      assert.equal(await p.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, `no sideways scroll at ${w}px`);
+    }
     await ctx2.close();
   });
 }

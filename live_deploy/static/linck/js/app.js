@@ -29,9 +29,9 @@ const app = { route: null, page: null, cleanup: null, me: null };
 // ── Header ─────────────────────────────────────────────────────────
 function kiteChip() {
   const s = kite.state;
-  if (s === 'connected') return html`<button type="button" class="kite-chip" data-act="kite"><i></i>Kite connected</button>`;
-  if (s === 'connecting') return html`<button type="button" class="kite-chip wait" data-act="kite"><i></i>Connecting…</button>`;
-  return html`<button type="button" class="kite-chip off" data-act="kite"><i></i><span class="long">Kite expired · Reconnect</span><span class="short">Reconnect</span></button>`;
+  if (s === 'connected') return html`<button type="button" class="kite-chip" data-act="kite" aria-label="Kite connected"><i></i>Kite connected</button>`;
+  if (s === 'connecting') return html`<button type="button" class="kite-chip wait" data-act="kite" aria-label="Connecting to Kite"><i></i>Connecting…</button>`;
+  return html`<button type="button" class="kite-chip off" data-act="kite" aria-label="Kite expired, reconnect"><i></i><span class="long">Kite expired · Reconnect</span><span class="short">Reconnect</span></button>`;
 }
 // While the daily option-history backfill runs: a slim strip under the
 // header with its progress (the header row itself has no room to spare),
@@ -63,7 +63,7 @@ function renderHeader() {
   const initials = app.me ? app.me.username.slice(0, 2) : '··';
   mount($('#top'), html`
     <header class="hdr">
-      <a class="wordmark" href="${href('desk')}" aria-label="Linck, go to the Desk"><img class="mark" src="/icons/linck-mark.svg" alt="" width="30" height="30"><img class="mark mark-paper" src="/icons/linck-mark-paper.svg" alt="" width="30" height="30"><span class="wm-text">Linck</span></a>
+      <a class="wordmark" href="${href('desk')}" aria-label="Linck, go to the Desk">Linck</a>
       <nav class="nav hide-phone" aria-label="Main">${NAV.map(([k, l, c]) => html`
         <a href="${href(k)}" class="${k === cur ? 'on' : ''} ${c}" ${k === cur ? html`aria-current="page"` : ''}>${l}</a>`)}</nav>
       <span class="spacer"></span>

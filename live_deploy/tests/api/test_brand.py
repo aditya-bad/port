@@ -81,7 +81,7 @@ def test_paper_mark_is_only_for_the_night_theme_never_an_app_icon():
             if f.is_file() and f.suffix in {".html", ".js", ".css", ".json", ".py", ".xml", ".kt"}:
                 if "mark-paper" in f.read_text(errors="ignore"):
                     users.add(str(f.relative_to(ROOT)))
-    assert users == {"static/linck/js/app.js", "static/linck/js/pages/geek/index.js", "static/linck/login/index.html",
+    assert users == {"static/linck/js/pages/geek/index.js", "static/linck/login/index.html",
                      "static/linck/css/shell.css", "static/linck/login/login.css"}, users
     for css in ["static/linck/css/shell.css", "static/linck/login/login.css"]:
         assert ':root[data-th="night"]' in (ROOT / css).read_text() and "mark-paper" in (ROOT / css).read_text()
@@ -160,10 +160,12 @@ def test_boot_screen_draws_the_current_mark():
     assert GLYPH in boot, "paste brand/linck-mark.svg into #boot in static/linck/index.html"
 
 
-def test_header_sign_in_and_geek_bar_show_the_mark():
-    for page in ["linck/js/app.js", "linck/login/index.html"]:
-        t = (STATIC / page).read_text()
-        assert 'class="mark" src="/icons/linck-mark.svg"' in t and 'class="mark mark-paper" src="/icons/linck-mark-paper.svg"' in t, page
+def test_sign_in_and_geek_bar_show_the_mark_and_the_header_says_linck():
+    t = (STATIC / "linck/login/index.html").read_text()
+    assert 'class="mark" src="/icons/linck-mark.svg"' in t and 'class="mark mark-paper" src="/icons/linck-mark-paper.svg"' in t
+    app = (STATIC / "linck/js/app.js").read_text()
+    head = re.search(r'<a class="wordmark"[^>]*>(.*?)</a>', app).group(1)
+    assert head == "Linck", "the header says Linck in words, no mark"
     geek = (STATIC / "linck/js/pages/geek/index.js").read_text()
     assert geek.count('src="/icons/linck-mark.svg"') == 3 and geek.count('src="/icons/linck-mark-paper.svg"') == 3
 
