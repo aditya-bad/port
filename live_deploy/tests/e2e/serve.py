@@ -72,6 +72,7 @@ DEPS = [
     ("Bankex Strangle", "strangle_monthly_v2", "positional", 500_000, "BANKEX", "active", ["Strategy Lab"], 6, "pos"),
 ]
 OPEN_LEGS = {"Nifty Strangle A": 4, "BankNifty DTT Plain": 2, "Bankex Strangle": 2}
+MARKED_ONLY = "Bankex Strangle"   # its legs have no live price, only a recorded mark
 _tok = [600000]
 GEEK_LIVE: list = []      # open geek legs: their last trade time is kept fresh
 
@@ -166,7 +167,13 @@ async def seed():
             t = ntok()
             px = R.uniform(90, 160) if act == "sell" else R.uniform(25, 50)
             await fill(pool, ids[name], sym(ix, TODAY + timedelta(days=30), k + off * STEP[ix], ot), t, act, q, px, when, "entry")
-            prices[t] = round(px * R.uniform(0.85, 1.12), 2)
+            if name == MARKED_ONLY:
+                # never live: only yesterday's last recorded price (a holiday / Kite down)
+                pos = await pool.fetchval("SELECT id FROM positions WHERE deployment_id=$1 AND instrument_token=$2", ids[name], t)
+                await queries.record_position_marks(pool, [(pos, ids[name], datetime.combine(
+                    (TODAY - timedelta(days=1)).date(), time(15, 25), IST), round(px * R.uniform(0.85, 1.12), 2))])
+            else:
+                prices[t] = round(px * R.uniform(0.85, 1.12), 2)
 
     # today's lanes: 5-minute snapshots up to now
     for name, _s, _m, cap, _ix, status, *_ in DEPS:

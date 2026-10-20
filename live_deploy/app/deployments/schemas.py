@@ -211,6 +211,10 @@ class PositionOut(BaseModel):
     opened_at: datetime
     closed_at: Optional[datetime] = None
     current_price: Optional[float] = None
+    # False when current_price is the last recorded mark, not a live tick
+    # (holiday, Kite down, just restarted); price_at is when it was set.
+    price_live: bool = False
+    price_at: Optional[datetime] = None
     unrealized_pnl: Optional[float] = None
     # Same idea as unrealized_pnl itself: a live, purely hypothetical
     # figure (what it would cost to close THIS position right now, at

@@ -129,3 +129,25 @@ test('once ticks arrive, the lane moves with them', async () => {
   assert.ok(new Set((await laneOf(p, ID)).ys).size > 1, 'the lane shows the move');
   await ctx.close();
 });
+
+// A holiday / Kite down: no live price, so the legs show their last
+// recorded price, muted, with when it was recorded (it was a bare "—").
+test('legs with no live price show their last recorded price, marked as not live', async () => {
+  const ctx = await context(b);
+  await streamTicks(ctx, [], false);
+  const p = await ctx.newPage();
+  const id = IDS['Bankex Strangle'];
+  await p.goto(`${BASE}/linck/#/d/${id}/now`);
+  await p.waitForSelector('.legs-tbl.leg [data-ltp]');
+  const cells = await p.$$eval('.legs-tbl.leg [data-ltp]', els => els.map(e => ({ t: e.textContent.trim(), stale: e.classList.contains('stale'), tip: e.dataset.tip || '' })));
+  assert.equal(cells.length, 2);
+  for (const c of cells) {
+    assert.match(c.t, /^\d+\.\d{2}$/, 'a price, not "—"');
+    assert.ok(c.stale, 'muted');
+    assert.match(c.tip, /Last recorded price, .* 15:25\. Not live\./);
+  }
+  assert.match(await p.innerText('[data-live]'), /Not live · last prices .* 15:25/);
+  const pnl = await p.$$eval('.legs-tbl.leg [data-pnl]', els => els.map(e => e.textContent.trim()));
+  assert.ok(pnl.every(t => t !== '—'), 'P&L at that price');
+  await ctx.close();
+});

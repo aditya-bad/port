@@ -3,7 +3,7 @@
 // P&L. Prices update in place on every tick and flash on a change.
 
 import { html, $, setText, setTone } from '../core/dom.js';
-import { symbolParts, inr, price, hhmm, tone } from '../core/format.js';
+import { symbolParts, inr, price, hhmm, dDay, tone } from '../core/format.js';
 import * as book from '../data/book.js';
 import { prices } from '../data/live.js';
 
@@ -23,12 +23,18 @@ export function legHead() {
   return html`<div class="tr th legs-tbl"><span>Instrument</span><span class="right">Qty</span><span class="right">Entry</span><span class="right">LTP</span><span class="right">P&L</span></div>`;
 }
 
+// A price that isn't from today's ticks (the last recorded one, on a
+// holiday or with Kite down) is shown muted, with when it was recorded.
+const stalePrice = p => !prices.get(p.instrument_token) && p.current_price != null && !p.price_live;
+const staleTip = p => `Last recorded price${p.price_at ? `, ${dDay(p.price_at)} ${hhmm(p.price_at)}` : ''}. Not live.`;
+
 export function legRow(p) {
   const pnl = book.legPnl(p);
+  const stale = stalePrice(p);
   return html`<div class="tr legs-tbl leg mono">${instrument(p)}
     <span class="right">${Number(p.qty)}</span>
     <span class="right">${price(p.avg_entry_price)}</span>
-    <span class="right ltp" data-ltp="${p.id}">${price(book.legPrice(p))}</span>
+    <span class="right ltp ${stale ? 'stale' : ''}" data-ltp="${p.id}" ${stale ? html`data-tip="${staleTip(p)}"` : ''}>${price(book.legPrice(p))}</span>
     <span class="right ${tone(pnl)}" data-pnl="${p.id}">${inr(pnl)}</span></div>`;
 }
 
@@ -40,6 +46,8 @@ export function liveState(legs) {
   if (last && Date.now() - last < FRESH_MS) return { live: true, text: 'Live' };
   if (last) return { live: false, text: `Last tick ${hhmm(last)}` };
   if (!legs.length) return { live: false, text: '' };
+  const marked = legs.filter(stalePrice).map(p => p.price_at).filter(Boolean).map(t => new Date(t).getTime());
+  if (marked.length) return { live: false, text: `Not live · last prices ${dDay(Math.max(...marked))} ${hhmm(Math.max(...marked))}` };
   return { live: false, text: legs.some(p => book.legPrice(p) != null) ? 'Not streaming · last known prices' : 'No prices yet' };
 }
 export function liveTag(legs) {
@@ -52,6 +60,7 @@ export function tickLegs(root, legs) {
   for (const p of legs) {
     const a = $(`[data-ltp="${p.id}"]`, root);
     if (a) {
+      if (!stalePrice(p) && a.classList.contains('stale')) { a.classList.remove('stale'); a.removeAttribute('data-tip'); }
       const next = price(book.legPrice(p));
       if (a.textContent !== next) {
         const up = parseFloat(next.replace(/[^\d.-]/g, '')) > parseFloat(a.textContent.replace(/[^\d.-]/g, ''));

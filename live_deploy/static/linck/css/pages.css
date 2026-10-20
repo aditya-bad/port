@@ -406,6 +406,7 @@ a.cell-name:hover b { text-decoration: underline; }
 .leg-sub .short { color: var(--r); font-weight: 600; }
 .leg-sub .long { color: var(--g); font-weight: 600; }
 .ltp { padding: 2px 4px; margin-right: -4px; }
+.ltp.stale { color: var(--mute); }
 .flash-up { animation: flash-up .9s ease-out; }
 .flash-dn { animation: flash-dn .9s ease-out; }
 @keyframes flash-up { from { background: var(--gs); } to { background: transparent; } }

@@ -18,9 +18,8 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
 
 from .aggregate import year_bounds
-from ..charges import estimate_options_charges
-from ..slippage import projected_slippage
 from ..db import queries
+from ..prices import open_prices, open_values, value_open_row
 from ..deployments.schemas import (
     AdjustmentHistogramOut, DeploymentCreate, DeploymentOut, DeploymentUpdate,
     EventOut, LotsPage, PnlDigestRow, PnlDigestRowWithRange, PositionOutWithEpisode,
@@ -49,42 +48,12 @@ def _annotate(row: dict) -> dict:
     return row
 
 
-def _mark_to_market(position: dict, dispatcher) -> float:
-    """Unrealized P&L for ONE open position row, or 0.0 if there's no
-    live price for it yet — same formula used by GET
-    /deployments/{id}/positions, kept in one place so every pnl-
-    enrichment path (single deployment, deployment list, cross-
-    deployment aggregate) computes it identically."""
-    price = dispatcher.last_prices.get(int(position["instrument_token"]))
-    if price is None:
-        return 0.0
-    qty, avg = float(position["qty"]), float(position["avg_entry_price"])
-    return (price - avg) * qty if position["side"] == "long" else (avg - price) * qty
-
-
-def _projected_charges(position: dict, dispatcher) -> float:
-    """What it would cost (app/charges.py's estimate_options_charges) to
-    close this OPEN position right now, at its live price -- the
-    "with brokerage" toggle's unrealized-side figure. Purely
-    hypothetical, same as unrealized_pnl itself: nothing is actually
-    charged until the position really closes, and positions.
-    estimated_charges only gets a real, stored value at that point (see
-    queries.record_fill). 0.0 if there's no live price yet, same
-    "not computed" convention _mark_to_market already uses."""
-    price = dispatcher.last_prices.get(int(position["instrument_token"]))
-    if price is None:
-        return 0.0
-    qty, avg = float(position["qty"]), float(position["avg_entry_price"])
-    buy_price, sell_price = (avg, price) if position["side"] == "long" else (price, avg)
-    return estimate_options_charges(buy_price, sell_price, qty)
-
-
 def _open_cost_basis(position: dict) -> float:
     """The entry-price cash effect of ONE open position — +qty*avg_entry
     for a short (the premium collected on selling to open, still sitting
     in current_cash uncredited to realized_pnl until it's bought back),
     -qty*avg_entry for a long (cash already spent buying it). Needs no
-    live price at all (unlike _mark_to_market above) — this is a fact
+    live price at all (unlike unrealized P&L) — this is a fact
     about the entry fill, not the current market.
 
     Summed across every open position, this is EXACTLY
@@ -113,11 +82,13 @@ async def _enrich_pnl_many(pool, dispatcher, rows: list[dict]) -> None:
     unrealized_charges_map: dict[str, float] = {}
     unrealized_slip_map: dict[str, float] = {}
     cost_basis_map: dict[str, float] = {}
+    prices = await open_prices(pool, dispatcher, open_positions)
     for p in open_positions:
         dep_id = str(p["deployment_id"])
-        unrealized_map[dep_id] = unrealized_map.get(dep_id, 0.0) + _mark_to_market(p, dispatcher)
-        unrealized_charges_map[dep_id] = unrealized_charges_map.get(dep_id, 0.0) + _projected_charges(p, dispatcher)
-        unrealized_slip_map[dep_id] = unrealized_slip_map.get(dep_id, 0.0) + projected_slippage(p, dispatcher)
+        unreal, charges, slip = open_values(p, prices.get(p["id"]), dispatcher)
+        unrealized_map[dep_id] = unrealized_map.get(dep_id, 0.0) + unreal
+        unrealized_charges_map[dep_id] = unrealized_charges_map.get(dep_id, 0.0) + charges
+        unrealized_slip_map[dep_id] = unrealized_slip_map.get(dep_id, 0.0) + slip
         cost_basis_map[dep_id] = cost_basis_map.get(dep_id, 0.0) + _open_cost_basis(p)
     for row in rows:
         dep_id = str(row["id"])
@@ -191,15 +162,15 @@ async def _enrich_pnl_one(pool, dispatcher, deployment_id: UUID, row: dict) -> N
     row["realized_pnl"] = round(await queries.realized_pnl_total(pool, deployment_id), 2)
     row["realized_pnl_net"] = round(await queries.realized_pnl_total_net(pool, deployment_id), 2)
     open_positions = await queries.list_open_positions(pool, deployment_id)
-    row["unrealized_pnl"] = round(sum(_mark_to_market(p, dispatcher) for p in open_positions), 2)
-    unrealized_charges = sum(_projected_charges(p, dispatcher) for p in open_positions)
+    prices = await open_prices(pool, dispatcher, open_positions)
+    vals = [open_values(p, prices.get(p["id"]), dispatcher) for p in open_positions]
+    row["unrealized_pnl"] = round(sum(v[0] for v in vals), 2)
+    unrealized_charges = sum(v[1] for v in vals)
     row["unrealized_pnl_net"] = round(row["unrealized_pnl"] - unrealized_charges, 2)
     row["realized_pnl_net_slip"] = round(
         await queries.realized_pnl_total_net(pool, deployment_id, with_slippage=True), 2,
     )
-    row["unrealized_pnl_net_slip"] = round(
-        row["unrealized_pnl_net"] - sum(projected_slippage(p, dispatcher) for p in open_positions), 2,
-    )
+    row["unrealized_pnl_net_slip"] = round(row["unrealized_pnl_net"] - sum(v[2] for v in vals), 2)
     row["open_cost_basis"] = round(sum(_open_cost_basis(p) for p in open_positions), 2)
 
 
@@ -354,20 +325,13 @@ async def get_positions(deployment_id: UUID, request: Request, status: str | Non
 
     rows = await queries.list_positions_with_episode(pool, deployment_id, status=status)
     dispatcher = request.app.state.dispatcher
+    prices = await open_prices(pool, dispatcher, [r for r in rows if r["status"] == "open"])
 
     out = []
     for r in rows:
         d = dict(r)
         if d["status"] == "open":
-            price = dispatcher.last_prices.get(int(d["instrument_token"]))
-            d["current_price"] = price
-            if price is not None:
-                qty, avg = float(d["qty"]), float(d["avg_entry_price"])
-                d["unrealized_pnl"] = (price - avg) * qty if d["side"] == "long" \
-                    else (avg - price) * qty
-                buy_price, sell_price = (avg, price) if d["side"] == "long" else (price, avg)
-                d["unrealized_pnl_net"] = d["unrealized_pnl"] - estimate_options_charges(buy_price, sell_price, qty)
-                d["unrealized_pnl_net_slip"] = d["unrealized_pnl_net"] - projected_slippage(d, dispatcher)
+            value_open_row(d, prices.get(d["id"]), dispatcher)
         else:
             d["realized_pnl_net"] = float(d["realized_pnl"]) - float(d["estimated_charges"])
             d["realized_pnl_net_slip"] = d["realized_pnl_net"] - float(d["estimated_slippage"])

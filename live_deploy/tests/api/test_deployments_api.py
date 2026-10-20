@@ -196,3 +196,56 @@ def test_list_reflects_fills_without_waiting_for_the_cache(client):
     short_trade(client, d["id"])
     row = next(x for x in client.get("/deployments").json() if x["id"] == d["id"])
     assert float(row["realized_pnl"]) == pytest.approx(1500)
+
+
+# ── Prices when nothing is live (holiday, Kite down, a restart) ──────
+
+def _mark(client, pos_id, dep_id, price, when):
+    from tests.conftest import sql
+    sql(client, "INSERT INTO position_marks (position_id, deployment_id, marked_at, price) VALUES ($1::uuid, $2::uuid, $3, $4)",
+        pos_id, dep_id, when, price)
+
+
+def test_open_legs_without_a_live_price_show_their_last_recorded_price(client):
+    from tests.conftest import refresh
+    d = make_deployment(client)
+    add_fill(client, d["id"], "NIFTYCE", 101, "sell", 75, 100, NOW - timedelta(days=1), reason="entry")
+    add_fill(client, d["id"], "NIFTYPE", 102, "sell", 75, 100, NOW - timedelta(days=1), reason="entry")
+    ce, pe = sorted(client.get(f"/deployments/{d['id']}/positions").json(), key=lambda p: p["symbol"])
+    _mark(client, ce["id"], d["id"], 70, NOW - timedelta(days=1, minutes=10))
+    _mark(client, ce["id"], d["id"], 80, NOW - timedelta(days=1, minutes=5))      # the latest
+    client.app.state.dispatcher.last_prices[102] = 90.0                           # PE is live
+    try:
+        refresh(client)
+        by = {p["symbol"]: p for p in client.get(f"/deployments/{d['id']}/positions").json()}
+        assert by["NIFTYCE"]["current_price"] == 80 and by["NIFTYCE"]["price_live"] is False
+        assert by["NIFTYCE"]["price_at"] is not None
+        assert by["NIFTYCE"]["unrealized_pnl"] == pytest.approx(1500)
+        assert by["NIFTYPE"]["current_price"] == 90 and by["NIFTYPE"]["price_live"] is True
+        agg = {p["symbol"]: p for p in client.get("/positions").json()}
+        assert agg["NIFTYCE"]["current_price"] == 80 and agg["NIFTYCE"]["price_live"] is False, "Desk's table too"
+        dep = client.get(f"/deployments/{d['id']}").json()
+        assert dep["unrealized_pnl"] == pytest.approx(1500 + 750), "the deployment's unrealized counts the marked leg"
+        listed = next(x for x in client.get("/deployments").json() if x["id"] == d["id"])
+        assert listed["unrealized_pnl"] == pytest.approx(2250)
+    finally:
+        client.app.state.dispatcher.last_prices.pop(102, None)
+
+
+def test_a_leg_never_priced_stays_unpriced(client):
+    d = make_deployment(client)
+    add_fill(client, d["id"], "NIFTYCE", 101, "sell", 75, 100, NOW, reason="entry")
+    [p] = client.get(f"/deployments/{d['id']}/positions").json()
+    assert p["current_price"] is None and p["unrealized_pnl"] is None and p["price_live"] is False
+    dep = client.get(f"/deployments/{d['id']}").json()
+    assert dep["unrealized_pnl"] == 0 and dep["unrealized_pnl_net_slip"] == 0, "no made-up slippage either"
+
+
+def test_projected_slippage_at_a_stored_mark_is_the_entry_side_only():
+    from types import SimpleNamespace
+    from app.prices import Price
+    from app.slippage import projected_slippage
+    disp = SimpleNamespace(last_prices={}, last_depths={101: ("a stale book", None)})
+    pos = {"instrument_token": 101, "estimated_slippage": 12.5, "side": "short", "qty": 75}
+    assert projected_slippage(pos, disp) == 0, "no price at all"
+    assert projected_slippage(pos, disp, Price(80.0, False)) == 12.5, "a mark has no current book"

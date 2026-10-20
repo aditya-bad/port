@@ -459,7 +459,7 @@ def test_backfill_runs_in_the_background_and_reports_progress(client, monkeypatc
     assert client.get("/health").json()["candle_backfill"] is None
     # again: nothing left to fetch
     _start_backfill(client, PAST)
-    assert _wait_backfill(client)["last"]["fetched"] == 0
+    assert _wait_backfill(client)["last"]["fetched"] == 0, "the second run's own result"
 
 
 def test_backfill_without_kite_is_reported_as_incomplete(client, monkeypatch):
@@ -473,3 +473,41 @@ def test_backfill_without_kite_is_reported_as_incomplete(client, monkeypatch):
     _start_backfill(client, PAST)
     last = _wait_backfill(client, PAST)["last"]
     assert last["complete"] is False and "Kite" in last["error"]
+
+
+def test_a_backfill_queued_behind_another_shows_as_running_until_it_has_run(client, monkeypatch):
+    """The scheduled run and a manual one share one slot: the manual one
+    waits. When the first finished it cleared the status, so for a moment
+    nothing showed as running though the queued run hadn't started (a
+    status read then saw the first run's result as the last)."""
+    import asyncio
+    import app.candles as C
+
+    async def history(resolver, token, start, end, interval):
+        return []
+    monkeypatch.setattr(C.OptionsResolver, "get_historical_candles", history)
+    d = make_deployment(client)
+    add_fill(client, d["id"], "NIFTY26DEC25000CE", 8191, "sell", 75, 100, at(PAST, "10:00"))
+    svc = client.app.state.candles
+    _wait_backfill(client)
+    states = []
+
+    class Watched(type(svc)):        # record every change of the running status
+        @property
+        def progress(self):
+            return self.__dict__.get("progress")
+
+        @progress.setter
+        def progress(self, v):
+            self.__dict__["progress"] = v
+            states.append(None if v is None else v["day"])
+    monkeypatch.setattr(svc, "__class__", Watched)
+
+    async def scenario():
+        first = asyncio.ensure_future(svc.backfill_day(PAST))       # like the scheduled run
+        await asyncio.sleep(0)
+        queued = svc.start_backfill(PAST - timedelta(days=1))       # a manual run, queued behind it
+        await asyncio.gather(first, queued)
+    client.portal.call(scenario)
+    assert states and states[-1] is None
+    assert None not in states[:-1], f"went idle between the runs: {states}"

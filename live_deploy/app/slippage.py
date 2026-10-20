@@ -85,18 +85,22 @@ def realized_slippage(row) -> float:
     return float(row["estimated_slippage"] or 0) if row["status"] == "closed" else 0.0
 
 
-def projected_slippage(position: dict, dispatcher) -> float:
+def projected_slippage(position: dict, dispatcher, price=None) -> float:
     """Slippage for an OPEN position if it were closed now: what its own
     fills already cost (positions.estimated_slippage, the entry side) plus
     the exit side priced against the latest cached book. Display-only and
     hypothetical, like unrealized P&L: 0 without a live price (the same
     "not computed" convention as unrealized P&L and projected charges),
-    entry side only without a cached book. Never fetches anything."""
+    entry side only without a cached book. Never fetches anything.
+    `price` (app.prices.Price) overrides the live lookup; a stored mark
+    has no current book, so only the entry side counts then."""
     token = int(position["instrument_token"])
-    ltp = dispatcher.last_prices.get(token)
+    ltp = price.value if price is not None else dispatcher.last_prices.get(token)
     if ltp is None:
         return 0.0
     already = float(position.get("estimated_slippage") or 0)
+    if price is not None and not price.live:
+        return already
     cached = dispatcher.last_depths.get(token)
     if cached is None:
         return already

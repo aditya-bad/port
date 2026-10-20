@@ -136,7 +136,8 @@ class CandleService:
         # The daily backfill as it runs (backfill_status / GET /health):
         # None when idle, else {day, total, done, fetched, rows, current, started_at}
         self.progress: Optional[dict] = None
-        self._backfill_lock = asyncio.Lock()                    # for tests and the status endpoint
+        self._backfill_lock = asyncio.Lock()
+        self._backfill_queue: list[dict] = []   # {"day"} tickets of runs waiting for the lock, oldest first                    # for tests and the status endpoint
 
     # ── Reading ──────────────────────────────────────────────────────
 
@@ -279,15 +280,25 @@ class CandleService:
 
     # ── After the close ──────────────────────────────────────────────
 
-    async def backfill_day(self, day: date) -> dict:
+    async def backfill_day(self, day: date, _ticket: Optional[dict] = None) -> dict:
         """Every option contract held on `day` — each once, whichever
         deployments held it: fill the day's missing minutes from Kite
         while it still has them. One run at a time (a second call waits
         for the first, then finds nothing left to fetch). Progress is in
         self.progress while it runs; the result is saved as the last run.
         Returns {"day", "instruments", "fetched", "rows", "seconds", "error"}."""
-        async with self._backfill_lock:
-            return await self._backfill(day)
+        ticket = _ticket or {"day": day}
+        if _ticket is None:
+            self._backfill_queue.append(ticket)
+        try:
+            async with self._backfill_lock:
+                self._drop(ticket)
+                return await self._backfill(day)
+        finally:
+            self._drop(ticket)   # cancelled while waiting
+
+    def _drop(self, ticket: dict) -> None:
+        self._backfill_queue[:] = [t for t in self._backfill_queue if t is not ticket]
 
     async def _backfill(self, day: date) -> dict:
         start = datetime.combine(day, SESSION_OPEN, IST)
@@ -331,17 +342,27 @@ class CandleService:
             await queries.set_app_scratch(self.pool, "candle_backfill_last", {**result, "fetched": len(fetched)})
         except Exception:
             logger.exception("Saving the candle backfill result failed")
-        self.progress = None
+        # A run still waiting for the lock (a manual one queued behind the
+        # scheduled one) keeps showing as running: clearing it here made the
+        # status say "nothing running" until that run began.
+        self.progress = self._waiting(self._backfill_queue[0]["day"]) if self._backfill_queue else None
         logger.info("Candle backfill %s: %d option contract(s), %d fetched from Kite, %d minute(s) stored%s",
                     day, total, len(fetched), rows, f" — {error}" if error else "")
         return result
 
+    @staticmethod
+    def _waiting(day: date) -> dict:
+        return {"day": day.isoformat(), "total": 0, "done": 0, "fetched": 0, "rows": 0,
+                "current": None, "started_at": datetime.now(timezone.utc).isoformat()}
+
     def start_backfill(self, day: date) -> asyncio.Task:
         """Run backfill_day in the background, marked as running from this
         moment (so a status read right after already sees it)."""
-        self.progress = {"day": day.isoformat(), "total": 0, "done": 0, "fetched": 0, "rows": 0,
-                         "current": None, "started_at": datetime.now(timezone.utc).isoformat()}
-        return asyncio.create_task(self.backfill_day(day), name="candle-backfill-now")
+        ticket = {"day": day}
+        self._backfill_queue.append(ticket)   # now, not when the task first runs
+        if self.progress is None:
+            self.progress = self._waiting(day)
+        return asyncio.create_task(self.backfill_day(day, ticket), name="candle-backfill-now")
 
     async def backfill_status(self, at: Optional[datetime] = None) -> dict:
         """For the UI: the run in progress (if any), the last run, the next

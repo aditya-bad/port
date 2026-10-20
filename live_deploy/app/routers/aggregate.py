@@ -17,9 +17,8 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ..charges import estimate_options_charges
-from ..slippage import projected_slippage
 from ..db import queries
+from ..prices import open_prices, value_open_row
 from ..deployments.schemas import (
     AggregatePositionOut, PnlDigestRow, PnlReportOut, PortfolioSnapshotOut, RecentTradeOut,
     StrategyLeaderboardRow,
@@ -116,18 +115,11 @@ async def fetch_positions_open(pool, dispatcher) -> list[dict]:
     pulled out on its own so app.state.cache's background loop can call
     it directly. See app/cache.py for why this is cached at all."""
     rows = await queries.list_all_positions(pool, status="open")
+    prices = await open_prices(pool, dispatcher, rows)
     out = []
     for r in rows:
         d = dict(r)
-        price = dispatcher.last_prices.get(int(d["instrument_token"]))
-        d["current_price"] = price
-        if price is not None:
-            qty, avg = float(d["qty"]), float(d["avg_entry_price"])
-            d["unrealized_pnl"] = (price - avg) * qty if d["side"] == "long" \
-                else (avg - price) * qty
-            buy_price, sell_price = (avg, price) if d["side"] == "long" else (price, avg)
-            d["unrealized_pnl_net"] = d["unrealized_pnl"] - estimate_options_charges(buy_price, sell_price, qty)
-            d["unrealized_pnl_net_slip"] = d["unrealized_pnl_net"] - projected_slippage(d, dispatcher)
+        value_open_row(d, prices.get(d["id"]), dispatcher)
         out.append(d)
     return out
 
@@ -151,20 +143,13 @@ async def list_all_positions(request: Request, status: str | None = "open"):
     pool = request.app.state.db_pool
     rows = await queries.list_all_positions(pool, status=status)
     dispatcher = request.app.state.dispatcher
+    prices = await open_prices(pool, dispatcher, [r for r in rows if r["status"] == "open"])
 
     out = []
     for r in rows:
         d = dict(r)
         if d["status"] == "open":
-            price = dispatcher.last_prices.get(int(d["instrument_token"]))
-            d["current_price"] = price
-            if price is not None:
-                qty, avg = float(d["qty"]), float(d["avg_entry_price"])
-                d["unrealized_pnl"] = (price - avg) * qty if d["side"] == "long" \
-                    else (avg - price) * qty
-                buy_price, sell_price = (avg, price) if d["side"] == "long" else (price, avg)
-                d["unrealized_pnl_net"] = d["unrealized_pnl"] - estimate_options_charges(buy_price, sell_price, qty)
-                d["unrealized_pnl_net_slip"] = d["unrealized_pnl_net"] - projected_slippage(d, dispatcher)
+            value_open_row(d, prices.get(d["id"]), dispatcher)
         else:
             d["realized_pnl_net"] = float(d["realized_pnl"]) - float(d["estimated_charges"])
             d["realized_pnl_net_slip"] = d["realized_pnl_net"] - float(d["estimated_slippage"])

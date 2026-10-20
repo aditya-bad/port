@@ -44,6 +44,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from ..db import queries
+from ..prices import open_prices
 from ..slippage import resolve_book_price
 from ..strategies.registry import get_strategy_class, is_registered
 from .runner import DeploymentRunner
@@ -1009,13 +1010,10 @@ class DeploymentManager:
             # last recorded mark; valuing it at 0 would record a fake
             # drop (and the Desk would show the whole unrealized P&L as
             # a move "today"). A leg never priced at all: no snapshot.
-            missing = [pos["id"] for token, pos in runner.open_positions.items()
-                       if self.dispatcher.last_prices.get(token) is None and pos.get("id") is not None]
-            marks = await queries.latest_marks(self.pool, missing) if missing else {}
+            prices = await open_prices(self.pool, self.dispatcher, runner.open_positions.values())
             for token, pos in runner.open_positions.items():
-                price = self.dispatcher.last_prices.get(token)
-                if price is None:
-                    price = marks.get(pos.get("id"))
+                price = prices.get(pos.get("id"))
+                price = price.value if price is not None else None
                 if price is None:
                     logger.info("Snapshot skipped for %s: %s has never been priced",
                                 runner.deployment_name, pos.get("symbol"))
