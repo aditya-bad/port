@@ -151,3 +151,30 @@ test('legs with no live price show their last recorded price, marked as not live
   assert.ok(pnl.every(t => t !== '—'), 'P&L at that price');
   await ctx.close();
 });
+
+// The Cycles tab listed closed cycles only; the one running now was missing.
+test('the Cycles tab shows the running cycle first, its P&L moving with the ticks', async () => {
+  const ctx = await context(b);
+  const legs = await api(ctx, `/deployments/${ID}/positions?status=open`);
+  await streamTicks(ctx, legs.slice(0, 1));
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/cycles`);
+  await p.waitForSelector('.cyc-grid.running');
+  const first = p.locator('.tr.cyc-grid:not(.th)').first();
+  assert.match(await first.getAttribute('class'), /running/, 'pinned first');
+  assert.match(await first.innerText(), /RUNNING[\s\S]*→ now[\s\S]*so far[\s\S]*still open/);
+  assert.match(await first.innerText(), new RegExp(`${legs.length} open legs`));
+  // a new price for one leg moves the running P&L (in place, on the next tick)
+  const a = await p.textContent('[data-run-pnl]');
+  await p.evaluate(async tok => {
+    const live = await import('/linck/js/data/live.js'), store = await import('/linck/js/core/store.js');
+    const cur = live.prices.get(tok);
+    live.prices.set(tok, { ...(cur || {}), price: (cur ? cur.price : 100) + 40, at: Date.now() });
+    store.emit('ticks');
+  }, legs[0].instrument_token);
+  await p.waitForFunction(v => document.querySelector('[data-run-pnl]').textContent !== v, a, { timeout: 8000 });
+  assert.match(await p.textContent('.stats'), /closed · 1 more running/);
+  await first.click();
+  await p.waitForSelector('.ss-plot, .sheet', { timeout: 15000 });
+  await ctx.close();
+});

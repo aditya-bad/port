@@ -1,16 +1,31 @@
 // Daily stats (intraday) or Cycles (positional).
 
-import { html, mount, actions } from '../../core/dom.js';
+import { html, mount, actions, $, setText, setTone } from '../../core/dom.js';
 import { inr, pct, dShort, WEEKDAYS, ist, fromDay, plural, tone } from '../../core/format.js';
 import { pnlOf, pick } from '../../core/basis.js';
 import { api } from '../../core/api.js';
 import { openSession } from './session.js';
-import { ui } from '../../core/store.js';
+import { ui, listen } from '../../core/store.js';
 import * as book from '../../data/book.js';
 import { upDownBars, centreBar } from '../../ui/charts.js';
 import { chips, utabs, empty, loading } from '../../ui/components.js';
 
 const cyst = ui('cycles', { f: 'all', s: 'new' });
+
+// The cycle still running (GET /deployments/{id}/cycles marks it "open"):
+// what it has booked so far (legs already closed or rolled, in the P&L
+// basis) plus the open legs' live P&L. Null when nothing is running.
+export function runningCycle(cycles, legs, unreal, now = Date.now()) {
+  const c = (cycles || []).find(x => x.status === 'open');
+  if (!c && !legs.length) return null;
+  const start = c ? new Date(c.start) : new Date(Math.min(...legs.map(l => +new Date(l.opened_at))));
+  const booked = c ? pick(c, 'realized_pnl') || 0 : 0;
+  return {
+    start, booked, unreal, p: booked + unreal,
+    held: Math.max(1, Math.round((now - start) / 864e5)),
+    adj: c ? c.adjustments || 0 : 0, legs: legs.length,
+  };
+}
 const fd = d => dShort(d);
 
 function statsGrid(stats) {
@@ -69,12 +84,32 @@ function intraday(v) {
     </div>`;
 }
 
-function positional(v) {
+function runRow(v, run, n) {
+  return html`<div class="tr hover click cyc-grid running" data-act="sess" data-at="${+run.start}" role="button" tabindex="0"
+      data-tip="Cycle ${n} · running\nOpened  ${fd(run.start)}\nBooked so far  ${inr(run.booked)}\nOpen legs now  ${inr(run.unreal)}\nAdjustments  ${run.adj}">
+    <span class="col" style="gap:0"><b class="mono small">#${n} <span class="run-tag">RUNNING</span></b><span class="tiny mute nowrap">${fd(run.start)} → now</span></span>
+    <span class="mono small">${plural(run.held, 'day')}</span>
+    <span class="small mute">${plural(run.legs, 'open leg')} · booked ${inr(run.booked)} + open ${inr(run.unreal)}</span>
+    <span class="num mute">—</span>
+    <span class="row" style="gap:5px;justify-content:center">${run.adj ? Array.from({ length: Math.min(run.adj, 6) }, () => html`<span class="dia sm" style="background:var(--b)"></span>`) : html`<span class="mute">—</span>`}</span>
+    <span class="col" style="gap:0;align-items:flex-end"><b class="mono ${tone(run.p)}" data-run-pnl>${inr(run.p)}</b><span class="mono mute" style="font-size:11px">so far · ${pct(run.p / v.cap * 100)}</span></span>
+    <span class="small mute">still open</span>
+  </div>`;
+}
+
+function positional(v, cycles) {
+  const run = cycles ? runningCycle(cycles, v.legs, book.live(v).unreal) : null;
   const cyc = v.trades.map((t, i) => {
     const o = new Date(t.opened_at), c = new Date(t.closed_at);
     return { i, t, p: pnlOf(t), o, c, held: Math.max(1, Math.round((c - o) / 864e5)), adj: t.adjustments, worst: t.worst };
   }).reverse();
-  if (!cyc.length) return empty('No cycles yet', 'A cycle appears here once it closes.');
+  if (!cyc.length) {
+    return run ? html`<div class="scroll-x">
+        <div class="sect"><h3 class="t-h3">The cycle running now</h3><span class="mute small">Results and averages appear once a cycle closes.</span></div>
+        <div class="tr th cyc-grid"><span>Cycle</span><span>Held</span><span>So far</span><span class="right">Worst point</span><span class="center">Adj.</span><span class="right">Result</span><span>Exit</span></div>
+        ${runRow(v, run, 1)}</div>`
+      : empty('No cycles yet', 'A cycle appears here once it opens.');
+  }
   const n = cyc.length, adjd = cyc.filter(c => c.adj), un = cyc.filter(c => !c.adj);
   const wr = L => (L.length ? `${Math.round(L.filter(c => c.p > 0).length / L.length * 100)}%` : '—');
   const withWorst = cyc.filter(c => c.worst != null);
@@ -91,7 +126,7 @@ function positional(v) {
   const hmx = Math.max(1, ...cyc.map(c => c.held));
   return html`
     ${statsGrid([
-      ['Cycles', String(n), 'entry to final exit'],
+      ['Cycles', String(n), run ? 'closed · 1 more running' : 'entry to final exit'],
       ['Average hold', `${(cyc.reduce((x, c) => x + c.held, 0) / n).toFixed(1)} days`, 'per cycle'],
       ['Average cycle', inr(cyc.reduce((x, c) => x + c.p, 0) / n), 'P&L per cycle'],
       ['Adjusted cycles', `${Math.round(adjd.length / n * 100)}%`, `${adjd.reduce((x, c) => x + c.adj, 0)} adjustments in total`],
@@ -121,6 +156,7 @@ function positional(v) {
         <span class="row" style="gap:6px"><span class="dia sm" style="background:var(--b)"></span>One adjustment</span>
       </div>
       <div class="tr th cyc-grid"><span>Cycle</span><span>Held</span><span>Journey: worst point, then close</span><span class="right">Worst point</span><span class="center">Adj.</span><span class="right">Result</span><span>Exit</span></div>
+      ${run ? runRow(v, run, n + 1) : ''}
       ${CL.slice(0, 40).map(c => {
         const dl = ((c.worst ?? 0) - lo) / sp * 100, pw = Math.abs(c.p) / sp * 100;
         return html`<div class="tr hover click cyc-grid" data-act="sess" data-at="${+c.o}" role="button" tabindex="0" data-tip="Cycle ${c.i + 1}\nOpened  ${fd(c.o)}\nClosed  ${fd(c.c)}\nWorst point  ${c.worst == null ? '—' : inr(c.worst)}\nResult  ${inr(c.p)}\nAdjustments  ${c.adj}">
@@ -176,22 +212,32 @@ function adjHist(h) {
 
 export default {
   render(el, v0) {
-    let digest = null, hist = null;
+    let digest = null, hist = null, cycles = null;
     function paint() {
       const v = book.find(v0.id) || v0;
-      mount(el, html`<div class="pad-x tab-body stack" style="gap:30px">${v.modeKey === 'intraday' ? intraday(v) : positional(v)}
+      mount(el, html`<div class="pad-x tab-body stack" style="gap:30px">${v.modeKey === 'intraday' ? intraday(v) : positional(v, cycles)}
         <div class="grid-side">${mtmTable(v, digest)}${adjHist(hist)}</div></div>`);
     }
     Promise.all([
       api.digest(v0.id, 'day', 30).then(r => { digest = r || []; }).catch(() => { digest = []; }),
       api.adjustmentHistogram(v0.id).then(r => { hist = r; }).catch(() => { hist = null; }),
+      v0.modeKey === 'intraday' ? null : api.cycles(v0.id).then(r => { cycles = r || []; }).catch(() => { cycles = []; }),
     ]).then(paint);
+    // The running cycle's P&L moves with the open legs' prices.
+    const offTicks = listen('ticks', () => {
+      const n = $('[data-run-pnl]', el), v = book.find(v0.id) || v0;
+      if (!n || !cycles) return;
+      const run = runningCycle(cycles, v.legs, book.live(v).unreal);
+      if (run) { setText(n, inr(run.p)); setTone(n, tone(run.p)); }
+    });
+    // A fill can open or close a cycle: refetch.
+    const offData = listen('data', () => { if (v0.modeKey !== 'intraday') api.cycles(v0.id).then(r => { cycles = r || []; paint(); }).catch(() => {}); });
     const off = actions(el, {
       cyf: d => { cyst.set({ f: d.v }); paint(); },
       sess: d => openSession(book.find(v0.id) || v0, d.at),
       cys: d => { cyst.set({ s: d.v }); paint(); },
     });
     paint();
-    return () => off();
+    return () => { off(); offTicks(); offData(); };
   },
 };
