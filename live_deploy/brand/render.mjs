@@ -37,6 +37,7 @@ const out = [
 ];
 
 copyFileSync(`${root}brand/linck-mark.svg`, `${root}static/icons/linck-mark.svg`);
+copyFileSync(`${root}brand/linck-mark-paper.svg`, `${root}static/icons/linck-mark-paper.svg`);
 const browser = await chromium.launch();
 for (const [path, px, opt] of out) {
   const page = await browser.newPage({ viewport: { width: px, height: px } });

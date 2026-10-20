@@ -62,18 +62,40 @@ def test_mark_has_the_parts_the_renderer_and_boot_screen_use():
         assert part in MARK, part
 
 
-def test_paper_backup_is_kept_but_used_nowhere():
-    backup = ROOT / "brand" / "linck-mark-paper.svg"
-    assert backup.exists() and 'id="glyph"' in backup.read_text()
-    assert not (STATIC / "icons" / "linck-mark-paper.svg").exists()
+PAPER = (ROOT / "brand" / "linck-mark-paper.svg").read_text().strip()
+
+
+def test_paper_mark_is_the_same_mark_on_paper():
+    assert (STATIC / "icons" / "linck-mark-paper.svg").read_text().strip() == PAPER
+    strip = lambda s: re.sub(r'#[0-9a-f]{6}|stroke-opacity="[^"]*"', "", s)
+    assert strip(PAPER) == strip(MARK), "same shapes, only the colours differ"
+    assert 'id="tile" width="100" height="100" fill="#f6f4ee"' in PAPER
+
+
+def test_paper_mark_is_only_for_the_night_theme_never_an_app_icon():
+    """Night shows the paper mark in the page; icons, the manifest and
+    Android always use the ink mark."""
+    users = set()
     for base in [STATIC, ROOT / "app", ROOT / "android"]:
         for f in base.rglob("*"):
             if f.is_file() and f.suffix in {".html", ".js", ".css", ".json", ".py", ".xml", ".kt"}:
-                assert "mark-paper" not in f.read_text(errors="ignore"), f
+                if "mark-paper" in f.read_text(errors="ignore"):
+                    users.add(str(f.relative_to(ROOT)))
+    assert users == {"static/linck/js/app.js", "static/linck/js/pages/geek/index.js", "static/linck/login/index.html",
+                     "static/linck/css/shell.css", "static/linck/login/login.css"}, users
+    for css in ["static/linck/css/shell.css", "static/linck/login/login.css"]:
+        assert ':root[data-th="night"]' in (ROOT / css).read_text() and "mark-paper" in (ROOT / css).read_text()
 
 
-def test_mark_is_public(app_client):
-    r = app_client.get("/icons/linck-mark.svg")
+def test_night_boot_screen_recolours_to_the_paper_mark():
+    css = (STATIC / "linck/css/shell.css").read_text()
+    assert ':root[data-th="night"] .boot-mark #tile { fill: #f6f4ee; }' in css
+    assert ":root[data-th=\"night\"] .boot-mark .candle rect { fill: #1d1b16; }" in css
+
+
+@pytest.mark.parametrize("path", ["/icons/linck-mark.svg", "/icons/linck-mark-paper.svg"])
+def test_marks_are_public(app_client, path):
+    r = app_client.get(path)
     assert r.status_code == 200 and "svg" in r.headers["content-type"]
 
 
@@ -139,9 +161,11 @@ def test_boot_screen_draws_the_current_mark():
 
 
 def test_header_sign_in_and_geek_bar_show_the_mark():
-    assert 'class="mark" src="/icons/linck-mark.svg"' in (STATIC / "linck/js/app.js").read_text()
-    assert 'class="mark" src="/icons/linck-mark.svg"' in (STATIC / "linck/login/index.html").read_text()
-    assert (STATIC / "linck/js/pages/geek/index.js").read_text().count('src="/icons/linck-mark.svg"') == 3
+    for page in ["linck/js/app.js", "linck/login/index.html"]:
+        t = (STATIC / page).read_text()
+        assert 'class="mark" src="/icons/linck-mark.svg"' in t and 'class="mark mark-paper" src="/icons/linck-mark-paper.svg"' in t, page
+    geek = (STATIC / "linck/js/pages/geek/index.js").read_text()
+    assert geek.count('src="/icons/linck-mark.svg"') == 3 and geek.count('src="/icons/linck-mark-paper.svg"') == 3
 
 
 def test_loaders_are_the_blinking_cursor_not_a_spinning_ring():

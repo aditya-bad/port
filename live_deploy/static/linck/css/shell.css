@@ -3,16 +3,21 @@
 .appbar { position: sticky; top: 0; z-index: 20; background: var(--paper); }
 .hdr { display: flex; align-items: center; gap: clamp(10px, 1.15vw, 24px); height: var(--hdr); padding: 0 var(--px); border-bottom: 1.5px solid var(--ink); min-width: 0; }
 .wordmark { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.03em; text-decoration: none; flex: none; display: inline-flex; align-items: center; gap: 10px; }
-/* The mark keeps its own ink tile in every theme; on Night it gets a hairline so it doesn't sink. */
+/* The ink mark on Paper and Slate, the paper mark on Night (each page renders both). */
 .mark { display: block; flex: none; width: 30px; height: 30px; }
-:root[data-th="night"] .mark { box-shadow: 0 0 0 1px var(--line2); }
+.mark.mark-paper, :root[data-th="night"] .mark:not(.mark-paper) { display: none; }
+:root[data-th="night"] .mark.mark-paper { display: block; }
 
 /* Boot screen: the mark on paper until the first page renders (app.js bootDone).
  * The cursor blinks and the candle prints, as in the icon. */
 .boot { position: fixed; inset: 0; z-index: 100; background: var(--paper); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; transition: opacity .3s, visibility .3s; }
 .boot.done { opacity: 0; visibility: hidden; pointer-events: none; }
 .boot-mark { width: 88px; height: 88px; border-radius: 20px; }
-:root[data-th="night"] .boot-mark { box-shadow: 0 0 0 1px var(--line2); }
+/* Night: recolour the inline mark to the paper mark (brand/linck-mark-paper.svg). */
+:root[data-th="night"] .boot-mark #tile { fill: #f6f4ee; }
+:root[data-th="night"] .boot-mark .prompt, :root[data-th="night"] .boot-mark .candle path, :root[data-th="night"] .boot-mark .base { stroke: #1d1b16; }
+:root[data-th="night"] .boot-mark .candle rect { fill: #1d1b16; }
+:root[data-th="night"] .boot-mark .base { stroke-opacity: .25; }
 .boot-mark .cursor { animation: blink 1s steps(1) infinite; }
 .boot-mark .candle { transform-box: fill-box; transform-origin: 50% 100%; animation: print .5s .15s cubic-bezier(.2,.7,.2,1) both; }
 .boot-name { font-family: var(--f-display); font-weight: 800; font-size: 22px; letter-spacing: -.03em; }

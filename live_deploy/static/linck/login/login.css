@@ -3,7 +3,9 @@
 .auth-main { display: flex; flex-direction: column; min-height: 100vh; padding: 28px var(--px); }
 .auth-mark { font-family: var(--f-display); font-weight: 800; font-size: 26px; letter-spacing: -.03em; display: inline-flex; align-items: center; gap: 10px; }
 .auth-mark > .mark { width: 32px; height: 32px; flex: none; }
-:root[data-th="night"] .auth-mark > .mark { box-shadow: 0 0 0 1px var(--line2); }
+/* The ink mark on Paper and Slate, the paper mark on Night. */
+.auth-mark > .mark-paper, :root[data-th="night"] .auth-mark > .mark:not(.mark-paper) { display: none; }
+:root[data-th="night"] .auth-mark > .mark-paper { display: block; }
 .theme-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; }
 .theme-btn > i { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--ink); background: linear-gradient(90deg, var(--ink) 50%, var(--paper) 50%); }
 .auth-mid { flex: 1; display: flex; align-items: center; padding: 40px 0; }
