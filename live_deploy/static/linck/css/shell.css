@@ -5,10 +5,6 @@
 /* The header says Linck in words; the mark is for icons, the boot screen,
  * sign-in and Geek mode. */
 .wordmark { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.03em; text-decoration: none; flex: none; }
-/* Just above 1180px (where the basis stamps fold into a chip) the header is
- * at its fullest: a slightly smaller word and tighter spacing keep it on
- * one line. 1380 leaves room for a desktop scrollbar. */
-@media (min-width: 1181px) and (max-width: 1380px) { .wordmark { font-size: 22px; } .hdr { gap: 12px; } }
 /* Small phones: the same, so it fits down to 320px. */
 @media (max-width: 400px) { .wordmark { font-size: 20px; } }
 /* The ink mark on Paper and Slate, the paper mark on Night (each page renders both). */

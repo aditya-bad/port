@@ -66,7 +66,7 @@ test('wizard creates a paused deployment on the chosen index', async () => {
 });
 
 test('back to classic, and it sticks', async () => {
-  await p.goto(`${BASE}/linck/#/account`);
+  await p.goto(`${BASE}/linck/#/account?s=appearance`);
   await p.waitForSelector('[data-act=classic]');
   await p.click('[data-act=classic]');
   await p.waitForURL(u => !/linck/.test(u.toString()));

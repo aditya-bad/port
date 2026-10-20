@@ -20,7 +20,7 @@ test('run now: progress in the header and on Account, then the result', async ()
   const ctx = await context(b, { width: 1440, height: 900 });
   await until(async () => (await api(ctx, '/candles/backfill')).running === null, 30000);   // a run at start-up may be going
   const p = await ctx.newPage();
-  await p.goto(`${BASE}/linck/#/account`);
+  await p.goto(`${BASE}/linck/#/account?s=history`);
   await p.waitForSelector('#history [data-act=runHist]');
   assert.match(await p.innerText('#history'), /Next run[\s\S]*15:45/);
   await ctx.request.post(`${BASE}/candles/backfill`, { data: { day: weekdayBack(1) } });   // what Run now does, for a day with work
@@ -28,7 +28,7 @@ test('run now: progress in the header and on Account, then the result', async ()
   assert.match(await p.innerText('#history .bf-run'), /Saving .* option history/);
   await p.goto(`${BASE}/linck/#/desk`);
   await p.waitForSelector('.bf-strip', { timeout: 10000 });
-  await p.goto(`${BASE}/linck/#/account`);
+  await p.goto(`${BASE}/linck/#/account?s=history`);
   await p.waitForSelector('#history [data-act=runHist]:not([disabled])', { timeout: 30000 });   // finished
   const txt = await p.innerText('#history');
   assert.match(txt, /Last run[\s\S]*contracts? ·/);
@@ -41,7 +41,7 @@ test('the run-now button starts it', async () => {
   const ctx = await context(b, { width: 1440, height: 900 });
   await until(async () => (await api(ctx, '/candles/backfill')).running === null, 30000);
   const p = await ctx.newPage();
-  await p.goto(`${BASE}/linck/#/account`);
+  await p.goto(`${BASE}/linck/#/account?s=history`);
   await p.waitForSelector('#history [data-act=runHist]:not([disabled])');
   await p.click('#history [data-act=runHist]');
   await p.waitForSelector('#history .bf-run, #history [data-act=runHist]:not([disabled])', { timeout: 10000 });

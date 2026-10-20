@@ -40,7 +40,7 @@ function backfillStrip() {
   const b = backfill.running;
   if (!b) return '';
   const pct = b.total ? Math.round(b.done / b.total * 100) : 0;
-  return html`<a class="bf-strip" href="${href('account')}" role="status" aria-live="polite">
+  return html`<a class="bf-strip" href="${href('account?s=history')}" role="status" aria-live="polite">
     <span class="bf-fill" style="width:${pct}%"></span>
     <i class="spin" aria-hidden="true"></i><b>Saving <span class="hide-phone">${b.day === dayKey(new Date()) ? 'today’s' : dDay(`${b.day}T12:00:00+05:30`)} </span>option history</b>
     <span class="mono">${b.done} of ${b.total || '…'}</span>
@@ -72,7 +72,6 @@ function renderHeader() {
       <button type="button" class="theme-btn hide-1520" data-act="theme" title="Theme"><i></i>${prefs.themeLabel()}</button>
       <a class="alerts-btn" href="${href('desk')}" title="Things that need you"><i class="${n ? '' : 'zero'}">${n}</i><span class="hide-phone">Alerts</span></a>
       <button type="button" class="btn btn-sm only-mid" data-act="more">More</button>
-      <button type="button" class="btn btn-sm btn-primary hide-1180 hide-phone" data-act="closeAll">Close everything…</button>
       <a class="avatar ${cur === 'account' ? 'on' : ''}" href="${href('account')}" title="Account">${initials}</a>
     </header>
     ${backfillStrip()}
@@ -110,7 +109,7 @@ export function openMore() {
       { l: 'Reports', h: 'Statements, account equity, exposure', run: () => go('reports') },
       { l: 'Strategies', h: 'Catalogue and new deployments', run: () => go('strategies') },
       { l: 'Tools', h: 'Brokerage, SIP, CAGR, instruments', run: () => go('tools') },
-      { l: 'Account', h: 'Kite, users, appearance, notifications, tags', run: () => go('account') },
+      { l: 'Account', h: 'Kite, emergency stop, appearance, notifications, users, server', run: () => go('account') },
       { l: `Theme: ${prefs.themeLabel()}`, h: 'Switch Paper, Slate, Night', run: () => { prefs.cycleTheme(); openMore(); } },
       { l: `P&L basis: ${b.long || b.l}`, h: 'Switch Gross, After charges, + Slippage', run: () => { cycleBasis(); openMore(); } },
       { l: 'Close everything…', h: 'Emergency exit of every open position', run: closeEverything },
@@ -187,7 +186,6 @@ async function boot() {
     theme: () => prefs.cycleTheme(),
     kite: () => kiteDialog(),
     more: () => openMore(),
-    closeAll: () => closeEverything(),
   };
   const click = (e, el) => { const fn = handlers[el.dataset.act]; if (fn) { e.preventDefault(); fn(el.dataset); } };
   on(top, 'click', '[data-act]', click);
