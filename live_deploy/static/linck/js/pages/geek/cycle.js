@@ -1,5 +1,6 @@
 // One cycle, end to end (#/d/:id/geek/cycle?c=N): everything about it in
 // one place. How it was entered, its P&L path with every roll on it, the
+// index and combined P&L with its legs and orders (the session sheet's body), the
 // side balance against the rules, the call and put premium, each leg's
 // strike over time, every action and every check in order, its rolls
 // scored, every leg, and where the money went. From Cycles or Adjustments.
@@ -10,7 +11,7 @@ import { inr, dStamp, dShort, hhmm, price } from '../../core/format.js';
 import { go } from '../../core/router.js';
 import * as book from '../../data/book.js';
 import { empty, loading } from '../../ui/components.js';
-import { openSession } from '../deployment/session.js';
+import { loadSession, sessionBody } from '../deployment/session.js';
 import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, ratio, bars, LABEL, yLabels, wide } from './ui.js';
 
 // Viewbox widths: half-width panels and full-width ones (text keeps its size).
@@ -163,8 +164,19 @@ function entryBox(e) {
 
 export default {
   render(el, v, g) {
-    let data = null;
+    let data = null, sess = null, sessFor = null;   // the price chart, legs and orders, loaded once per cycle
     const c = g.params && g.params.c;
+    function sessPanel() {
+      return html`<div class="gk-panel" id="cySess"><h3>Price chart, legs and orders <span class="s">the index and the combined P&L on one time line · every leg’s final status · every order</span></h3>
+        ${sess === null ? loading(4) : sess instanceof Error ? empty('Couldn’t load the price chart', sess.message) : sessionBody(book.find(v.id) || v, sess)}</div>`;
+    }
+    async function loadSess(cy) {
+      const at = ms(cy.row.start);
+      if (sessFor === at) return;
+      sessFor = at; sess = null;
+      try { sess = await loadSession(book.find(v.id) || v, at); } catch (e) { sess = e; }
+      if (sessFor === at) paint();
+    }
     function paint() {
       if (data === null) { mount(el, html`${head('Cycle')}${loading(8)}`); return; }
       if (data instanceof Error) { mount(el, html`${head('Cycle')}${empty('Couldn’t load this cycle', data.message)}`); return; }
@@ -179,8 +191,9 @@ export default {
       mount(el, html`
         <div class="row wrap" style="gap:8px;align-items:center">
           <a class="small" href="${g.href('cycles')}">← All cycles</a><span class="grow"></span>
+          <span class="mono tiny mute nowrap">${cy.ids.indexOf(cy.cycle_id) + 1} of ${cy.ids.length}</span>
           ${nav(cy.prev, '‹ Previous')}${nav(cy.next, 'Next ›')}
-          <button type="button" class="btn btn-sm" data-act="chart">Price chart, legs and orders</button>
+          <button type="button" class="btn btn-sm" data-act="toSess">Price chart, legs and orders ↓</button>
         </div>
         ${head(html`Cycle ${cy.cycle_id} ${endTag(r)}`, `${dStamp(r.start)} → ${r.end ? dStamp(r.end) : 'now'} · ${r.days} days · expiry ${r.contract_expiry || '—'}`, 'fills · checks · 5-minute marks · candles')}
         ${tiles([
@@ -192,6 +205,7 @@ export default {
           ['Costs', inr(-(m.charges + m.slippage)), `charges ${inr(m.charges, { sign: false })} · slippage ${inr(m.slippage, { sign: false })}`],
         ], 6)}
         <div class="gk-panel"><h3>P&L through the cycle <span class="s">${cy.path_kind === 'booked' ? 'no prices were stored for this cycle: steps at what each leg booked' : `closed legs at what they booked, open legs at each ${cy.path_kind === 'candles' ? '15-minute candle close' : '5-minute mark'}`} · dotted: market open, no prices · dashed blue: rolls</span></h3>${pnlChart(cy)}</div>
+        ${sessPanel()}
         <div class="gk-two even">
           <div class="gk-panel"><h3>Side balance <span class="s">smaller ÷ bigger · shaded: where rolls aim</span></h3>${balanceChart(cy)}</div>
           <div class="gk-panel"><h3>Call and put premium <span class="s">each side’s open short legs</span></h3>${premiumChart(cy)}</div>
@@ -220,9 +234,10 @@ export default {
               html`<span class="mono tiny">${dStamp(l.opened_at)}</span>`, html`<span class="mono tiny">${l.closed_at ? dStamp(l.closed_at) : 'open'}</span>`,
               price(l.entry), l.exit != null ? price(l.exit) : '—', html`<span class="${tone(l.pnl)}">${money(l.pnl)}</span>`,
               l.charges != null ? inr(l.charges + l.slippage, { sign: false }) : '—', l.closed_by ? (LABEL[l.closed_by] || l.closed_by.replace(/_/g, ' ')) : '—']), { minw: 980 })}</div>`);
+      loadSess(cy);
     }
     const off = actions(el, {
-      chart: () => { const vv = book.find(v.id) || v; if (data && data.row) openSession(vv, ms(data.row.start)); },
+      toSess: () => { const t = el.querySelector('#cySess'); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
     });
     const stop = poll(() => api.geek(g.id, `cycle${c ? `?c=${encodeURIComponent(c)}` : ''}`), 60000, d => { data = d; paint(); });
     return () => { stop(); off(); };

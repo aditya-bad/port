@@ -190,8 +190,11 @@ async def list_cycles(deployment_id: UUID, request: Request):
             key=lambda lot: lot["executed_at"],
         )
         events = _group_events(cycle_lots, c)
+        # the strategy's own cycle number, when every leg carries the same one
+        ids = {(p["metadata"] or {}).get("cycle_id") for p in c["positions"]}
         out.append({
             "key": c["key"], "start": c["start"], "end": c["end"], "status": c["status"],
+            "cycle_id": next(iter(ids)) if len(ids) == 1 else None,
             "positions": len(c["positions"]), "fills": len(cycle_lots),
             "adjustments": sum(1 for e in events if e["kind"] in ("adjustment", "rollout")),
             "rollouts": sum(1 for e in events if e["kind"] == "rollout"),

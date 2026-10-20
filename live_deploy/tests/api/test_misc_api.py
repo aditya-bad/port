@@ -275,6 +275,7 @@ def test_cycles_list_and_chart_with_recorded_underlying(client, monkeypatch):
     add_fill(client, d["id"], "NIFTY25000PE", 12, "buy", 75, 90, at(PAST, "15:15"), reason="exit")
     [c] = client.get(f"/deployments/{d['id']}/cycles").json()
     assert c["status"] == "closed" and c["positions"] == 2 and c["fills"] == 4
+    assert c["cycle_id"] is None, "no strategy cycle number on these legs"
     assert c["realized_pnl"] == pytest.approx(3000)
     ch = client.get(f"/deployments/{d['id']}/cycles/{c['key']}/chart").json()
     assert ch["underlying_source"] == "kite" and ch["underlying"]
@@ -304,6 +305,18 @@ def test_cycles_mark_eod_rollouts(client):
     add_fill(client, d["id"], "PE2", 3, "sell", 75, 100, at(PAST, "15:13"), reason="eod_rollout")
     [c] = client.get(f"/deployments/{d['id']}/cycles").json()
     assert c["status"] == "open" and c["rollouts"] == 1 and c["adjustments"] >= 1
+
+
+def test_cycles_carry_the_strategys_own_cycle_number(client):
+    """The sheet titles a cycle with the strategy's number when its legs
+    agree on one (it counts oldest first, like Geek mode)."""
+    d = make_deployment(client, name="S", strategy="strangle_monthly_v2", mode="positional")
+    for sym, tok, cid, t0, t1 in (("CE1", 1, 7, "10:00", "11:00"), ("CE2", 2, 8, "12:00", None)):
+        add_fill(client, d["id"], sym, tok, "sell", 75, 100, at(PAST, t0), reason="entry", metadata={"cycle_id": cid})
+        if t1:
+            add_fill(client, d["id"], sym, tok, "buy", 75, 90, at(PAST, t1), reason="exit", metadata={"cycle_id": cid})
+    newest, oldest = client.get(f"/deployments/{d['id']}/cycles").json()
+    assert (newest["cycle_id"], oldest["cycle_id"]) == (8, 7)
 
 
 # ── Admin ─────────────────────────────────────────────────────────────

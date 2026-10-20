@@ -152,11 +152,22 @@ test('a cycle opens end to end from Cycles and from Adjustments', async () => {
   assert.match(await p.locator('.gk-h').innerText(), /Running/);
   await p.click('a.btn:has-text("Previous")');
   await p.waitForURL(/cycle\?c=9$/);
-  // the price chart, legs and orders open from here
-  await p.waitForSelector('[data-act=chart]');
-  await p.click('[data-act=chart]');
-  await p.waitForSelector('.ss-plot', { timeout: 15000 });
-  await p.keyboard.press('Escape');
+  // the price chart, legs and orders are on the page itself: no sheet to open
+  await p.waitForSelector('#cySess .ss-plot', { timeout: 15000 });
+  assert.equal(await p.locator('.sess').count(), 0, 'no sheet');
+  const sess = await p.locator('#cySess').innerText();
+  assert.match(sess, /NIFTY and combined P&L[\s\S]*Positions, final status[\s\S]*Orders and events/);
+  assert.doesNotMatch(sess, /CYCLE · /, 'the page has its own header');
+  // cycles count oldest first: cycle 9 of 10
+  assert.match(await p.locator('#gkView .row.wrap').first().innerText(), /9 of 10/);
+  // the header button jumps to it
+  await p.evaluate(() => window.scrollTo(0, 0));
+  await p.click('[data-act=toSess]');
+  await p.waitForFunction(() => { const r = document.querySelector('#cySess').getBoundingClientRect(); return r.top < innerHeight / 2 && r.top > -40; });
+  // a worst point still in profit isn't red
+  const worst = p.locator('#cySess .ss-stats > div', { hasText: 'Worst' }).locator('b');
+  const wv = await worst.innerText();
+  assert.equal(await worst.evaluate(e => e.classList.contains('neg')), wv.trim().startsWith('−'), `worst ${wv}`);
   // from Adjustments: a roll opens its own cycle
   await p.goto(`${BASE}/linck/#/d/${ID}/geek/adjustments`);
   await p.waitForSelector('.gk-tbl .tr[data-c]');

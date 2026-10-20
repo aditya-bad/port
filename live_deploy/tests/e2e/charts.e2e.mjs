@@ -75,3 +75,28 @@ for (const [name, route, sel] of EQUITY) {
     await ctx.close();
   });
 }
+
+// Cycles count oldest first: the sheet's "k of n" and its title agree,
+// and Older steps down (cycle 9 of 10, then 8 of 10).
+test('the cycle sheet numbers cycles oldest first, title and counter alike', async () => {
+  const ctx = await context(b, { width: 1440, height: 1000 });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${IDS['Nifty Monthly Strangle']}/cycles`);
+  await p.waitForSelector('[data-act=sess]', { timeout: 10000 });
+  await p.locator('[data-act=sess]').first().click();
+  await p.waitForSelector('.sess .ss-plot', { timeout: 15000 });
+  const read = async () => {
+    const [, k, n] = (await p.locator('.ss-bar').innerText()).match(/(\d+) of (\d+)/);
+    const [, t] = (await p.locator('.ss-head h1').innerText()).match(/Cycle #(\d+)/);
+    return [+k, +n, +t];
+  };
+  const [k, n, t] = await read();
+  assert.equal(n, 10);
+  assert.equal(t, k, 'title and counter agree');
+  await p.keyboard.press('ArrowRight');                   // older
+  await p.waitForFunction(want => document.querySelector('.ss-bar').innerText.includes(`${want} of`), k - 1);
+  await p.waitForSelector('.sess .ss-head h1');
+  assert.deepEqual(await read(), [k - 1, 10, k - 1]);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

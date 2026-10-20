@@ -3,6 +3,8 @@
 // with entry / adjustment / exit markers, then every leg's final status
 // and every order. Opened from Daily stats or Cycles; Newer / Older step
 // through the rest.
+// The same body also sits inline on Geek mode's cycle page (sessionBody).
+// Cycles are numbered oldest first everywhere: the newest of 16 is 16.
 //
 // Data: GET /deployments/{id}/cycles/{key}/chart. The underlying comes
 // from Kite's history; option legs from the app's 1-minute option store
@@ -72,7 +74,7 @@ function model(v, row, ch) {
   return { intra, T, N, U, P, e0, ex, pk, wk, red, final, finalGross, events, nAdj, nRoll, when, seps, X, ticks, mv, kept, start, end };
 }
 
-function chart(m, sym, ch) {
+function chart(m, sym, ch, embed = false) {
   const { U, P, N, X } = m;
   const vals = P.filter(p => p != null);
   const pLo = Math.min(0, ...vals), pHi = Math.max(0, ...vals);
@@ -87,6 +89,7 @@ function chart(m, sym, ch) {
   const pFill = pk.length ? `${pPath} L${x(pk[pk.length - 1][1])} ${z.toFixed(1)} L${x(pk[0][1])} ${z.toFixed(1)} Z` : '';
   const lineC = toneVar(m.finalGross);
   const cid = `ssp${Math.random().toString(36).slice(2, 8)}`;   // clip ids, unique per render
+  const sk = embed ? 'ssi' : 'ss';   // scrub key: the sheet's, or the inline copy's (both can be on screen)
   const evC = e => (KINDS[e.kind] && KINDS[e.kind][1]) || lineC;
   const evL = e => `${kindLabel(e.kind)}${reasonOf(e) ? ` · ${reasonOf(e)}` : ''}`;
   const pc = k => `${X(k) * 100}%`;
@@ -96,8 +99,8 @@ function chart(m, sym, ch) {
   const idx = f => Math.max(0, Math.min(N - 1, Math.round(f * (N - 1))));
   // Both panels scrub together: one guide through the index and the
   // P&L, a dot on each line, the same moment in the card.
-  registerScrub('ss', f => {
-    const k = idx(f), plot = document.querySelector('.sess .ss-plot');
+  registerScrub(sk, f => {
+    const k = idx(f), plot = document.querySelector(`.ss-plot[data-plot="${sk}"]`);
     if (!plot) return null;
     const u = plot.querySelector('.ss-u'), pl = plot.querySelector('.ss-p');
     return {
@@ -109,16 +112,16 @@ function chart(m, sym, ch) {
 
   return html`
     <div class="ss-marks">${m.events.map(e => html`<i style="left:${pc(e.k)};background:${evC(e)}" data-tip="${evL(e)}\n${m.when(e.k)}${U.length ? `\n${sym}  ${price(U[e.k])}` : ''}${P[e.k] != null ? `\nCombined P&L  ${inr(P[e.k])}` : ''}"></i>`)}</div>
-    <div class="ss-plot">
+    <div class="ss-plot" data-plot="${sk}">
       <div class="ss-open" style="left:${pc(m.e0)};width:${(X(m.ex) - X(m.e0)) * 100}%"></div>
       ${m.seps.map(k => html`<div class="ss-sep" style="left:${pc(k)}"></div>`)}
       ${m.events.map(e => html`<div class="ss-evl" style="left:${pc(e.k)};border-color:${evC(e)}"></div>`)}
       ${U.length ? html`
         <div class="ss-lab" style="top:4px">${price(uHi)}</div>
-        <svg data-scrub="ss" viewBox="0 0 1000 180" preserveAspectRatio="none" class="ss-u" aria-label="${sym} price">${raw(`<path d="${uPath}" fill="none" stroke="var(--ink)" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`)}</svg>`
+        <svg data-scrub="${sk}" viewBox="0 0 1000 180" preserveAspectRatio="none" class="ss-u" aria-label="${sym} price">${raw(`<path d="${uPath}" fill="none" stroke="var(--ink)" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`)}</svg>`
         : html`<div class="ss-nou">${ch.underlying_error || 'No underlying history for this window.'}</div>`}
       <div class="ss-mid"><span>${sym}${U.length ? ` · low ${price(uLo)}` : ''}</span><span>Combined P&L · high ${inrS(pHi)}</span></div>
-      <svg data-scrub="ss" viewBox="0 0 1000 120" preserveAspectRatio="none" class="ss-p" aria-label="Combined P&L">${raw(`
+      <svg data-scrub="${sk}" viewBox="0 0 1000 120" preserveAspectRatio="none" class="ss-p" aria-label="Combined P&L">${raw(`
         <defs><clipPath id="${cid}-up"><rect x="0" y="0" width="1000" height="${z.toFixed(1)}"/></clipPath>
           <clipPath id="${cid}-dn"><rect x="0" y="${z.toFixed(1)}" width="1000" height="${(120 - z).toFixed(1)}"/></clipPath></defs>
         <line x1="0" x2="1000" y1="${z.toFixed(1)}" y2="${z.toFixed(1)}" stroke="var(--line2)" stroke-dasharray="4 4" vector-effect="non-scaling-stroke"/>
@@ -139,13 +142,17 @@ function chart(m, sym, ch) {
     </div>`;
 }
 
-function body(v, row, ch, i, L) {
+// Cycle number, oldest first: the strategy's own when it keeps one.
+export const cycleNo = (L, i) => (L[i] && L[i].cycle_id != null ? L[i].cycle_id : L.length - i);
+
+function body(v, row, ch, i, L, embed = false) {
   const m = model(v, row, ch);
   const sym = ch.underlying_symbol || v.index;
   const nDays = new Set(m.T.slice(m.e0, m.ex + 1).map(dayOf)).size || 1;
   const stats = [
-    ['Peak', m.pk[0] > -Infinity ? inr(m.pk[0]) : '—', m.pk[0] > -Infinity ? `at ${m.when(m.pk[1])}` : '', 'pos'],
-    ['Worst', m.wk[0] < Infinity ? inr(m.wk[0]) : '—', m.wk[0] < Infinity ? `at ${m.when(m.wk[1])}` : '', 'neg'],
+    // coloured by sign: a worst point still in profit is green, a peak still in loss red
+    ['Peak', m.pk[0] > -Infinity ? inr(m.pk[0]) : '—', m.pk[0] > -Infinity ? `at ${m.when(m.pk[1])}` : '', m.pk[0] > -Infinity ? tone(m.pk[0]) : ''],
+    ['Worst', m.wk[0] < Infinity ? inr(m.wk[0]) : '—', m.wk[0] < Infinity ? `at ${m.when(m.wk[1])}` : '', m.wk[0] < Infinity ? tone(m.wk[0]) : ''],
     [`${sym} move`, m.mv == null ? '—' : `${m.mv >= 0 ? '+' : '−'}${Math.abs(m.mv).toFixed(0)} pts`, m.mv == null ? 'no underlying history' : `${pct(m.mv / m.U[m.e0] * 100)} entry to exit`, ''],
     ['Kept of peak', m.kept == null ? '—' : `${m.kept}%`, m.finalGross <= 0 ? (m.pk[0] > 0 ? `peak was ${inr(m.pk[0])}, closed below ₹0` : 'never in profit') : `gave back ${inr(Math.max(0, m.pk[0] - m.finalGross), { sign: false })}`, ''],
     ['Time in red', `${Math.round(m.red * 100)}%`, 'of the time it was open', ''],
@@ -163,22 +170,22 @@ function body(v, row, ch, i, L) {
     return { ...p, pnl, dim: rolled, stt: p.status === 'open' ? 'Open' : `${rolled ? 'Rolled' : 'Closed'} · ${at}` };
   });
   const legTot = legs.reduce((a, l) => a + l.pnl, 0);
-  const title = m.intra ? dFull(m.start) : `Cycle #${L.length - i}`;
+  const title = m.intra ? dFull(m.start) : `Cycle #${cycleNo(L, i)}`;
   const kicker = m.intra ? `TRADING DAY · ${v.name.toUpperCase()}` : `CYCLE · ${plural(nDays, 'DAY').toUpperCase()} · ${v.name.toUpperCase()}`;
   const sub = m.intra
     ? `${plural(row.positions, 'leg')} · entered ${hhmm(m.start)} · ${row.status === 'open' ? 'still open' : `out ${hhmm(m.end)}`}`
     : `${m.when(m.e0)} → ${row.status === 'open' ? 'still open' : m.when(m.ex)}`;
 
   return html`
-    <div class="ss-head">
+    ${embed ? '' : html`<div class="ss-head">
       <div class="col grow" style="gap:6px;min-width:240px"><span class="ss-kick">${kicker}</span><h1 class="t-h1">${title}</h1><span class="mute">${sub}</span></div>
       <div class="col" style="align-items:flex-end;gap:2px"><b class="mono ss-res ${tone(m.final)}">${inr(m.final)}</b>
         <span class="small mute">${pct(m.final / v.cap * 100)} of ${inrS(v.cap, { sign: false })} capital${row.status === 'open' ? ' · realized so far' : ''}</span></div>
-    </div>
+    </div>`}
     <div class="ss-stats">${stats.map(([l, val, s, c]) => html`<div><span class="l">${l}</span><b class="mono ${c}">${val}</b><span class="s">${s}</span></div>`)}</div>
     <div>
       <div class="row" style="padding-bottom:12px"><h2 class="t-h3">${sym} and combined P&L</h2></div>
-      ${chart(m, sym, ch)}
+      ${chart(m, sym, ch, embed)}
       <p class="pretty" style="margin:12px 0 0;max-width:760px">${note}</p>
       ${(ch.notes || []).map(n => html`<p class="tiny mute" style="margin:6px 0 0;max-width:760px">${n}</p>`)}
       ${basis() !== 'gross' ? html`<p class="tiny mute" style="margin:6px 0 0">The chart is gross. The result above follows your P&L basis.</p>` : ''}
@@ -203,6 +210,37 @@ function body(v, row, ch, i, L) {
       </div>
     </div>`;
 }
+
+// The cycles list (newest first) and the index of the one at time `at`:
+// same IST day (intraday), or the cycle containing that opening time
+// (positional), else the nearest start.
+async function listAt(v, at) {
+  const L = listCache.get(v.id) || await api.cycles(v.id);
+  listCache.set(v.id, L);
+  setTimeout(() => listCache.delete(v.id), 60000);
+  if (!L.length) return { L, i: -1 };
+  const t = Number(at);
+  let k = v.modeKey === 'intraday'
+    ? L.findIndex(c => dayOf(c.start) === dayOf(t))
+    : L.findIndex(c => new Date(c.start).getTime() <= t + 60000 && (c.end ? new Date(c.end).getTime() : Date.now()) >= t);
+  if (k < 0) k = L.reduce((b, c, j) => (Math.abs(new Date(c.start) - t) < Math.abs(new Date(L[b].start) - t) ? j : b), 0);
+  return { L, i: k };
+}
+async function chartOf(v, row) {
+  const ck = `${v.id}:${row.key}`;
+  const ch = chartCache.get(ck) || await api.cycleChart(v.id, row.key);
+  if (row.status === 'closed') chartCache.set(ck, ch);
+  return ch;
+}
+
+// For a page that shows one cycle: its chart, legs and orders, without
+// the sheet's header. Resolves to { row, ch } (render with sessionBody).
+export async function loadSession(v, at) {
+  const { L, i } = await listAt(v, at);
+  if (i < 0) throw new Error('No cycles recorded for this deployment yet.');
+  return { L, i, row: L[i], ch: await chartOf(v, L[i]) };
+}
+export const sessionBody = (v, s) => html`<div class="ss-inline">${body(v, s.row, s.ch, s.i, s.L, true)}</div>`;
 
 export async function openSession(v, at) {
   const el = document.createElement('div');
@@ -233,7 +271,7 @@ export async function openSession(v, at) {
       <div class="ss-bar">
         <button type="button" class="b" data-ss="close">‹ ${intra ? 'Daily stats' : 'Cycles'}</button>
         <span class="grow"></span>
-        ${L ? html`<span class="mono tiny mute nowrap">${i + 1} of ${L.length}</span>
+        ${L ? html`<span class="mono tiny mute nowrap">${L.length - i} of ${L.length}</span>
           <button type="button" class="btn btn-sm" data-ss="prev" ${i > 0 ? '' : 'disabled style="opacity:.3"'}>${intra ? html`‹ Newer<span class="hide-phone">&nbsp;day</span>` : '‹ Newer'}</button>
           <button type="button" class="btn btn-sm" data-ss="next" ${i < L.length - 1 ? '' : 'disabled style="opacity:.3"'}><span class="hide-phone">${intra ? 'Older day' : 'Older'}</span><span class="only-phone-in">Older</span> ›</button>` : ''}
         <button type="button" class="ss-x-btn" data-ss="close" aria-label="Close">×</button>
@@ -244,11 +282,8 @@ export async function openSession(v, at) {
   }
   async function load() {
     ch = null; err = ''; paint();
-    const row = L[i], ck = `${v.id}:${row.key}`;
-    try {
-      ch = chartCache.get(ck) || await api.cycleChart(v.id, row.key);
-      if (row.status === 'closed') chartCache.set(ck, ch);
-    } catch (e) { err = e.message; }
+    const row = L[i];
+    try { ch = await chartOf(v, row); } catch (e) { err = e.message; }
     if (L[i] === row) paint();
   }
   function go(d) {
@@ -267,18 +302,8 @@ export async function openSession(v, at) {
 
   paint();
   try {
-    L = listCache.get(v.id) || await api.cycles(v.id);
-    listCache.set(v.id, L);
-    setTimeout(() => listCache.delete(v.id), 60000);
+    ({ L, i } = await listAt(v, at));
   } catch (e) { err = e.message; paint(); return; }
   if (!L.length) { err = 'No cycles recorded for this deployment yet.'; paint(); return; }
-  // The row clicked: same IST day (intraday), or the cycle containing
-  // that opening time (positional), else the nearest start.
-  const t = Number(at);
-  let k = intra
-    ? L.findIndex(c => dayOf(c.start) === dayOf(t))
-    : L.findIndex(c => new Date(c.start).getTime() <= t + 60000 && (c.end ? new Date(c.end).getTime() : Date.now()) >= t);
-  if (k < 0) k = L.reduce((b, c, j) => (Math.abs(new Date(c.start) - t) < Math.abs(new Date(L[b].start) - t) ? j : b), 0);
-  i = k;
   load();
 }
