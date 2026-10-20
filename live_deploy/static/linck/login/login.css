@@ -1,7 +1,9 @@
 /* Linck sign-in: form on the left, the market clock on the right. */
 .auth { display: grid; grid-template-columns: var(--g-two); min-height: 100vh; }
 .auth-main { display: flex; flex-direction: column; min-height: 100vh; padding: 28px var(--px); }
-.auth-mark { font-family: var(--f-display); font-weight: 800; font-size: 26px; letter-spacing: -.03em; }
+.auth-mark { font-family: var(--f-display); font-weight: 800; font-size: 26px; letter-spacing: -.03em; display: inline-flex; align-items: center; gap: 10px; }
+.auth-mark > .mark { width: 32px; height: 32px; flex: none; }
+:root[data-th="night"] .auth-mark > .mark { box-shadow: 0 0 0 1px var(--line2); }
 .theme-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; }
 .theme-btn > i { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--ink); background: linear-gradient(90deg, var(--ink) 50%, var(--paper) 50%); }
 .auth-mid { flex: 1; display: flex; align-items: center; padding: 40px 0; }
@@ -25,7 +27,9 @@
 .auth-go[aria-disabled="true"] { opacity: .55; cursor: progress; }
 .auth-alt { height: 46px; width: 100%; border: 1.5px solid var(--ink); font-weight: 700; display: flex; align-items: center; justify-content: center; text-align: center; padding: 0 12px; }
 .auth-alt:hover { background: var(--soft); }
-.auth-spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
+/* Working: the mark's cursor, blinking (same as Linck's .spin). */
+.auth-spin { width: 12px; height: 4px; transform: translateY(5px); background: var(--y); animation: blink 1s steps(1) infinite; }
+@media (prefers-reduced-motion: reduce) { .auth-spin { animation: none; } }
 .auth-or { display: flex; align-items: center; gap: 12px; color: var(--mute); font-size: 13px; }
 .auth-or::before, .auth-or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
 .auth-link { font-weight: 700; text-decoration: underline; text-underline-offset: 3px; font-size: 14px; }

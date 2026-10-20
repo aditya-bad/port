@@ -42,6 +42,7 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 }
 
 .gk-top { grid-column: 1 / 3; display: flex; align-items: center; gap: 22px; padding: 0 20px; border-bottom: 1px solid var(--line); white-space: nowrap; min-width: 0; }
+.gk-top .gk-mark { width: 24px; height: 24px; margin-right: -12px; }
 .gk-badge { font-family: var(--f-mono); font-size: 11px; font-weight: 700; letter-spacing: .14em; color: var(--ink); background: var(--y); padding: 4px 8px; flex: none; }
 .gk-name { font-family: var(--f-display); font-weight: 700; font-size: 19px; letter-spacing: -.02em; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-decoration: none; }
 .gk-kv { display: flex; flex-direction: column; line-height: 1.15; flex: none; }

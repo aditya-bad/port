@@ -54,7 +54,7 @@ export default {
       const ck = engine && engine.rules ? engine.rules.find(r => r.key === 'checkpoint_target') : null;
       const cycle = engine && engine.state ? engine.state.cycle_id : null;
       return html`
-        <span class="gk-badge">GEEK</span>
+        <img class="mark gk-mark" src="/icons/linck-mark.svg" alt="" width="24" height="24"><span class="gk-badge">GEEK</span>
         <a class="gk-name" href="${href(`d/${id}/now`)}" title="${v.name}">${v.name}</a>
         <span class="mono tiny mute hide-m">${v.strategy} · ${v.mode.toLowerCase()}</span>
         <span class="gk-live ${isLive() && v.rawStatus === 'active' ? 'on' : ''}"><i></i><span class="hide-m">${v.rawStatus === 'active' ? (isLive() ? 'Live' : 'Not streaming') : v.rawStatus === 'paused' ? 'Paused' : 'Stopped'}</span></span>
@@ -76,12 +76,12 @@ export default {
 
     function paint() {
       if (!book.isLoaded('deployments')) {
-        mount(main, html`<div class="gk"><div class="gk-top"><span class="gk-badge">GEEK</span></div><nav class="gk-rail"></nav><div class="gk-main"><div class="gk-view"><div class="skel" style="height:260px"></div></div></div></div>`);
+        mount(main, html`<div class="gk"><div class="gk-top"><img class="mark gk-mark" src="/icons/linck-mark.svg" alt="" width="24" height="24"><span class="gk-badge">GEEK</span></div><nav class="gk-rail"></nav><div class="gk-main"><div class="gk-view"><div class="skel" style="height:260px"></div></div></div></div>`);
         return;
       }
       const v = book.find(id);
       if (!v || !supports(v)) {
-        mount(main, html`<div class="gk"><div class="gk-top"><span class="gk-badge">GEEK</span><span class="grow"></span><button type="button" class="gk-exit" data-act="exit">Exit <kbd>Esc</kbd></button></div><nav class="gk-rail"></nav>
+        mount(main, html`<div class="gk"><div class="gk-top"><img class="mark gk-mark" src="/icons/linck-mark.svg" alt="" width="24" height="24"><span class="gk-badge">GEEK</span><span class="grow"></span><button type="button" class="gk-exit" data-act="exit">Exit <kbd>Esc</kbd></button></div><nav class="gk-rail"></nav>
           <div class="gk-main"><div class="gk-view">${empty(v ? 'No Geek mode for this strategy yet' : 'This deployment doesn’t exist', v ? `${v.strategy} has no strategy-specific views. strangle_monthly_v2 is the first.` : 'It may have been deleted.')}</div></div></div>`);
         return;
       }

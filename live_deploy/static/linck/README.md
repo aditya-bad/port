@@ -25,6 +25,10 @@ js/actions.js         every deployment action and its confirmation
 js/pages/             one module per page; deployment/ has one module per tab
 ```
 
+## Brand
+
+The mark, the icons and how to re-render them: `brand/README.md` at the repo root.
+
 ## Signing in
 
 Signed-out visits to `/linck/` get `login/index.html`. Linck's CSS, fonts and `login/` are the only public Linck paths. After a password sign-in, the Connect Kite step appears when Kite isn't connected on a weekday that isn't marked as a holiday. It offers four ways forward: log in on Zerodha (popup), paste a `request_token` or the redirect URL (`POST /kite/manual-login`, with an optional one-off API key and secret), mark today as a market holiday (`POST /notifications/mute-today`), or skip. The same Kite options are in the header's Kite dialog at any time. Classic's sign-in page forwards Linck users here.

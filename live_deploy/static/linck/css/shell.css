@@ -2,7 +2,22 @@
 
 .appbar { position: sticky; top: 0; z-index: 20; background: var(--paper); }
 .hdr { display: flex; align-items: center; gap: clamp(10px, 1.15vw, 24px); height: var(--hdr); padding: 0 var(--px); border-bottom: 1.5px solid var(--ink); min-width: 0; }
-.wordmark { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.03em; text-decoration: none; flex: none; }
+.wordmark { font-family: var(--f-display); font-weight: 800; font-size: 24px; letter-spacing: -.03em; text-decoration: none; flex: none; display: inline-flex; align-items: center; gap: 10px; }
+/* The mark keeps its own ink tile in every theme; on Night it gets a hairline so it doesn't sink. */
+.mark { display: block; flex: none; width: 30px; height: 30px; }
+:root[data-th="night"] .mark { box-shadow: 0 0 0 1px var(--line2); }
+
+/* Boot screen: the mark on paper until the first page renders (app.js bootDone).
+ * The cursor blinks and the candle prints, as in the icon. */
+.boot { position: fixed; inset: 0; z-index: 100; background: var(--paper); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 18px; transition: opacity .3s, visibility .3s; }
+.boot.done { opacity: 0; visibility: hidden; pointer-events: none; }
+.boot-mark { width: 88px; height: 88px; border-radius: 20px; }
+:root[data-th="night"] .boot-mark { box-shadow: 0 0 0 1px var(--line2); }
+.boot-mark .cursor { animation: blink 1s steps(1) infinite; }
+.boot-mark .candle { transform-box: fill-box; transform-origin: 50% 100%; animation: print .5s .15s cubic-bezier(.2,.7,.2,1) both; }
+.boot-name { font-family: var(--f-display); font-weight: 800; font-size: 22px; letter-spacing: -.03em; }
+@keyframes print { from { transform: scaleY(0); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .boot-mark .cursor, .boot-mark .candle { animation: none; } }
 .wordmark:hover { color: inherit; }
 .nav { display: flex; gap: clamp(14px, 1.2vw, 20px); flex: none; font-weight: 600; white-space: nowrap; }
 .nav > a { padding: 20px 0 17px; border-bottom: 3px solid transparent; color: var(--mute); text-decoration: none; }
@@ -56,7 +71,6 @@
 .bf-strip { position: relative; display: flex; align-items: center; gap: 10px; min-width: 0; padding: 6px var(--px); font-size: 12.5px; color: var(--ink); text-decoration: none; background: var(--soft); border-bottom: 1px solid var(--line); overflow: hidden; }
 .bf-strip > * { position: relative; }
 .bf-strip > .bf-fill { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in oklch, var(--b) 16%, transparent); transition: width .4s; }
-.bf-strip > .spin { width: 11px; height: 11px; border: 2px solid var(--line); border-top-color: var(--ink); border-radius: 50%; display: inline-block; animation: spin 1s linear infinite; flex: none; }
 .bf-strip > .ell { min-width: 0; }
 .bf-strip:hover b { text-decoration: underline; }
 @media (prefers-reduced-motion: reduce) { .bf-strip > .spin { animation: none; } }

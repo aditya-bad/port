@@ -411,7 +411,7 @@ a.cell-name:hover b { text-decoration: underline; }
 
 /* Account: option price history backfill */
 .bf-run { display: flex; flex-direction: column; gap: 8px; padding: 14px; margin: 6px 0 4px; background: var(--soft); border: 1px solid var(--line); }
-.bf-run .spin { width: 12px; height: 12px; border: 2px solid var(--line); border-top-color: var(--ink); border-radius: 50%; display: inline-block; animation: spin 1s linear infinite; flex: none; }
+
 .bf-track { height: 6px; background: var(--paper); border: 1px solid var(--line); }
 .bf-track > span { display: block; height: 100%; background: var(--b); transition: width .4s; }
 @media (prefers-reduced-motion: reduce) { .bf-run .spin { animation: none; } }

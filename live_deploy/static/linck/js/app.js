@@ -63,7 +63,7 @@ function renderHeader() {
   const initials = app.me ? app.me.username.slice(0, 2) : '··';
   mount($('#top'), html`
     <header class="hdr">
-      <a class="wordmark" href="${href('desk')}" aria-label="Linck, go to the Desk">Linck</a>
+      <a class="wordmark" href="${href('desk')}" aria-label="Linck, go to the Desk"><img class="mark" src="/icons/linck-mark.svg" alt="" width="30" height="30">Linck</a>
       <nav class="nav hide-phone" aria-label="Main">${NAV.map(([k, l, c]) => html`
         <a href="${href(k)}" class="${k === cur ? 'on' : ''} ${c}" ${k === cur ? html`aria-current="page"` : ''}>${l}</a>`)}</nav>
       <span class="spacer"></span>
@@ -135,6 +135,7 @@ async function route() {
   let mod;
   try { mod = (await r.load()).default; } catch (e) {
     mount(main, html`<div class="page"><div class="empty"><b>This page didn’t load</b><span>${e.message}</span></div></div>`);
+    bootDone();
     return;
   }
   if (app.route !== r) return;   // navigated away while loading
@@ -148,6 +149,16 @@ async function route() {
   }
   if (changed) window.scrollTo(0, 0);
   renderHeader();
+  bootDone();
+}
+
+// The boot screen (index.html #boot) covers the first paint until the
+// first page has rendered, then fades out.
+function bootDone() {
+  const b = $('#boot');
+  if (!b || b.classList.contains('done')) return;
+  b.classList.add('done');
+  setTimeout(() => b.remove(), 400);
 }
 
 // Geek mode (js/data/geek.js) owns the whole screen: the header, index
