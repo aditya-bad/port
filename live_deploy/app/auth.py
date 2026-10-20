@@ -96,6 +96,11 @@ _PWA_PUBLIC_PREFIX = "/icons/"
 _LINCK_PUBLIC_PREFIXES = ("/linck/css/", "/linck/fonts/", "/linck/login/")
 _LINCK_ROOTS = frozenset({"/linck", "/linck/", "/linck/index.html"})
 
+# The sign-in screen's market clock asks whether today was marked as a
+# market holiday: one yes/no about the calendar, nothing about a
+# deployment, a trade or a user.
+_PUBLIC_API_PATHS = frozenset({"/notifications/market-day"})
+
 # Paths a plain browser client genuinely can't attach a custom header to
 # — used to widen _query_api_key_ok's exception below beyond WebSocket
 # connections (its original and, until now, only reason to exist).
@@ -305,7 +310,8 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        if scope["path"] in _PWA_PUBLIC_PATHS or scope["path"].startswith(_PWA_PUBLIC_PREFIX):
+        if scope["path"] in _PWA_PUBLIC_PATHS or scope["path"] in _PUBLIC_API_PATHS \
+                or scope["path"].startswith(_PWA_PUBLIC_PREFIX):
             await self.app(scope, receive, send)
             return
 

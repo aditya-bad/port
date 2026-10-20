@@ -102,3 +102,24 @@ test('signed out, data and app code stay private', async () => {
   assert.equal((await ctx.request.get(`${BASE}/manifest.json`)).status(), 200);
   await ctx.close();
 });
+
+test('a day marked as a market holiday: the sign-in clock says so, no countdown', async () => {
+  const admin = await context(b);
+  const ctx = await context(b, { signedIn: false });
+  try {
+    assert.equal((await admin.request.post(`${BASE}/notifications/mute-today`)).status(), 200);
+    const p = await ctx.newPage();
+    // 11:00 IST today: without the holiday this would read "Market open … CLOSES IN"
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    await p.clock.setFixedTime(new Date(`${today}T11:00:00+05:30`));
+    await p.goto(`${BASE}/linck/`);
+    await p.waitForFunction(() => /holiday/i.test(document.querySelector('#side')?.textContent || ''));
+    const side = await p.textContent('#side');
+    assert.match(side, /NSE · Market holiday/);
+    assert.match(side, /NEXT SESSION/);
+    assert.doesNotMatch(side, /Market open|CLOSES IN/);
+  } finally {
+    await admin.request.post(`${BASE}/notifications/unmute`);
+    await admin.close(); await ctx.close();
+  }
+});

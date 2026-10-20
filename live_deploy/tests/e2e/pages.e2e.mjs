@@ -78,3 +78,29 @@ for (const width of WIDTHS) {
     assert.deepEqual(problems, []);
   });
 }
+
+// Desktop browsers show a real scrollbar (~15px) that media queries still
+// count as width: the header overflowed by up to 31px at 1522–1558px. Swept
+// with real scrollbars (headless hides them by default).
+test('no sideways scroll at any desktop width with a real scrollbar', async () => {
+  const opts = { ignoreDefaultArgs: ['--hide-scrollbars'], ...(process.env.E2E_CHROMIUM ? { executablePath: process.env.E2E_CHROMIUM } : {}) };
+  const { chromium } = await import('playwright');
+  const rb = await chromium.launch(opts);
+  try {
+    for (const th of ['paper', 'night']) {
+      const ctx = await context(rb, { width: 1920, height: 900 });
+      await ctx.addInitScript(t => localStorage.setItem('linck-prefs', JSON.stringify({ theme: t })), th);
+      const p = await ctx.newPage();
+      await p.goto(`${BASE}/linck/#/desk`);
+      await p.waitForSelector('.hdr .avatar');
+      const bad = [];
+      for (let w = 1100; w <= 2000; w += 6) {
+        await p.setViewportSize({ width: w, height: 900 });
+        const r = await p.evaluate(() => [document.documentElement.scrollWidth, document.documentElement.clientWidth]);
+        if (r[0] > r[1]) bad.push(`${w}px: ${r[0]} > ${r[1]}`);
+      }
+      assert.deepEqual(bad, [], `${th}: scrolls sideways`);
+      await ctx.close();
+    }
+  } finally { await rb.close(); }
+});

@@ -93,6 +93,20 @@ async def mute_status(request: Request):
     }
 
 
+def is_marked_holiday(until: Optional[datetime], now: datetime) -> bool:
+    """"Mark as holiday" mutes Kite alerts until 07:00 the next day, so a
+    mute still running that ends after today means today is the holiday."""
+    return until is not None and now < until and until.astimezone(IST).date() > now.astimezone(IST).date()
+
+
+@router.get("/market-day")
+async def market_day(request: Request):
+    """Public (the sign-in screen's clock): is today a marked holiday?"""
+    until = await request.app.state.cache.get("notification_mute_until")
+    now = datetime.now(IST)
+    return {"date": now.date().isoformat(), "holiday": is_marked_holiday(until, now)}
+
+
 @router.post("/mute-today")
 async def mute_today(request: Request):
     """Suppresses every Kite-connection alert for the rest of today AND

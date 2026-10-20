@@ -30,10 +30,13 @@ async function call(path, body) {
   return data;
 }
 
-// ── Market clock (IST, NSE 09:15–15:30; holidays aren't modelled) ────
+// ── Market clock (IST, NSE 09:15–15:30, weekdays; a day marked as a
+// market holiday — GET /notifications/market-day, public — is closed) ──
+let holidayOn = null;   // the IST date (YYYY-MM-DD) the server says is a marked holiday
 function market(now = new Date()) {
-  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
     .formatToParts(now).map(x => [x.type, x.value]));
+  const holiday = holidayOn === `${p.year}-${p.month}-${p.day}`;   // that day only, even if the page stays open
   const dw = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(p.weekday);
   const m = +p.hour * 60 + +p.minute, op = 555, cl = 930;
   // countdown to minute `x` (of the day), to the second
@@ -41,6 +44,7 @@ function market(now = new Date()) {
   const pad = n => String(n).padStart(2, '0');
   const hm = x => { const t = secs(x); return `${Math.floor(t / 3600)}h ${pad(Math.floor(t / 60) % 60)}m ${pad(t % 60)}s`; };
   const wk = dw >= 1 && dw <= 5;
+  if (wk && holiday) return { wk: false, cls: 'shut', s: 'NSE · Market holiday', k: 'NEXT SESSION', big: dw === 5 ? 'Mon 09:15' : 'Tomorrow 09:15', sub: 'Today is marked as a market holiday. Deployments stay idle until the next session.' };
   if (wk && m >= op && m < cl) return { wk, cls: 'open', s: 'NSE · Market open', k: 'CLOSES IN', big: hm(cl), sub: 'Your deployments are running. Sign in to see where they stand.' };
   if (wk && m < op) return { wk, cls: 'pre', s: 'NSE · Pre-open', k: 'MARKET OPENS IN', big: hm(op), sub: 'Reconnect Kite before 09:15 so deployments enter on time.' };
   return { wk, cls: 'shut', s: 'NSE · Market closed', k: 'NEXT SESSION', big: (dw === 5 && m >= cl) || dw === 6 || dw === 0 ? 'Mon 09:15' : 'Tomorrow 09:15', sub: 'Today’s results are in. Sign in for the day’s statement.' };
@@ -230,3 +234,6 @@ paintTheme();
 paintSide();
 setInterval(paintSide, 1000);
 paint(true);
+fetch('/notifications/market-day', { credentials: 'same-origin' }).then(r => (r.ok ? r.json() : null)).then(d => {
+  if (d && d.holiday) { holidayOn = d.date; $('#side').innerHTML = ''; paintSide(); }
+}).catch(() => { /* the plain weekday clock */ });

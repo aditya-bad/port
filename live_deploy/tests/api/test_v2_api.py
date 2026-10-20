@@ -142,6 +142,36 @@ def test_session_realized_open_leaves_out_open_legs_and_todays_closes(client):
     assert ro["net_slip"] <= ro["net"] < ro["gross"]
 
 
+def test_session_equity_open_ignores_trades_an_old_snapshot_predates(client):
+    """A paused deployment records no snapshots, so the newest one before
+    today's open can be days old. Trades closed after it (yesterday) are not
+    today's P&L: the open must count them."""
+    d = make_deployment(client)
+    old = at(TODAY - timedelta(days=3), "15:20")
+    sql(client, "INSERT INTO deployment_snapshots (deployment_id, snapshot_at, cash, open_positions_value, total_value, "
+                "realized_pnl_cumulative) VALUES ($1::uuid, $2, 500000, 0, 500000, 0)", d["id"], old)
+    trade(client, d["id"], "CE", 1, 100, 80, at(TODAY - timedelta(days=1), "10:00"))   # +1500 yesterday
+    eo = client.get("/v2/session").json()["lanes"][d["id"]]["equity_open"]
+    assert eo["gross"] == pytest.approx(1500), "today's P&L must not show yesterday's +1500"
+
+
+def test_session_equity_open_counts_legs_carried_overnight_at_their_value_then(client):
+    d = make_deployment(client)
+    add_fill(client, d["id"], "CE", 1, "sell", 75, 100, at(TODAY - timedelta(days=1), "10:00"))
+    sql(client, "INSERT INTO deployment_snapshots (deployment_id, snapshot_at, cash, open_positions_value, total_value, "
+                "realized_pnl_cumulative) VALUES ($1::uuid, $2, 500000, 900, 500900, 0)", d["id"], at(TODAY, "09:10"))
+    assert client.get("/v2/session").json()["lanes"][d["id"]]["equity_open"]["gross"] == pytest.approx(900)
+
+
+def test_session_equity_open_drops_a_leg_value_that_fills_since_made_stale(client):
+    d = make_deployment(client)
+    sql(client, "INSERT INTO deployment_snapshots (deployment_id, snapshot_at, cash, open_positions_value, total_value, "
+                "realized_pnl_cumulative) VALUES ($1::uuid, $2, 500000, 900, 500900, 0)", d["id"], at(TODAY - timedelta(days=2), "15:20"))
+    trade(client, d["id"], "CE", 1, 100, 80, at(TODAY - timedelta(days=1), "10:00"))   # the leg closed, +1500
+    eo = client.get("/v2/session").json()["lanes"][d["id"]]["equity_open"]
+    assert eo["gross"] == pytest.approx(1500), "not 1500 + the closed leg's old 900"
+
+
 def test_session_shows_errors_and_pauses(client):
     d = make_deployment(client, start="now")
     assert client.post(f"/deployments/{d['id']}/pause").status_code == 200

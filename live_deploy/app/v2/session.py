@@ -5,11 +5,13 @@ For every deployment this returns:
 * equity_open — its P&L (realized + unrealized) as of the session open,
   in each basis. Today's P&L is then simply "P&L now − equity_open",
   which the UI computes live from the same realized/unrealized figures
-  GET /deployments already serves. Gross comes from the last 5-minute
-  snapshot at or before 09:15 IST (total_value − initial capital), so
+  GET /deployments already serves. It is what closed before today plus
+  the open legs' value in the last snapshot at or before 09:15 IST, so
   legs carried overnight count only their move since the open; the
   after-charges bases subtract the charges/slippage of everything that
-  closed before today. With no snapshot to go on, unrealized at the open
+  closed before today. Not the snapshot's total: a paused deployment
+  records none, so it can be days old, and trades closed since would show
+  as today's. With no snapshot, or fills after it, unrealized at the open
   is taken as 0.
 * realized_open — what had closed before today, in each basis. When no
   fresh price has arrived for a deployment's open legs today (a holiday,
@@ -93,11 +95,16 @@ async def build_session(pool: asyncpg.Pool, now: datetime | None = None) -> dict
         )
         open_snaps = await conn.fetch(
             """
-            SELECT DISTINCT ON (deployment_id) deployment_id, total_value::float8 AS v
+            SELECT DISTINCT ON (deployment_id) deployment_id, snapshot_at,
+                   open_positions_value::float8 AS opv
             FROM deployment_snapshots
             WHERE snapshot_at <= $1 AND snapshot_at >= $1 - interval '4 days'
             ORDER BY deployment_id, snapshot_at DESC
             """,
+            open_at,
+        )
+        last_fill = await conn.fetch(
+            "SELECT deployment_id, max(executed_at) AS t FROM position_lots WHERE executed_at <= $1 GROUP BY 1",
             open_at,
         )
         snaps = await conn.fetch(
@@ -129,7 +136,11 @@ async def build_session(pool: asyncpg.Pool, now: datetime | None = None) -> dict
         )
 
     before_by = {r["deployment_id"]: r for r in before}
-    open_by = {r["deployment_id"]: r["v"] for r in open_snaps}
+    fill_by = {r["deployment_id"]: r["t"] for r in last_fill}
+    # Open legs' value at the open: from the snapshot, unless fills since
+    # it changed which legs were open.
+    open_by = {r["deployment_id"]: r["opv"] for r in open_snaps
+               if not (fill_by.get(r["deployment_id"]) and fill_by[r["deployment_id"]] > r["snapshot_at"])}
     snaps_by: dict = defaultdict(list)
     for r in snaps:
         snaps_by[r["deployment_id"]].append(r)
@@ -144,8 +155,7 @@ async def build_session(pool: asyncpg.Pool, now: datetime | None = None) -> dict
     for d in deps:
         b = before_by.get(d["id"])
         g, c, s = (b["g"], b["c"], b["s"]) if b else (0.0, 0.0, 0.0)
-        snap = open_by.get(d["id"])
-        gross_open = (snap - d["cap"]) if snap is not None else g
+        gross_open = g + (open_by.get(d["id"]) or 0.0)
         markers = group_fills(lots_by.get(d["id"], []))
         markers += [
             {"t": _ms(e["created_at"]), "kind": _EVENT_KINDS[e["event_type"]], "reason": e["message"] or ""}

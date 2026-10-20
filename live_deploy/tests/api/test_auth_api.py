@@ -187,3 +187,28 @@ def test_audit_log_records_unparsed_bodies_and_redacts_nested_secrets(client):
 def test_reads_are_not_audited(client):
     client.get("/deployments")
     assert [r["path"] for r in client.get("/auth/audit-log").json()] == ["/auth/login"], "only the sign-in itself"
+
+
+def test_market_day_is_public_and_follows_mark_as_holiday(app_client, client):
+    """The sign-in screen's clock (signed out) asks whether today is a
+    marked holiday; it must not say "Market open" on one."""
+    anon = lambda: app_client.get("/notifications/market-day")
+    assert anon().status_code == 200 and anon().json()["holiday"] is False
+    assert client.post("/notifications/mute-today").status_code == 200
+    client.cookies.clear()
+    assert anon().json()["holiday"] is True
+    assert set(anon().json()) == {"date", "holiday"}, "nothing else is public"
+
+
+
+def test_marked_holiday_means_a_mute_running_into_tomorrow():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app.routers.notifications import is_marked_holiday
+    ist = ZoneInfo("Asia/Kolkata")
+    now = datetime(2026, 10, 20, 11, 0, tzinfo=ist)
+    assert is_marked_holiday(datetime(2026, 10, 21, 7, 0, tzinfo=ist), now)
+    assert not is_marked_holiday(None, now)
+    assert not is_marked_holiday(datetime(2026, 10, 20, 18, 0, tzinfo=ist), now), "ends today: just a mute"
+    assert not is_marked_holiday(datetime(2026, 10, 20, 7, 0, tzinfo=ist), now), "already over"
+    assert not is_marked_holiday(datetime(2026, 10, 21, 7, 0, tzinfo=ist), datetime(2026, 10, 21, 8, 0, tzinfo=ist))
