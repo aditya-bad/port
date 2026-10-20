@@ -474,8 +474,10 @@ a.cell-name:hover b { text-decoration: underline; }
 /* Overview: one card per section, grouped */
 .ov-grid { display: flex; flex-direction: column; gap: 26px; }
 .ov-grp h3 { margin: 0 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--mute); }
-.ov-grp { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-.ov-grp h3 { grid-column: 1 / -1; }
+.ov-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+/* phone-only pieces of the overview: who you are, what needs you, the short state and the chevron */
+.ov-me, .ov-attns, .ov-short, .ov-chev { display: none; }
+.ov-chev { font-style: normal; font-size: 20px; line-height: 1; color: var(--mute); }
 .ov-card { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border: 1px solid var(--line); text-decoration: none; color: var(--ink); min-width: 0; }
 .ov-card:hover { border-color: var(--ink); }
 .ov-card:focus-visible { outline: 2px solid var(--b); outline-offset: 2px; }
@@ -498,8 +500,37 @@ a.cell-name:hover b { text-decoration: underline; }
 @media (max-width: 900px) {
   .acct { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .acct-nav { display: none; }
-  .acct-back { display: inline-block; }
   .acct-head h2 { font-size: 24px; }
+  /* A phone's settings app: a compact list grouped in boxes, the
+   * explanations inside each section, not on the list. */
+  .is-ov .page-head > span, .is-ov .acct-head { display: none; }
+  .is-ov .acct-main { gap: 22px; }
+  .ov-me { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); text-decoration: none; color: var(--ink); }
+  .ov-me .avatar { width: 40px; height: 40px; font-size: 14px; }
+  .ov-attns { display: flex; flex-direction: column; gap: 8px; }
+  .ov-attn { display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--ys); border: 1px solid var(--wr); color: var(--wt); text-decoration: none; }
+  .ov-attn b { display: block; font-size: 14px; }
+  .ov-attn span { font-size: 12.5px; }
+  .ov-grid { gap: 22px; }
+  .ov-grp h3 { margin: 0 0 6px 2px; }
+  .ov-list { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--line); }
+  .ov-card { display: grid; grid-template-columns: minmax(0, 1fr) auto 14px; align-items: center; gap: 10px; min-height: 50px; padding: 0 14px; border: 0; border-bottom: 1px solid var(--line); }
+  .ov-list > .ov-card:last-child { border-bottom: 0; }
+  .ov-card b { font-size: 15px; font-weight: 600; }
+  .ov-card .ov-state, .ov-card .ov-what { display: none; }
+  .ov-short { display: block; font-size: 13.5px; color: var(--mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 42vw; }
+  .ov-chev { display: block; }
+  .ov-card:active, .ov-me:active { background: var(--soft); }
+  .ov-card.warn { background: none; border-color: var(--line); }
+  .ov-card.warn .ov-short { color: var(--wt); font-weight: 700; }
+  .ov-card.good .ov-short { color: var(--g); }
+  .ov-grp.danger .ov-list { border-color: color-mix(in oklch, var(--r) 45%, var(--line)); }
+  /* a section: a back link and its title, no repeated page header */
+  .is-sec .page-head { display: none; }
+  .acct-back { display: inline-flex; align-items: center; gap: 4px; padding: 14px 0 0; font-weight: 600; text-decoration: none; }
+  .is-sec .acct-main { gap: 22px; }
+  .is-sec .acct-head { border-top: 0; padding-top: 0; }
+  .acct-head p { font-size: 14px; }
   .em-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .em-tile:nth-child(2) { border-right: 0; }
   .em-tile:nth-child(-n+2) { border-bottom: 1px solid var(--line); }

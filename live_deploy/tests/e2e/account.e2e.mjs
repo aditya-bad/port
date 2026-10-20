@@ -100,9 +100,24 @@ test('on a phone: the overview is the menu, and sections have a way back', async
   await p.goto(`${BASE}/linck/#/account`);
   await p.waitForSelector('.ov-card');
   assert.ok(!(await p.isVisible('.acct-nav')), 'no side list on a phone');
+  // a settings list: name, a short state and a chevron per row; the explanations wait inside each section
+  await p.waitForSelector('.ov-card[data-sec="kite"] .ov-short:not(:empty)');
+  assert.ok(!(await p.isVisible('.ov-card .ov-what')) && !(await p.isVisible('.ov-card .ov-state')));
+  assert.match(await p.innerText('.ov-card[data-sec="kite"] .ov-short'), /^(Not connected|Connected|Connecting)$/);
+  assert.match(await p.innerText('.ov-card[data-sec="emergency"] .ov-short'), /^(\d+ open legs?|Nothing open)$/);
+  const h = await p.$$eval('.ov-card', cs => cs.map(c => c.getBoundingClientRect().height));
+  assert.ok(h.every(x => x < 64), `one-line rows (${h})`);
+  // who you are, and what needs you, come first
+  assert.ok(await p.isVisible('.ov-me'));
+  if (await p.isVisible('.ov-attn [data-act=kite]')) {
+    await p.click('.ov-attn [data-act=kite]');
+    await p.locator('[role=dialog]').last().waitFor();
+    await p.keyboard.press('Escape');
+  }
   await p.click('.ov-card[data-sec="notifications"]');
   await p.waitForSelector('.acct-head h2:text-is("Notifications")');
   assert.ok(await p.isVisible('.acct-back'));
+  assert.ok(!(await p.isVisible('.page-head')), 'a section shows its own title, not the page header again');
   await p.click('.acct-back');
   await p.waitForURL(/#\/account$/);
   await p.waitForSelector('.ov-card');
@@ -120,5 +135,15 @@ test('the market holiday mute lives in one place: Notifications', async () => {
     await p.waitForTimeout(200);
     assert.equal(await p.locator('.acct-main [data-act=mute]').count(), s === 'notifications' ? 1 : 0, s);
   }
+  await ctx.close();
+});
+
+test('on a desktop the phone-only pieces stay hidden', async () => {
+  const ctx = await context(b, { width: 1440, height: 900 });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/account`);
+  await p.waitForSelector('.ov-card');
+  for (const sel of ['.ov-me', '.ov-attns', '.ov-card .ov-short', '.ov-card .ov-chev', '.acct-back']) assert.ok(!(await p.isVisible(sel)), sel);
+  assert.ok(await p.isVisible('.ov-card .ov-what') && await p.isVisible('.acct-nav'));
   await ctx.close();
 });

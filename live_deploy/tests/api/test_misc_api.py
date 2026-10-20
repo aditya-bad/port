@@ -472,7 +472,8 @@ def test_backfill_runs_in_the_background_and_reports_progress(client, monkeypatc
     assert client.get("/health").json()["candle_backfill"] is None
     # again: nothing left to fetch
     _start_backfill(client, PAST)
-    assert _wait_backfill(client)["last"]["fetched"] == 0, "the second run's own result"
+    st2 = _wait_backfill(client)
+    assert st2["last"]["fetched"] == 0, ("the second run's own result", st2, asked)
 
 
 def test_backfill_without_kite_is_reported_as_incomplete(client, monkeypatch):

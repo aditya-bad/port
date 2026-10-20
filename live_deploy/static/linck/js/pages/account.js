@@ -96,23 +96,38 @@ export default {
     const S = {
       overview() {
         const x = exposure(deps()), st = installState();
-        // [section, state, tone]
+        const pushShort = { on: 'On', off: 'Off', loading: '…' }[push.state] || 'Unavailable';
+        const histBad = hist && hist.last && !hist.last.complete;
+        // [section, state, tone, short state for the phone's list]
         const cards = [
-          ['kite', live() ? `Connected${subs != null ? ` · streaming ${plural(subs, 'instrument')}` : ''}` : kite.state === 'connecting' ? 'Connecting…' : 'Not connected: prices are frozen and nothing can trade', live() ? 'good' : 'warn'],
-          ['emergency', x.legs ? `${plural(x.legs, 'open leg')} in ${plural(x.holding, 'deployment')} · ${x.running} running` : `No open positions · ${x.running} running`, ''],
-          ['appearance', `${prefs.themeLabel()} theme`, ''],
-          ['notifications', `This device: ${push.state === 'on' ? 'on' : push.state === 'off' ? 'off' : push.state === 'loading' ? '…' : 'unavailable'}${mute && mute.muted ? ' · muted for the holiday' : ''}`, push.state === 'on' ? 'good' : ''],
-          ['security', me ? `Signed in as ${me.username}` : '…', ''],
-          ['app', st === 'installed' ? 'Installed on this device' : 'Not installed on this device', ''],
-          ['users', users ? plural(users.length, 'user') : '…', ''],
-          ['tags', plural(book.tags().length, 'tag'), ''],
-          ['history', hist && hist.running ? 'Saving now…' : hist && hist.last ? `Last saved ${dDay(hist.last.finished_at)}, ${hhmm(hist.last.finished_at)}${hist.last.complete ? '' : ' · stopped early'}` : '…', hist && hist.last && !hist.last.complete ? 'warn' : ''],
-          ['log', audit ? (audit.length ? `Last change ${ago(audit[0].occurred_at)} by ${audit[0].username || 'API key'}` : 'Nothing yet') : '…', ''],
-          ['server', 'Redeploy · delete every deployment', 'danger'],
+          ['kite', live() ? `Connected${subs != null ? ` · streaming ${plural(subs, 'instrument')}` : ''}` : kite.state === 'connecting' ? 'Connecting…' : 'Not connected: prices are frozen and nothing can trade', live() ? 'good' : 'warn',
+            live() ? 'Connected' : kite.state === 'connecting' ? 'Connecting' : 'Not connected'],
+          ['emergency', x.legs ? `${plural(x.legs, 'open leg')} in ${plural(x.holding, 'deployment')} · ${x.running} running` : `No open positions · ${x.running} running`, '',
+            x.legs ? plural(x.legs, 'open leg') : 'Nothing open'],
+          ['appearance', `${prefs.themeLabel()} theme`, '', prefs.themeLabel()],
+          ['notifications', `This device: ${pushShort.toLowerCase()}${mute && mute.muted ? ' · muted for the holiday' : ''}`, push.state === 'on' ? 'good' : '', mute && mute.muted ? 'Muted' : pushShort],
+          ['security', me ? `Signed in as ${me.username}` : '…', '', me ? me.username : ''],
+          ['app', st === 'installed' ? 'Installed on this device' : 'Not installed on this device', '', st === 'installed' ? 'Installed' : 'Not installed'],
+          ['users', users ? plural(users.length, 'user') : '…', '', users ? String(users.length) : ''],
+          ['tags', plural(book.tags().length, 'tag'), '', String(book.tags().length)],
+          ['history', hist && hist.running ? 'Saving now…' : hist && hist.last ? `Last saved ${dDay(hist.last.finished_at)}, ${hhmm(hist.last.finished_at)}${hist.last.complete ? '' : ' · stopped early'}` : '…', histBad ? 'warn' : '',
+            hist && hist.running ? 'Saving…' : histBad ? 'Stopped early' : hist && hist.last ? dDay(hist.last.finished_at) : ''],
+          ['log', audit ? (audit.length ? `Last change ${ago(audit[0].occurred_at)} by ${audit[0].username || 'API key'}` : 'Nothing yet') : '…', '', audit && audit.length ? ago(audit[0].occurred_at) : ''],
+          ['server', 'Redeploy · delete every deployment', 'danger', ''],
         ];
-        return html`<div class="ov-grid">${GROUPS.map(gr => html`<section class="ov-grp"><h3>${gr}</h3>
-          ${cards.filter(([k]) => sectionOf(k)[2] === gr).map(([k, state, tone]) => html`<a class="ov-card ${tone}" href="${href(`account?s=${k}`)}" data-sec="${k}">
-            <b>${sectionOf(k)[1]}</b><span class="ov-state">${state}</span><span class="ov-what">${sectionOf(k)[3]}</span></a>`)}</section>`)}</div>`;
+        // On a phone: who you are, then anything that needs you, then a short list.
+        const attn = [
+          !live() && kite.state !== 'connecting' && html`<div class="ov-attn"><div class="grow"><b>Kite isn’t connected</b><span>Prices are frozen and nothing can trade.</span></div><button type="button" class="btn btn-sm btn-primary" data-act="kite">Connect</button></div>`,
+          histBad && html`<a class="ov-attn" href="${href('account?s=history')}"><div class="grow"><b>Option history stopped early</b><span>It retries every minute. Tap for details.</span></div><i class="ov-chev" aria-hidden="true">›</i></a>`,
+        ].filter(Boolean);
+        return html`
+          <a class="ov-me" href="${href('account?s=security')}"><span class="avatar">${me ? me.username.slice(0, 2) : '··'}</span>
+            <span class="col grow" style="gap:0"><b>${me ? me.username : '…'}</b><span class="tiny mute">${me ? `${me.role || 'admin'} · sign-in & security` : ''}</span></span><i class="ov-chev" aria-hidden="true">›</i></a>
+          ${attn.length ? html`<div class="ov-attns">${attn}</div>` : ''}
+          <div class="ov-grid">${GROUPS.map(gr => html`<section class="ov-grp ${gr === 'Danger zone' ? 'danger' : ''}"><h3>${gr}</h3>
+          <div class="ov-list">${cards.filter(([k]) => sectionOf(k)[2] === gr).map(([k, state, tone, short]) => html`<a class="ov-card ${tone}" href="${href(`account?s=${k}`)}" data-sec="${k}">
+            <b>${sectionOf(k)[1]}</b><span class="ov-state">${state}</span><span class="ov-what">${sectionOf(k)[3]}</span>
+            <span class="ov-short">${short}</span><i class="ov-chev" aria-hidden="true">›</i></a>`)}</div></section>`)}</div>`;
       },
 
       kite() {
@@ -258,7 +273,7 @@ export default {
 
     function paint() {
       const [k, title, gr, what] = sectionOf(key);
-      mount(main, html`
+      mount(main, html`<div class="acct-page ${k === 'overview' ? 'is-ov' : 'is-sec'}">
         <div class="page-head"><h1 class="t-h1">Account</h1><span class="mute pretty" style="max-width:520px">Your Kite login, how Linck looks and talks to you, who can sign in, and the server.</span></div>
         <div class="acct pad-x">
           ${nav()}
@@ -267,7 +282,7 @@ export default {
             <header class="acct-head">${gr ? html`<span class="acct-grp ${gr === 'Danger zone' ? 'neg' : ''}">${gr}</span>` : ''}<h2>${title}</h2><p>${what}</p></header>
             ${S[k]()}
           </div>
-        </div>`);
+        </div></div>`);
     }
 
     // Password + typed phrase, both checked by the server (same as classic).

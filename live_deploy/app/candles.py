@@ -368,6 +368,11 @@ class CandleService:
         """For the UI: the run in progress (if any), the last run, the next
         scheduled one, and what the store holds."""
         now = (at or datetime.now(IST)).astimezone(IST)
+        # Read "running" before anything is awaited: a run saves its result
+        # before it stops showing as running, so if none is running now, the
+        # result read next is its own. Read last, a run finishing during the
+        # reads below showed as not running beside the previous run's result.
+        running = dict(self.progress) if self.progress else None
         last = await queries.get_app_scratch(self.pool, "candle_backfill_last")
         nxt = now.date()
         done_today = bool(last and last.get("day") == nxt.isoformat() and last.get("complete"))
@@ -379,7 +384,7 @@ class CandleService:
             stored = await conn.fetchrow(
                 "SELECT count(DISTINCT instrument_token) AS contracts, count(*) AS minutes, min(minute) AS since FROM candles_1m")
         return {
-            "running": dict(self.progress) if self.progress else None,
+            "running": running,
             "last": last,
             "next_at": datetime.combine(nxt, BACKFILL_AT, IST).isoformat(),
             "stored": {"contracts": stored["contracts"], "minutes": stored["minutes"],

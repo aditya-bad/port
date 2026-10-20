@@ -301,6 +301,32 @@ def test_migration_0022_removes_stored_index_candles_and_keeps_options(pool_run)
 
 
 
+def test_status_never_shows_not_running_beside_the_previous_result(pool_run, monkeypatch):
+    """A run that finishes while the status is being read: the status must
+    either still show it running, or show its own result, never "nothing
+    running" beside the run before it (a reader would take that stale
+    result for the new run's)."""
+    async def go(pool):
+        svc = service(pool)
+        await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-19", "fetched": 2, "complete": True})
+        svc.progress = svc._waiting(date(2026, 10, 19))
+        real = queries.get_app_scratch
+
+        async def finishes_meanwhile(pool_, key):
+            old = await real(pool_, key)
+            # the run saves its result, then stops showing as running
+            await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-19", "fetched": 0, "complete": True})
+            svc.progress = None
+            return old
+        monkeypatch.setattr(queries, "get_app_scratch", finishes_meanwhile)
+        st = await svc.backfill_status()
+        assert st["running"] is not None or st["last"]["fetched"] == 0, st
+        monkeypatch.setattr(queries, "get_app_scratch", real)
+        st = await svc.backfill_status()
+        assert st["running"] is None and st["last"]["fetched"] == 0, "and next time, the new result"
+    pool_run(go)
+
+
 def test_next_run_is_today_at_1545_until_done_then_the_next_weekday(pool_run):
     async def go(pool):
         svc = service(pool)
