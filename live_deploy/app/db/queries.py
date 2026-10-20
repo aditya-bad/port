@@ -1039,6 +1039,23 @@ async def record_snapshot(
         )
 
 
+async def latest_marks(pool: asyncpg.Pool, position_ids: list) -> dict:
+    """{position_id: its most recent recorded price (position_marks)}."""
+    if not position_ids:
+        return {}
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT DISTINCT ON (position_id) position_id, price::float8 AS price
+            FROM position_marks
+            WHERE position_id = ANY($1::uuid[])
+            ORDER BY position_id, marked_at DESC
+            """,
+            position_ids,
+        )
+    return {r["position_id"]: r["price"] for r in rows}
+
+
 async def list_deployment_lots(pool: asyncpg.Pool, deployment_id: UUID) -> list[asyncpg.Record]:
     """Every fill of a deployment, oldest first, with its position's side."""
     async with pool.acquire() as conn:

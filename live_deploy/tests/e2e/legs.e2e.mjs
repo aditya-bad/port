@@ -93,3 +93,39 @@ for (const [width, label] of [[390, 'phone'], [1440, 'desktop']]) {
     await ctx.close();
   });
 }
+
+// A holiday with Kite down: open legs have no price since the open, so
+// they haven't moved. The Desk must not show their stored unrealized P&L
+// as a spike "today" (seen on a holiday: flat lanes jumping at "now").
+const laneOf = (p, id) => p.evaluate(id => {
+  const lane = document.querySelector(`[data-today="${id}"]`).closest('.lane');
+  const d = lane.querySelector('.lane-plot path[fill=none]').getAttribute('d');
+  const ys = [...d.matchAll(/[ML][\d.]+ ([\d.]+)/g)].map(m => +m[1]);
+  return { today: document.querySelector(`[data-today="${id}"]`).textContent.trim(), ys };
+}, id);
+
+test('no ticks since the open: lanes holding legs stay flat at ₹0', async () => {
+  const ctx = await context(b);
+  await streamTicks(ctx, [], false);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/desk`);
+  await p.waitForSelector(`[data-today="${ID}"]`);
+  await p.waitForTimeout(500);
+  const l = await laneOf(p, ID);
+  assert.equal(l.today, '₹0', 'nothing moved today');
+  assert.equal(new Set(l.ys).size, 1, `a flat lane, not a spike (${l.ys.join(',')})`);
+  await ctx.close();
+});
+
+test('once ticks arrive, the lane moves with them', async () => {
+  const ctx = await context(b);
+  const legs = await api(ctx, `/deployments/${ID}/positions?status=open`);
+  // move one leg only: the same move on every leg of a balanced strangle nets to ₹0
+  await streamTicks(ctx, legs.slice(0, 1));
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/desk`);
+  await p.waitForSelector(`[data-today="${ID}"]`);
+  await p.waitForFunction(id => document.querySelector(`[data-today="${id}"]`).textContent.trim() !== '₹0', ID, { timeout: 8000 });
+  assert.ok(new Set((await laneOf(p, ID)).ys).size > 1, 'the lane shows the move');
+  await ctx.close();
+});

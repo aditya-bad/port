@@ -8,7 +8,7 @@ One command tells you whether a change is safe to deploy:
 ```
 
 Everything runs in parallel: the Python tests on one pytest-xdist worker
-per CPU (`PY_WORKERS`), the browser tests on two app servers
+per CPU (`PY_WORKERS`, work-stealing so no worker sits idle at the end), the browser tests on two app servers
 (`E2E_SHARDS`), both at the same time. Each worker and server has its
 own database beside the test one (`t_test_gw0`…, `t_test_e2e0`…),
 created on first use, so they never touch each other's data.

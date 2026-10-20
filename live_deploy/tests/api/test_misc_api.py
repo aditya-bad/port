@@ -392,12 +392,14 @@ def test_backfill_status_route_is_not_taken_for_an_instrument_token(client):
 _WAIT_S = 20
 
 
-def _wait_backfill(client):
+def _wait_backfill(client, day=None):
+    """Until nothing is running (and, given a day, that day's run has
+    saved its result: the app's own catch-up run can finish in between)."""
     import time as _t
     end = _t.monotonic() + _WAIT_S
     while _t.monotonic() < end:
         st = client.get("/candles/backfill").json()
-        if st["running"] is None:
+        if st["running"] is None and (day is None or (st["last"] or {}).get("day") == day.isoformat()):
             return st
         _t.sleep(0.05)
     raise AssertionError("backfill never finished")
@@ -448,7 +450,7 @@ def test_backfill_runs_in_the_background_and_reports_progress(client, monkeypatc
     assert h is not None and h["total"] == 2, "the header learns of it from /health"
     assert client.post("/candles/backfill", json={}).status_code == 409, "one run at a time"
     gate["open"] = True
-    st = _wait_backfill(client)
+    st = _wait_backfill(client, PAST)
     assert asked.count(8181) == 1 and asked.count(8182) == 1
     last = st["last"]
     assert last["day"] == PAST.isoformat() and last["instruments"] == 2 and last["fetched"] == 2
@@ -469,5 +471,5 @@ def test_backfill_without_kite_is_reported_as_incomplete(client, monkeypatch):
     d = make_deployment(client)
     add_fill(client, d["id"], "NIFTY26DEC25000CE", 8191, "sell", 75, 100, at(PAST, "10:00"))
     _start_backfill(client, PAST)
-    last = _wait_backfill(client)["last"]
+    last = _wait_backfill(client, PAST)["last"]
     assert last["complete"] is False and "Kite" in last["error"]

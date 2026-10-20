@@ -61,7 +61,7 @@ else
       echo "note: $(cat "$LOGS/dbs") — running Python tests on one worker"; W=0; }
   fi
   echo "Python: unit, database, API and strategy simulations ($([ "$W" = 0 ] && echo 1 || echo "$W") workers)…"
-  "$PY" -m pytest --require-db -p no:cacheprovider -n "$W" --cov --cov-report=term:skip-covered --cov-report=html \
+  "$PY" -m pytest --require-db -p no:cacheprovider -n "$W" $([ "$W" = 0 ] || echo --dist worksteal) --cov --cov-report=term:skip-covered --cov-report=html \
     ${MIN_COVERAGE:+--cov-fail-under=$MIN_COVERAGE} > "$LOGS/py" 2>&1 &
   PY_PID=$!
 fi

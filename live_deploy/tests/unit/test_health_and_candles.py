@@ -2,6 +2,8 @@
 watchdog (deployments active but not running; Kite not connected)."""
 
 import asyncio
+
+import pytest
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -65,9 +67,25 @@ def manager(active_rows, running_ids=(), connected=True, needs_login=False):
 
     async def list_deployments(pool, status=None):
         return active_rows
-    import app.deployments.manager as M
-    M.queries.list_deployments = list_deployments
+    _fake_queries["list_deployments"] = list_deployments
     return mgr
+
+
+# The watchdog reads deployments through app.db.queries. The fake is
+# swapped in for each test and the real query put back after: assigning
+# it for good broke every later API test on the same worker (empty lists).
+_fake_queries = {}
+
+
+@pytest.fixture(autouse=True)
+def _fake_list_deployments(monkeypatch):
+    import app.deployments.manager as M
+    _fake_queries.clear()
+
+    async def through(*a, **k):
+        return await _fake_queries["list_deployments"](*a, **k)
+    monkeypatch.setattr(M.queries, "list_deployments", through)
+    yield
 
 
 ROW = {"id": "00000000-0000-0000-0000-000000000001", "deployment_name": "DTT A", "strategy_name": "intraday_dtt_adjusted"}

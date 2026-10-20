@@ -11,6 +11,10 @@ For every deployment this returns:
   after-charges bases subtract the charges/slippage of everything that
   closed before today. With no snapshot to go on, unrealized at the open
   is taken as 0.
+* realized_open — what had closed before today, in each basis. When no
+  fresh price has arrived for a deployment's open legs today (a holiday,
+  Kite not connected), the UI counts only what closed today: open legs
+  can't have moved, whatever price was last stored for them.
 * series — [epoch ms, gross P&L since the open] from today's snapshots,
   the shape of the lane. The UI appends a live point for "now".
 * events — fills grouped into entries / exits / adjustments, plus
@@ -154,6 +158,7 @@ async def build_session(pool: asyncpg.Pool, now: datetime | None = None) -> dict
                 "net": round(gross_open - c, 2),
                 "net_slip": round(gross_open - c - s, 2),
             },
+            "realized_open": {"gross": round(g, 2), "net": round(g - c, 2), "net_slip": round(g - c - s, 2)},
             "series": [[_ms(r["snapshot_at"]), round(r["v"] - d["cap"] - gross_open, 2)] for r in snaps_by.get(d["id"], [])],
             "events": markers,
         }

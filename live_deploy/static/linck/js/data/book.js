@@ -152,7 +152,20 @@ function base(d) {
     lastTradeAt: last, quietDays: last ? Math.floor((Date.now() - last) / 864e5) : ageDays,
     issue, statusFields: d.status_fields || [],
     equityOpen: raw.session && raw.session.lanes[id] ? raw.session.lanes[id].equity_open : null,
+    realizedOpen: raw.session && raw.session.lanes[id] ? raw.session.lanes[id].realized_open : null,
   };
+}
+
+// Today's P&L: P&L now minus P&L at the session open. When none of the
+// open legs has had a price since the open (a holiday, Kite not
+// connected, before 09:15) they haven't moved today, so only what closed
+// today counts; the stored last prices would otherwise show the legs'
+// whole unrealized P&L as today's move. Pure, for tests.
+export function dayPnl({ realized, overall, legs, equityOpen, realizedOpen, openAt, stopped }, priceAt) {
+  if (stopped) return { today: 0, stale: false };
+  const fresh = legs.some(p => { const at = priceAt(p.instrument_token); return at != null && at >= openAt; });
+  if (legs.length && !fresh && realizedOpen) return { today: realized - baseOf(realizedOpen), stale: true };
+  return { today: overall - (equityOpen ? baseOf(equityOpen) : realized), stale: false };
 }
 
 // Live figures for one deployment in the current basis.
@@ -165,8 +178,11 @@ export function live(v) {
   }
   if (!known && v.legs.length) unreal = pick(v.raw, 'unrealized_pnl') || 0;
   const overall = realized + unreal;
-  const today = v.rawStatus === 'stopped' ? 0 : overall - (v.equityOpen ? baseOf(v.equityOpen) : realized);
-  return { realized, unreal, overall, today, ret: v.cap ? overall / v.cap * 100 : 0 };
+  const { today, stale } = dayPnl({
+    realized, overall, legs: v.legs, equityOpen: v.equityOpen, realizedOpen: v.realizedOpen,
+    openAt: raw.session ? raw.session.open_at : Infinity, stopped: v.rawStatus === 'stopped',
+  }, tok => { const t = prices.get(tok); return t ? t.at : null; });
+  return { realized, unreal, overall, today, stale, ret: v.cap ? overall / v.cap * 100 : 0 };
 }
 
 export function deployments() {

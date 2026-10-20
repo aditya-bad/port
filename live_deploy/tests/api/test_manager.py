@@ -158,6 +158,40 @@ def test_snapshots_value_positional_legs_at_market_and_intraday_at_cash(client):
     assert float(rows[intra["id"]]["total_value"]) == pytest.approx(500000)
 
 
+def test_snapshot_values_an_unpriced_leg_at_its_last_mark_not_zero(client):
+    """Kite down / holiday / just restarted: no live price. Valuing the leg
+    at 0 recorded a fake drop and made the Desk show the leg's whole
+    unrealized P&L as today's move."""
+    d = make_deployment(client, name="P", strategy="strangle_monthly_v2", mode="positional", start="now")
+    add_fill(client, d["id"], "CE", 11, "sell", 75, 100, at(WED, "10:00"))
+    add_fill(client, d["id"], "PE", 12, "sell", 75, 100, at(WED, "10:00"))
+    runner = mgr(client).runners[d["id"]]
+    call(client, runner._reload_positions)
+    disp = client.app.state.dispatcher
+    disp.last_prices.pop(11, None)
+    disp.last_prices[12] = 90.0
+    ce = runner.open_positions[11]["id"]
+    sql(client, "INSERT INTO position_marks (position_id, deployment_id, marked_at, price) VALUES "
+                "($1::uuid, $2::uuid, $3, 70), ($1::uuid, $2::uuid, $4, 80)",
+        str(ce), d["id"], at(WED, "14:00"), at(WED, "15:25"))
+    try:
+        call(client, mgr(client).snapshot_all_active)
+    finally:
+        disp.last_prices.pop(12, None)
+    [row] = sql(client, "SELECT * FROM deployment_snapshots WHERE deployment_id = $1::uuid", d["id"])
+    # CE at its latest mark 80: +1500; PE live at 90: +750
+    assert float(row["open_positions_value"]) == pytest.approx(2250)
+
+
+def test_snapshot_is_skipped_while_a_leg_has_never_been_priced(client):
+    d = make_deployment(client, name="P", strategy="strangle_monthly_v2", mode="positional", start="now")
+    add_fill(client, d["id"], "CE", 13, "sell", 75, 100, at(WED, "10:00"))
+    call(client, mgr(client).runners[d["id"]]._reload_positions)
+    client.app.state.dispatcher.last_prices.pop(13, None)
+    call(client, mgr(client).snapshot_all_active)
+    assert sql(client, "SELECT 1 FROM deployment_snapshots WHERE deployment_id = $1::uuid", d["id"]) == []
+
+
 def test_marks_every_minute_intraday_every_fifth_positional_in_session_only(client):
     pos = make_deployment(client, name="P", strategy="strangle_monthly_v2", mode="positional", start="now")
     intra = make_deployment(client, name="I", start="now")

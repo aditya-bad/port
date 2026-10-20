@@ -54,7 +54,8 @@ function laneNote(v) {
 function lanePath(v, x, frac) {
   const lane = book.session() && book.session().lanes[v.id];
   const pts = [];
-  if (lane) {
+  // Legs unpriced since the open: they haven't moved, so neither has the lane.
+  if (lane && !x.stale) {
     for (const [t, val] of lane.series) {
       const p = ist(t), m = p.h * 60 + p.mi - OPEN_MIN;
       if (m >= 0 && m <= SESSION_MIN) pts.push([m / SESSION_MIN, val]);
@@ -65,7 +66,8 @@ function lanePath(v, x, frac) {
     pts.push([frac, x.today]);
   }
   if (!pts.length) return { d: '', area: '' };
-  const sc = Math.max(1, ...pts.map(p => Math.abs(p[1])));
+  // Floor the scale at 0.1% of capital (min ₹100): a few rupees mustn't fill the lane.
+  const sc = Math.max(100, v.cap * 0.001, ...pts.map(p => Math.abs(p[1])));
   const d = pts.map(([fx, y], i) => `${i ? 'L' : 'M'}${(fx * 1000).toFixed(1)} ${(31 - y / sc * 26).toFixed(1)}`).join(' ');
   return { d, area: `${d} L${(pts[pts.length - 1][0] * 1000).toFixed(1)} 31 L0 31 Z` };
 }

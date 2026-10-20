@@ -2,7 +2,7 @@
 // Geek mode bar, the loaders and the tab icon.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BASE, IDS, PASSWORD, browser, context } from './helper.mjs';
+import { BASE, IDS, browser, context } from './helper.mjs';
 
 let b;
 test.before(async () => { b = await browser(); });
@@ -41,7 +41,7 @@ for (const th of ['paper', 'slate', 'night']) {
   test(`mark in the header, boot screen and sign-in (${th})`, async () => {
     const ctx = await context(b, { signedIn: false });
     await ctx.addInitScript(t => localStorage.setItem('linck-prefs', JSON.stringify({ theme: t })), th);
-    const p = await ctx.newPage();
+    let p = await ctx.newPage();
     await p.goto(`${BASE}/linck/`);
     await p.waitForSelector('.auth-mark');
     const [show, hide] = th === 'night' ? ['img.mark-paper', 'img.mark:not(.mark-paper)'] : ['img.mark:not(.mark-paper)', 'img.mark-paper'];
@@ -49,17 +49,24 @@ for (const th of ['paper', 'slate', 'night']) {
     assert.ok(await loaded(p, `.auth-mark ${show}`), 'sign-in mark loads');
     const box = await p.$eval(`.auth-mark ${show}`, i => i.getBoundingClientRect().width);
     assert.equal(Math.round(box), 32);
-    // signed in: header and boot screen
-    await ctx.request.post(`${BASE}/auth/login`, { data: { username: 'admin', password: PASSWORD } });
-    await p.route('**/linck/js/pages/desk.js', async r => { await new Promise(res => setTimeout(res, 800)); await r.continue(); });
+    await ctx.close();
+    // signed in, in a fresh context: the sign-in page installed the service
+    // worker, which would serve desk.js past the route below
+    const ctx2 = await context(b);
+    await ctx2.addInitScript(t => localStorage.setItem('linck-prefs', JSON.stringify({ theme: t })), th);
+    p = await ctx2.newPage();
+    await p.route('**/linck/js/pages/desk.js', async r => { await new Promise(res => setTimeout(res, 3000)); await r.continue(); });
     await p.goto(`${BASE}/linck/?b=${th}#/desk`);
-    await p.waitForSelector('#boot .boot-mark');
-    const tile = await p.$eval('#boot #tile', t => getComputedStyle(t).fill);
+    // one read while the boot screen is up (it leaves once the page renders)
+    const tile = await (await p.waitForFunction(() => {
+      const t = document.querySelector('#boot:not(.done) #tile');
+      return t && getComputedStyle(t).fill;
+    })).jsonValue();
     assert.equal(tile, th === 'night' ? 'rgb(246, 244, 238)' : 'rgb(29, 27, 22)', 'boot mark tile');
     await p.waitForSelector('.hdr');
     assert.ok(await p.isVisible(`.hdr ${show}`) && !(await p.isVisible(`.hdr ${hide}`)), `header shows ${show} on ${th}`);
     assert.ok(await loaded(p, `.hdr ${show}`));
-    await ctx.close();
+    await ctx2.close();
   });
 }
 

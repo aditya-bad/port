@@ -104,6 +104,7 @@ def test_session_has_a_lane_per_deployment(client):
     assert set(s["lanes"]) == {a["id"]}
     lane = s["lanes"][a["id"]]
     assert lane["equity_open"] == {"gross": 0, "net": 0, "net_slip": 0}
+    assert lane["realized_open"] == {"gross": 0, "net": 0, "net_slip": 0}
     assert lane["series"] == []
     assert [e["kind"] for e in lane["events"]] == ["pause"], "created paused"
 
@@ -124,9 +125,21 @@ def test_session_marks_entries_exits_adjustments_and_rollouts(client):
 def test_session_equity_open_counts_what_closed_before_today(client):
     d = make_deployment(client)
     trade(client, d["id"], "CE", 1, 100, 80, at(TODAY - timedelta(days=1), "10:00"))
-    eo = client.get("/v2/session").json()["lanes"][d["id"]]["equity_open"]
+    lane = client.get("/v2/session").json()["lanes"][d["id"]]
+    eo, ro = lane["equity_open"], lane["realized_open"]
     assert eo["gross"] == pytest.approx(1500)
     assert eo["net_slip"] <= eo["net"] < eo["gross"]
+    assert ro == eo, "nothing open: P&L at the open is just what closed before"
+
+
+def test_session_realized_open_leaves_out_open_legs_and_todays_closes(client):
+    d = make_deployment(client)
+    trade(client, d["id"], "CE", 1, 100, 80, at(TODAY - timedelta(days=1), "10:00"))   # +1500 yesterday
+    trade(client, d["id"], "PE", 2, 100, 90, at(TODAY, "09:30"))                        # +750 today
+    add_fill(client, d["id"], "CE2", 3, "sell", 75, 100, at(TODAY - timedelta(days=1), "11:00"))   # still open
+    ro = client.get("/v2/session").json()["lanes"][d["id"]]["realized_open"]
+    assert ro["gross"] == pytest.approx(1500)
+    assert ro["net_slip"] <= ro["net"] < ro["gross"]
 
 
 def test_session_shows_errors_and_pauses(client):

@@ -1004,11 +1004,22 @@ class DeploymentManager:
         open_positions_value = 0.0
         if runner.mode == "positional":
             # Mark-to-market off the runner's OWN already-loaded
-            # open_positions cache (no extra DB round trip needed).
+            # open_positions cache. A leg with no live price (Kite not
+            # connected, a holiday, just restarted) is valued at its
+            # last recorded mark; valuing it at 0 would record a fake
+            # drop (and the Desk would show the whole unrealized P&L as
+            # a move "today"). A leg never priced at all: no snapshot.
+            missing = [pos["id"] for token, pos in runner.open_positions.items()
+                       if self.dispatcher.last_prices.get(token) is None and pos.get("id") is not None]
+            marks = await queries.latest_marks(self.pool, missing) if missing else {}
             for token, pos in runner.open_positions.items():
                 price = self.dispatcher.last_prices.get(token)
                 if price is None:
-                    continue
+                    price = marks.get(pos.get("id"))
+                if price is None:
+                    logger.info("Snapshot skipped for %s: %s has never been priced",
+                                runner.deployment_name, pos.get("symbol"))
+                    return
                 qty, avg = float(pos["qty"]), float(pos["avg_entry_price"])
                 open_positions_value += (price - avg) * qty if pos["side"] == "long" \
                     else (avg - price) * qty
