@@ -49,3 +49,29 @@ test('the P&L line and fill are green above zero and red below', async () => {
   assert.deepEqual(colours, [['var(--g)', 'var(--g)'], ['var(--r)', 'var(--r)']]);
   await ctx.close();
 });
+
+// Equity curves: a loss (below the zero line) is red, a gain green, on the
+// Performance tab, Reports and Geek mode's overview.
+const EQUITY = [
+  ['Performance', `d/${IDS['BankNifty DTT Plain']}/performance`, 'svg[data-scrub=eq]'],
+  ['Reports', 'reports', 'svg[data-scrub=acct]'],
+  ['Geek overview', `d/${IDS['Nifty Monthly Strangle']}/geek`, '.gk svg'],
+];
+for (const [name, route, sel] of EQUITY) {
+  test(`equity below zero is red, above zero green (${name})`, async () => {
+    const ctx = await context(b);
+    const p = await ctx.newPage();
+    await p.goto(`${BASE}/linck/#/${route}`);
+    await p.waitForSelector(`${sel} [data-fill=down]`, { timeout: 10000 });
+    // one synchronous read: Geek mode redraws its views every few seconds
+    const c = await p.evaluate(sel => {
+      const svg = document.querySelector(`${sel}:has([data-fill=down])`);
+      const css = v => { const e = document.createElement('i'); e.style.color = `var(${v})`; document.body.append(e); const c = getComputedStyle(e).color; e.remove(); return c; };
+      const f = s => getComputedStyle(svg.querySelector(`[data-fill=${s}]`)).fill;
+      return { up: f('up'), down: f('down'), gs: css('--gs'), rs: css('--rs') };
+    }, sel);
+    assert.equal(c.up, c.gs, 'gains green');
+    assert.equal(c.down, c.rs, 'losses red');
+    await ctx.close();
+  });
+}

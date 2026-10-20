@@ -147,7 +147,7 @@ export default {
         <div class="pad-x rule grid-side" style="margin-top:36px;padding-top:30px;padding-bottom:var(--px)">
           <div>
             <div class="sect"><h3 class="t-h3">Account equity</h3><span class="mute small">all deployments combined · ${inrS(eq.length ? eq[eq.length - 1] : 0)}</span></div>
-            ${eq.length > 1 ? line({ series: [{ values: eq, color: 'var(--ink)', fill: 'var(--gs)', fillTo: 0 }], h: 220, key: 'acct', zero: true }) : empty('', 'No closed trades yet.')}
+            ${eq.length > 1 ? line({ series: [{ values: eq, color: 'var(--ink)', fill: 'var(--gs)', fillNeg: 'var(--rs)', fillTo: 0 }], h: 220, key: 'acct', zero: true }) : empty('', 'No closed trades yet.')}
             <div class="axis-row"><span>${days.length ? dMonthYear(days[0].date) : ''}</span><span>${dMonthYear(new Date())}</span></div>
             <h3 class="t-h3" style="padding:28px 0 10px">Capital</h3>
             <div class="capbar">${[[dep, 'var(--ink)', 'Holding positions'], [idle, 'var(--y)', 'Running, flat'], [off, 'var(--soft)', 'Paused or stopped']].map(([v, bg, l]) => html`<i class="grow-x" data-tip="${l}\n${inrS(v, { sign: false })}" style="width:${v / capAll * 100}%;background:${bg}"></i>`)}</div>

@@ -25,7 +25,7 @@ function equity(v, cycles) {
   const bands = (cycles ? cycles.rows : []).slice().reverse().map((c, i) => ({ c, a: fx(c.start), b: c.end ? fx(c.end) : 1, odd: i % 2 }));
   return html`<div style="position:relative">
     ${bands.map(x => html`<div title="Cycle ${x.c.cycle_id} · ${LABEL[x.c.ended_by] || x.c.ended_by}" style="position:absolute;top:0;bottom:0;left:${(x.a * 100).toFixed(2)}%;width:${((x.b - x.a) * 100).toFixed(2)}%;background:${x.odd ? 'var(--soft)' : 'transparent'};border-left:1px solid var(--line)"></div>`)}
-    <div style="position:relative">${line({ series: [{ values: cum, color: 'var(--ink)', fill: 'var(--gs)', fillTo: 0 }], h: 190, lo: Math.min(0, ...cum), hi: Math.max(1, ...cum), zero: true })}</div>
+    <div style="position:relative">${line({ series: [{ values: cum, color: 'var(--ink)', fill: 'var(--gs)', fillNeg: 'var(--rs)', fillTo: 0 }], h: 190, lo: Math.min(0, ...cum), hi: Math.max(1, ...cum), zero: true })}</div>
     <div style="position:relative;height:18px">${bands.map(x => html`<span class="mono tiny" style="position:absolute;left:${(((x.a + x.b) / 2) * 100).toFixed(2)}%;transform:translateX(-50%);color:${x.c.ended_by === 'convergence_stop' ? 'var(--r)' : x.c.ended_by === 'contract_expiry_backstop' ? 'var(--b)' : 'var(--mute)'}">${x.c.cycle_id}</span>`)}</div>
   </div>`;
 }

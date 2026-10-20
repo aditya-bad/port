@@ -18,7 +18,10 @@ export function pathXY(points, h, lo, hi, w = 1000, pad = 2) {
 }
 export const yOf = (v, h, lo, hi, pad = 2) => h - pad - (v - lo) / ((hi - lo) || 1) * (h - pad * 2);
 
-// A line chart with optional area fill and zero line.
+// A line chart with optional area fill and zero line. A series' fill runs
+// from the line to fillTo; with fillNeg, the part below fillTo (a loss,
+// when fillTo is 0) is filled with fillNeg instead.
+let clipN = 0;
 export function line({ series, h = 200, key = '', lo, hi, zero = false, rule = true, cls = '', refs = [] }) {
   const all = series.flatMap(s => s.values);
   const L = lo ?? Math.min(0, ...all), H = hi ?? Math.max(1, ...all);
@@ -30,7 +33,16 @@ export function line({ series, h = 200, key = '', lo, hi, zero = false, rule = t
       const d = s.xy ? pathXY(s.xy, h, L, H) : path(s.values, h, L, H);
       if (!d) return '';
       const base = yOf(Math.max(L, Math.min(H, s.fillTo ?? L)), h, L, H).toFixed(1);
-      return raw(`${s.fill ? `<path d="${d} L1000 ${base} L0 ${base} Z" fill="${s.fill}"/>` : ''}<path d="${d}" fill="none" stroke="${s.color || 'var(--ink)'}" stroke-width="${s.width || 2}" ${s.dash ? `stroke-dasharray="${s.dash}"` : ''} vector-effect="non-scaling-stroke"/>`);
+      const area = `${d} L1000 ${base} L0 ${base} Z`;
+      let fill = s.fill ? `<path d="${area}" fill="${s.fill}"/>` : '';
+      if (s.fill && s.fillNeg) {
+        const id = `lc${++clipN}`;
+        fill = `<defs><clipPath id="${id}u"><rect x="0" y="-1" width="1000" height="${(+base + 1).toFixed(1)}"/></clipPath>`
+          + `<clipPath id="${id}d"><rect x="0" y="${base}" width="1000" height="${(h - base + 1).toFixed(1)}"/></clipPath></defs>`
+          + `<path d="${area}" fill="${s.fill}" clip-path="url(#${id}u)" data-fill="up"/>`
+          + `<path d="${area}" fill="${s.fillNeg}" clip-path="url(#${id}d)" data-fill="down"/>`;
+      }
+      return raw(`${fill}<path d="${d}" fill="none" stroke="${s.color || 'var(--ink)'}" stroke-width="${s.width || 2}" ${s.dash ? `stroke-dasharray="${s.dash}"` : ''} vector-effect="non-scaling-stroke"/>`);
     })}
   </svg>`;
 }

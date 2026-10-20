@@ -56,7 +56,7 @@ export default {
             <div class="stat top"><span class="l">${l}</span><span class="v ${c}">${val}</span><span class="s">${sub}</span></div>`)}</div>
           <div>
             <div class="sect"><h3 class="t-h3">Equity, since start</h3><span class="mute small">cumulative realized · peak ${inrS(top, { sign: false })}</span></div>
-            ${line({ series: [{ values: cum, color: 'var(--ink)', fill: 'var(--gs)', fillTo: 0 }], h: 200, key: 'eq', lo: low, hi: top, zero: true })}
+            ${line({ series: [{ values: cum, color: 'var(--ink)', fill: 'var(--gs)', fillNeg: 'var(--rs)', fillTo: 0 }], h: 200, key: 'eq', lo: low, hi: top, zero: true })}
             ${line({ series: [{ values: dd, color: 'var(--r)', fill: 'var(--rs)', fillTo: 0, width: 1.5 }], h: 70, key: 'dd', lo: ddLow, hi: 0, rule: false })}
             <div class="axis-row"><span>${days.length ? dMonthYear(days[0].date) : ''}</span><span>drawdown from peak, low ${inr(ddLow)}</span><span>${dMonthYear(new Date())}</span></div>
           </div>
