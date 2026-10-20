@@ -387,9 +387,15 @@ def test_backfill_status_route_is_not_taken_for_an_instrument_token(client):
     assert r.status_code == 200 and set(r.json()) >= {"running", "last", "next_at", "stored"}
 
 
+# Generous deadlines: the gate runs tests in parallel, so a busy machine
+# must not turn a slow background run into a failure.
+_WAIT_S = 20
+
+
 def _wait_backfill(client):
     import time as _t
-    for _ in range(100):
+    end = _t.monotonic() + _WAIT_S
+    while _t.monotonic() < end:
         st = client.get("/candles/backfill").json()
         if st["running"] is None:
             return st
@@ -409,7 +415,8 @@ def _start_backfill(client, day):
 def _running(client, n):
     """The run's progress once it has counted its contracts."""
     import time as _t
-    for _ in range(100):
+    end = _t.monotonic() + _WAIT_S
+    while _t.monotonic() < end:
         st = client.get("/candles/backfill").json()["running"]
         if st and st["total"] == n:
             return st

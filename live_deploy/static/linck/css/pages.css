@@ -52,7 +52,19 @@
 .desk-bottom > .col-pad:first-child { border-right: 1px solid var(--line); }
 .legs-grid { grid-template-columns: 24px minmax(0, 1fr) 60px 84px 84px 100px; min-width: 430px; min-height: 0; padding: 5px 0; font-family: var(--f-mono); font-size: 12px; }
 .tr.th.legs-grid { font-family: var(--f-body); border-top: 0; border-bottom: 1px solid var(--line); padding: 8px 0; }
-.leg-group { display: flex; align-items: center; gap: 10px; padding: 10px 0 4px; text-decoration: none; min-width: 430px; }
+/* Desk open positions: each deployment is a band (name, strategy, leg
+ * count, its P&L) with its legs indented under a rule, so a deployment
+ * never reads as another leg. */
+.leg-set { margin-top: 14px; }
+.leg-set:first-of-type { margin-top: 0; }
+.leg-set:first-of-type > .leg-group { border-top: 0; }
+.leg-group { display: flex; align-items: center; gap: 10px; padding: 9px 12px; text-decoration: none; min-width: 430px; background: var(--soft); border-top: 1.5px solid var(--ink); }
+.leg-group:hover { background: var(--ys); }
+.leg-group-name { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.leg-group-name > b { font-family: var(--f-display); font-weight: 700; font-size: 15px; letter-spacing: -.01em; }
+.leg-group-meta { font-size: 12px; color: var(--mute); }
+.leg-group > .mono { font-weight: 700; }
+.leg-set-rows { margin-left: 12px; padding-left: 12px; border-left: 2px solid var(--line); }
 .act-row { display: grid; grid-template-columns: 70px 66px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13px; align-items: baseline; text-decoration: none; }
 .act-row:hover { background: var(--soft); }
 
@@ -313,7 +325,9 @@ a.cell-name:hover b { text-decoration: underline; }
 @media (max-width: 900px) {
   .only-phone-in { display: inline; }
   .legs-grid { grid-template-columns: minmax(0, 1fr) 40px 76px 86px; min-width: 0; }
-  .leg-group { min-width: 0; }
+  .leg-group { min-width: 0; padding: 9px 10px; }
+  .leg-group-name { flex-direction: column; gap: 0; }
+  .leg-set-rows { margin-left: 0; padding-left: 6px; }
   .hold-grid { grid-template-columns: minmax(0, 1fr) 40px 76px 86px; min-width: 0; font-size: 12px; }
   .lane-name .tiny { padding-left: 0; }
 }

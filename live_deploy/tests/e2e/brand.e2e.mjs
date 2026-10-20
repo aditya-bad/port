@@ -43,7 +43,7 @@ for (const th of ['paper', 'slate', 'night']) {
     await ctx.addInitScript(t => localStorage.setItem('linck-prefs', JSON.stringify({ theme: t })), th);
     const p = await ctx.newPage();
     await p.goto(`${BASE}/linck/`);
-    await p.waitForSelector('.auth-mark img.mark');
+    await p.waitForSelector('.auth-mark');
     const [show, hide] = th === 'night' ? ['img.mark-paper', 'img.mark:not(.mark-paper)'] : ['img.mark:not(.mark-paper)', 'img.mark-paper'];
     assert.ok(await p.isVisible(`.auth-mark ${show}`) && !(await p.isVisible(`.auth-mark ${hide}`)), `sign-in shows ${show} on ${th}`);
     assert.ok(await loaded(p, `.auth-mark ${show}`), 'sign-in mark loads');

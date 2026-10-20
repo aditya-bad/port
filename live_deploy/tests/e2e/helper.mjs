@@ -3,7 +3,8 @@
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 
-const meta = JSON.parse(readFileSync(new URL('./.ids.json', import.meta.url), 'utf8'));
+// run.sh gives each server its own ids file (E2E_IDS); by hand it's ./.ids.json.
+const meta = JSON.parse(readFileSync(process.env.E2E_IDS || new URL('./.ids.json', import.meta.url), 'utf8'));
 export const IDS = meta.ids;
 export const PASSWORD = meta.password;
 export const BASE = `http://127.0.0.1:${meta.port}`;
@@ -28,8 +29,9 @@ export async function context(b, { width = 1440, height = 900, signedIn = true }
 export const api = async (ctx, path) => (await ctx.request.get(BASE + path)).json();
 export const dep = async (ctx, name) => (await api(ctx, '/deployments')).find(d => d.deployment_name === name);
 
-// Waits for a condition the server reports, up to ms.
-export async function until(fn, ms = 5000) {
+// Waits for a condition the server reports, up to ms. Generous: the gate
+// runs the Python tests at the same time, so the server can be slow.
+export async function until(fn, ms = 15000) {
   const end = Date.now() + ms;
   let v;
   while (Date.now() < end) {

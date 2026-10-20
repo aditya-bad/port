@@ -194,10 +194,13 @@ function positionsBlock(list, T) {
         ${withLegs.slice(0, 8).map(v => {
           const x = book.live(v);
           return html`
-            <a class="leg-group" href="${href(`d/${v.id}`)}"><b>${v.name}</b>
-              <span class="tiny b warn">${v.status === 'down' ? 'NOT RUNNING' : v.status === 'error' ? 'ERROR' : v.rawStatus === 'paused' ? 'PAUSED' : ''}</span><span class="grow"></span>
-              <span class="mono small ${tone(x.unreal)}" data-grp="${v.id}">${inr(x.unreal)}</span></a>
-            ${v.legs.map(legRow)}`;
+            <section class="leg-set" aria-label="${v.name}">
+              <a class="leg-group" href="${href(`d/${v.id}`)}">
+                <span class="leg-group-name"><b class="ell">${v.name}</b><span class="leg-group-meta ell">${v.strategyLabel} · ${plural(v.legs.length, 'leg')}</span></span>
+                <span class="tiny b warn">${v.status === 'down' ? 'NOT RUNNING' : v.status === 'error' ? 'ERROR' : v.rawStatus === 'paused' ? 'PAUSED' : ''}</span><span class="grow"></span>
+                <span class="mono ${tone(x.unreal)}" data-grp="${v.id}">${inr(x.unreal)}</span></a>
+              <div class="leg-set-rows">${v.legs.map(legRow)}</div>
+            </section>`;
         })}
         ${withLegs.length > 8 ? html`<a class="linkish" style="display:inline-block;padding-top:12px" href="${href('deployments')}">+ ${plural(withLegs.length - 8, 'more deployment')} holding positions</a>` : ''}`
       : empty('', 'Nothing open right now.')}

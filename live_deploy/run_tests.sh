@@ -10,6 +10,12 @@
 # Needs a Postgres test database whose name contains "test":
 #   TEST_DATABASE_URL (default postgresql://t:t@localhost/t_test)
 #   e.g.  sudo -u postgres createuser -P t && sudo -u postgres createdb -O t t_test
+# Runs in parallel: Python on PY_WORKERS workers (default: one per CPU) and,
+# with --e2e, the browser tests on E2E_SHARDS servers (default 2) at the
+# same time. Each worker/server has its own database beside the test one
+# (t_test_gw0…, t_test_e2e0…), so the role needs CREATEDB:
+#   sudo -u postgres psql -c 'ALTER ROLE t CREATEDB'
+# Without it the Python tests run on one worker. PY_WORKERS=0 forces that.
 # Python: $PYTHON, else .venv/bin/python, else python3, with requirements-dev.txt installed.
 # Coverage report: htmlcov/index.html. Set MIN_COVERAGE to fail below a percentage.
 
@@ -35,19 +41,37 @@ bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 FAILED=() SKIPPED=()
 
 # ── Python ────────────────────────────────────────────────────────────
-if ! "$PY" -c "import pytest, pytest_cov, pytest_timeout, httpx" 2>/dev/null; then
+# The Python and browser layers run side by side (their logs are shown
+# when each finishes); JavaScript runs meanwhile.
+LOGS="$(mktemp -d)"; trap 'rm -rf "$LOGS"' EXIT
+START=$(date +%s)
+PY_PID="" E2E_PID=""
+if ! "$PY" -c "import pytest, pytest_cov, pytest_timeout, httpx, xdist" 2>/dev/null; then
   echo "Missing test tools for $PY — run: $PY -m pip install -r requirements-dev.txt"
   FAILED+=("python: test dependencies not installed")
+elif [ "$QUICK" = 1 ]; then
+  bold "Python: unit tests"
+  "$PY" -m pytest tests/unit -p no:cacheprovider -n "${PY_WORKERS:-auto}" || FAILED+=("python unit tests")
+  SKIPPED+=("database, API and strategy tests (--quick)")
 else
-  if [ "$QUICK" = 1 ]; then
-    bold "Python: unit tests"
-    "$PY" -m pytest tests/unit -p no:cacheprovider || FAILED+=("python unit tests")
-    SKIPPED+=("database, API and strategy tests (--quick)")
-  else
-    bold "Python: unit, database, API and strategy simulations"
-    "$PY" -m pytest --require-db -p no:cacheprovider --cov --cov-report=term:skip-covered --cov-report=html \
-      ${MIN_COVERAGE:+--cov-fail-under=$MIN_COVERAGE} || FAILED+=("python tests")
+  W="${PY_WORKERS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+  if [ "$W" != 0 ]; then
+    dbs=(); for ((i = 0; i < W; i++)); do dbs+=("gw$i"); done
+    "$PY" tests/dbs.py "${dbs[@]}" 2>"$LOGS/dbs" || {
+      echo "note: $(cat "$LOGS/dbs") — running Python tests on one worker"; W=0; }
   fi
+  echo "Python: unit, database, API and strategy simulations ($([ "$W" = 0 ] && echo 1 || echo "$W") workers)…"
+  "$PY" -m pytest --require-db -p no:cacheprovider -n "$W" --cov --cov-report=term:skip-covered --cov-report=html \
+    ${MIN_COVERAGE:+--cov-fail-under=$MIN_COVERAGE} > "$LOGS/py" 2>&1 &
+  PY_PID=$!
+fi
+
+if [ "$E2E" = 1 ]; then
+  echo "Browser: sign-in, flows, every page (${E2E_SHARDS:-2} servers)…"
+  tests/e2e/run.sh > "$LOGS/e2e" 2>&1 &
+  E2E_PID=$!
+else
+  SKIPPED+=("browser tests (run with --e2e)")
 fi
 
 # ── JavaScript (Linck's pure modules) ────────────────────────────────
@@ -58,13 +82,19 @@ else
   FAILED+=("javascript tests: node is not installed")
 fi
 
-# ── Browser ───────────────────────────────────────────────────────────
-if [ "$E2E" = 1 ]; then
-  bold "Browser: sign-in, flows, every page"
-  tests/e2e/run.sh || FAILED+=("browser tests")
-else
-  SKIPPED+=("browser tests (run with --e2e)")
+if [ -n "$PY_PID" ]; then
+  wait "$PY_PID"; rc=$?
+  bold "Python: unit, database, API and strategy simulations"
+  cat "$LOGS/py"
+  [ $rc = 0 ] || FAILED+=("python tests")
 fi
+if [ -n "$E2E_PID" ]; then
+  wait "$E2E_PID"; rc=$?
+  bold "Browser: sign-in, flows, every page"
+  cat "$LOGS/e2e"
+  [ $rc = 0 ] || FAILED+=("browser tests")
+fi
+echo "took $(( $(date +%s) - START ))s"
 
 # ── Verdict ───────────────────────────────────────────────────────────
 echo

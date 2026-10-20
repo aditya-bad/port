@@ -10,7 +10,7 @@ straight into the dispatcher's cache (no ticks are broadcast, so no
 strategy trades while the browser clicks around).
 
 Prints "E2E READY <port>" once it accepts requests, and writes the seeded
-deployment ids to tests/e2e/.ids.json for the specs.
+deployment ids to tests/e2e/.ids.json (or $E2E_IDS) for the specs.
 """
 
 import asyncio
@@ -188,7 +188,7 @@ async def seed():
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
-    (HERE / ".ids.json").write_text(json.dumps({"ids": ids, "password": PASSWORD, "port": PORT}, indent=1))
+    Path(os.environ.get("E2E_IDS") or HERE / ".ids.json").write_text(json.dumps({"ids": ids, "password": PASSWORD, "port": PORT}, indent=1))
     return prices
 
 

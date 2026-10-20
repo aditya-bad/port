@@ -57,3 +57,39 @@ test('without ticks it says the prices are not live', async () => {
   assert.ok(!(await p.locator('[data-live].on').count()));
   await ctx.close();
 });
+
+// Desk's open positions: each deployment is its own band, never mistaken for a leg.
+for (const [width, label] of [[390, 'phone'], [1440, 'desktop']]) {
+  test(`desk groups open legs under a band per deployment (${label})`, async () => {
+    const ctx = await context(b, { width, height: 900 });
+    const p = await ctx.newPage();
+    await p.goto(`${BASE}/linck/#/desk`);
+    await p.waitForSelector('.leg-set .leg-group');
+    const sets = await p.$$eval('.leg-set', ss => ss.map(s => {
+      const g = s.querySelector('.leg-group'), name = g.querySelector('.leg-group-name > b');
+      const leg = s.querySelector('.leg-set-rows .legs-tbl.leg b');
+      const gs = getComputedStyle(g), rows = s.querySelector('.leg-set-rows');
+      return {
+        name: name.textContent, meta: g.querySelector('.leg-group-meta').textContent,
+        legs: rows.querySelectorAll('.legs-tbl.leg').length,
+        shaded: gs.backgroundColor !== getComputedStyle(document.body).backgroundColor,
+        rule: parseFloat(gs.borderTopWidth),
+        fonts: [getComputedStyle(name).fontFamily, getComputedStyle(leg).fontFamily],
+        indent: rows.querySelector('.legs-tbl.leg').getBoundingClientRect().left - g.getBoundingClientRect().left,
+        href: g.getAttribute('href'),
+      };
+    }));
+    assert.ok(sets.length >= 2, 'several deployments hold legs');
+    for (const [i, s] of sets.entries()) {
+      assert.match(s.meta, new RegExp(`· ${s.legs} legs?$`), `${s.name}: strategy and leg count`);
+      assert.ok(s.legs > 0 && s.shaded, `${s.name}: a shaded band`);
+      // a rule between deployments; the first sits on the column-header rule
+      assert.ok(i ? s.rule >= 1 : s.rule === 0, `${s.name}: rule above (${s.rule}px)`);
+      assert.notEqual(s.fonts[0], s.fonts[1], `${s.name}: the name is set apart from the instruments`);
+      assert.ok(s.indent >= 6, `${s.name}: its legs are indented under it`);
+      assert.match(s.href, /#\/d\//);
+    }
+    assert.equal(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'no sideways scroll');
+    await ctx.close();
+  });
+}

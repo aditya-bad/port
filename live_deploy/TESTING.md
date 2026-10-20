@@ -3,9 +3,15 @@
 One command tells you whether a change is safe to deploy:
 
 ```bash
-./run_tests.sh          # Python + JS: about 5 minutes
-./run_tests.sh --e2e    # plus the browser tests: about 3 more minutes
+./run_tests.sh          # Python + JS: about 2 minutes on 4 cores
+./run_tests.sh --e2e    # plus the browser tests, run alongside: about 2½ minutes
 ```
+
+Everything runs in parallel: the Python tests on one pytest-xdist worker
+per CPU (`PY_WORKERS`), the browser tests on two app servers
+(`E2E_SHARDS`), both at the same time. Each worker and server has its
+own database beside the test one (`t_test_gw0`…, `t_test_e2e0`…),
+created on first use, so they never touch each other's data.
 
 It ends with **SAFE TO DEPLOY** (exit 0) or **DO NOT DEPLOY** (exit 1),
 followed by the list of what failed. Deploy only on SAFE TO DEPLOY. Run
@@ -17,6 +23,7 @@ followed by the list of what failed. Deploy only on SAFE TO DEPLOY. Run
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 sudo -u postgres createuser -P t           # password: t
 sudo -u postgres createdb -O t t_test
+sudo -u postgres psql -c 'ALTER ROLE t CREATEDB'   # per-worker databases
 # browser tests only:
 (cd tests/e2e && npm install && npx playwright install chromium)
 ```
@@ -66,8 +73,10 @@ New strategies are picked up automatically by
 .venv/bin/python -m pytest tests/unit                      # no database needed
 .venv/bin/python -m pytest tests/api/test_v2_api.py -x     # one file, stop at first failure
 .venv/bin/python -m pytest -k strangle                     # by name
+.venv/bin/python -m pytest -n 4                            # in parallel
 node --test --test-force-exit tests/js/*.test.mjs
-tests/e2e/run.sh
+tests/e2e/run.sh                                           # 2 servers
+E2E_SHARDS=1 E2E_SPECS="./geek.e2e.mjs" tests/e2e/run.sh   # one spec
 ```
 
 Without a test database, the database and API tests are skipped when

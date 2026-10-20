@@ -63,7 +63,7 @@ function renderHeader() {
   const initials = app.me ? app.me.username.slice(0, 2) : '··';
   mount($('#top'), html`
     <header class="hdr">
-      <a class="wordmark" href="${href('desk')}" aria-label="Linck, go to the Desk"><img class="mark" src="/icons/linck-mark.svg" alt="" width="30" height="30"><img class="mark mark-paper" src="/icons/linck-mark-paper.svg" alt="" width="30" height="30">Linck</a>
+      <a class="wordmark" href="${href('desk')}" aria-label="Linck, go to the Desk"><img class="mark" src="/icons/linck-mark.svg" alt="" width="30" height="30"><img class="mark mark-paper" src="/icons/linck-mark-paper.svg" alt="" width="30" height="30"><span class="wm-text">Linck</span></a>
       <nav class="nav hide-phone" aria-label="Main">${NAV.map(([k, l, c]) => html`
         <a href="${href(k)}" class="${k === cur ? 'on' : ''} ${c}" ${k === cur ? html`aria-current="page"` : ''}>${l}</a>`)}</nav>
       <span class="spacer"></span>

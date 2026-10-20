@@ -7,7 +7,9 @@ Three layers, each a folder:
          same database, through an HTTP client
 
 Database: TEST_DATABASE_URL (default postgresql://t:t@localhost/t_test).
-Its name must contain "test" — the suite drops and recreates the public
+Run in parallel (pytest -n 4, as run_tests.sh does), each worker gets its
+own database beside it (t_test_gw0, t_test_gw1, …, see tests/dbs.py),
+created on first use. Its name must contain "test" — the suite drops and recreates the public
 schema, so it refuses anything else. Without a reachable test database
 the db/ and api/ tests are skipped, and the deploy gate (run_tests.sh,
 which passes --require-db) fails instead.
@@ -25,7 +27,10 @@ from urllib.parse import urlparse
 
 import pytest
 
-TEST_DB = os.environ.get("TEST_DATABASE_URL", "postgresql://t:t@localhost/t_test")
+from tests import dbs as _dbs   # noqa: E402
+
+# pytest-xdist sets PYTEST_XDIST_WORKER (gw0, gw1, …) before this loads.
+TEST_DB = _dbs.url_for(os.environ.get("PYTEST_XDIST_WORKER", ""))
 _db_name = urlparse(TEST_DB).path.lstrip("/")
 if "test" not in _db_name:
     raise SystemExit(f"TEST_DATABASE_URL must name a database containing 'test' (got {_db_name!r}).")
@@ -68,6 +73,7 @@ _KEEP = {"schema_migrations", "users", "strategy_settings"}
 async def _reset_schema():
     import asyncpg
     from app.db.migrate import run_migrations
+    await _dbs.ensure(TEST_DB)
     conn = await asyncpg.connect(TEST_DB)
     try:
         await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")
@@ -90,7 +96,8 @@ def _ensure_db(request):
             _db_state["error"] = f"{type(e).__name__}: {e}"
     if _db_state["error"]:
         msg = (f"test database unavailable ({_db_state['error']}). Create it, e.g. "
-               f"`createdb -O <user> {_db_name}`, or set TEST_DATABASE_URL.")
+               f"`createdb -O <user> {_db_name}`, or set TEST_DATABASE_URL. Parallel runs "
+               f"create one per worker: give the test role CREATEDB, or run with -n 0.")
         if request.config.getoption("--require-db"):
             pytest.fail(msg, pytrace=False)
         pytest.skip(msg)

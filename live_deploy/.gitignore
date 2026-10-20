@@ -22,6 +22,8 @@ logs/*
 # test runs
 tests/e2e/node_modules/
 tests/e2e/package-lock.json
-tests/e2e/.ids.json
-tests/e2e/server.log
+tests/e2e/.ids*.json
+tests/e2e/server*.log
+tests/e2e/shard*.log
+tests/e2e/.queue*
 htmlcov/
