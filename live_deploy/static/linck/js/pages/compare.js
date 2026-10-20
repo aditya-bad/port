@@ -16,6 +16,7 @@ import { seg, check, empty } from '../ui/components.js';
 import { registerScrub } from '../ui/tooltip.js';
 import { yOf } from '../ui/charts.js';
 import { say } from '../ui/toast.js';
+import { openDialog } from '../ui/dialog.js';
 import { resolve, decode, encode, keyOf } from '../data/groups.js';
 
 const st = ui('compare', { items: [], p: 'all', norm: false, comb: false, mode: 'all', q: '', view: false });
@@ -104,12 +105,16 @@ export default {
           <div class="tiles">${tiles}</div>
         </div>
         <div class="cmp-bar">
-          <b>${items.length ? `${items.length} of ${MAX} selected` : 'Nothing selected yet'}</b>
-          ${recs.map((r, i) => html`<span class="cmp-chip ${r.isGroup ? 'group' : ''}" ${r.isGroup ? html`data-tip="${r.members.map(v => v.name).join('\n')}"` : ''}><span class="swatch" style="background:${C[i]}"></span>${r.name}${r.isGroup ? html`<span class="mute tiny">· ${r.members.length}</span><button type="button" class="linkish tiny" data-act="split" data-key="${r.key}" aria-label="Split ${r.name}">split</button>` : ''}<button type="button" data-act="drop" data-key="${r.key}" aria-label="Remove ${r.name}">×</button></span>`)}
+          <b>${!items.length ? 'Nothing selected yet' : items.length <= MAX ? `${items.length} of ${MAX} selected` : `${items.length} selected · compare takes ${MAX}`}</b>
+          ${recs.map((r, i) => html`<span class="cmp-chip ${r.isGroup ? 'group' : ''}" ${r.isGroup ? html`data-tip="${r.members.map(v => v.name).join('\n')}"` : ''}><span class="swatch" style="background:${C[i]}"></span>${r.name}${r.isGroup ? html`<span class="mute tiny">· ${r.members.length}</span><button type="button" class="linkish tiny" data-act="rename" data-key="${r.key}" aria-label="Rename ${r.name}">rename</button><button type="button" class="linkish tiny" data-act="split" data-key="${r.key}" aria-label="Split ${r.name}">split</button>` : ''}<button type="button" data-act="drop" data-key="${r.key}" aria-label="Remove ${r.name}">×</button></span>`)}
           <span class="grow"></span>
-          ${singles >= 2 ? html`<button type="button" class="btn" data-act="combine" data-tip="Treat the ${singles} single deployments as one: P&L added up day by day, capital added up">Combine ${singles} into one</button>` : ''}
+          ${singles >= 2 ? html`<button type="button" class="btn ${items.length > MAX ? 'btn-primary' : ''}" data-act="combine" data-tip="Treat the ${singles} single deployments ticked as one: P&L added up day by day, capital added up">Combine ${singles} into one</button>` : ''}
           ${s.wasOn && items.length >= 2 ? html`<button type="button" class="btn btn-quiet" data-act="back">Back to comparison</button>` : ''}
-          <button type="button" class="btn ${items.length >= 2 ? 'btn-primary' : ''}" data-act="go" ${items.length >= 2 ? '' : html`aria-disabled="true" data-reason="Pick at least 2."`}>${items.length >= 2 ? `Compare ${items.length}` : 'Pick at least 2'}</button>
+          ${(() => {
+            const ok = items.length >= 2 && items.length <= MAX;
+            const why = items.length < 2 ? 'Pick at least 2.' : `Compare takes up to ${MAX}. Combine the ones you ticked into a group, or remove some.`;
+            return html`<button type="button" class="btn ${ok ? 'btn-primary' : ''}" data-act="go" ${ok ? '' : html`aria-disabled="true" data-reason="${why}"`}>${ok ? `Compare ${items.length}` : items.length < 2 ? 'Pick at least 2' : `Compare up to ${MAX}`}</button>`;
+          })()}
         </div>`;
     }
 
@@ -215,7 +220,7 @@ export default {
         <div class="page stack" style="gap:18px;padding-bottom:0">
           <div class="row wrap end" style="gap:14px">
             <h1 class="t-h1">Compare</h1>
-            <div class="row wrap" style="gap:6px">${deps.map(x => html`<span class="cmp-chip ${x.v.isGroup ? 'group' : ''}" ${x.v.isGroup ? html`data-tip="${x.v.members.map(v => v.name).join('\n')}"` : ''}><span class="swatch" style="background:${x.c}"></span>${x.v.name}${x.v.isGroup ? html`<span class="mute tiny">· ${x.v.members.length}</span>` : ''}<button type="button" data-act="remove" data-key="${x.v.key}" aria-label="Remove ${x.v.name}">×</button></span>`)}
+            <div class="row wrap" style="gap:6px">${deps.map(x => html`<span class="cmp-chip ${x.v.isGroup ? 'group' : ''}" ${x.v.isGroup ? html`data-tip="${x.v.members.map(v => v.name).join('\n')}"` : ''}><span class="swatch" style="background:${x.c}"></span>${x.v.name}${x.v.isGroup ? html`<span class="mute tiny">· ${x.v.members.length}</span><button type="button" class="linkish tiny" data-act="rename" data-key="${x.v.key}" aria-label="Rename ${x.v.name}">rename</button>` : ''}<button type="button" data-act="remove" data-key="${x.v.key}" aria-label="Remove ${x.v.name}">×</button></span>`)}
               <button type="button" class="cmp-chip dashed" data-act="edit">Change selection</button></div>
             <span class="grow"></span>
             ${seg([['abs', '₹'], ['pct', '% of capital']], s.norm ? 'pct' : 'abs', 'norm')}
@@ -281,16 +286,17 @@ export default {
       const all = book.deployments();
       const s = st.get();
       const known = new Set(all.map(v => v.id));
-      const items = s.items.map(it => ({ ids: it.ids.filter(id => known.has(id)) })).filter(it => it.ids.length);
+      const items = s.items.map(it => ({ ...it, ids: it.ids.filter(id => known.has(id)) })).filter(it => it.ids.length);
       if (encode(items) !== encode(s.items)) st.set({ items });
-      mount(main, s.view && items.length >= 2 ? results(all) : picker(all));
+      mount(main, s.view && items.length >= 2 && items.length <= MAX ? results(all) : picker(all));
     }
     const set = p => { st.set(p); paint(); };
     // Add or remove one item (a deployment, or a group of them).
     function toggleItem(ids) {
+      // No limit while picking: 5 + 5 deployments can be ticked and then
+      // combined into two groups. The limit applies to what is compared.
       const items = st.get().items, k = keyOf(ids);
       if (items.some(it => keyOf(it.ids) === k)) set({ items: items.filter(it => keyOf(it.ids) !== k) });
-      else if (items.length >= MAX) say(`Compare takes up to ${MAX}.`);
       else set({ items: [...items, { ids }] });
     }
     const off = actions(main, {
@@ -303,8 +309,23 @@ export default {
         const items = st.get().items, i = items.findIndex(it => keyOf(it.ids) === d.key);
         if (i < 0) return;
         const parts = items[i].ids.map(id => ({ ids: [id] })).filter(p => !items.some(it => it.ids.length === 1 && it.ids[0] === p.ids[0]));
-        if (items.length - 1 + parts.length > MAX) return say(`Splitting gives more than ${MAX}. Remove some first.`);
         set({ items: [...items.slice(0, i), ...parts, ...items.slice(i + 1)] });
+      },
+      rename: d => {
+        const it = st.get().items.find(x => keyOf(x.ids) === d.key);
+        if (!it) return;
+        const [rec] = records([it], book.deployments());
+        openDialog({
+          kicker: 'GROUP', title: 'Name this group',
+          lines: [`${rec.members.map(v => v.name).join(' + ')}.`, 'Leave it empty to go back to the automatic name.'],
+          input: { label: 'Name', placeholder: rec.name, value: it.name || '', mono: false },
+          okLabel: 'Save name', armed: () => true,
+          onOk: async s => {
+            const name = s.text.trim().slice(0, 40);
+            set({ items: st.get().items.map(x => (keyOf(x.ids) === d.key ? { ids: x.ids, ...(name ? { name } : {}) } : x)) });
+            return true;
+          },
+        });
       },
       combine: () => {
         const items = st.get().items, singles = items.filter(it => it.ids.length === 1);

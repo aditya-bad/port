@@ -5,13 +5,19 @@
 // its drawdown is the portfolio's own (members that offset each other
 // show it), not an average of theirs.
 //
-// An item is { ids: [deployment ids] }; one id is that deployment itself.
-// In a link, items are comma-separated and a group's ids joined by "."
-// (compare?ids=a,b.c.d compares a with b+c+d).
+// An item is { ids: [deployment ids], name? }; one id is that deployment
+// itself, and a group without a name is named for what it holds. In a link,
+// items are comma-separated, a group's ids joined by "." and its name, if
+// given, after "~" (compare?ids=a,b.c.d~Wide%20wings compares a with b+c+d).
 
 export const keyOf = ids => [...ids].sort().join('.');
-export const encode = items => items.map(it => keyOf(it.ids)).join(',');
-export const decode = s => (s || '').split(',').filter(Boolean).map(k => ({ ids: [...new Set(k.split('.').filter(Boolean))] }));
+export const encode = items => items.map(it => keyOf(it.ids) + (it.name ? `~${encodeURIComponent(it.name)}` : '')).join(',');
+export const decode = s => (s || '').split(',').filter(Boolean).map(k => {
+  const [ids, name] = k.split('~');
+  const it = { ids: [...new Set(ids.split('.').filter(Boolean))] };
+  if (name) { try { it.name = decodeURIComponent(name); } catch (e) { it.name = name; } }
+  return it;
+}).filter(it => it.ids.length);
 
 // Sum every numeric field of the day rows that share a day.
 function addDays(rows) {
@@ -53,8 +59,14 @@ export function combine(vs, name) {
 }
 
 // Items → records, dropping ids that no longer exist (and items left empty).
+// Groups that would share a name (5 strangles against the other 5) are
+// numbered: "Monthly strangle ×5 #1", "… #2".
 export function resolve(items, all, opts = {}) {
   const byId = new Map(all.map(v => [v.id, v]));
-  return items.map(it => it.ids.map(id => byId.get(id)).filter(Boolean)).filter(vs => vs.length)
-    .map(vs => combine(vs, groupName(vs, opts.allOfStrategy, opts.label)));
+  const recs = items.map(it => ({ it, vs: it.ids.map(id => byId.get(id)).filter(Boolean) })).filter(x => x.vs.length)
+    .map(({ it, vs }) => combine(vs, (vs.length > 1 && it.name) || groupName(vs, opts.allOfStrategy, opts.label)));
+  const count = {};
+  recs.forEach(r => { count[r.name] = (count[r.name] || 0) + 1; });
+  const seen = {};
+  return recs.map(r => (count[r.name] > 1 ? { ...r, name: `${r.name} #${(seen[r.name] = (seen[r.name] || 0) + 1)}` } : r));
 }

@@ -61,3 +61,22 @@ test('deleted deployments drop out; an emptied group disappears', () => {
   assert.equal(r.length, 2);
   assert.equal(r[0].isGroup, false, 'one member left: just that deployment');
 });
+
+test('5 strangles against the other 5: same-named groups are numbered, or named', () => {
+  const S = Array.from({ length: 10 }, (_, i) => dep(`s${i}`, 'strangle', 100000, [['2026-02-02', 100 * i]]));
+  const items = [{ ids: S.slice(0, 5).map(v => v.id) }, { ids: S.slice(5).map(v => v.id) }];
+  const [g1, g2] = resolve(items, S, { allOfStrategy: (s, n) => n === 10 });
+  assert.equal(g1.name, 'strangle ×5 #1');
+  assert.equal(g2.name, 'strangle ×5 #2');
+  assert.equal(g1.cap, 500000);
+  assert.equal(g1.daily[0].pnl, 0 + 100 + 200 + 300 + 400);
+  assert.equal(g2.daily[0].pnl, 500 + 600 + 700 + 800 + 900);
+  const named = resolve([{ ...items[0], name: 'Wide wings' }, { ...items[1], name: 'Tight wings' }], S);
+  assert.deepEqual(named.map(r => r.name), ['Wide wings', 'Tight wings']);
+});
+
+test('a group’s name travels in the link', () => {
+  const items = [{ ids: ['b', 'a'], name: 'Wide wings, v2' }, { ids: ['c'] }];
+  assert.equal(encode(items), 'a.b~Wide%20wings%2C%20v2,c');
+  assert.deepEqual(decode(encode(items)), [{ ids: ['a', 'b'], name: 'Wide wings, v2' }, { ids: ['c'] }]);
+});

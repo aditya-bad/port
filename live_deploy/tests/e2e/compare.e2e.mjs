@@ -74,3 +74,48 @@ test('a link can carry a group: ids joined by "."', async () => {
   assert.ok(cs[0].group && !cs[1].group);
   await ctx.close();
 });
+
+test('same strategy, half against half: two groups, numbered, renamed, compared', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/compare`);
+  await p.waitForSelector('.tile[data-act=toggle]');
+  for (const n of ['Nifty Strangle A', 'Nifty Strangle B']) await p.click(`.tile[data-id="${IDS[n]}"]`);
+  await p.click('[data-act=combine]');
+  for (const n of ['Nifty Monthly Strangle', 'Bankex Strangle']) await p.click(`.tile[data-id="${IDS[n]}"]`);
+  await p.click('[data-act=combine]');
+  let cs = await chips(p);
+  assert.equal(cs.length, 2);
+  assert.ok(cs.every(c => c.group));
+  assert.notEqual(cs[0].text, cs[1].text, 'told apart');
+  // name the first one
+  await p.click('.cmp-bar .cmp-chip >> nth=0 >> [data-act=rename]');
+  await p.fill('.dialog input', 'Nifty pair');
+  await p.click('.dialog [data-ok]');
+  cs = await chips(p);
+  assert.match(cs[0].text, /^Nifty pair/);
+  await p.click('[data-act=go]');
+  await p.waitForSelector('.verdict');
+  assert.match(await p.textContent('.cmp-groups'), /Nifty pair is Nifty Strangle A \+ Nifty Strangle B as one/);
+  await ctx.close();
+});
+
+test('more than 5 can be ticked while picking; combine them to compare', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/compare`);
+  await p.waitForSelector('.tile[data-act=toggle]');
+  const tiles = p.locator('.tile[data-act=toggle]');
+  const n = Math.min(await tiles.count(), 7);
+  assert.ok(n >= 6);
+  for (let i = 0; i < n; i++) await tiles.nth(i).click();
+  assert.match(await p.textContent('.cmp-bar'), new RegExp(`${n} selected · compare takes 5`));
+  assert.equal(await p.getAttribute('[data-act=go]', 'aria-disabled'), 'true');
+  // keep one apart, combine the rest, then add it back
+  await tiles.nth(0).click();
+  await p.click('[data-act=combine]');
+  await tiles.nth(0).click();
+  assert.equal((await chips(p)).length, 2);
+  assert.equal(await p.getAttribute('[data-act=go]', 'aria-disabled'), null);
+  await ctx.close();
+});

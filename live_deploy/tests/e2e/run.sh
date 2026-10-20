@@ -32,7 +32,7 @@ fi
 
 suffixes=(); for ((i = 0; i < SHARDS; i++)); do suffixes+=("e2e$i"); done
 (cd "$ROOT" && "$PY" tests/dbs.py "${suffixes[@]}") || {
-  echo "e2e: could not create the test databases (the test role needs CREATEDB)"; exit 2; }
+  echo "e2e: could not create the test databases (is Postgres running? the test role needs CREATEDB)"; exit 2; }
 BASE_DB="${TEST_DATABASE_URL:-postgresql://t:t@localhost/t_test}"
 
 PIDS=()
