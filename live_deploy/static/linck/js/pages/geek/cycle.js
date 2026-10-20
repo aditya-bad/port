@@ -12,6 +12,7 @@ import { go } from '../../core/router.js';
 import * as book from '../../data/book.js';
 import { empty, loading } from '../../ui/components.js';
 import { loadSession, sessionBody } from '../deployment/session.js';
+import { journeys } from './cycles.js';
 import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, ratio, bars, LABEL, yLabels, wide } from './ui.js';
 
 // Viewbox widths: half-width panels and full-width ones (text keeps its size).
@@ -41,6 +42,13 @@ function marks(cy, ax, top, bottom) {
     s += `<text class="lab" x="${X + 3}" y="${bottom - 3}" style="fill:var(--b);font-size:10px">${r.side || ''} ${r.direction || ''}</text>`;
   }
   return s;
+}
+
+// The Cycles page's journey chart for this one cycle.
+function journey(cy) {
+  const t0 = ms(cy.row.start);
+  const path = cy.path.map(p => [(ms(p.t) - t0) / 3600000, p.pnl]);
+  return journeys([{ ...cy.row, path, path_kind: cy.path_kind, path_gaps: cy.path_gaps }], cy.checkpoint_target, true);
 }
 
 function pnlChart(cy) {
@@ -205,6 +213,7 @@ export default {
           ['Costs', inr(-(m.charges + m.slippage)), `charges ${inr(m.charges, { sign: false })} · slippage ${inr(m.slippage, { sign: false })}`],
         ], 6)}
         <div class="gk-panel"><h3>P&L through the cycle <span class="s">${cy.path_kind === 'booked' ? 'no prices were stored for this cycle: steps at what each leg booked' : `closed legs at what they booked, open legs at each ${cy.path_kind === 'candles' ? '15-minute candle close' : '5-minute mark'}`} · dotted: market open, no prices · dashed blue: rolls</span></h3>${pnlChart(cy)}</div>
+        <div class="gk-panel"><h3>Journey <span class="s">this cycle only · P&L against days since it opened, as on Cycles · dashed green: checkpoint</span></h3>${journey(cy)}</div>
         ${sessPanel()}
         <div class="gk-two even">
           <div class="gk-panel"><h3>Side balance <span class="s">smaller ÷ bigger · shaded: where rolls aim</span></h3>${balanceChart(cy)}</div>

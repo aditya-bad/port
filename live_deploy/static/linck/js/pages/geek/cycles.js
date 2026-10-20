@@ -17,8 +17,9 @@ const END_C = { checkpoint_target: 'var(--ink)', open: 'var(--b)', contract_expi
 const endColour = k => END_C[k] || 'var(--mute)';
 
 // Every cycle's P&L against days since it opened: do they climb steadily
-// to the checkpoint, or dip first? The open one is blue.
-function journeys(rows, target) {
+// to the checkpoint, or dip first? The open one is blue. With `one`, the
+// cycle page's own copy: that cycle alone, at full weight, not a link.
+export function journeys(rows, target, one = false) {
   const R = rows.filter(r => r.path && r.path.length > 1).slice(0, 24);
   if (!R.length) return empty('', 'Appears once a cycle has prices or has booked a leg.');
   const W = 1200, H = 280, all = R.flatMap(r => r.path);
@@ -33,8 +34,8 @@ function journeys(rows, target) {
   [...R].reverse().forEach(r => {
     const open = r.status === 'open', c = endColour(r.ended_by);
     const pts = r.path.map(p => [x(p[0] / 24), y(p[1])]), L = pts[pts.length - 1];
-    const w = open ? 2.6 : 1.3, op = open ? 1 : 0.55;
-    s += `<g class="jr" data-c="${r.cycle_id}" data-kind="${r.path_kind || 'marks'}">`;
+    const w = open || one ? 2.4 : 1.3, op = open || one ? 1 : 0.55;
+    s += one ? `<g class="jr-one" data-kind="${r.path_kind || 'marks'}">` : `<g class="jr" data-c="${r.cycle_id}" data-kind="${r.path_kind || 'marks'}">`;
     if (r.path_kind === 'booked') {
       s += `<path d="${path(steps(pts))}" fill="none" stroke="${c}" stroke-width="${w}" stroke-dasharray="6 4" opacity="${op}"/>`;
     } else {
@@ -42,10 +43,12 @@ function journeys(rows, target) {
       s += `<path d="${g.solid}" fill="none" stroke="${c}" stroke-width="${w}" opacity="${op}"/>`;
       if (g.gaps) s += `<path class="gap" d="${g.gaps}" fill="none" stroke="${c}" stroke-width="${w}" stroke-dasharray="1 4" stroke-linecap="round" opacity="${op}"/>`;
     }
-    s += `<circle cx="${L[0]}" cy="${L[1]}" r="${open ? 4.5 : 3}" fill="${c}"/><text x="${L[0] + 6}" y="${L[1] + 3}" style="fill:${c}">#${r.cycle_id}</text></g>`;
+    s += `<circle cx="${L[0]}" cy="${L[1]}" r="${open || one ? 4.5 : 3}" fill="${c}"/><text x="${L[0] + 6}" y="${L[1] + 3}" style="fill:${c}">#${r.cycle_id}</text></g>`;
   });
-  return html`${wide(svg(W, H, s, 'Every cycle’s P&L against days since it opened'))}
-    <div class="row wrap tiny" style="gap:16px">${[['checkpoint_target', 'reached the checkpoint'], ['contract_expiry_backstop', 'expiry'], ['convergence_stop', 'convergence stop'], ['open', 'running']]
+  const ends = [['checkpoint_target', 'reached the checkpoint'], ['contract_expiry_backstop', 'expiry'], ['convergence_stop', 'convergence stop'], ['open', 'running']]
+    .filter(([k]) => !one || R[0].ended_by === k);
+  return html`${wide(svg(W, H, s, one ? `Cycle ${R[0].cycle_id}’s P&L against days since it opened` : 'Every cycle’s P&L against days since it opened'))}
+    <div class="row wrap tiny" style="gap:16px">${ends
       .map(([k, l]) => html`<span class="row" style="gap:6px"><i style="width:14px;height:3px;background:${endColour(k)}"></i>${l}</span>`)}
       ${R.some(r => r.path_kind === 'booked') ? html`<span class="row" style="gap:6px"><i style="width:14px;border-top:2px dashed var(--ink)"></i>no prices stored: steps at what each leg booked</span>` : ''}
       ${R.some(r => r.path_gaps && r.path_gaps.length) ? html`<span class="row" style="gap:6px"><i style="width:14px;border-top:2px dotted var(--ink)"></i>market open, no prices (Kite offline)</span>` : ''}</div>`;

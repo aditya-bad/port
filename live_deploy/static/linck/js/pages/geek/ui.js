@@ -103,7 +103,7 @@ export function yLabels(vals, y, x, fmt = v => inr(Math.round(v))) {
   let s = '';
   for (const v of vals) {
     const Y = y(v);
-    if (done.some(d => Math.abs(d - Y) < 12)) continue;
+    if (done.some(d => Math.abs(d - Y) < 16)) continue;
     done.push(Y);
     s += `<text x="${x}" y="${Y + 3}" text-anchor="end">${fmt(v)}</text>`;
   }

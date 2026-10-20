@@ -152,6 +152,13 @@ test('a cycle opens end to end from Cycles and from Adjustments', async () => {
   assert.match(await p.locator('.gk-h').innerText(), /Running/);
   await p.click('a.btn:has-text("Previous")');
   await p.waitForURL(/cycle\?c=9$/);
+  // its own journey: this cycle only, not a link to itself
+  await p.waitForSelector('.gk-h h2:has-text("Cycle 9")');
+  await p.waitForSelector('#gkView .jr-one');
+  assert.equal(await p.locator('#gkView .jr-one').count(), 1, 'one journey line');
+  assert.equal(await p.locator('#gkView .jr').count(), 0, 'no other cycles');
+  assert.match(await p.locator('#gkView .jr-one').innerHTML(), /#9/);
+  assert.match(await p.locator('#gkView').innerText(), /Journey\s+this cycle only/);
   // the price chart, legs and orders are on the page itself: no sheet to open
   await p.waitForSelector('#cySess .ss-plot', { timeout: 15000 });
   assert.equal(await p.locator('.sess').count(), 0, 'no sheet');
@@ -196,6 +203,7 @@ test('a cycle from before prices were stored still shows its P&L', async () => {
   await p.waitForSelector('.gk-h h2:has-text("Cycle 1")');
   const text = await p.locator('#gkView').innerText();
   assert.match(text, /no prices were stored for this cycle: steps at what each leg booked/);
+  assert.equal(await p.locator('.jr-one[data-kind="booked"] path[stroke-dasharray="6 4"]').count(), 1, 'its journey, booked steps');
   assert.match(text, /no prices stored for this cycle/, 'no dip or peak claimed');
   assert.ok(await p.locator('.gk-chart path[stroke-dasharray="6 4"]').count() >= 1, 'the booked steps are drawn');
   await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycle?c=3`);
