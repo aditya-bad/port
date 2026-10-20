@@ -1163,6 +1163,26 @@ async def list_candles(
 list_index_candles = list_candles   # the name the index charts started with
 
 
+async def list_candle_closes(
+    pool: asyncpg.Pool, instrument_tokens: list, start: datetime, end: datetime, every_s: int = 900,
+) -> list[asyncpg.Record]:
+    """The last 1-minute close in each every_s bucket, per token: a
+    light price history for charts that span weeks."""
+    if not instrument_tokens:
+        return []
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT DISTINCT ON (instrument_token, floor(extract(epoch FROM minute) / $4))
+                   instrument_token, minute, close::float8 AS c
+            FROM candles_1m
+            WHERE instrument_token = ANY($1::bigint[]) AND minute >= $2 AND minute < $3
+            ORDER BY instrument_token, floor(extract(epoch FROM minute) / $4), minute DESC
+            """,
+            [int(t) for t in instrument_tokens], start, end, every_s,
+        )
+
+
 async def candle_minutes_per_day(
     pool: asyncpg.Pool, instrument_token: int, start: datetime, end: datetime,
 ) -> dict:

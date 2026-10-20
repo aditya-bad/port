@@ -70,6 +70,21 @@ export function svg(w, h, body, label = '') {
 // minimum width and scrolls sideways inside its panel.
 export const wide = chart => html`<div class="gk-wide">${chart}</div>`;
 export const path = pts => pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join('');
+// A line that doesn't pretend to know a stretch with no prices (Kite
+// offline, a holiday): it breaks before each index in `gaps`, and the
+// breaks come back separately to be drawn dotted.
+export function gapped(pts, gaps = []) {
+  const at = new Set(gaps), solid = [], dots = [];
+  let cur = [];
+  pts.forEach((p, i) => {
+    if (i && at.has(i)) { solid.push(cur); dots.push([pts[i - 1], p]); cur = []; }
+    cur.push(p);
+  });
+  solid.push(cur);
+  return { solid: solid.filter(s => s.length > 1).map(path).join(''), gaps: dots.map(path).join('') };
+}
+// Booked-only P&L stays flat until each booking: a step line.
+export const steps = pts => pts.flatMap((p, i) => (i ? [[p[0], pts[i - 1][1]], p] : [p]));
 
 // Signed bars around a centre line: [[label, ₹ or null], ...].
 export function bars(items) {

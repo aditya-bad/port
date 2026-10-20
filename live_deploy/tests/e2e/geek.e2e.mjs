@@ -126,6 +126,12 @@ test('a cycle opens end to end from Cycles and from Adjustments', async () => {
   await p.waitForSelector('.gk-tbl .tr[data-c]');
   // the new charts are there, and every cycle line opens its cycle
   assert.ok(await p.locator('.gk-chart .jr').count() >= 10, 'journeys and ranges, one mark per cycle');
+  // every cycle has a journey, including the ones from before prices were stored
+  const kinds = await p.locator('.gk-chart .jr[data-kind]').evaluateAll(es => es.map(e => [e.dataset.c, e.dataset.kind]));
+  assert.equal(kinds.length, 10, 'all ten cycles drawn');
+  assert.deepEqual(Object.fromEntries(kinds.filter(([c]) => +c <= 4)), { 1: 'booked', 2: 'booked', 3: 'candles', 4: 'marks' });
+  assert.equal(await p.locator('.jr[data-kind="booked"] path[stroke-dasharray="6 4"]').count(), 2, 'booked-only drawn dashed');
+  assert.match(await p.locator('#gkView').innerText(), /no prices stored: steps at what each leg booked/);
   await p.locator('.gk-tbl .tr[data-c="9"]').click();
   await p.waitForURL(/\/geek\/cycle\?c=9$/);
   await p.waitForSelector('.cy-tl .cy-ev');
@@ -169,5 +175,22 @@ test('an unknown cycle says so and links back', async () => {
   await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycle?c=999`);
   await p.waitForSelector('#gkView a[href$="/geek/cycles"]');
   assert.match(await p.locator('#gkView').innerText(), /There’s no cycle 999/);
+  await ctx.close();
+});
+
+test('a cycle from before prices were stored still shows its P&L', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycle?c=1`);
+  await p.waitForSelector('.gk-h h2:has-text("Cycle 1")');
+  const text = await p.locator('#gkView').innerText();
+  assert.match(text, /no prices were stored for this cycle: steps at what each leg booked/);
+  assert.match(text, /no prices stored for this cycle/, 'no dip or peak claimed');
+  assert.ok(await p.locator('.gk-chart path[stroke-dasharray="6 4"]').count() >= 1, 'the booked steps are drawn');
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycle?c=3`);
+  await p.waitForSelector('.gk-h h2:has-text("Cycle 3")');
+  assert.match(await p.locator('#gkView').innerText(), /15-minute candle close/);
+  assert.doesNotMatch(await p.locator('#gkView').innerText(), /Appears after/, 'drawn from the candles');
+  assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });

@@ -9,7 +9,7 @@ import { html, mount, on } from '../../core/dom.js';
 import { go } from '../../core/router.js';
 import { inr, dShort } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
-import { head, tiles, table, poll, svg, path, money, tone, LABEL, yLabels, wide } from './ui.js';
+import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, LABEL, yLabels, wide } from './ui.js';
 
 const endTag = r => html`<span class="oc ${r.ended_by === 'checkpoint_target' ? '' : r.ended_by === 'open' ? 'no_action' : 'blocked'}">${LABEL[r.ended_by] || r.ended_by.replace(/_/g, ' ')}</span>`;
 
@@ -20,7 +20,7 @@ const endColour = k => END_C[k] || 'var(--mute)';
 // to the checkpoint, or dip first? The open one is blue.
 function journeys(rows, target) {
   const R = rows.filter(r => r.path && r.path.length > 1).slice(0, 24);
-  if (!R.length) return empty('', 'Appears once cycles have 5-minute price marks.');
+  if (!R.length) return empty('', 'Appears once a cycle has prices or has booked a leg.');
   const W = 1200, H = 280, all = R.flatMap(r => r.path);
   const dx = Math.max(1, ...all.map(p => p[0] / 24)), hi = Math.max(target, ...all.map(p => p[1])), lo = Math.min(0, ...all.map(p => p[1]));
   const pad = (hi - lo || 1) * 0.06, top = hi + pad, bot = lo - pad;
@@ -33,12 +33,22 @@ function journeys(rows, target) {
   [...R].reverse().forEach(r => {
     const open = r.status === 'open', c = endColour(r.ended_by);
     const pts = r.path.map(p => [x(p[0] / 24), y(p[1])]), L = pts[pts.length - 1];
-    s += `<g class="jr" data-c="${r.cycle_id}"><path d="${path(pts)}" fill="none" stroke="${c}" stroke-width="${open ? 2.6 : 1.3}" opacity="${open ? 1 : 0.55}"/>`;
+    const w = open ? 2.6 : 1.3, op = open ? 1 : 0.55;
+    s += `<g class="jr" data-c="${r.cycle_id}" data-kind="${r.path_kind || 'marks'}">`;
+    if (r.path_kind === 'booked') {
+      s += `<path d="${path(steps(pts))}" fill="none" stroke="${c}" stroke-width="${w}" stroke-dasharray="6 4" opacity="${op}"/>`;
+    } else {
+      const g = gapped(pts, r.path_gaps);
+      s += `<path d="${g.solid}" fill="none" stroke="${c}" stroke-width="${w}" opacity="${op}"/>`;
+      if (g.gaps) s += `<path class="gap" d="${g.gaps}" fill="none" stroke="${c}" stroke-width="${w}" stroke-dasharray="1 4" stroke-linecap="round" opacity="${op}"/>`;
+    }
     s += `<circle cx="${L[0]}" cy="${L[1]}" r="${open ? 4.5 : 3}" fill="${c}"/><text x="${L[0] + 6}" y="${L[1] + 3}" style="fill:${c}">#${r.cycle_id}</text></g>`;
   });
   return html`${wide(svg(W, H, s, 'Every cycle’s P&L against days since it opened'))}
     <div class="row wrap tiny" style="gap:16px">${[['checkpoint_target', 'reached the checkpoint'], ['contract_expiry_backstop', 'expiry'], ['convergence_stop', 'convergence stop'], ['open', 'running']]
-      .map(([k, l]) => html`<span class="row" style="gap:6px"><i style="width:14px;height:3px;background:${endColour(k)}"></i>${l}</span>`)}</div>`;
+      .map(([k, l]) => html`<span class="row" style="gap:6px"><i style="width:14px;height:3px;background:${endColour(k)}"></i>${l}</span>`)}
+      ${R.some(r => r.path_kind === 'booked') ? html`<span class="row" style="gap:6px"><i style="width:14px;border-top:2px dashed var(--ink)"></i>no prices stored: steps at what each leg booked</span>` : ''}
+      ${R.some(r => r.path_gaps && r.path_gaps.length) ? html`<span class="row" style="gap:6px"><i style="width:14px;border-top:2px dotted var(--ink)"></i>market open, no prices (Kite offline)</span>` : ''}</div>`;
 }
 
 // Each cycle as a range from its worst dip to its best peak, and where it
@@ -131,7 +141,7 @@ export default {
             html`<span class="${tone(r.mae)}">${money(r.mae)}</span>`, html`<span class="${tone(r.mfe)}">${money(r.mfe)}</span>`,
             html`<span class="${tone(r.pnl)} b">${money(r.pnl)}</span>${r.status === 'open' ? html` <span class="tiny mute">open</span>` : ''}`]),
           { minw: 960, rowCls: i => `click ${data.rows[i].ended_by === 'convergence_stop' ? 'att' : ''}`, rowAttrs: i => html`data-c="${data.rows[i].cycle_id}" role="link" tabindex="0"` })}
-        <p class="gk-note">P&L is gross (before charges) for closed cycles and the live cycle P&L for the open one. Worst dip and best peak come from the 5-minute price marks, so a spike between two marks isn’t seen.</p>
+        <p class="gk-note">P&L is gross (before charges) for closed cycles and the live cycle P&L for the open one. Worst dip and best peak come from the 5-minute price marks (15-minute candle closes for cycles older than the marks), so a spike between two prices isn’t seen; a cycle with no stored prices shows none.</p>
         <div class="gk-two even">
           <div class="gk-panel"><h3>Days to checkpoint <span class="s">each cycle that reached it</span></h3>${daysChart(data.rows)}</div>
           <div class="gk-panel"><h3>Monthly target <span class="s">net P&L per month · informational</span></h3>${monthChart(data.monthly)}</div>

@@ -37,3 +37,13 @@ test('chart y labels skip values that would print on top of each other', async (
   assert.match(s, /₹0/);
   assert.match(s, /₹5,000/);
 });
+
+test('a P&L line breaks where prices are missing, and the breaks come back dotted', async () => {
+  const { gapped, steps } = await import('../../static/linck/js/pages/geek/ui.js');
+  const pts = [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]];
+  assert.deepEqual(gapped(pts), { solid: 'M0.0 0.0L1.0 1.0L2.0 2.0L3.0 3.0L4.0 4.0', gaps: '' });
+  assert.deepEqual(gapped(pts, [2]), { solid: 'M0.0 0.0L1.0 1.0M2.0 2.0L3.0 3.0L4.0 4.0', gaps: 'M1.0 1.0L2.0 2.0' });
+  // a lone point between two gaps is only reached by the dotted lines
+  assert.deepEqual(gapped(pts, [2, 3]), { solid: 'M0.0 0.0L1.0 1.0M3.0 3.0L4.0 4.0', gaps: 'M1.0 1.0L2.0 2.0M2.0 2.0L3.0 3.0' });
+  assert.deepEqual(steps([[0, 0], [2, 5], [3, 1]]), [[0, 0], [2, 0], [2, 5], [3, 5], [3, 1]]);
+});

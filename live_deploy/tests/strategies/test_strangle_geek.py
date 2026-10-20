@@ -3,7 +3,7 @@ simulated market: the live engine readings must agree with what the
 strategy then actually does, and every history view must add up to the
 book."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.db import queries
@@ -373,6 +373,7 @@ def test_cycle_page_has_everything_about_one_cycle(pool_run, monkeypatch):
         assert cy["entry"]["cycle_id"] == 1 and [l["opt"] for l in cy["entry"]["legs"]] == ["CE", "PE"]
         assert len(cy["rolls"]) == 1 and cy["rolls"][0]["side"] == "PE" and cy["rolls"][0]["direction"] == "in"
         assert cy["path"] and all(set(p) == {"t", "pnl"} for p in cy["path"])
+        assert cy["path_kind"] == "marks" and cy["path"][0]["pnl"] == 0 and cy["path_gaps"] == []
         assert cy["side"] and 0 < cy["side"][0]["ratio"] <= 1
         lots = await queries.list_deployment_lots(pool, sim.dep_id)
         sold = sum(float(l["price"]) * float(l["qty"]) for l in lots if l["position_side"] == "short" and l["action"] == "sell")
@@ -414,11 +415,85 @@ def test_cycles_rows_carry_their_pnl_path_and_rolls_their_direction(pool_run, mo
             for p in legs for m in (5, 10, 15)])
         await sim.tick("10:30", spot=25000)
         row = (await G.cycles(await ctx(sim)))["rows"][0]
-        assert len(row["path"]) == 3
+        assert row["path_kind"] == "marks" and row["path_gaps"] == []
+        assert len(row["path"]) == 4 and row["path"][0] == [0, 0], "it opened at 0, then the 3 marks"
         hrs = [p[0] for p in row["path"]]
-        assert hrs == sorted(hrs) and hrs[0] > 0
-        assert row["path"][-1][1] > row["path"][0][1], "premium decayed: P&L rose"
+        assert hrs == sorted(hrs) and hrs[1] > 0
+        assert row["path"][-1][1] > row["path"][1][1], "premium decayed: P&L rose"
     pool_run(go)
+
+
+def test_cycles_from_before_the_marks_still_have_a_journey(pool_run, monkeypatch):
+    """Old cycles have no 5-minute marks: their path comes from the stored
+    1-minute candles, or, with none, from what each leg booked."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        sim.market.vol = 0.13
+        await sim.tick("11:00", spot=25000)       # cycle 1 hits its checkpoint, cycle 2 starts
+        rows = {r["cycle_id"]: r for r in (await G.cycles(await ctx(sim)))["rows"]}
+        one = rows[1]
+        assert one["path_kind"] == "booked" and one["path_gaps"] == []
+        assert one["path"][0] == [0, 0] and len(one["path"]) >= 2, "drawn, not dropped"
+        assert one["path"][-1][1] == one["realized_pnl"], "ends at its result"
+        assert one["mae"] is None and one["mfe"] is None, "no prices: no dip or peak to claim"
+
+        # now candles for cycle 1's legs, one every minute, decaying
+        prs = [p for p in await queries.list_positions(pool, sim.dep_id) if (p["metadata"] or {}).get("cycle_id") == 1]
+        t0 = min(p["opened_at"] for p in prs)
+        rows_c = []
+        for p in prs:
+            entry = float(p["avg_entry_price"])
+            for m in range(0, 60):
+                rows_c.append((int(p["instrument_token"]), t0 + timedelta(minutes=m), entry, entry, entry, entry - m / 20, None))
+        await queries.upsert_candles(pool, rows_c, "kite")
+        c = await ctx(sim)
+        one = {r["cycle_id"]: r for r in (await G.cycles(c))["rows"]}[1]
+        assert one["path_kind"] == "candles"
+        assert len(one["path"]) > 3 and one["path"][0] == [0, 0]
+        assert one["mae"] is not None and one["mfe"] > 0, "candles show the move"
+        c.params = {"c": "1"}
+        cy = await G.cycle(c)
+        assert cy["path_kind"] == "candles" and len(cy["path"]) > 3
+        assert len(cy["side"]) >= 2 and all(0 < x["ratio"] <= 1 for x in cy["side"]), "side balance from the candles too"
+    pool_run(go)
+
+
+def test_leg_prices_use_candles_only_before_the_marks():
+    t0 = datetime(2026, 9, 1, 10, 0, tzinfo=IST)
+    leg = {"id": "a", "instrument_token": 7, "opened_at": t0, "closed_at": None}
+    candles = {7: [(t0 + timedelta(minutes=m), 100.0 - m) for m in (0, 15, 30, 90, 180)]}
+    marks = {"a": [(t0 + timedelta(minutes=120), 50.0)]}
+    prices, used = G._leg_prices([leg], marks, candles)
+    assert used and [t for t, _ in prices["a"]] == [t0 + timedelta(minutes=m) for m in (0, 15, 30, 90, 120)]
+    # marks from the start: candles aren't needed
+    marks = {"a": [(t0 + timedelta(minutes=5), 99.0)]}
+    prices, used = G._leg_prices([leg], marks, candles)
+    assert not used and prices["a"] == marks["a"]
+    # a closed leg takes no candle after its close
+    closed = {**leg, "closed_at": t0 + timedelta(minutes=20)}
+    prices, _ = G._leg_prices([closed], {}, candles)
+    assert [t for t, _ in prices["a"]] == [t0, t0 + timedelta(minutes=15)]
+
+
+def test_booked_path_steps_at_each_close():
+    t0 = datetime(2026, 9, 1, 10, 0, tzinfo=IST)
+    legs = [{"closed_at": t0 + timedelta(days=2), "realized_pnl": -300},
+            {"closed_at": t0 + timedelta(days=1), "realized_pnl": 500},
+            {"closed_at": None, "realized_pnl": 0}]
+    assert G._booked_path(legs, t0, None) == [(t0, 0.0), (t0 + timedelta(days=1), 500.0), (t0 + timedelta(days=2), 200.0)]
+    assert G._booked_path(legs, t0, t0 + timedelta(days=2)) == [(t0, 0.0), (t0 + timedelta(days=1), 500.0)], \
+        "the close at the end is the result, added by the caller"
+
+
+def test_gaps_are_market_hours_without_prices_not_nights_or_weekends():
+    d = lambda *a: datetime(*a, tzinfo=IST)
+    fri_close, mon_open = d(2026, 10, 16, 15, 25), d(2026, 10, 19, 9, 20)
+    assert G._market_minutes(fri_close, mon_open) == 10
+    assert G._gaps([d(2026, 10, 19, 15, 25), d(2026, 10, 20, 9, 20)]) == [], "overnight"
+    assert G._gaps([fri_close, mon_open]) == [], "weekend"
+    assert G._gaps([d(2026, 10, 19, 10, 0), d(2026, 10, 19, 10, 50), d(2026, 10, 20, 11, 0)]) == [2], \
+        "Kite offline from Monday 10:50 to Tuesday 11:00"
+    assert G._market_minutes(d(2026, 10, 19, 9, 0), d(2026, 10, 19, 16, 0)) == 375
 
 
 def test_thin_keeps_the_ends():

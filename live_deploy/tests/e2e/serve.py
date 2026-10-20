@@ -266,7 +266,7 @@ async def seed_geek(pool, prices, live_times):
             if t.weekday() < 5 and time(9, 30) <= t.time() <= time(15, 30):
                 fr = (t - start).total_seconds() / span
                 bump = leg["entry"] * 0.18 * math.sin(math.pi * fr) * (1 if leg["opt"] == "CE" else -1)
-                marks.append((leg["tok"], t, max(1.0, leg["entry"] + (exit_px - leg["entry"]) * fr + bump)))
+                marks.append((leg["tok"], t, max(1.0, leg["entry"] + (exit_px - leg["entry"]) * fr + bump), cid))
             t += timedelta(hours=1)
 
     for cid, (start, end, why, target, rolls) in enumerate(cycles, start=1):
@@ -340,7 +340,12 @@ async def seed_geek(pool, prices, live_times):
 
     pid = {r["instrument_token"]: r["id"] for r in await pool.fetch(
         "SELECT id, instrument_token FROM positions WHERE deployment_id=$1", dep)}
-    await queries.record_position_marks(pool, [(pid[t], dep, w, round(px, 2)) for t, w, px in marks if t in pid])
+    # Marks only began part-way: cycles 1-2 have no prices stored at all
+    # (their journeys are what each leg booked), cycle 3 only the 1-minute
+    # candles the candle store backfilled.
+    await queries.record_position_marks(pool, [(pid[t], dep, w, round(px, 2)) for t, w, px, c in marks if t in pid and c > 3])
+    await queries.upsert_candles(pool, [(t, w, round(px, 2), round(px, 2), round(px, 2), round(px, 2), None)
+                                        for t, w, px, c in marks if c == 3], "kite")
     for days in (8, 7, 6, 5):
         await queries.record_decision(pool, dep, at(days, 15, 13), "eod_gap_check", "no_action",
                                       f"PE/CE 0.{G.randint(82, 93)} ≥ floor 0.80: gap small enough to hold overnight",

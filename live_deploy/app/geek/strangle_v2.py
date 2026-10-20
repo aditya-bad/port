@@ -25,6 +25,7 @@ arithmetic; if that changes, change engine() with it (tests pin both).
 from __future__ import annotations
 
 import statistics
+from bisect import bisect_right
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any, Optional
@@ -612,10 +613,36 @@ def _side_series(prs: list, mark_rows: list) -> list[dict]:
                         "ratio": round(min(ce, pe) / max(ce, pe), 4)})
     return out
 
+_MARKS_LATE = timedelta(hours=1)
+
+
+def _leg_prices(positions: list, marks: dict, candles: dict) -> tuple[dict, bool]:
+    """Each leg's price history, oldest first: its 5-minute marks, and
+    stored candle closes for the part of its life before marks began
+    (legs older than the marks, or a gap before the first one). Returns
+    (prices by position id, whether any candle was used)."""
+    out, used = {}, False
+    for p in positions:
+        m = marks.get(p["id"], [])
+        first = m[0][0] if m else None
+        if first is not None and first - p["opened_at"] <= _MARKS_LATE:
+            out[p["id"]] = m
+            continue
+        c = [(t, px) for t, px in candles.get(int(p["instrument_token"]), [])
+             if t >= p["opened_at"] and (first is None or t < first)
+             and (p["closed_at"] is None or t < p["closed_at"])]
+        used = used or bool(c)
+        out[p["id"]] = c + m
+    return out, used
+
+
 def _pnl_path(positions: list, marks: dict, start: datetime, end: datetime) -> list[tuple[datetime, float]]:
-    """Cycle P&L at every mark time: closed legs at their realized P&L,
-    open legs marked to that time's price."""
-    times = sorted({t for p in positions for t, _ in marks.get(p["id"], []) if start <= t <= end})
+    """Cycle P&L at every price time: closed legs at their realized P&L,
+    open legs at their last price then. A time where an open leg has no
+    price yet is left out."""
+    series = {p["id"]: marks.get(p["id"], []) for p in positions}
+    keys = {pid: [t for t, _ in s] for pid, s in series.items()}
+    times = sorted({t for s in series.values() for t, _ in s if start <= t <= end})
     path = []
     for t in times:
         total, known = 0.0, True
@@ -625,19 +652,48 @@ def _pnl_path(positions: list, marks: dict, start: datetime, end: datetime) -> l
             if p["closed_at"] is not None and p["closed_at"] <= t:
                 total += float(p["realized_pnl"])
                 continue
-            px = None
-            for mt, mp in marks.get(p["id"], []):
-                if mt <= t:
-                    px = mp
-                else:
-                    break
-            if px is None:
+            i = bisect_right(keys[p["id"]], t)
+            if not i:
                 known = False
                 break
+            px = series[p["id"]][i - 1][1]
             entry, qty = float(p["avg_entry_price"]), float(p["qty"] or p.get("total_qty") or 0)
             total += (entry - px) * qty if p["side"] == "short" else (px - entry) * qty
         if known:
             path.append((t, total))
+    return path
+
+
+def _market_minutes(a: datetime, b: datetime) -> float:
+    """Weekday market minutes (09:15–15:30 IST) between a and b."""
+    a, b = _ist(a), _ist(b)
+    total, d = 0.0, a.date()
+    while d <= b.date():
+        if d.weekday() < 5:
+            lo = max(a, datetime.combine(d, time(9, 15), IST))
+            hi = min(b, datetime.combine(d, time(15, 30), IST))
+            if hi > lo:
+                total += (hi - lo).total_seconds() / 60
+        d += timedelta(days=1)
+    return total
+
+
+def _gaps(times: list, missing_min: float = 90) -> list[int]:
+    """Indices i where the market was open for over 90 minutes between
+    point i-1 and point i with no price: Kite offline, a holiday. Nights
+    and weekends aren't gaps."""
+    return [i for i in range(1, len(times)) if _market_minutes(times[i - 1], times[i]) > missing_min]
+
+
+def _booked_path(positions: list, start: datetime, end: Optional[datetime]) -> list[tuple[datetime, float]]:
+    """With no prices at all: 0 at the start, then what had been booked
+    each time a leg closed. Open legs count as 0, so it's a lower-detail
+    outline, not the cycle's real ups and downs."""
+    path, total = [(start, 0.0)], 0.0
+    for p in sorted((p for p in positions if p["closed_at"] is not None and (end is None or p["closed_at"] < end)),
+                    key=lambda p: p["closed_at"]):
+        total += float(p["realized_pnl"])
+        path.append((p["closed_at"], total))
     return path
 
 
@@ -655,7 +711,19 @@ async def cycles(ctx: Ctx) -> dict:
         first = min(p["opened_at"] for p in book["positions"])
         for r in await queries.list_marks_for_positions(ctx.pool, ids, first, now):
             marks.setdefault(r["position_id"], []).append((r["marked_at"], r["price"]))
-    decs = [dict(d) for d in await queries.list_decisions(ctx.pool, ctx.dep["id"], limit=5000)]
+    # legs from before the marks began: stored candle closes, 15 minutes apart
+    late = [p for p in book["positions"]
+            if not marks.get(p["id"]) or marks[p["id"]][0][0] - p["opened_at"] > _MARKS_LATE]
+    candles: dict = {}
+    if late:
+        for r in await queries.list_candle_closes(
+                ctx.pool, sorted({int(p["instrument_token"]) for p in late}),
+                min(p["opened_at"] for p in late), now):
+            # stamped at the bucket's start, so every leg's closes line up
+            # (an illiquid leg's last trade in a bucket can be minutes early)
+            t = r["minute"]
+            candles.setdefault(int(r["instrument_token"]), []).append((t - timedelta(minutes=t.minute % 15), r["c"]))
+    decs =[dict(d) for d in await queries.list_decisions(ctx.pool, ctx.dep["id"], limit=5000)]
     rows = []
     for cid, prs in sorted(groups.items()):
         start = min(p["opened_at"] for p in prs)
@@ -671,10 +739,17 @@ async def cycles(ctx: Ctx) -> dict:
         gross = sum(float(p["realized_pnl"]) for p in closed)
         charges = sum(float(p["estimated_charges"]) for p in closed)
         slip = sum(float(p["estimated_slippage"]) for p in closed)
-        path = _pnl_path(prs, marks, start, end or now)
-        if end is not None:   # a closed cycle ends at its result, not at its last mark
+        prices, used_candles = _leg_prices(prs, marks, candles)
+        path = [p for p in _pnl_path(prs, prices, start, end or now) if p[0] > start]
+        kind = "candles" if used_candles else "marks"
+        if not path:
+            path, kind = _booked_path(prs, start, end), "booked"
+        elif path[0][0] > start:   # it opened at 0
+            path = [(start, 0.0)] + path
+        if end is not None:   # a closed cycle ends at its result, not at its last price
             path = [p for p in path if p[0] < end] + [(end, sum(float(p["realized_pnl"]) for p in prs))]
-        ctx._cache.setdefault("cycle_parts", {})[cid] = {"prs": prs, "acts": acts, "path": path, "marks": marks}
+        ctx._cache.setdefault("cycle_parts", {})[cid] = {"prs": prs, "acts": acts, "path": path, "prices": prices,
+                                                         "path_kind": kind}
         expiry = next((a["contract_expiry"] for a in acts if a["contract_expiry"]), None)
         eod_checks = [d for d in decs if d["rule"] == "eod_gap_check" and d["decided_at"] >= start
                       and (end is None or d["decided_at"] <= end)]
@@ -686,6 +761,7 @@ async def cycles(ctx: Ctx) -> dict:
                 open_pnl = ck["value"]
         elif is_open and path:
             open_pnl = round(path[-1][1], 2)
+        thin = _thin(path, 80)
         rows.append({
             "cycle_id": cid, "start": _iso(start), "end": _iso(end), "status": "open" if is_open else "closed",
             "contract_expiry": expiry, "days": round(((end or now) - start).total_seconds() / 86400, 1),
@@ -694,14 +770,18 @@ async def cycles(ctx: Ctx) -> dict:
                               for k in ("continuous", "eod", "rollout")},
             "eod_checks_no_action": sum(1 for d in eod_checks if d["outcome"] == "no_action"),
             # never above / below zero: a cycle that was never down has no dip
-            "mae": round(min(0.0, *(v for _, v in path)), 2) if path else None,
-            "mfe": round(max(0.0, *(v for _, v in path)), 2) if path else None,
+            # (booked-only outlines don't see the dips and peaks in between)
+            "mae": round(min(0.0, *(v for _, v in path)), 2) if path and kind != "booked" else None,
+            "mfe": round(max(0.0, *(v for _, v in path)), 2) if path and kind != "booked" else None,
             "realized_pnl": round(gross, 2), "charges": round(charges, 2), "slippage": round(slip, 2),
             "pnl": round(gross, 2) if not is_open else open_pnl,
             "pnl_net": round(gross - charges - slip, 2) if not is_open else None,
             "legs": len([p for p in prs if not p["hedge"]]),
             # cycle P&L over its life, for the journeys chart: [hours since start, ₹]
-            "path": [[round((t - start).total_seconds() / 3600, 2), round(v, 2)] for t, v in _thin(path, 80)],
+            "path": [[round((t - start).total_seconds() / 3600, 2), round(v, 2)] for t, v in thin],
+            "path_gaps": [] if kind == "booked" else _gaps([t for t, _ in thin]),
+            # where it came from: 5-minute marks, stored candles (older legs), or only what was booked
+            "path_kind": kind,
         })
     closed_rows = [r for r in rows if r["status"] == "closed"]
     ck_days = [r["days"] for r in closed_rows if r["ended_by"] == "checkpoint_target"]
@@ -1026,8 +1106,11 @@ async def cycle(ctx: Ctx) -> dict:
 
     rolls = [r for r in (await adjustments(ctx))["rows"] if r["cycle_id"] == cid]
     entry = next((e for e in (await entries(ctx))["rows"] if e["cycle_id"] == cid), None)
-    marks = await queries.list_marks_for_positions(ctx.pool, [p["id"] for p in prs], start, end or now)
-    side = _side_series(prs, marks)
+    # the same prices as the P&L path: marks, or candles for older legs
+    side = _side_series(prs, [{"position_id": pid, "marked_at": t, "price": px}
+                              for pid, s in parts["prices"].items() for t, px in s
+                              if start <= t <= (end or now)])
+    thin = _thin(path, 400)
     sold = sum(f["price"] * f["qty"] for a in acts for f in a["fills"] if not f["hedge"] and f["open"])
     roles: dict = {}
     for p in prs:
@@ -1043,7 +1126,8 @@ async def cycle(ctx: Ctx) -> dict:
         "row": {k: v for k, v in row.items() if k != "path"},
         "checkpoint_target": target, "capital": ctx.capital,
         "entry": entry, "legs": legs, "timeline": timeline, "rolls": list(reversed(rolls)),
-        "path": [{"t": _iso(t), "pnl": round(v, 2)} for t, v in _thin(path, 400)],
+        "path": [{"t": _iso(t), "pnl": round(v, 2)} for t, v in thin], "path_kind": parts["path_kind"],
+        "path_gaps": [] if parts["path_kind"] == "booked" else _gaps([t for t, _ in thin]),
         "side": _thin(side, 400),
         "money": {
             "premium_sold": round(sold, 2), "gross": row["realized_pnl"], "charges": row["charges"],

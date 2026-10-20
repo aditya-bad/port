@@ -246,6 +246,20 @@ def test_snapshots_events_and_marks_round_trip(pool_run):
     pool_run(go)
 
 
+def test_candle_closes_keep_the_last_close_in_each_bucket(pool_run):
+    async def go(pool):
+        rows = [(tok, at(19, 10, m), 1, 1, 1, float(tok + m), None) for tok in (11, 22) for m in range(0, 40)]
+        await queries.upsert_candles(pool, rows, "kite")
+        got = await queries.list_candle_closes(pool, [11, 22], at(19, 10, 0), at(19, 10, 40), every_s=900)
+        by = {}
+        for r in got:
+            by.setdefault(r["instrument_token"], []).append((r["minute"].astimezone(IST).minute, r["c"]))
+        # buckets :00-:14, :15-:29, :30-:39 (end is exclusive)
+        assert by == {11: [(14, 25.0), (29, 40.0), (39, 50.0)], 22: [(14, 36.0), (29, 51.0), (39, 61.0)]}
+        assert await queries.list_candle_closes(pool, [], at(19), at(20)) == []
+    pool_run(go)
+
+
 def test_index_candles_merge_within_a_minute(pool_run):
     async def go(pool):
         m = at(14, 10)

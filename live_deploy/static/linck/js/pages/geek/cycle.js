@@ -11,7 +11,7 @@ import { go } from '../../core/router.js';
 import * as book from '../../data/book.js';
 import { empty, loading } from '../../ui/components.js';
 import { openSession } from '../deployment/session.js';
-import { head, tiles, table, poll, svg, path, money, tone, ratio, bars, LABEL, yLabels, wide } from './ui.js';
+import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, ratio, bars, LABEL, yLabels, wide } from './ui.js';
 
 // Viewbox widths: half-width panels and full-width ones (text keeps its size).
 const W = 640, WF = 1200;
@@ -51,8 +51,9 @@ function pnlChart(cy) {
   const top = Math.max(tgt, ...vals), bot = Math.min(0, ...vals), pad = (top - bot || 1) * 0.08;
   const hi = top + pad, lo = bot - pad;
   const y = v => 12 + (hi - v) / ((hi - lo) || 1) * (H - 44);
-  const pts = P.map(p => [ax.x(p.t), y(p.pnl)]);
-  const d = path(pts), z = y(0);
+  const booked = cy.path_kind === 'booked';
+  const pts = booked ? steps(P.map(p => [ax.x(p.t), y(p.pnl)])) : P.map(p => [ax.x(p.t), y(p.pnl)]);
+  const d = path(pts), z = y(0), line = booked ? { solid: d, gaps: '' } : gapped(pts, cy.path_gaps);
   const area = `${d}L${pts[pts.length - 1][0].toFixed(1)} ${z.toFixed(1)}L${pts[0][0].toFixed(1)} ${z.toFixed(1)}Z`;
   let s = `<defs><clipPath id="cyU"><rect x="0" y="0" width="${WF}" height="${z}"/></clipPath><clipPath id="cyD"><rect x="0" y="${z}" width="${WF}" height="${H}"/></clipPath></defs>`;
   [bot, top].forEach(v => { s += `<line x1="64" x2="${WF - 12}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/>`; });
@@ -61,7 +62,9 @@ function pnlChart(cy) {
   s += `<line x1="64" x2="${WF - 12}" y1="${z}" y2="${z}" stroke="var(--ink)"/>`;
   s += `<line x1="64" x2="${WF - 12}" y1="${y(tgt)}" y2="${y(tgt)}" stroke="var(--g)" stroke-dasharray="5 3"/><text class="lab" x="${WF - 12}" y="${y(tgt) - 5}" text-anchor="end" style="fill:var(--g)">checkpoint ${inr(tgt, { sign: false })}</text>`;
   s += marks(cy, ax, 10, H - 32);
-  s += `<path d="${d}" fill="none" stroke="var(--ink)" stroke-width="1.8"/>`;
+  s += `<path d="${line.solid}" fill="none" stroke="var(--ink)" stroke-width="1.8"${booked ? ' stroke-dasharray="6 4"' : ''}/>`;
+  if (line.gaps) s += `<path class="gap" d="${line.gaps}" fill="none" stroke="var(--ink)" stroke-width="1.8" stroke-dasharray="1 4" stroke-linecap="round"/>`;
+  if (booked) return finish(s);
   const iLo = vals.indexOf(Math.min(...vals)), iHi = vals.indexOf(Math.max(...vals));
   // near the right edge a label goes to the left of its point
   const lab = (X, Y, txt, c) => (X > WF - 160
@@ -69,10 +72,13 @@ function pnlChart(cy) {
     : `<text class="lab" x="${X + 6}" y="${Y}" style="fill:${c}">${txt}</text>`);
   if (vals[iLo] < 0) s += `<circle cx="${pts[iLo][0]}" cy="${pts[iLo][1]}" r="4" fill="var(--r)"/>${lab(pts[iLo][0], pts[iLo][1] + 14, `worst ${inr(vals[iLo])}`, 'var(--r)')}`;
   if (vals[iHi] > 0) s += `<circle cx="${pts[iHi][0]}" cy="${pts[iHi][1]}" r="4" fill="var(--g)"/>${lab(pts[iHi][0], pts[iHi][1] - 8, `best ${inr(vals[iHi])}`, 'var(--g)')}`;
-  const L = pts[pts.length - 1];
-  s += `<circle cx="${L[0]}" cy="${L[1]}" r="4" fill="var(--ink)"/>`;
-  s += ax.ticks(H - 8);
-  return wide(svg(WF, H, s, 'Cycle P&L over its life, with every roll'));
+  return finish(s);
+  function finish(s) {
+    const L = pts[pts.length - 1];
+    s += `<circle cx="${L[0]}" cy="${L[1]}" r="4" fill="var(--ink)"/>`;
+    s += ax.ticks(H - 8);
+    return wide(svg(WF, H, s, 'Cycle P&L over its life, with every roll'));
+  }
 }
 
 function balanceChart(cy) {
@@ -180,12 +186,12 @@ export default {
         ${tiles([
           [r.status === 'open' ? 'P&L so far' : 'Result', html`<span class="${tone(result)}">${money(result)}</span>`, r.status === 'open' ? 'booked + open legs, gross' : `net ${inr(m.net)} after costs`],
           ['Checkpoint', `${result != null && cy.checkpoint_target ? Math.round(Math.max(0, result) / cy.checkpoint_target * 100) : 0}%`, `of ${inr(cy.checkpoint_target, { sign: false })}${result != null && result < 0 ? ' · in loss' : ''}`],
-          ['Worst dip / best peak', html`<span class="${tone(r.mae)}">${money(r.mae)}</span> / <span class="${tone(r.mfe)}">${money(r.mfe)}</span>`, r.mae === 0 ? 'never below zero' : 'from the 5-minute marks', 'sm'],
+          ['Worst dip / best peak', html`<span class="${tone(r.mae)}">${money(r.mae)}</span> / <span class="${tone(r.mfe)}">${money(r.mfe)}</span>`, r.mae == null ? 'no prices stored for this cycle' : r.mae === 0 ? 'never below zero' : r.path_kind === 'candles' ? 'from 15-minute candle closes' : 'from the 5-minute marks', 'sm'],
           ['Rolls', r.rolls, `continuous ${r.rolls_by_kind.continuous} · EOD ${r.rolls_by_kind.eod} · roll-out ${r.rolls_by_kind.rollout}`],
           ['Premium sold', inr(m.premium_sold, { sign: false }), m.premium_sold && r.status !== 'open' ? `${(m.net / m.premium_sold * 100).toFixed(1)}% kept, net` : `${cy.legs.filter(l => !l.hedge).length} short legs`],
           ['Costs', inr(-(m.charges + m.slippage)), `charges ${inr(m.charges, { sign: false })} · slippage ${inr(m.slippage, { sign: false })}`],
         ], 6)}
-        <div class="gk-panel"><h3>P&L through the cycle <span class="s">closed legs at what they booked, open legs at each 5-minute mark · dashed blue: rolls</span></h3>${pnlChart(cy)}</div>
+        <div class="gk-panel"><h3>P&L through the cycle <span class="s">${cy.path_kind === 'booked' ? 'no prices were stored for this cycle: steps at what each leg booked' : `closed legs at what they booked, open legs at each ${cy.path_kind === 'candles' ? '15-minute candle close' : '5-minute mark'}`} · dotted: market open, no prices · dashed blue: rolls</span></h3>${pnlChart(cy)}</div>
         <div class="gk-two even">
           <div class="gk-panel"><h3>Side balance <span class="s">smaller ÷ bigger · shaded: where rolls aim</span></h3>${balanceChart(cy)}</div>
           <div class="gk-panel"><h3>Call and put premium <span class="s">each side’s open short legs</span></h3>${premiumChart(cy)}</div>
