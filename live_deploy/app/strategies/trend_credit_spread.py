@@ -662,6 +662,10 @@ class TrendCreditSpreadStrategy(StrategyBase):
                 runner.deployment_name, candle["date"], now,
                 (now - candle["date"]).total_seconds() / 60,
             )
+            if candle["date"].date() == now.date():   # a session's last candle always closes on the next morning's first tick
+                await self.decide(runner, now, "stale_candle", "blocked",
+                                  f"Candle {candle['date']:%H:%M} arrived {(now - candle['date']).total_seconds() / 60:.0f} min late (feed gap): no new entry off it",
+                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)})
 
         t = now.time()   # real wall-clock time, for the expiry-day cutoff
         before_cutoff = self.expiry_day_force_exit_time is None or t < self.expiry_day_force_exit_time
@@ -708,6 +712,10 @@ class TrendCreditSpreadStrategy(StrategyBase):
                         runner.deployment_name, prev_trend_before_update, new_trend,
                         self.max_trades_per_day,
                     )
+                    await self.decide(runner, now, "max_trades", "blocked",
+                                      f"SuperTrend flipped {prev_trend_before_update} → {new_trend} but today's {self.max_trades_per_day} entries are used",
+                                      {"prev_trend": prev_trend_before_update, "new_trend": new_trend, "close": round(candle["close"], 2),
+                                       "trades_today": self.trades_today, "max_trades_per_day": self.max_trades_per_day})
                 else:
                     trigger_values = {
                         "prev_trend": prev_trend_before_update, "new_trend": new_trend,
@@ -716,6 +724,12 @@ class TrendCreditSpreadStrategy(StrategyBase):
                         "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
                     }
                     await self._enter_spread(runner, candle, new_trend, trigger_values)
+            elif flipped and not stale and self.short_leg is None:
+                why = (f"it's past the {self.expiry_day_force_exit_time:%H:%M} expiry-day cut-off" if not before_cutoff
+                       else "it's before the session opens")
+                await self.decide(runner, now, "st_flip", "blocked",
+                                  f"SuperTrend flipped {prev_trend_before_update} → {new_trend} at {candle['close']:.2f}: no entry, {why}",
+                                  {"prev_trend": prev_trend_before_update, "new_trend": new_trend, "close": round(candle["close"], 2)})
             self.prev_trend = new_trend
 
     # ── Execution ────────────────────────────────────────────────────────
@@ -761,12 +775,17 @@ class TrendCreditSpreadStrategy(StrategyBase):
                 "%s: SuperTrend flip -> sell %s credit spread signal, but no "
                 "Kite session yet — skipping", runner.deployment_name, spread_side,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"SuperTrend flipped {new_trend} (sell a {spread_side.replace('_', ' ')} spread) but Kite isn't connected", trigger_values)
             return
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the %s credit spread's legs for "
                 "entry — skipping", runner.deployment_name, spread_side,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"SuperTrend flipped {new_trend} but the {spread_side.replace('_', ' ')} spread's legs couldn't be found or priced: {e}",
+                              {**trigger_values, "error": str(e)[:200]})
             return
 
         if short_price is None or long_price is None:
@@ -774,6 +793,8 @@ class TrendCreditSpreadStrategy(StrategyBase):
                 "%s: no live quote for one or both legs of the %s credit "
                 "spread — skipping this entry", runner.deployment_name, spread_side,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"SuperTrend flipped {new_trend} but there was no live quote for a leg of the {spread_side.replace('_', ' ')} spread", trigger_values)
             return
         if short_leg.strike == long_leg.strike:
             logger.warning(
@@ -783,6 +804,9 @@ class TrendCreditSpreadStrategy(StrategyBase):
                 runner.deployment_name, short_leg.strike,
                 self.short_leg_otm_steps, self.spread_width_steps,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"Short and long legs came out at the same strike ({short_leg.strike:g}): the option chain is too narrow for these settings",
+                              {**trigger_values, "strike": short_leg.strike})
             return
         credit_per_unit = short_price - long_price
         if credit_per_unit <= 0:
@@ -792,6 +816,9 @@ class TrendCreditSpreadStrategy(StrategyBase):
                 "quotes?) — skipping this entry",
                 runner.deployment_name, short_price, long_price,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"The short leg ({short_price:.2f}) wasn't pricier than the long leg ({long_price:.2f}): a debit, not a credit (illiquid or stale quotes?)",
+                              {**trigger_values, "short_price": short_price, "long_price": long_price})
             return
 
         qty = self.lots_per_trade * short_leg.lot_size
@@ -834,6 +861,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             reason="entry", metadata=long_meta,
         )
 
+        self._entered_at = candle["date"]   # for the decision log only: a leg's first tick takes a moment
         self.short_leg = {
             "token": short_leg.instrument_token, "symbol": short_leg.tradingsymbol,
             "exchange": short_leg.exchange, "entry_price": short_price, "qty": qty,
@@ -872,6 +900,9 @@ class TrendCreditSpreadStrategy(StrategyBase):
         short_price = runner.dispatcher.last_prices.get(self.short_leg["token"])
         long_price = runner.dispatcher.last_prices.get(self.long_leg["token"])
         if short_price is None or long_price is None:
+            if (getattr(self, '_entered_at', None) is None or (ts - self._entered_at).total_seconds() > 120):
+                await self.decide(runner, ts, "exit_checks", "blocked",
+                                  "No live price yet for a leg: profit target and stop wait for one", once="no_price")
             return   # wait for a live tick on both legs
 
         qty = self.short_leg["qty"]
@@ -880,6 +911,13 @@ class TrendCreditSpreadStrategy(StrategyBase):
         spread_pnl = unrealized_short + unrealized_long
 
         profit_target = self.profit_target_pct * self.credit_received_cash
+        stop_at = -self.stop_loss_multiple * self.credit_received_cash
+        if stop_at < spread_pnl < profit_target:
+            # every half hour while open: how close each exit was
+            await self.decide(runner, ts, "exit_checks", "no_action",
+                              f"Spread P&L {spread_pnl:,.0f}: target {profit_target:,.0f}, stop {stop_at:,.0f}",
+                              {"spread_pnl": round(spread_pnl, 2), "profit_target": round(profit_target, 2), "stop_loss": round(stop_at, 2)},
+                              once=f"{ts.hour}:{ts.minute // 30}")
         if spread_pnl >= profit_target:
             await self._exit_spread(runner, ts, "profit_target", {
                 "spread_pnl": round(spread_pnl, 2), "profit_target": round(profit_target, 2),

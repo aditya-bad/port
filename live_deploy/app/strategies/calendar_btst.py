@@ -318,6 +318,10 @@ class CalendarBTSTStrategy(StrategyBase):
 
     async def _maybe_enter(self, runner, ts) -> None:
         if self.entry_day is not None:
+            if ts.time() >= self.entry_time and ts.date() > self.entry_day:
+                await self.decide(runner, ts, "entry", "blocked",
+                                  f"{self.entry_time:%H:%M} entry due but the spread from {self.entry_day:%d %b} is still open",
+                                  {"entry_day": self.entry_day.isoformat()}, once="holding")
             return   # still holding an open cycle
         if self.entered_today:
             return
@@ -331,6 +335,9 @@ class CalendarBTSTStrategy(StrategyBase):
                 "catch_up_late_entry=False — skipping today's entry, will "
                 "try again at tomorrow's %s", runner.deployment_name, self.entry_time,
             )
+            await self.decide(runner, ts, "entry", "blocked",
+                              f"Started at {t:%H:%M}, after the {self.entry_time:%H:%M} entry, with catch-up off: no spread today",
+                              {"catch_up_late_entry": False})
             return
 
         await self._enter(runner, ts)
@@ -397,12 +404,15 @@ class CalendarBTSTStrategy(StrategyBase):
                 "%s: entry_time reached but no Kite session yet — skipping "
                 "today's entry", runner.deployment_name,
             )
+            await self.decide(runner, ts, "entry", "blocked", f"{self.entry_time:%H:%M} entry due but Kite isn't connected: no spread today")
             return
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the calendar spread for entry "
                 "— skipping today's entry", runner.deployment_name,
             )
+            await self.decide(runner, ts, "entry", "blocked",
+                              f"{self.entry_time:%H:%M} entry due but the calendar spread couldn't be found or priced: {e}", {"error": str(e)[:200]})
             return
 
         qty = self.lots_per_trade * short_ce.lot_size   # all 4 legs share the same lot_size
@@ -497,26 +507,28 @@ class CalendarBTSTStrategy(StrategyBase):
         for token, leg in list(self.short_legs.items()):
             pos = runner.open_positions.get(token)
             price = runner.dispatcher.last_prices.get(token) or leg["entry_price"]
+            src = "last_tick" if runner.dispatcher.last_prices.get(token) else "entry_price"
             if pos is not None:
                 await runner.buy(
                     leg["symbol"], token, float(pos["qty"]), price, ts,
                     reason=reason,
                     metadata=build_trade_meta(
                         trigger=reason, action="buy_close_short",
-                        trigger_values=trigger_values, resulting_state={"leg": "closed"},
+                        trigger_values={**trigger_values, "price_source": src}, resulting_state={"leg": "closed"},
                     ),
                 )
             runner.dispatcher.release_instruments([token])
         for token, leg in list(self.long_legs.items()):
             pos = runner.open_positions.get(token)
             price = runner.dispatcher.last_prices.get(token) or leg["entry_price"]
+            src = "last_tick" if runner.dispatcher.last_prices.get(token) else "entry_price"
             if pos is not None:
                 await runner.sell(
                     leg["symbol"], token, float(pos["qty"]), price, ts,
                     reason=reason,
                     metadata=build_trade_meta(
                         trigger=reason, action="sell_close_long",
-                        trigger_values=trigger_values, resulting_state={"leg": "closed"},
+                        trigger_values={**trigger_values, "price_source": src}, resulting_state={"leg": "closed"},
                     ),
                 )
             runner.dispatcher.release_instruments([token])

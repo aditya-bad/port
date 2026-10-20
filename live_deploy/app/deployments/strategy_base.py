@@ -189,3 +189,34 @@ class StrategyBase(ABC):
         fallback if this throws.
         """
         return None
+
+    # ── Geek mode's decision log ────────────────────────────────────────
+    #
+    # A check that didn't trade, for Geek mode's Decisions view (trades
+    # explain themselves through their fills' metadata). Outcomes:
+    # "no_action" (the rule looked and nothing was due) or "blocked" (a
+    # trade was due but something stopped it: the daily cap, a stale
+    # candle, no Kite session, a price that didn't confirm). Logging
+    # only: never changes what or when a strategy trades, and a failure
+    # to record never reaches the strategy (runner.record_decision
+    # swallows it). `once` dedupes a check that would otherwise repeat
+    # every candle: the same (rule, outcome, once) is noted at most once
+    # per IST day.
+
+    async def decide(self, runner: "Any", ts: "Any", rule: str, outcome: str, summary: str,
+                     data: Optional[dict] = None, once: "Any" = None) -> None:
+        record = getattr(runner, "record_decision", None)
+        if record is None or ts is None:
+            return
+        if once is not None:
+            seen = self.__dict__.setdefault("_decided_once", set())
+            key = (rule, outcome, once, ts.date())
+            if key in seen:
+                return
+            if len(seen) > 2000:   # a long-running process: forget earlier days
+                seen.clear()
+            seen.add(key)
+        try:
+            await record(ts, rule, outcome, summary, data or {})
+        except Exception:   # display-only
+            pass

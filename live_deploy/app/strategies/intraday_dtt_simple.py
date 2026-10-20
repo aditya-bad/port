@@ -410,6 +410,8 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                 "%s: entry_time already passed AND force_exit_time too — "
                 "skipping today's entry entirely", runner.deployment_name,
             )
+            await self.decide(runner, ts, "entry", "blocked",
+                              f"Started at {t:%H:%M}, after the {self.force_exit_time:%H:%M} square-off: no straddle today")
             return
         if self._late_start_today and not self.catch_up_late_entry:
             self.entered_today = True
@@ -418,6 +420,9 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                 "catch_up_late_entry=False — skipping today's entry, will "
                 "try again at tomorrow's %s", runner.deployment_name, self.entry_time,
             )
+            await self.decide(runner, ts, "entry", "blocked",
+                              f"Started at {t:%H:%M}, after the {self.entry_time:%H:%M} entry, with catch-up off: no straddle today, next at tomorrow's {self.entry_time:%H:%M}",
+                              {"catch_up_late_entry": False})
             return
 
         await self._enter(runner, ts)
@@ -443,12 +448,15 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                 "%s: entry_time reached but no Kite session yet — skipping "
                 "today's entry", runner.deployment_name,
             )
+            await self.decide(runner, ts, "entry", "blocked", f"{self.entry_time:%H:%M} entry due but Kite isn't connected: no straddle today")
             return
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the ATM straddle for entry — "
                 "skipping today's entry", runner.deployment_name,
             )
+            await self.decide(runner, ts, "entry", "blocked",
+                              f"{self.entry_time:%H:%M} entry due but the ATM straddle couldn't be found or priced: {e}", {"error": str(e)[:200]})
             return
 
         qty = self.lots_per_trade * ce_leg.lot_size   # CE/PE share the same lot_size
@@ -505,6 +513,7 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         self.ce_exchange, self.ce_entry_price = ce_leg.exchange, ce_price
         self.pe_token, self.pe_symbol = pe_leg.instrument_token, pe_leg.tradingsymbol
         self.pe_exchange, self.pe_entry_price = pe_leg.exchange, pe_price
+        self._entered_at = ts   # for the decision log only: a leg's first tick takes a moment
 
         # ONE notification for the whole straddle (2 fills above), not
         # two -- see runner.notify_execution's own docstring.
@@ -541,10 +550,16 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         # prices — an asymmetric resume (only one leg reattached) skips
         # these entirely (see on_start's warning) until force_exit_time.
         if self.ce_token is None or self.pe_token is None:
+            await self.decide(runner, ts, "exit_checks", "blocked",
+                              "Only one leg is open (after a restart): profit target and stops are skipped until the square-off",
+                              {"ce": self.ce_symbol, "pe": self.pe_symbol}, once="one_leg")
             return
 
         ce_now = runner.dispatcher.last_prices.get(self.ce_token)
         pe_now = runner.dispatcher.last_prices.get(self.pe_token)
+        if (ce_now is None or pe_now is None) and (getattr(self, '_entered_at', None) is None or (ts - self._entered_at).total_seconds() > 120):
+            await self.decide(runner, ts, "exit_checks", "blocked",
+                              "No live price yet for a leg: profit target and stops wait for one", once="no_price")
         if ce_now is None or pe_now is None:
             return   # no live tick yet for one of the legs — check again next tick
 
@@ -568,6 +583,15 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         combined_entry = self.ce_entry_price + self.pe_entry_price
         combined_now = ce_now + pe_now
         target_combined = combined_entry * (1 - self.combined_premium_profit_pct)
+        if combined_now > target_combined:
+            # every half hour while open: how close each exit was
+            await self.decide(runner, ts, "exit_checks", "no_action",
+                              f"Combined {combined_now:.1f} (entry {combined_entry:.1f}, target {target_combined:.1f}) · "
+                              f"CE {ce_now:.1f} / stop {ce_spike_threshold:.1f} · PE {pe_now:.1f} / stop {pe_spike_threshold:.1f}",
+                              {"combined_entry": round(combined_entry, 2), "combined_now": round(combined_now, 2),
+                               "target_combined": round(target_combined, 2), "ce_now": round(ce_now, 2), "pe_now": round(pe_now, 2),
+                               "ce_threshold": round(ce_spike_threshold, 2), "pe_threshold": round(pe_spike_threshold, 2)},
+                              once=f"{t.hour}:{t.minute // 30}")
         if combined_now <= target_combined:
             await self._exit_both(runner, ts, "profit_target_decay", ce_now, pe_now, trigger_values={
                 "combined_entry": round(combined_entry, 2), "combined_now": round(combined_now, 2),
@@ -584,13 +608,14 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         trigger_values = trigger_values or {}
         had_position = self.ce_token is not None or self.pe_token is not None
         if self.ce_token is not None:
+            src = "live" if ce_now is not None else "last_tick" if runner.dispatcher.last_prices.get(self.ce_token) else "entry_price"
             price = ce_now if ce_now is not None else \
                 (runner.dispatcher.last_prices.get(self.ce_token) or self.ce_entry_price)
             pos = runner.open_positions.get(self.ce_token)
             if pos is not None:
                 meta = build_trade_meta(
                     trigger=reason, action="buy_close_CE",
-                    trigger_values=trigger_values, resulting_state={"position": "flat"},
+                    trigger_values={**trigger_values, "price_source": src}, resulting_state={"position": "flat"},
                 )
                 await runner.buy(self.ce_symbol, self.ce_token, float(pos["qty"]), price, ts,
                                  reason=reason, metadata=meta)
@@ -598,13 +623,14 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             self.ce_token = self.ce_symbol = self.ce_exchange = self.ce_entry_price = None
 
         if self.pe_token is not None:
+            src = "live" if pe_now is not None else "last_tick" if runner.dispatcher.last_prices.get(self.pe_token) else "entry_price"
             price = pe_now if pe_now is not None else \
                 (runner.dispatcher.last_prices.get(self.pe_token) or self.pe_entry_price)
             pos = runner.open_positions.get(self.pe_token)
             if pos is not None:
                 meta = build_trade_meta(
                     trigger=reason, action="buy_close_PE",
-                    trigger_values=trigger_values, resulting_state={"position": "flat"},
+                    trigger_values={**trigger_values, "price_source": src}, resulting_state={"position": "flat"},
                 )
                 await runner.buy(self.pe_symbol, self.pe_token, float(pos["qty"]), price, ts,
                                  reason=reason, metadata=meta)

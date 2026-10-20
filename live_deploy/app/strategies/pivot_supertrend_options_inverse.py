@@ -495,6 +495,10 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                 runner.deployment_name, candle["date"], now,
                 (now - candle["date"]).total_seconds() / 60,
             )
+            if candle["date"].date() == now.date():   # a session's last candle always closes on the next morning's first tick
+                await self.decide(runner, now, "stale_candle", "blocked",
+                                  f"Candle {candle['date']:%H:%M} arrived {(now - candle['date']).total_seconds() / 60:.0f} min late (feed gap): no new entry off it",
+                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)})
 
         t = now.time()   # real wall-clock time -- deliberately used for the
                           # force-exit cutoff below, NOT for after_open
@@ -543,6 +547,9 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                 await self._exit(runner, candle, "force_exit", {
                     "candle_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
                 })
+            else:
+                await self.decide(runner, now, "force_exit", "no_action",
+                                  f"{self.force_exit_time:%H:%M} square-off: nothing open", once="flat")
 
         # 2 — still holding a position -> one more full candle has
         # elapsed since entry, count it toward hold_candles, and exit
@@ -586,6 +593,10 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                         runner.deployment_name, prev_trend_before_update, new_trend,
                         self.max_trades_per_day,
                     )
+                    await self.decide(runner, now, "max_trades", "blocked",
+                                      f"SuperTrend flipped {prev_trend_before_update} → {new_trend} (would buy a {'PE' if new_trend == 'down' else 'CE'}) but today's {self.max_trades_per_day} entries are used",
+                                      {"prev_trend": prev_trend_before_update, "new_trend": new_trend, "close": round(candle["close"], 2),
+                                       "trades_today": self.trades_today, "max_trades_per_day": self.max_trades_per_day})
                 else:
                     option_type = "PE" if new_trend == "down" else "CE"
                     trigger_values = {
@@ -595,6 +606,13 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                         "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
                     }
                     await self._enter(runner, candle, option_type, trigger_values)
+            elif prev_trend_before_update is not None and new_trend != prev_trend_before_update and not stale:
+                why = ("a leg is still held" if self.active_leg_token is not None
+                       else f"it's past the {self.force_exit_time:%H:%M} cut-off" if not before_cutoff
+                       else "it's before the session opens")
+                await self.decide(runner, now, "st_flip", "no_action" if self.active_leg_token is not None else "blocked",
+                                  f"SuperTrend flipped {prev_trend_before_update} → {new_trend} at {candle['close']:.2f}: no entry, {why}",
+                                  {"prev_trend": prev_trend_before_update, "new_trend": new_trend, "close": round(candle["close"], 2)})
             self.prev_trend = new_trend
 
     # ── Execution — buy an option leg to open, sell it to close ────────
@@ -632,12 +650,17 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
                 "%s: SuperTrend flip -> buy %s signal, but no Kite session "
                 "yet — skipping", runner.deployment_name, option_type,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"SuperTrend flipped (buy {option_type}) but Kite isn't connected", trigger_values)
             return
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the %s ATM leg for entry — "
                 "skipping", runner.deployment_name, option_type,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"SuperTrend flipped (buy {option_type}) but the ATM {option_type} couldn't be found or priced: {e}",
+                              {**trigger_values, "error": str(e)[:200]})
             return
 
         qty = self.lots_per_trade * leg.lot_size
@@ -690,11 +713,14 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             return
 
         key = f"{self.active_leg_exchange}:{self.active_leg_symbol}"
+        price_source = "ltp"
         try:
             price = await self.resolver.get_ltp(key)
         except Exception:
             price = runner.dispatcher.last_prices.get(self.active_leg_token)
+            price_source = "last_tick"
             if price is None:
+                price_source = "entry_price"
                 price = float(pos["avg_entry_price"])
                 logger.warning(
                     "%s: no live/last price for %s on exit (%s) — selling at "
@@ -713,7 +739,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         meta = build_trade_meta(
             trigger=reason,
             action=f"sell_close_{option_type}",
-            trigger_values=trigger_values,
+            trigger_values={**trigger_values, "price_source": price_source},
             resulting_state={"position": "flat"},
         )
         closed_symbol = self.active_leg_symbol

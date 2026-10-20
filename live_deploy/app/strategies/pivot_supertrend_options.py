@@ -570,6 +570,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 runner.deployment_name, candle["date"], now,
                 (now - candle["date"]).total_seconds() / 60,
             )
+            if candle["date"].date() == now.date():   # a session's last candle always closes on the next morning's first tick
+                await self.decide(runner, now, "stale_candle", "blocked",
+                                  f"Candle {candle['date']:%H:%M} arrived {(now - candle['date']).total_seconds() / 60:.0f} min late (feed gap): no new entry off it",
+                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)})
 
         t = now.time()   # real wall-clock time -- deliberately used for the
                           # force-exit cutoff below (must reflect reality
@@ -607,6 +611,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                     "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
                 }
                 await self._exit(runner, candle, "st_flip", trigger_values)
+            elif prev_trend_before_update is not None and new_trend != prev_trend_before_update:
+                await self.decide(runner, now, "st_flip", "no_action",
+                                  f"SuperTrend flipped {prev_trend_before_update} → {new_trend} at {candle['close']:.2f}: nothing open to close",
+                                  {"prev_trend": prev_trend_before_update, "new_trend": new_trend, "close": round(candle["close"], 2)})
             self.prev_trend = new_trend
 
         # 2 — force-exit at/after cutoff if still open (real `now`, not
@@ -616,6 +624,9 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 await self._exit(runner, candle, "force_exit", {
                     "candle_time": t.isoformat(), "force_exit_time": self.force_exit_time.isoformat(),
                 })
+            else:
+                await self.decide(runner, now, "force_exit", "no_action",
+                                  f"{self.force_exit_time:%H:%M} square-off: nothing open", once="flat")
 
         # 3 — a fresh entry signal, detected AND acted on immediately
         # (flat, pivots known, ST ready, within the entry window, this
@@ -624,6 +635,16 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         # call, is intentional — see module docstring's RULES ("a fresh
         # entry can fire immediately after an exit closes the previous
         # leg").
+        if not stale and self.active_leg_token is None and self.pivots is None and after_open:
+            await self.decide(runner, now, "pivot_break", "blocked",
+                              "No pivot levels yet (no previous-day prices): no entries until they're known", once="no_pivots")
+        if not stale and self.active_leg_token is None and self.pivots is not None \
+                and self.prev_trend is not None and after_open and not before_cutoff \
+                and self._broken_level(candle["close"]) is not None:
+            key, level = self._broken_level(candle["close"])
+            await self.decide(runner, now, "pivot_break", "blocked",
+                              f"{key} broken at {candle['close']:.2f} after the {self.force_exit_time:%H:%M} cut-off: no new entry",
+                              {"close": round(candle["close"], 2), "broken_level_key": key, "broken_level": round(level, 2)}, once="after_cutoff")
         if not stale and self.active_leg_token is None and self.pivots is not None \
                 and self.prev_trend is not None and before_cutoff and after_open:
             # Daily trade cap (Step 98) — checked here, not folded into
@@ -655,6 +676,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                                 "(%d) already reached today — staying flat",
                                 runner.deployment_name, k, close, self.max_trades_per_day,
                             )
+                            await self.decide(runner, now, "max_trades", "blocked",
+                                              f"{k} broken at {close:.2f} (would sell a PE) but today's {self.max_trades_per_day} entries are used",
+                                              {"close": round(close, 2), "broken_level_key": k, "side": "long",
+                                               "trades_today": self.trades_today, "max_trades_per_day": self.max_trades_per_day}, once=f"long:{k}")
                             break
                         trigger_values = {
                             "close": round(close, 2), "trend": self.prev_trend,
@@ -675,6 +700,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                                 "(%d) already reached today — staying flat",
                                 runner.deployment_name, k, close, self.max_trades_per_day,
                             )
+                            await self.decide(runner, now, "max_trades", "blocked",
+                                              f"{k} broken at {close:.2f} (would sell a CE) but today's {self.max_trades_per_day} entries are used",
+                                              {"close": round(close, 2), "broken_level_key": k, "side": "short",
+                                               "trades_today": self.trades_today, "max_trades_per_day": self.max_trades_per_day}, once=f"short:{k}")
                             break
                         trigger_values = {
                             "close": round(close, 2), "trend": self.prev_trend,
@@ -685,6 +714,18 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                         }
                         await self._enter(runner, candle, "short", trigger_values)
                         break
+
+    def _broken_level(self, close: float):
+        """(key, level) of the first pivot level this close breaks in the
+        current trend's direction — the same scan step 3 makes — or None."""
+        if not self.pivots or self.prev_trend not in ("up", "down"):
+            return None
+        keys = R_KEYS if self.prev_trend == "up" else S_KEYS
+        for k in keys:
+            level = self.pivots[k]
+            if (close > level) if self.prev_trend == "up" else (close < level):
+                return k, level
+        return None
 
     # ── Execution — sell an option leg to open, buy it back to close ───
 
@@ -724,12 +765,18 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
                 "%s: entry signal (%s -> sell %s) but no Kite session yet — skipping",
                 runner.deployment_name, side, option_type,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"{trigger_values.get('broken_level_key')} broken (sell {option_type}) but Kite isn't connected",
+                              {**trigger_values, "side": side})
             return
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the %s ATM leg for entry — skipping",
                 runner.deployment_name, option_type,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"{trigger_values.get('broken_level_key')} broken (sell {option_type}) but the ATM {option_type} couldn't be found or priced: {e}",
+                              {**trigger_values, "side": side, "error": str(e)[:200]})
             return
 
         qty = self.lots_per_trade * leg.lot_size
@@ -776,11 +823,14 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             return
 
         key = f"{self.active_leg_exchange}:{self.active_leg_symbol}"
+        price_source = "ltp"
         try:
             price = await self.resolver.get_ltp(key)
         except Exception:
             price = runner.dispatcher.last_prices.get(self.active_leg_token)
+            price_source = "last_tick"
             if price is None:
+                price_source = "entry_price"
                 price = float(pos["avg_entry_price"])
                 logger.warning(
                     "%s: no live/last price for %s on exit (%s) — buying back "
@@ -799,7 +849,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         meta = build_trade_meta(
             trigger=reason,
             action=f"buy_close_{option_type}",
-            trigger_values=trigger_values,
+            trigger_values={**trigger_values, "price_source": price_source},
             resulting_state={"position": "flat"},
         )
         closed_symbol = self.active_leg_symbol

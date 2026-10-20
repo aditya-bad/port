@@ -812,6 +812,10 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
                 runner.deployment_name, candle["date"], now,
                 (now - candle["date"]).total_seconds() / 60,
             )
+            if candle["date"].date() == now.date():   # a session's last candle always closes on the next morning's first tick
+                await self.decide(runner, now, "stale_candle", "blocked",
+                                  f"Candle {candle['date']:%H:%M} arrived {(now - candle['date']).total_seconds() / 60:.0f} min late (feed gap): no new entry off it",
+                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)})
 
         prev_close = self._prev_close
         new_ema = self.ema.update(candle)
@@ -859,18 +863,31 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             early = self._check_early_close(runner)
             if early is not None:
                 await self._exit(runner, candle, "early_close_capture", early)
+            else:
+                await self.decide(runner, now, "hold", "no_action",
+                                  f"Holding the {self.entry_trend or ''} spread: SuperTrend {new_trend or '—'}"
+                                  f"{', past the entry cut-off so a flip waits for tomorrow' if not before_cutoff else ''}",
+                                  {"close": round(candle["close"], 2), "ema": round(new_ema, 2) if new_ema is not None else None,
+                                   "entry_trend": self.entry_trend, "trend": new_trend}, once="hold")
             return
 
         if stale or new_trend is None or new_ema is None or not after_open:
             return
-        if self._gap_exit_pending:
-            return
-        if not self.touched_ema_since_exit:
-            return
-
         close = candle["close"]
         bearish = new_trend == "down" and close < new_ema
         bullish = new_trend == "up" and close > new_ema
+        if self._gap_exit_pending:
+            if bearish or bullish:
+                await self.decide(runner, now, "entry", "blocked",
+                                  "A signal, but an exit is still pending from an opening gap: no new entry yet", once="gap_exit")
+            return
+        if not self.touched_ema_since_exit:
+            if bearish or bullish:
+                await self.decide(runner, now, "reentry_gate", "blocked",
+                                  f"{'Bearish' if bearish else 'Bullish'} signal at {close:.2f}, but price hasn't touched EMA({self.ema_period}) since the last exit: waiting",
+                                  {"close": round(close, 2), "ema": round(new_ema, 2), "trend": new_trend}, once="gate")
+            return
+
         if not (bearish or bullish):
             return
         side = "bearish" if bearish else "bullish"
@@ -890,6 +907,9 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
                     self.entry_signal_cutoff_time,
                 )
                 self._late_signal_logged_today = True
+                await self.decide(runner, now, "entry", "blocked",
+                                  f"{side.capitalize()} signal at {close:.2f} after the {self.entry_signal_cutoff_time:%H:%M} cut-off: deferred to tomorrow's open, if it still holds",
+                                  trigger_values)
             return
 
         await self._enter(runner, candle, side, trigger_values)
@@ -925,12 +945,17 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
                 "%s: entry signal (%s -> sell %s spread) but no Kite session "
                 "yet — skipping", runner.deployment_name, side, option_type,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"{side.capitalize()} signal (sell a {option_type} spread) but Kite isn't connected", trigger_values)
             return
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the %s spread for entry — skipping",
                 runner.deployment_name, option_type,
             )
+            await self.decide(runner, candle["date"], "entry", "blocked",
+                              f"{side.capitalize()} signal but the {option_type} spread couldn't be found or priced: {e}",
+                              {**trigger_values, "error": str(e)[:200]})
             return
 
         sold_price = sold_leg.last_price

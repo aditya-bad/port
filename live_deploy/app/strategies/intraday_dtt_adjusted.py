@@ -664,6 +664,8 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                 "%s: entry_time already passed AND force_exit_time too — "
                 "skipping today's entry entirely", runner.deployment_name,
             )
+            await self.decide(runner, ts, "entry", "blocked",
+                              f"Started at {t:%H:%M}, after the {self.force_exit_time:%H:%M} square-off: no straddle today")
             return
         if self._late_start_today and not self.catch_up_late_entry:
             self.entered_today = True
@@ -672,6 +674,9 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                 "catch_up_late_entry=False — skipping today's entry, will "
                 "try again at tomorrow's %s", runner.deployment_name, self.entry_time,
             )
+            await self.decide(runner, ts, "entry", "blocked",
+                              f"Started at {t:%H:%M}, after the {self.entry_time:%H:%M} entry, with catch-up off: no straddle today, next at tomorrow's {self.entry_time:%H:%M}",
+                              {"catch_up_late_entry": False})
             return
 
         await self._enter(runner, ts)
@@ -703,12 +708,15 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                 "%s: entry_time reached but no Kite session yet — skipping "
                 "today's entry", runner.deployment_name,
             )
+            await self.decide(runner, ts, "entry", "blocked", f"{self.entry_time:%H:%M} entry due but Kite isn't connected: no straddle today")
             return
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the ATM straddle for entry — "
                 "skipping today's entry", runner.deployment_name,
             )
+            await self.decide(runner, ts, "entry", "blocked",
+                              f"{self.entry_time:%H:%M} entry due but the ATM straddle couldn't be found or priced: {e}", {"error": str(e)[:200]})
             return
 
         qty = self.lots_per_trade * ce_leg.lot_size
@@ -772,6 +780,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
 
         self.entry_spot = entry_spot
         self.combined_entry_premium = ce_price + pe_price
+        self._entered_at = ts   # for the decision log only: a leg's first tick takes a moment
         band = self.breakeven_multiplier * self.combined_entry_premium
         self.breakeven_lower = entry_spot - band
         self.breakeven_upper = entry_spot + band
@@ -821,6 +830,9 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
             for leg in side_legs:
                 p = runner.dispatcher.last_prices.get(leg["token"])
                 if p is None:
+                    if (getattr(self, '_entered_at', None) is None or (ts - self._entered_at).total_seconds() > 120):
+                        await self.decide(runner, ts, "exit_checks", "blocked",
+                                          f"No live price yet for {leg['symbol']}: profit target and adjustments wait for one", once="no_price")
                     return   # no live tick yet for some leg -- check again next tick
                 prices[leg["token"]] = p
 
@@ -852,6 +864,17 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                     unrealized += (leg["entry_price"] - prices[leg["token"]]) * leg_qty
             total_profit = self.realized_pnl_today + unrealized
             target = self.combined_premium_profit_pct * self.combined_entry_premium * self.entry_qty
+            if total_profit < target:
+                # every half hour while open: how close the exits were
+                be = (f" · spot {spot_price:.1f} between break-evens {self.breakeven_lower:.1f} and {self.breakeven_upper:.1f}"
+                      if self.breakeven_lower is not None else "")
+                await self.decide(runner, ts, "exit_checks", "no_action",
+                                  f"Day P&L {total_profit:,.0f} of the {target:,.0f} target{be}",
+                                  {"total_profit": round(total_profit, 2), "target": round(target, 2), "spot": round(spot_price, 2),
+                                   "breakeven_lower": self.breakeven_lower and round(self.breakeven_lower, 2),
+                                   "breakeven_upper": self.breakeven_upper and round(self.breakeven_upper, 2),
+                                   "legs": {k: len(v) for k, v in self.legs.items()}},
+                                  once=f"{t.hour}:{t.minute // 30}")
             if total_profit >= target:
                 await self._flatten_all(runner, ts, "profit_target_total", trigger_values={
                     "realized_pnl_today": round(self.realized_pnl_today, 2),
@@ -902,6 +925,11 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
     ) -> None:
         if self.adjustments_used < self.max_adjustments:
             await self._adjust(runner, ts, side, bigger_now)
+        else:
+            await self.decide(runner, ts, "adjustment", "blocked",
+                              f"{side} side fell to the adjustment trigger but today's {self.max_adjustments} adjustments are used",
+                              {"side": side, "bigger_now": round(bigger_now, 2), "adjustments_used": self.adjustments_used,
+                               "max_adjustments": self.max_adjustments}, once=f"cap:{side}")
         # else: hard cap already spent for the day -- see module
         # docstring's "HARD CAP". Nothing else to do; reversal-unwind
         # (checked right after this in _maybe_manage) can't ALSO fire on
@@ -936,13 +964,19 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                 "skipping this %s (will re-check next tick)",
                 runner.deployment_name, reason,
             )
+            await self.decide(runner, ts, "adjustment", "blocked",
+                              f"{side} side fell to the adjustment trigger but Kite isn't connected: retrying each tick",
+                              {"side": side, "reason": reason}, once=f"nokite:{side}")
             return
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the adjustment leg (%s, target "
                 "premium %.2f) — skipping this %s", runner.deployment_name,
                 side, target, reason,
             )
+            await self.decide(runner, ts, "adjustment", "blocked",
+                              f"{side} side fell to the adjustment trigger but no {side} near {target:.1f} could be found or priced: {e}",
+                              {"side": side, "target_premium": round(target, 2), "reason": reason, "error": str(e)[:200]}, once=f"fail:{side}")
             return
 
         # trigger_values computed HERE, internally, from `side`/`bigger_now`
@@ -1091,7 +1125,9 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         for side in ("CE", "PE"):
             for leg in list(self.legs[side]):
                 price = runner.dispatcher.last_prices.get(leg["token"])
+                src = "last_tick"
                 if price is None:
+                    src = "entry_price"
                     price = leg["entry_price"]
                     logger.warning(
                         "%s: no live price for %s on flatten (%s) — closing "
@@ -1105,7 +1141,7 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
                             leg["symbol"], leg["token"], float(pos["qty"]), price, ts, reason=reason,
                             metadata=build_trade_meta(
                                 trigger=reason, action=f"buy_close_{side}",
-                                trigger_values=trigger_values,
+                                trigger_values={**trigger_values, "price_source": src},
                                 resulting_state=_legs_snapshot({k: [l for l in v if l is not leg] for k, v in self.legs.items()}),
                             ),
                         )
