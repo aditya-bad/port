@@ -193,3 +193,14 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 .sp-info { margin: 6px 0 0; color: var(--mute); min-height: 1.4em; }
 .sp-info.on { color: var(--ink); font-weight: 600; }
 @media (prefers-reduced-motion: reduce) { .sp .v { transition: none; } }
+
+/* One cycle: a bar of links to its sections, and the section headings */
+.cy-jump { position: sticky; top: 0; z-index: 3; background: var(--paper); display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.cy-jump button { font: 12px var(--f-mono); border: 1px solid var(--line); padding: 4px 10px; background: none; color: var(--ink); cursor: pointer; white-space: nowrap; }
+.cy-jump button:hover { border-color: var(--ink); }
+.cy-jump button:focus-visible { outline: 2px solid var(--b); outline-offset: 2px; }
+.cy-sec { display: flex; flex-direction: column; gap: 28px; scroll-margin-top: 56px; }
+#cySess { scroll-margin-top: 56px; }
+.cy-h { margin: 6px 0 -10px; font-family: var(--f-display); font-size: 22px; letter-spacing: -.02em; border-top: 1.5px solid var(--ink); padding-top: 14px; }
+.cy-h span { font-family: var(--f-body, inherit); font-size: 13px; font-weight: 400; color: var(--mute); margin-left: 10px; letter-spacing: 0; }
+#cy-vs .rg, #cy-vs .sp-run { cursor: pointer; }

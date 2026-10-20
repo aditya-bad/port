@@ -2,6 +2,9 @@
 // numbers for the Cycles page: one cycle's P&L at an hour, a calmer copy
 // of its path, what past cycles did hour by hour, and the same day by day
 // with the running cycle placed against them. Pure: no DOM.
+//
+// `focus` (a cycle id) is the cycle page's view: that cycle against every
+// other closed cycle, instead of the running one against all past ones.
 
 export const hoursOf = r => (r.path && r.path.length ? r.path[r.path.length - 1][0] : 0);
 const hasPath = r => r.path && r.path.length > 1;
@@ -35,13 +38,15 @@ export function quantile(a, f) {
   return a[lo] + (a[hi] - a[lo]) * (pos - lo);
 }
 
-const pastOf = rows => rows.filter(r => r.status !== 'open' && hasPath(r));
+const pastOf = (rows, focus = null) => rows.filter(r => r.status !== 'open' && hasPath(r) && r.cycle_id !== focus);
+// The cycle drawn over the others: the focused one, else the running one.
+export const heroOf = (rows, focus = null) => rows.find(r => hasPath(r) && (focus != null ? r.cycle_id === focus : r.status === 'open'));
 
 // Past (closed) cycles hour by hour: how many were still open, and their
 // typical (median), middle half and best to worst. Stops where fewer than
 // `min` were still open: a "typical" of one or two cycles isn't one.
-export function band(rows, stepH = 2, min = 3) {
-  const past = pastOf(rows), end = Math.max(0, ...past.map(hoursOf)), out = [];
+export function band(rows, stepH = 2, min = 3, focus = null) {
+  const past = pastOf(rows, focus), end = Math.max(0, ...past.map(hoursOf)), out = [];
   for (let h = 0; h <= end; h += stepH) {
     const v = past.map(r => atHour(r, h)).filter(x => x != null).sort((a, b) => a - b);
     if (v.length < min) break;
@@ -53,17 +58,18 @@ export function band(rows, stepH = 2, min = 3) {
 // Where a value sits among past cycles on the same day.
 export function place(v, s) {
   if (v == null || s.med == null) return '';
-  if (v > s.hi) return 'above every past cycle';
-  if (v < s.lo) return 'below every past cycle';
+  if (v > s.hi) return 'above every other cycle';
+  if (v < s.lo) return 'below every other cycle';
   if (v > s.q3) return 'top quarter';
   if (v < s.q1) return 'bottom quarter';
   return 'middle half';
 }
 
 // The consolidated table: one row per day since opening (P&L at the end
-// of that day's 24 hours), plus a "now" row for the running cycle's age.
-export function dayTable(rows, min = 3) {
-  const past = pastOf(rows), run = rows.find(r => r.status === 'open' && hasPath(r));
+// of that day's 24 hours), plus a row for the hero's age now (running) or
+// at its end (a closed cycle on its own page).
+export function dayTable(rows, min = 3, focus = null) {
+  const past = pastOf(rows, focus), run = heroOf(rows, focus);
   const lastDay = Math.ceil(Math.max(0, ...past.map(hoursOf), run ? hoursOf(run) : 0) / 24);
   const at = (h, label, now = false) => {
     const v = past.map(r => atHour(r, h)).filter(x => x != null).sort((a, b) => a - b);
@@ -76,6 +82,30 @@ export function dayTable(rows, min = 3) {
   };
   const out = [];
   for (let d = 1; d <= lastDay; d++) out.push(at(d * 24, `Day ${d}`));
-  if (run) out.push(at(hoursOf(run), `Now · day ${(hoursOf(run) / 24).toFixed(1)}`, true));
+  if (run) out.push(at(hoursOf(run), `${run.status === 'open' ? 'Now' : 'End'} · day ${(hoursOf(run) / 24).toFixed(1)}`, true));
   return out.filter(r => r.open || r.run != null || r.now).sort((a, b) => a.day - b.day || (a.now ? 1 : -1));
+}
+
+// This cycle's numbers next to the other closed cycles': the typical
+// (median) value and where this one ranks.
+const median = a => { const b = [...a].sort((x, y) => x - y), n = b.length; return n ? (n % 2 ? b[(n - 1) / 2] : (b[n / 2 - 1] + b[n / 2]) / 2) : null; };
+const ordinal = n => `${n}${[, 'st', 'nd', 'rd'][n % 100 > 10 && n % 100 < 14 ? 0 : n % 10] || 'th'}`;
+// Rank of v among vals plus v itself (1 = highest, or lowest with low).
+const rankOf = (v, vals, low = false) => 1 + vals.filter(x => (low ? x < v : x > v)).length;
+export function vsCompare(row, all) {
+  const o = all.filter(x => x.cycle_id !== row.cycle_id && x.status === 'closed');
+  const pick = k => o.map(x => x[k]).filter(x => x != null);
+  const n = o.length + 1;
+  const res = row.pnl;
+  return {
+    others: o.length,
+    rows: [
+      ['Result, gross', res, median(pick('pnl')), res != null ? `${ordinal(rankOf(res, pick('pnl')))} best of ${pick('pnl').length + 1}` : '', 'money'],
+      ['Days', row.days, median(pick('days')), `${ordinal(rankOf(row.days, pick('days'), true))} shortest of ${pick('days').length + 1}`, 'days'],
+      ['Rolls', row.rolls, median(pick('rolls')), `${ordinal(rankOf(row.rolls, pick('rolls'), true))} fewest of ${n}`, 'n'],
+      ['Worst dip', row.mae, median(pick('mae')), row.mae != null ? `${ordinal(rankOf(row.mae, pick('mae'), true))} deepest of ${pick('mae').length + 1}` : 'no prices stored', 'money'],
+      ['Best peak', row.mfe, median(pick('mfe')), row.mfe != null ? `${ordinal(rankOf(row.mfe, pick('mfe')))} highest of ${pick('mfe').length + 1}` : 'no prices stored', 'money'],
+    ],
+    same: row.status === 'open' ? null : o.filter(x => x.ended_by === row.ended_by).length,
+  };
 }

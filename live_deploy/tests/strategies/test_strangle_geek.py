@@ -380,6 +380,8 @@ def test_cycle_page_has_everything_about_one_cycle(pool_run, monkeypatch):
         assert abs(cy["money"]["premium_sold"] - sold) < 0.01
         assert cy["money"]["open"] is not None
         assert cy["rules"] == {"trigger": 0.5, "floor": 0.8, "band": [0.8, 0.95]}
+        # every cycle's row and journey, to set this one against the others
+        assert [r["cycle_id"] for r in cy["cycles"]] == [1] and cy["cycles"][0]["path"]
     pool_run(go)
 
 

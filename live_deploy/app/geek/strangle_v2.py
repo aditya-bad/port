@@ -1122,6 +1122,8 @@ async def cycle(ctx: Ctx) -> dict:
     cfg = {**_defaults(), **ctx.config}
     return {
         "found": True, "cycle_id": cid, "ids": ids,
+        # every cycle's row and journey, to set this one against the others
+        "cycles": all_cycles["rows"],
         "prev": ids[i - 1] if i > 0 else None, "next": ids[i + 1] if i < len(ids) - 1 else None,
         "row": {k: v for k, v in row.items() if k != "path"},
         "checkpoint_target": target, "capital": ctx.capital,

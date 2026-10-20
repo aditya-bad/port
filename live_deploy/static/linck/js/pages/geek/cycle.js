@@ -1,18 +1,25 @@
 // One cycle, end to end (#/d/:id/geek/cycle?c=N): everything about it in
-// one place. How it was entered, its P&L path with every roll on it, the
-// index and combined P&L with its legs and orders (the session sheet's body), the
-// side balance against the rules, the call and put premium, each leg's
-// strike over time, every action and every check in order, its rolls
-// scored, every leg, and where the money went. From Cycles or Adjustments.
+// one place, A to Z. While it runs, the engine's rules, strikes and legs.
+// Its P&L path with every roll on it and its journey; the Cycles page's
+// charts and day-by-day table with this cycle set against every other;
+// the index and combined P&L with its legs and orders (the session
+// sheet's body); the side balance, the call and put premium and each
+// leg's strike over time; its rolls scored and charted as on Adjustments;
+// how it was entered, every action and check in order, where the money
+// went, and every leg. A bar of links jumps between the sections.
+// From Cycles, Adjustments, or another cycle's line.
 
 import { api } from '../../core/api.js';
-import { html, mount, actions } from '../../core/dom.js';
+import { html, mount, actions, on } from '../../core/dom.js';
 import { inr, dStamp, dShort, hhmm, price } from '../../core/format.js';
 import { go } from '../../core/router.js';
 import * as book from '../../data/book.js';
 import { empty, loading } from '../../ui/components.js';
 import { loadSession, sessionBody } from '../deployment/session.js';
-import { journeys } from './cycles.js';
+import { journeys, spotlight, spotEvents, normalBand, dayRows, ranges, daysChart } from './cycles.js';
+import { vsCompare } from './paths.js';
+import { arrows, cumulative, scatter, bySide, byHour, legend } from './adjustments.js';
+import { rulesBlock, strikesBlock, legsBlock } from './engine.js';
 import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, ratio, bars, LABEL, yLabels, wide } from './ui.js';
 
 // Viewbox widths: half-width panels and full-width ones (text keeps its size).
@@ -170,9 +177,51 @@ function entryBox(e) {
   </div>`;
 }
 
+function vsOthers(cy) {
+  const c = vsCompare(cy.row, cy.cycles || []);
+  if (!c.others) return empty('', 'Appears once another cycle has closed.');
+  const fmt = (v, k) => (v == null ? '—' : k === 'money' ? html`<span class="${tone(v)}">${inr(v)}</span>` : k === 'days' ? `${Number(v).toFixed(1)} d` : Number.isInteger(v) ? String(v) : v.toFixed(1));
+  return html`${table([['', 'minmax(96px,1fr)'], ['This cycle', '100px', 'num'], ['Typical other', '104px', 'num'], ['Rank', 'minmax(120px,1.2fr)']],
+    c.rows.map(([l, v, med, rank, k]) => [html`<b>${l}</b>`, fmt(v, k), fmt(med, k), html`<span class="small mute">${rank}</span>`]), { minw: 0 })}
+    <p class="gk-note">${cy.row.status === 'open' ? 'Still running: its result, days and dip can still change.' : `${c.same} of the ${c.others} other closed cycles also ended by ${(LABEL[cy.row.ended_by] || cy.row.ended_by).toLowerCase()}.`} Typical is the median.</p>`;
+}
+
+// While this cycle runs: the engine's rules, strikes and legs.
+const liveBody = live => html`<div class="col" style="gap:28px">${rulesBlock(live)}
+  <div class="gk-two even">
+    ${live.strikes ? html`<div class="gk-panel"><h3>Where the strikes sit <span class="s">credit ${live.strikes.credit.toFixed(1)} pts</span></h3>${strikesBlock(live.strikes)}</div>` : ''}
+    <div class="gk-panel"><h3>Legs &amp; price feed <span class="s">${live.running ? 'live' : 'not running: no live prices'}</span></h3>${legsBlock(live)}</div>
+  </div></div>`;
+
+// Rolls: the table, then the Adjustments page's charts for this cycle's rolls.
+function rollsSection(cy, eodBand) {
+  const R = cy.rolls;
+  return html`<section class="cy-sec" id="cy-rolls"><h2 class="cy-h">Rolls <span>${R.length ? `${R.length} in this cycle, each against keeping the leg it closed` : 'none in this cycle'}</span></h2>
+    <div class="gk-panel"><h3>Rolls in this cycle <span class="s">each against keeping the leg it closed</span></h3>
+      ${R.length ? table([['When', '110px'], ['Rule', '110px'], ['Side', '70px'], ['Balance', '104px', 'num'], ['Closed → opened', 'minmax(200px,1.6fr)'], ['If held', '92px', 'num'], ['Roll paid', '100px', 'num']],
+        R.map(x => [html`<span class="mono tiny">${dStamp(x.t)}</span>`, html`<span class="oc">${LABEL[x.rule]}</span>`, `${x.side || ''} ${x.direction || ''}`,
+          `${ratio(x.ratio_before)} → ${ratio(x.ratio_after)}`,
+          html`<span class="mono tiny">${x.closed.map(f => `closed ${f.opt} ${f.strike ?? ''} @${Number(f.price).toFixed(1)}`).join(' · ')}${x.opened.length ? ' → ' : ''}${x.opened.map(f => `sold ${f.opt} ${f.strike ?? ''} @${Number(f.price).toFixed(1)}`).join(' · ')}</span>`,
+          html`<span class="${tone(x.if_held)}">${money(x.if_held)}</span>`, html`<b class="${tone(x.roll_paid)}">${money(x.roll_paid)}</b>`]), { minw: 860 })
+        : empty('', 'No rolls in this cycle.')}</div>
+    ${R.length ? html`<div class="gk-two even">
+        <div class="gk-panel"><h3>What rolling earned <span class="s">running total, roll by roll, in this cycle</span></h3>${cumulative(R)}${legend()}</div>
+        <div class="gk-panel"><h3>Balance when it rolled vs what it paid</h3>${scatter(R, eodBand)}${legend()}</div>
+      </div>
+      <div class="gk-two even">
+        <div class="col" style="gap:28px">
+          <div class="gk-panel"><h3>Balance before → after each roll <span class="s">rolls should land in the shaded band</span></h3>${arrows(R, eodBand)}</div>
+          <div class="gk-panel"><h3>By side and direction</h3>${bySide(R)}</div>
+        </div>
+        <div class="gk-panel"><h3>By hour of day <span class="s">IST, split by rule</span></h3>${byHour(R)}${legend()}</div>
+      </div>` : ''}
+  </section>`;
+}
+
 export default {
   render(el, v, g) {
     let data = null, sess = null, sessFor = null;   // the price chart, legs and orders, loaded once per cycle
+    let spotFilter = 'all', eng = g.engine ? g.engine() : null;
     const c = g.params && g.params.c;
     function sessPanel() {
       return html`<div class="gk-panel" id="cySess"><h3>Price chart, legs and orders <span class="s">the index and the combined P&L on one time line · every leg’s final status · every order</span></h3>
@@ -196,12 +245,17 @@ export default {
       const r = cy.row, m = cy.money;
       const result = r.status === 'open' ? m.open : r.pnl;
       const nav = (id, l) => (id == null ? html`<span class="btn btn-sm" aria-disabled="true">${l}</span>` : html`<a class="btn btn-sm" href="${g.href(`cycle?c=${id}`)}">${l}</a>`);
+      const all = cy.cycles || [], tgt = cy.checkpoint_target, id = cy.cycle_id;
+      // the engine speaks for the cycle the strategy is in: this one, if it runs
+      const live = r.status === 'open' && eng && eng.state && eng.state.cycle_id === id ? eng : null;
+      const eodBand = { rules: [{ key: 'eod_gap_check', band: cy.rules.band }] };
+      const SECTIONS = [...(live ? [['cy-live', 'Live now']] : []), ['cy-pnl', 'P&L'], ['cy-vs', 'Against other cycles'], ['cySess', 'Price chart, legs, orders'],
+        ['cy-bal', 'Balance & strikes'], ['cy-rolls', 'Rolls'], ['cy-tl', 'Timeline & money'], ['cy-legs', 'Every leg']];
       mount(el, html`
         <div class="row wrap" style="gap:8px;align-items:center">
           <a class="small" href="${g.href('cycles')}">← All cycles</a><span class="grow"></span>
           <span class="mono tiny mute nowrap">${cy.ids.indexOf(cy.cycle_id) + 1} of ${cy.ids.length}</span>
           ${nav(cy.prev, '‹ Previous')}${nav(cy.next, 'Next ›')}
-          <button type="button" class="btn btn-sm" data-act="toSess">Price chart, legs and orders ↓</button>
         </div>
         ${head(html`Cycle ${cy.cycle_id} ${endTag(r)}`, `${dStamp(r.start)} → ${r.end ? dStamp(r.end) : 'now'} · ${r.days} days · expiry ${r.contract_expiry || '—'}`, 'fills · checks · 5-minute marks · candles')}
         ${tiles([
@@ -212,14 +266,33 @@ export default {
           ['Premium sold', inr(m.premium_sold, { sign: false }), m.premium_sold && r.status !== 'open' ? `${(m.net / m.premium_sold * 100).toFixed(1)}% kept, net` : `${cy.legs.filter(l => !l.hedge).length} short legs`],
           ['Costs', inr(-(m.charges + m.slippage)), `charges ${inr(m.charges, { sign: false })} · slippage ${inr(m.slippage, { sign: false })}`],
         ], 6)}
+        <nav class="cy-jump" aria-label="Sections of this cycle">${SECTIONS.map(([k, l]) => html`<button type="button" data-act="jump" data-to="${k}">${l}</button>`)}</nav>
+        ${live ? html`<section class="cy-sec" id="cy-live"><h2 class="cy-h">Live now <span>the engine, for this cycle</span></h2>
+          <div class="cy-live-body">${liveBody(live)}</div></section>` : ''}
+        <section class="cy-sec" id="cy-pnl"><h2 class="cy-h">P&L <span>through the cycle, and its journey</span></h2>
         <div class="gk-panel"><h3>P&L through the cycle <span class="s">${cy.path_kind === 'booked' ? 'no prices were stored for this cycle: steps at what each leg booked' : `closed legs at what they booked, open legs at each ${cy.path_kind === 'candles' ? '15-minute candle close' : '5-minute mark'}`} · dotted: market open, no prices · dashed blue: rolls</span></h3>${pnlChart(cy)}</div>
         <div class="gk-panel"><h3>Journey <span class="s">this cycle only · P&L against days since it opened, as on Cycles · dashed green: checkpoint</span></h3>${journey(cy)}</div>
+        </section>
+        <section class="cy-sec" id="cy-vs"><h2 class="cy-h">Against other cycles <span>the Cycles page’s charts, with cycle ${id} in blue</span></h2>
+        <div class="gk-panel"><h3>Spotlight <span class="s">other cycles faint · bold black: the typical cycle · blue: this one · hover a line to light it up, click to open it</span></h3>${spotlight(all, tgt, spotFilter, id)}</div>
+        <div class="gk-panel"><h3>Is this cycle normal? <span class="s">this cycle against where the other cycles were on the same day</span></h3>${normalBand(all, tgt, id)}</div>
+        <div class="gk-panel"><h3>Day by day <span class="s">the other cycles’ P&L at the end of each day since opening, and this one against them</span></h3>${dayRows(all, id)}</div>
+        <div class="gk-panel"><h3>Range and result <span class="s">every cycle’s worst dip, best peak and result · this one outlined · click a bar to open that cycle</span></h3>${ranges(all, tgt, id)}</div>
+        <div class="gk-two even">
+          <div class="gk-panel"><h3>This cycle vs the others <span class="s">against the other closed cycles</span></h3>${vsOthers(cy)}</div>
+          <div class="gk-panel"><h3>Days to checkpoint <span class="s">each cycle that reached it${r.ended_by === 'checkpoint_target' ? ' · this one in blue' : ''}</span></h3>${daysChart(all, id)}</div>
+        </div>
+        </section>
         ${sessPanel()}
+        <section class="cy-sec" id="cy-bal"><h2 class="cy-h">Balance &amp; strikes</h2>
         <div class="gk-two even">
           <div class="gk-panel"><h3>Side balance <span class="s">smaller ÷ bigger · shaded: where rolls aim</span></h3>${balanceChart(cy)}</div>
           <div class="gk-panel"><h3>Call and put premium <span class="s">each side’s open short legs</span></h3>${premiumChart(cy)}</div>
         </div>
         <div class="gk-panel"><h3>Strikes over time <span class="s">each leg from open to close · a roll ends one bar and starts another</span></h3>${ladder(cy)}</div>
+        </section>
+        ${rollsSection(cy, eodBand)}
+        <section class="cy-sec" id="cy-tl"><h2 class="cy-h">Timeline &amp; money</h2>
         <div class="gk-two">
           <div class="gk-panel"><h3>Everything that happened <span class="s">${cy.timeline.length} actions and checks, oldest first</span></h3>${timeline(cy)}</div>
           <div class="col" style="gap:28px">
@@ -230,25 +303,32 @@ export default {
               ${r.status === 'open' ? html`<p class="gk-note">Still open: ${money(m.open)} including the open legs at their latest price.</p>` : ''}</div>
           </div>
         </div>
-        <div class="gk-panel"><h3>Rolls in this cycle <span class="s">each against keeping the leg it closed</span></h3>
-          ${cy.rolls.length ? table([['When', '110px'], ['Rule', '110px'], ['Side', '70px'], ['Balance', '104px', 'num'], ['Closed → opened', 'minmax(200px,1.6fr)'], ['If held', '92px', 'num'], ['Roll paid', '100px', 'num']],
-            cy.rolls.map(x => [html`<span class="mono tiny">${dStamp(x.t)}</span>`, html`<span class="oc">${LABEL[x.rule]}</span>`, `${x.side || ''} ${x.direction || ''}`,
-              `${ratio(x.ratio_before)} → ${ratio(x.ratio_after)}`,
-              html`<span class="mono tiny">${x.closed.map(f => `closed ${f.opt} ${f.strike ?? ''} @${Number(f.price).toFixed(1)}`).join(' · ')}${x.opened.length ? ' → ' : ''}${x.opened.map(f => `sold ${f.opt} ${f.strike ?? ''} @${Number(f.price).toFixed(1)}`).join(' · ')}</span>`,
-              html`<span class="${tone(x.if_held)}">${money(x.if_held)}</span>`, html`<b class="${tone(x.roll_paid)}">${money(x.roll_paid)}</b>`]), { minw: 860 })
-            : empty('', 'No rolls in this cycle.')}</div>
+        </section>
+        <section class="cy-sec" id="cy-legs">
         <div class="gk-panel"><h3>Every leg <span class="s">${cy.legs.length} legs, in the order they were opened</span></h3>
           ${table([['Leg', 'minmax(120px,1fr)'], ['Role', '100px'], ['Opened', '110px'], ['Closed', '110px'], ['Entry', '76px', 'num'], ['Exit', '76px', 'num'], ['P&L', '96px', 'num'], ['Costs', '80px', 'num'], ['Closed by', '130px']],
             cy.legs.map(l => [html`<b class="mono small">${legTxt(l)}</b>${l.hedge ? html` <span class="tiny mute">wing</span>` : ''}`, html`<span class="tiny">${(l.role || '').replace(/_/g, ' ')}</span>`,
               html`<span class="mono tiny">${dStamp(l.opened_at)}</span>`, html`<span class="mono tiny">${l.closed_at ? dStamp(l.closed_at) : 'open'}</span>`,
               price(l.entry), l.exit != null ? price(l.exit) : '—', html`<span class="${tone(l.pnl)}">${money(l.pnl)}</span>`,
-              l.charges != null ? inr(l.charges + l.slippage, { sign: false }) : '—', l.closed_by ? (LABEL[l.closed_by] || l.closed_by.replace(/_/g, ' ')) : '—']), { minw: 980 })}</div>`);
+              l.charges != null ? inr(l.charges + l.slippage, { sign: false }) : '—', l.closed_by ? (LABEL[l.closed_by] || l.closed_by.replace(/_/g, ' ')) : '—']), { minw: 980 })}</div>
+        </section>`);
       loadSess(cy);
     }
     const off = actions(el, {
-      toSess: () => { const t = el.querySelector('#cySess'); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
+      // the router owns the hash: scroll instead of linking to #id
+      jump: d => { const t = el.querySelector(`#${d.to}`); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
     });
+    const offs = [...spotEvents(el, f => { spotFilter = f; paint(); }),
+      // another cycle's line, bar or square opens that cycle
+      on(el, 'click', '#cy-vs [data-c]', (e, t) => { if (t.dataset.c && +t.dataset.c !== (data && data.cycle_id)) go(`d/${g.id}/geek/cycle?c=${t.dataset.c}`); })];
+    // engine updates refresh only the live section; the first one draws it
+    const offEng = g.onEngine ? g.onEngine(d => {
+      eng = d;
+      if (!data || !data.row || data.row.status !== 'open' || !d.state || d.state.cycle_id !== data.cycle_id) return;
+      const body = el.querySelector('#cy-live .cy-live-body');
+      if (body) mount(body, liveBody(d)); else paint();
+    }) : () => {};
     const stop = poll(() => api.geek(g.id, `cycle${c ? `?c=${encodeURIComponent(c)}` : ''}`), 60000, d => { data = d; paint(); });
-    return () => { stop(); off(); };
+    return () => { stop(); off(); offs.forEach(f => f()); offEng(); };
   },
 };

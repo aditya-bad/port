@@ -50,6 +50,37 @@ const STATE_LABEL = {
   entered_ever: 'Has entered', last_flatten: 'Last flatten', hedges: 'Hedges open',
 };
 
+// The rules, the strikes and the legs: also shown on a running cycle's own page.
+export function rulesBlock(eng) {
+  const rules = eng.rules || [];
+  return html`${nextMove(eng)}
+    ${rules.length ? html`<div class="gk-tbl gk-rules" style="--minw:0px">
+      <div class="tr th"><span>#</span><span>Rule</span><span>Distance to trigger</span><span>Reading</span><span>State</span></div>
+      ${rules.map((r, i) => html`<div class="tr ${r.state === 'armed' ? 'att' : ''}" data-rule="${r.key}">
+        <span class="prio">${i + 1}</span>
+        <div class="cell-name"><b>${r.label}</b><span title="${r.desc}">${r.desc}</span></div>
+        <div class="g">${gauge(r)}<div class="gauge-l"><span>${r.left || ''}</span><span>${r.mid || ''}</span><span>${r.right || ''}</span></div></div>
+        <span class="mono small rd">${r.reading}</span>
+        ${stateChip(r)}</div>`)}
+    </div>` : ''}`;
+}
+export function strikesBlock(k) {
+  return html`${ruler(k)}
+    ${tiles([
+      ['To CE strike', k.spot != null ? `+${Math.round(k.ce - k.spot)}` : '—', k.spot != null ? `${((k.ce - k.spot) / k.spot * 100).toFixed(2)}%` : ''],
+      ['To PE strike', k.spot != null ? `−${Math.round(k.spot - k.pe)}` : '—', k.spot != null ? `${((k.spot - k.pe) / k.spot * 100).toFixed(2)}%` : ''],
+      ['Upper break-even', Math.round(k.upper_be).toLocaleString('en-IN'), k.spot != null ? `+${((k.upper_be - k.spot) / k.spot * 100).toFixed(2)}%` : ''],
+      ['Lower break-even', Math.round(k.lower_be).toLocaleString('en-IN'), k.spot != null ? `−${((k.spot - k.lower_be) / k.spot * 100).toFixed(2)}%` : ''],
+    ])}`;
+}
+export function legsBlock(eng) {
+  const legs = table([['Leg', 'minmax(176px,1.6fr)'], ['Role', '110px'], ['Entry', '80px', 'num'], ['LTP', '80px', 'num'], ['Last tick', '80px', 'num'], ['P&L', '96px', 'num']],
+    eng.legs.map(l => [html`<b class="${l.opt === 'CE' ? 'leg-ce' : 'leg-pe'}">${l.symbol}</b>`, l.role || '—', price(l.entry), price(l.ltp), age(l.tick_age_s), html`<span class="${tone(l.pnl)}">${money(l.pnl)}</span>`]), { minw: 620 });
+  return html`${eng.legs.length ? legs : empty('', 'No open legs.')}
+    ${eng.hedges && eng.hedges.length ? html`<p class="gk-note">Hedges: ${eng.hedges.map(h => `${h.symbol} @${price(h.entry)}`).join(' · ')}</p>` : ''}
+    ${eng.running ? html`<p class="gk-note">${eng.cooldowns.length ? html`<b>Waiting on quotes:</b> ${eng.cooldowns.map(c => `${c.rule.replace(/_/g, ' ')} until ${hhmmss(c.until)}`).join(' · ')}` : 'No trigger is waiting on a quote check.'} Decisions wait until every leg has traded this session.</p>` : ''}`;
+}
+
 export default {
   render(el, v, g) {
     let eng = g.engine(), prem = null, at = new Date();
@@ -57,37 +88,18 @@ export default {
       if (!eng) { mount(el, html`${head('Engine')}${loading(5)}`); return; }
       const k = eng.strikes, rules = eng.rules || [];
       const eod = rules.find(r => r.key === 'eod_gap_check'), cont = rules.find(r => r.key === 'continuous_50pct_trigger');
-      const legs = table([['Leg', 'minmax(0,1.6fr)'], ['Role', '110px'], ['Entry', '80px', 'num'], ['LTP', '80px', 'num'], ['Last tick', '80px', 'num'], ['P&L', '96px', 'num']],
-        eng.legs.map(l => [html`<b class="${l.opt === 'CE' ? 'leg-ce' : 'leg-pe'}">${l.symbol}</b>`, l.role || '—', price(l.entry), price(l.ltp), age(l.tick_age_s), html`<span class="${tone(l.pnl)}">${money(l.pnl)}</span>`]), { minw: 620 });
       mount(el, html`
         ${head('Engine', 'Every rule the strategy checks, in the order it checks them, and how close each one is to acting.', `updated ${hhmmss(at)}`)}
-        ${nextMove(eng)}
-        ${rules.length ? html`<div class="gk-tbl gk-rules" style="--minw:0px">
-          <div class="tr th"><span>#</span><span>Rule</span><span>Distance to trigger</span><span>Reading</span><span>State</span></div>
-          ${rules.map((r, i) => html`<div class="tr ${r.state === 'armed' ? 'att' : ''}" data-rule="${r.key}">
-            <span class="prio">${i + 1}</span>
-            <div class="cell-name"><b>${r.label}</b><span title="${r.desc}">${r.desc}</span></div>
-            <div class="g">${gauge(r)}<div class="gauge-l"><span>${r.left || ''}</span><span>${r.mid || ''}</span><span>${r.right || ''}</span></div></div>
-            <span class="mono small rd">${r.reading}</span>
-            ${stateChip(r)}</div>`)}
-        </div>` : ''}
+        ${rulesBlock(eng)}
         ${k ? html`<div class="gk-two even">
           <div class="gk-panel"><h3>Where the strikes sit <span class="s">credit ${k.credit.toFixed(1)} pts</span></h3>
-            ${ruler(k)}
-            ${tiles([
-              ['To CE strike', k.spot != null ? `+${Math.round(k.ce - k.spot)}` : '—', k.spot != null ? `${((k.ce - k.spot) / k.spot * 100).toFixed(2)}%` : ''],
-              ['To PE strike', k.spot != null ? `−${Math.round(k.spot - k.pe)}` : '—', k.spot != null ? `${((k.spot - k.pe) / k.spot * 100).toFixed(2)}%` : ''],
-              ['Upper break-even', Math.round(k.upper_be).toLocaleString('en-IN'), k.spot != null ? `+${((k.upper_be - k.spot) / k.spot * 100).toFixed(2)}%` : ''],
-              ['Lower break-even', Math.round(k.lower_be).toLocaleString('en-IN'), k.spot != null ? `−${((k.spot - k.lower_be) / k.spot * 100).toFixed(2)}%` : ''],
-            ])}</div>
+            ${strikesBlock(k)}</div>
           <div class="gk-panel"><h3>Side balance, this cycle <span class="s">smaller side ÷ bigger side, every 5 minutes · shaded: where rolls aim</span></h3>
             ${prem === null ? loading(3) : prem.series && prem.series.length ? balance(prem.series, eod, cont) : empty('', 'Appears after the first 5-minute snapshot of this cycle.')}</div>
         </div>` : ''}
         <div class="gk-two">
           <div class="gk-panel"><h3>Legs &amp; price feed <span class="s">${eng.running ? 'live' : 'not running: no live prices'}</span></h3>
-            ${eng.legs.length ? legs : empty('', 'No open legs.')}
-            ${eng.hedges && eng.hedges.length ? html`<p class="gk-note">Hedges: ${eng.hedges.map(h => `${h.symbol} @${price(h.entry)}`).join(' · ')}</p>` : ''}
-            ${eng.running ? html`<p class="gk-note">${eng.cooldowns.length ? html`<b>Waiting on quotes:</b> ${eng.cooldowns.map(c => `${c.rule.replace(/_/g, ' ')} until ${hhmmss(c.until)}`).join(' · ')}` : 'No trigger is waiting on a quote check.'} Decisions wait until every leg has traded this session.</p>` : ''}
+            ${legsBlock(eng)}
           </div>
           <div class="gk-panel"><h3>Strategy state <span class="s">what it remembers</span></h3>
             ${eng.state ? table([['', 'minmax(0,1fr)'], ['', 'minmax(0,1fr)', 'num']],

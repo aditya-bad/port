@@ -169,7 +169,7 @@ test('a cycle opens end to end from Cycles and from Adjustments', async () => {
   assert.match(await p.locator('#gkView .row.wrap').first().innerText(), /9 of 10/);
   // the header button jumps to it
   await p.evaluate(() => window.scrollTo(0, 0));
-  await p.click('[data-act=toSess]');
+  await p.click('[data-act=jump][data-to=cySess]');
   await p.waitForFunction(() => { const r = document.querySelector('#cySess').getBoundingClientRect(); return r.top < innerHeight / 2 && r.top > -40; });
   // a worst point still in profit isn't red
   const worst = p.locator('#cySess .ss-stats > div', { hasText: 'Worst' }).locator('b');
@@ -251,11 +251,53 @@ test('cycles: spotlight, is-this-normal band and the day-by-day table', async ()
   assert.match(rows[0], /^Day 1/);
   assert.ok(rows.some(r => /^Now · day \d/.test(r)), 'a row for the running cycle now');
   assert.equal(await dt.locator('.tr.att').count(), 1);
-  assert.match(rows.join('\n'), /below every past cycle|bottom quarter|middle half|top quarter|above every past cycle/);
+  assert.match(rows.join('\n'), /below every other cycle|bottom quarter|middle half|top quarter|above every other cycle/);
   const text = await p.locator('#gkView').innerText();
   assert.doesNotMatch(text, /undefined|NaN|\[object/);
   await p.mouse.click(pt.x, pt.y);
   await p.waitForURL(/cycle\?c=5$/);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+// A to Z on one page: the engine while it runs, the Cycles page's charts
+// with this cycle set against the others, the Adjustments charts for its
+// rolls, and a bar of links to every section.
+test('a cycle’s own page has everything, set against the other cycles', async () => {
+  const ctx = await context(b, { width: 1440, height: 900 });
+  const p = await ctx.newPage();
+  // the running cycle: the engine's rules, strikes and legs come first
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycle?c=10`);
+  await p.waitForSelector('#cy-live [data-rule]', { timeout: 15000 });
+  assert.deepEqual(await p.$$eval('.cy-jump button', bs => bs.map(x => x.textContent)),
+    ['Live now', 'P&L', 'Against other cycles', 'Price chart, legs, orders', 'Balance & strikes', 'Rolls', 'Timeline & money', 'Every leg']);
+  assert.equal(await p.locator('#cy-live [data-rule]').count(), 5);
+  assert.match(await p.locator('#cy-live').innerText(), /Where the strikes sit[\s\S]*Legs & price feed/);
+  // a closed cycle: no live section; everything else
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycle?c=5`);
+  await p.waitForSelector('.gk-h h2:has-text("Cycle 5")');
+  await p.waitForSelector('#cy-vs .sp');
+  assert.equal(await p.locator('#cy-live').count(), 0);
+  assert.equal(await p.locator('.cy-jump button').first().innerText(), 'P&L');
+  const vs = p.locator('#cy-vs');
+  assert.equal(await vs.locator('.sp').count(), 8, 'the other closed cycles, faint');
+  assert.match(await vs.locator('.sp-run').innerHTML(), /#5</, 'this one in blue, not marked "now"');
+  assert.match(await vs.locator('.nb-run').innerHTML(), /#5 ended −₹3,852/);
+  const day = await vs.locator('.gk-panel', { hasText: 'Day by day' }).locator('.tr.att').innerText();
+  assert.match(day, /^End · day 9\.1/);
+  assert.equal(await vs.locator('.rg.me').count(), 1, 'its bar outlined among the rest');
+  assert.match(await vs.locator('.gk-panel', { hasText: 'This cycle vs the others' }).innerText(), /Result, gross[\s\S]*9th best of 9/);
+  // its rolls, charted as on Adjustments
+  const rolls = await p.locator('#cy-rolls').innerText();
+  for (const want of [/2 in this cycle/, /What rolling earned/, /Balance when it rolled vs what it paid/, /Balance before → after each roll/, /By side and direction/, /By hour of day/]) assert.match(rolls, want);
+  // the bar jumps to a section
+  await p.click('.cy-jump [data-to="cy-rolls"]');
+  await p.waitForFunction(() => { const r = document.querySelector('#cy-rolls').getBoundingClientRect(); return r.top >= 0 && r.top < 200; });
+  // another cycle's bar opens that cycle
+  await vs.locator('.rg[data-c="4"] rect').first().click({ force: true });
+  await p.waitForURL(/cycle\?c=4$/);
+  await p.waitForSelector('.gk-h h2:has-text("Cycle 4")');
+  assert.doesNotMatch(await p.locator('#gkView').innerText(), /undefined|NaN|\[object/);
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });

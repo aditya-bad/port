@@ -47,11 +47,11 @@ test('the band covers past cycles only, and stops where fewer than 3 were open',
 
 test('where a value sits among past cycles', () => {
   const s = { lo: -10, q1: 0, med: 5, q3: 10, hi: 20 };
-  assert.equal(place(25, s), 'above every past cycle');
+  assert.equal(place(25, s), 'above every other cycle');
   assert.equal(place(15, s), 'top quarter');
   assert.equal(place(5, s), 'middle half');
   assert.equal(place(-5, s), 'bottom quarter');
-  assert.equal(place(-20, s), 'below every past cycle');
+  assert.equal(place(-20, s), 'below every other cycle');
   assert.equal(place(5, { ...s, med: null }), '', 'too few past cycles to say');
   assert.equal(place(null, s), '');
 });
@@ -68,11 +68,49 @@ test('the day table: each day, past cycles against the running one, and a row fo
   const d1 = T[0];
   assert.deepEqual([d1.open, d1.closed, d1.med, d1.lo, d1.hi], [3, 3, 100, -100, 200]);
   assert.equal(d1.run, -300);
-  assert.equal(d1.place, 'below every past cycle');
+  assert.equal(d1.place, 'below every other cycle');
   const now = T[1];
   assert.equal(now.now, true);
   assert.equal(now.run, 50);
   assert.deepEqual([T[2].open, T[2].med, T[2].reached], [2, null, 1], 'day 2: one reached it, too few for a typical');
   assert.equal(T[2].run, null, 'the running cycle isn’t 2 days old yet');
   assert.equal(T[3].reached, 2);
+});
+
+test('on a cycle’s own page: that cycle against every other closed one, ending in an End row', async () => {
+  const { heroOf } = await import('../../static/linck/js/pages/geek/paths.js');
+  const rows = [
+    { cycle_id: 4, status: 'open', ended_by: 'open', path: [[0, 0], [24, 900]] },
+    cyc(3, [[0, 0], [24, -300], [30, -500]], { ended_by: 'convergence_stop' }),   // the focus
+    cyc(2, [[0, 0], [24, 100], [48, 750]]),
+    cyc(1, [[0, 0], [24, 200], [60, 800]]),
+    cyc(0, [[0, 0], [24, 300], [72, 700]]),
+  ];
+  assert.equal(heroOf(rows).cycle_id, 4, 'Cycles page: the running one');
+  assert.equal(heroOf(rows, 3).cycle_id, 3, 'cycle page: the focus, closed or not');
+  const B = band(rows, 24, 3, 3);
+  assert.deepEqual([B[1].n, B[1].lo, B[1].hi], [3, 100, 300], 'the focus and the running one are left out');
+  const T = dayTable(rows, 3, 3);
+  assert.deepEqual(T.map(r => r.label), ['Day 1', 'End · day 1.3', 'Day 2', 'Day 3']);
+  assert.equal(T[0].run, -300);
+  assert.equal(T[0].place, 'below every other cycle');
+  assert.equal(T[1].run, -500);
+  assert.equal(T[2].run, null, 'it had ended');
+});
+
+test('this cycle vs the others: typical values and ranks', async () => {
+  const { vsCompare } = await import('../../static/linck/js/pages/geek/paths.js');
+  const row = { cycle_id: 5, status: 'closed', ended_by: 'convergence_stop', pnl: -3852, days: 9.1, rolls: 2, mae: -3852, mfe: 7571 };
+  const others = [1, 2, 3, 4].map(i => ({ cycle_id: i, status: 'closed', ended_by: 'checkpoint_target', pnl: 3000 + i, days: i * 2, rolls: i % 2, mae: i === 4 ? null : -i * 100, mfe: i * 1000 }));
+  const c = vsCompare(row, [{ cycle_id: 9, status: 'open', ended_by: 'open', pnl: 50, days: 1, rolls: 0 }, row, ...others]);
+  assert.equal(c.others, 4, 'closed others only');
+  const by = Object.fromEntries(c.rows.map(([l, v, med, rank]) => [l, [v, med, rank]]));
+  assert.deepEqual(by['Result, gross'], [-3852, 3002.5, '5th best of 5']);
+  assert.deepEqual(by.Days, [9.1, 5, '5th shortest of 5']);
+  assert.deepEqual(by.Rolls, [2, 0.5, '5th fewest of 5']);
+  assert.deepEqual(by['Worst dip'], [-3852, -200, '1st deepest of 4'], 'a cycle without prices has no dip to rank');
+  assert.deepEqual(by['Best peak'], [7571, 2500, '1st highest of 5']);
+  assert.equal(c.same, 0);
+  assert.equal(vsCompare({ ...row, mae: null }, others).rows[3][3], 'no prices stored');
+  assert.equal(vsCompare({ ...row, status: 'open' }, others).same, null, 'still running: no ending yet');
 });

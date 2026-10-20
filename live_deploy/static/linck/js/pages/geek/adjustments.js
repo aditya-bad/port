@@ -14,7 +14,7 @@ import { head, tiles, table, poll, svg, path, money, tone, ratio, LABEL, yLabels
 
 const legs = (xs, verb) => xs.map(f => `${verb} ${f.opt} ${f.strike ?? ''} @${Number(f.price).toFixed(1)}`).join(' · ');
 
-function arrows(rows, eng) {
+export function arrows(rows, eng) {
   const pts = rows.filter(r => r.ratio_before != null && r.ratio_after != null).reverse();
   if (!pts.length) return empty('', 'Appears after the first roll.');
   const eod = eng && eng.rules ? eng.rules.find(r => r.key === 'eod_gap_check') : null;
@@ -36,7 +36,7 @@ function arrows(rows, eng) {
 const RULE_C = { continuous: 'var(--ink)', eod: 'var(--b)', rollout: 'var(--c4)' };
 
 // What rolling has earned so far, roll by roll (scored rolls only).
-function cumulative(rows) {
+export function cumulative(rows) {
   const R = rows.filter(r => r.roll_paid != null).reverse();
   if (!R.length) return empty('', 'Appears once a roll can be scored.');
   const W = 520, H = 200;
@@ -55,7 +55,7 @@ function cumulative(rows) {
 }
 
 // How lopsided it was when it rolled (x) against what the roll paid (y).
-function scatter(rows, eng) {
+export function scatter(rows, eng) {
   const R = rows.filter(r => r.roll_paid != null && r.ratio_before != null);
   if (!R.length) return empty('', 'Appears once a roll can be scored.');
   const W = 520, H = 200, eod = eng && eng.rules ? eng.rules.find(r => r.key === 'eod_gap_check') : null;
@@ -72,7 +72,7 @@ function scatter(rows, eng) {
 }
 
 // Rolls by side and direction: in = towards the market, out = away.
-function bySide(rows) {
+export function bySide(rows) {
   const keys = [['CE', 'in'], ['CE', 'out'], ['PE', 'in'], ['PE', 'out']];
   const B = keys.map(([sd, d]) => { const L = rows.filter(r => r.side === sd && r.direction === d), S = L.filter(r => r.roll_paid != null);
     return { l: `${sd} ${d}`, n: L.length, net: S.reduce((a, r) => a + r.roll_paid, 0), scored: S.length }; });
@@ -85,7 +85,7 @@ function bySide(rows) {
 }
 
 // When in the day rolls happen (IST hour), split by rule.
-function byHour(rows) {
+export function byHour(rows) {
   if (!rows.length) return empty('', 'Appears after the first roll.');
   const H = 160, W = 520, hours = [9, 10, 11, 12, 13, 14, 15];
   const cnt = hours.map(h => Object.fromEntries(['continuous', 'eod', 'rollout'].map(k => [k, rows.filter(r => r.rule === k && ist(r.t).h === h).length])));
@@ -106,7 +106,7 @@ function byHour(rows) {
   return svg(W, H, s, 'Rolls by hour of day');
 }
 
-const legend = () => html`<div class="row wrap tiny" style="gap:14px">${['continuous', 'eod', 'rollout'].map(k => html`<span class="row" style="gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${RULE_C[k]}"></i>${LABEL[k]}</span>`)}</div>`;
+export const legend = () => html`<div class="row wrap tiny" style="gap:14px">${['continuous', 'eod', 'rollout'].map(k => html`<span class="row" style="gap:6px"><i style="width:10px;height:10px;border-radius:50%;background:${RULE_C[k]}"></i>${LABEL[k]}</span>`)}</div>`;
 
 export default {
   render(el, v, g) {
