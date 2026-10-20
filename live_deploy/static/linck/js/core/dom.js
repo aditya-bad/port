@@ -2,7 +2,9 @@
 //
 // html`...` escapes every interpolated value unless it is itself the
 // result of html`` / raw(). Arrays are joined; null/undefined/false
-// render as nothing, so `${cond && html`...`}` works.
+// render as nothing, so `${cond && html`...`}` works. Inside an ARIA
+// state (aria-pressed="${x}" and the like) false is written "false":
+// an empty value there means "not a toggle", not "off".
 
 class Safe {
   constructor(s) { this.s = s; }
@@ -20,9 +22,13 @@ function part(v) {
   if (Array.isArray(v)) return v.map(part).join('');
   return esc(v);
 }
+const ARIA_STATE = /aria-(?:pressed|checked|selected|expanded)="$/;
 export function html(strings, ...vals) {
   let out = strings[0];
-  for (let i = 0; i < vals.length; i++) out += part(vals[i]) + strings[i + 1];
+  for (let i = 0; i < vals.length; i++) {
+    const v = vals[i] === false && ARIA_STATE.test(strings[i]) ? 'false' : vals[i];
+    out += part(v) + strings[i + 1];
+  }
   return new Safe(out);
 }
 export function mount(el, content) {

@@ -10,6 +10,7 @@ export const ROUTES = [
   { path: 'compare', nav: 'compare', load: () => import('../pages/compare.js') },
   { path: 'reports', nav: 'reports', load: () => import('../pages/reports.js') },
   { path: 'strategies', nav: 'strategies', load: () => import('../pages/strategies.js') },
+  { path: 's/:name', nav: 'strategies', load: () => import('../pages/strategy.js') },
   { path: 'tools/:tab?', nav: 'tools', load: () => import('../pages/tools.js') },
   { path: 'account', nav: 'account', load: () => import('../pages/account.js') },
 ];

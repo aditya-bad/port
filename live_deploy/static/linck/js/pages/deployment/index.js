@@ -50,7 +50,7 @@ export default {
             <div class="col" style="gap:8px;min-width:0">
               <div class="row wrap" style="gap:14px"><h1 class="dep-title">${v.name}</h1>${status(v.status)}</div>
               <div class="row wrap mute" style="gap:8px 16px">
-                <span class="mono tiny">${v.strategy}</span><span>${v.mode}</span><span>${v.index}</span>
+                <a class="mono tiny" href="${href(`s/${v.strategy}`)}" title="${v.strategyLabel}: every deployment of it, combined">${v.strategy}</a><span>${v.mode}</span><span>${v.index}</span>
                 <span class="mono small">${inr(v.cap, { sign: false })} capital</span>
                 <span>${v.ageDays ? `running since ${dShort(v.created)}` : 'created today'}</span>
                 ${v.tags.map(t => html`<button type="button" class="tag" data-act="untag" data-t="${t}" title="Remove tag ${t}">${t} ×</button>`)}

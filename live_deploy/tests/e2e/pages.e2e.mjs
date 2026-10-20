@@ -8,7 +8,7 @@ import { BASE, IDS, browser, context } from './helper.mjs';
 const A = IDS['Nifty Strangle A'], D = IDS['BankNifty DTT Adjusted'];
 const ROUTES = ['desk', 'deployments', `d/${A}/now`, `d/${A}/performance`, `d/${A}/cycles`, `d/${D}/cycles`,
   `d/${A}/trades`, `d/${A}/settings`, 'leaderboard', 'compare', 'reports', 'strategies',
-  'tools/brokerage', 'tools/sip', 'tools/instruments', 'account',
+  'tools/brokerage', 'tools/sip', 'tools/instruments', 's/strangle_monthly_v2', 's/intraday_dtt_simple', 's/calendar_btst', 'account',
   ...['kite', 'emergency', 'appearance', 'notifications', 'security', 'app', 'users', 'tags', 'history', 'log', 'server'].map(s => `account?s=${s}`)];
 const WIDTHS = (process.env.E2E_WIDTHS || '390,1024,1440').split(',').map(Number);
 

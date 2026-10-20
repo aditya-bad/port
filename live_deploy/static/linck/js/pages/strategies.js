@@ -1,11 +1,12 @@
 // Strategies — the catalogue: what each strategy does, its risk and
-// hold, how many deployments run it and what they've made.
+// hold, how many deployments run it and what they've made. Each opens
+// its own page (#/s/:name) with every deployment's results combined.
 
 import { html, mount, actions } from '../core/dom.js';
 import { inr, plural, tone } from '../core/format.js';
 import { pnlOf } from '../core/basis.js';
 import { listen } from '../core/store.js';
-import { go } from '../core/router.js';
+import { href } from '../core/router.js';
 import * as book from '../data/book.js';
 import { empty } from '../ui/components.js';
 import { say } from '../ui/toast.js';
@@ -30,7 +31,7 @@ export default {
             const p = L.reduce((a, v) => a + book.live(v).overall, 0);
             const T = L.flatMap(v => v.trades), wins = T.filter(t => pnlOf(t) > 0).length;
             return html`<article class="str-card">
-              <div class="row base"><h2 class="t-h3" style="font-size:24px">${s.label}</h2><span class="tiny b mute">${s.mode === 'intraday' ? 'Intraday' : 'Positional'}</span></div>
+              <div class="row base"><h2 class="t-h3" style="font-size:24px"><a class="str-link" href="${href(`s/${s.name}`)}">${s.label}</a></h2><span class="tiny b mute">${s.mode === 'intraday' ? 'Intraday' : 'Positional'}</span></div>
               <span class="mono mute" style="font-size:11px">${s.name}${s.enabled === false ? ' · disabled' : ''}</span>
               <p class="mute pretty small" style="margin:0;min-height:60px">${s.description}</p>
               <div class="kv-grid small" style="grid-template-columns:96px 1fr">
@@ -43,7 +44,7 @@ export default {
               </div>
               <div class="row" style="gap:8px;padding-top:4px">
                 <button type="button" class="btn btn-sm btn-primary" data-act="deploy" data-k="${s.name}" ${s.enabled === false ? html`aria-disabled="true" data-reason="This strategy is disabled on the server."` : ''}>Deploy</button>
-                <button type="button" class="btn btn-sm" data-act="view" data-k="${s.name}" ${L.length ? '' : html`aria-disabled="true" data-reason="Nothing runs this strategy yet."`}>View deployments</button>
+                <a class="btn btn-sm" href="${href(`s/${s.name}`)}">${L.length ? 'Results & details' : 'Details'}</a>
                 <span class="grow"></span>
                 <button type="button" class="btn btn-xs btn-quiet" data-act="toggle" data-k="${s.name}" data-tip="${s.enabled === false ? 'Show it in New deployment again' : 'Hide it from New deployment. Running deployments keep running.'}">${s.enabled === false ? 'Enable' : 'Disable'}</button>
               </div>
@@ -63,7 +64,6 @@ export default {
           onOk: async () => { await api.setStrategyEnabled(d.k, on); await book.load(['strategies']); say(`${s.label} ${on ? 'enabled' : 'disabled'}.`); },
         });
       },
-      view: (d, el) => (el.dataset.reason ? say(el.dataset.reason) : go(`deployments?strat=${encodeURIComponent(d.k)}`)),
     });
     paint();
     const offs = [listen('data', paint)];

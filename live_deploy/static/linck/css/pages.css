@@ -535,3 +535,30 @@ a.cell-name:hover b { text-decoration: underline; }
   .em-tile:nth-child(2) { border-right: 0; }
   .em-tile:nth-child(-n+2) { border-bottom: 1px solid var(--line); }
 }
+
+/* ── Strategy page: which deployments are in view, then the same stack as a deployment ── */
+.str-link { color: inherit; text-decoration: none; }
+.str-link:hover { text-decoration: underline; }
+.st-pick { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border: 1.5px solid var(--ink); }
+.st-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.st-chip { display: inline-flex; align-items: center; gap: 8px; max-width: 280px; padding: 6px 10px; border: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--ink); background: var(--paper); cursor: pointer; }
+.st-chip.on { border-color: var(--ink); }
+.st-chip:not(.on) { color: var(--mute); }
+.st-chip:not(.on) .box { background: none; }
+.st-chip:focus-visible { outline: 2px solid var(--b); outline-offset: 2px; }
+.st-strip { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.st-tbl { min-width: 1060px; }
+.st-tbl .tr { grid-template-columns: 28px minmax(200px, 1.6fr) 96px 92px 64px 56px 96px 104px 76px 76px 60px; min-height: 52px; }
+.st-tbl .tr.out, .st-card.out { opacity: .45; }
+.st-card { grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; }
+.st-set .tr { grid-template-columns: minmax(220px, 1.4fr) minmax(90px, .6fr) minmax(200px, 1.4fr); min-height: 52px; align-items: center; }
+.st-set .tr.chg { background: color-mix(in oklch, var(--y) 12%, transparent); }
+@media (max-width: 1180px) { .st-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 900px) {
+  .st-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* one setting per block: what it is, its default, then what's in use */
+  .st-set .tr { grid-template-columns: minmax(0, 1fr); gap: 4px; padding: 10px 0; }
+  .st-set .tr.th { display: none; }
+  .st-def::before { content: 'Default '; font-family: var(--f-body); color: var(--mute); }
+  .st-chip { max-width: 100%; }
+}
