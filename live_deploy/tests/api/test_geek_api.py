@@ -1,5 +1,6 @@
-"""GET /v2/deployments/{id}/geek/{view}: offered for strangle_monthly_v2
-only, every view answers on a deployment with no history and on one with
+"""GET /v2/deployments/{id}/geek/{view}: every strategy has the shared
+views (engine, decisions, settings); strangle_monthly_v2's own views all
+answer on a deployment with no history and on one with
 fills (the views themselves: tests/strategies/test_strangle_geek.py)."""
 
 from datetime import datetime
@@ -13,10 +14,64 @@ T = datetime.fromisoformat
 VIEWS = ["engine", "decisions", "cycles", "cycle", "adjustments", "entries", "premium", "settings"]
 
 
-def test_other_strategies_have_no_geek_mode(client):
+def test_other_strategies_have_the_shared_views_only(client):
     d = make_deployment(client, name="dtt")
-    r = client.get(f"/v2/deployments/{d['id']}/geek/engine")
-    assert r.status_code == 404 and "isn't available for intraday_dtt_simple" in r.json()["detail"]
+    for view in ("engine", "decisions", "settings"):
+        r = client.get(f"/v2/deployments/{d['id']}/geek/{view}")
+        assert r.status_code == 200, (view, r.text)
+    e = client.get(f"/v2/deployments/{d['id']}/geek/engine").json()
+    assert e["running"] is False and e["legs"] == [] and e["rules"] == []
+    assert e["next"]["text"].startswith("Paused")
+    r = client.get(f"/v2/deployments/{d['id']}/geek/cycles")
+    assert r.status_code == 404 and "No such Geek view" in r.json()["detail"]
+
+
+def _decide(client, dep_id, at, rule, outcome, summary, data):
+    from uuid import UUID
+
+    from app.db import queries
+    pool = client.app.state.db_pool
+    client.portal.call(lambda: queries.record_decision(pool, UUID(str(dep_id)), at, rule, outcome, summary, data))
+
+
+def test_shared_decisions_group_fills_into_actions_and_merge_the_log(client):
+    d = make_deployment(client, name="dtt decisions")
+    t0 = T("2026-10-19T09:20:00+05:30")
+    tv = {"close": 25010.5, "prev_high": 24990.0}
+    for sym, tok, px in (("NIFTY26OCT25000CE", 7101, 120.0), ("NIFTY26OCT25000PE", 7102, 110.0)):
+        add_fill(client, d["id"], sym, tok, "sell", 75, px, t0, "entry",
+                 {"trigger": "straddle_entry", "action": "open", "trigger_values": tv})
+    t1 = T("2026-10-19T11:05:00+05:30")
+    add_fill(client, d["id"], "NIFTY26OCT25000CE", 7101, "buy", 75, 150.0, t1, "leg_stop",
+             {"trigger": "leg_stop", "action": "close", "trigger_values": {"ce": 150.0, "stop": 148.0},
+              "price_source": "ltp"})
+    _decide(client, d["id"], T("2026-10-19T10:00:00+05:30"), "exit_checks", "no_action", "Both legs inside their stops",
+            {"ce": 131.0, "pe": 101.5})
+    body = client.get(f"/v2/deployments/{d['id']}/geek/decisions").json()
+    rows = body["rows"]
+    assert [r["kind"] for r in rows] == ["exit", "check", "entry"]
+    assert body["counts"] == {"acted": 2, "no_action": 1, "blocked": 0}
+    stop, check, entry = rows
+    assert stop["label"] == "Leg stop" and stop["outcome"] == "acted"
+    assert "Bought NIFTY26OCT25000CE ×75 @ 150" in stop["summary"] and "booked −₹2,250" in stop["summary"]
+    assert stop["why"] == "ce 150 · stop 148 · price from ltp"
+    assert entry["summary"].count("Sold") == 2 and entry["why"] == "close 25,010.5 · prev high 24,990"
+    assert check["label"] == "Exit checks" and check["why"] == "ce 131 · pe 101.5"
+
+
+def test_shared_settings_against_the_defaults(client):
+    from tests.conftest import default_config
+    cfg = default_config("intraday_dtt_simple")
+    key = next(k for k, v in cfg.items() if isinstance(v, (int, float)) and not isinstance(v, bool) and k != "instrument_tokens")
+    cfg[key] = cfg[key] + 1
+    d = make_deployment(client, name="dtt settings", config=cfg)
+    body = client.get(f"/v2/deployments/{d['id']}/geek/settings").json()
+    rows = {r["key"]: r for r in body["rows"]}
+    assert "instrument_tokens" not in rows
+    assert rows[key]["changed"] is True and rows[key]["value"] == cfg[key]
+    assert sum(r["changed"] for r in body["rows"]) == 1
+    assert all(r["label"] for r in body["rows"])
+    assert body["rules"] == []
 
 
 def test_unknown_view_and_unknown_deployment_are_404(client):

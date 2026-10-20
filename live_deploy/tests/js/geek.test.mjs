@@ -2,7 +2,7 @@ import './setup.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parse } from '../../static/linck/js/core/router.js';
-import { supports, GEEK } from '../../static/linck/js/data/geek.js';
+import { supports, hasOwn, GEEK } from '../../static/linck/js/data/geek.js';
 
 test('geek routes win over deployment tabs', () => {
   const g = parse('#/d/abc/geek/cycles');
@@ -14,11 +14,30 @@ test('geek routes win over deployment tabs', () => {
   assert.ok(!parse('#/d/abc/now').route.geek);
 });
 
-test('only strategies with a Geek module offer it', () => {
+test('every deployment offers Geek mode; some strategies have views of their own', () => {
   assert.ok(GEEK.has('strangle_monthly_v2'));
   assert.equal(supports({ strategy: 'strangle_monthly_v2' }), true);
-  assert.equal(supports({ strategy: 'intraday_dtt_simple' }), false);
+  assert.equal(supports({ strategy: 'intraday_dtt_simple' }), true);
+  assert.equal(supports({ strategy: 'pivot_supertrend_options' }), true);
   assert.equal(supports(null), false);
+  assert.equal(hasOwn({ strategy: 'strangle_monthly_v2' }), true);
+  assert.equal(hasOwn({ strategy: 'intraday_dtt_simple' }), false);
+});
+
+test('the view menu: shared views for all, the strangle adds its own between Live and Settings', async () => {
+  const { viewsFor } = await import('../../static/linck/js/pages/geek/views.js');
+  const keys = s => viewsFor(s).map(v => v[0]);
+  const shared = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'settings'];
+  assert.deepEqual(keys('intraday_dtt_simple'), shared);
+  assert.deepEqual(keys('no_such_strategy'), shared);
+  const st = keys('strangle_monthly_v2');
+  assert.deepEqual(st.filter(k => shared.includes(k)), shared);
+  for (const k of ['cycles', 'cycle', 'adjustments', 'premium', 'entries', 'map']) assert.ok(st.includes(k), k);
+  assert.equal(st[st.length - 1], 'settings');
+  for (const s of ['intraday_dtt_simple', 'strangle_monthly_v2']) {
+    const ks = viewsFor(s).map(v => v[3]).filter(Boolean);
+    assert.equal(new Set(ks.map(k => k.toLowerCase())).size, ks.length, `${s}: shortcut keys are unique`);
+  }
 });
 
 test('checkpoint chip: a percentage only while in profit, "In loss" (red) while behind', async () => {

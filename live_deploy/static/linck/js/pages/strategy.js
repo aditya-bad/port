@@ -66,9 +66,9 @@ export default {
           <span class="grow"></span>
           <div class="chips">${presets(deps).map(([k, l]) => html`<button type="button" class="chip ${cur === k ? 'on' : ''}" data-act="preset" data-k="${k}" aria-pressed="${cur === k}">${l}</button>`)}</div>
         </div>
-        <div class="st-chips">${deps.map(v => {
+        <div class="pick-chips">${deps.map(v => {
           const on = !o.includes(v.id);
-          return html`<button type="button" class="st-chip ${on ? 'on' : ''}" data-act="pick" data-id="${v.id}" role="checkbox" aria-checked="${on}" title="${on ? 'In view: tap to leave it out' : 'Left out: tap to include'}">
+          return html`<button type="button" class="pick-chip ${on ? 'on' : ''}" data-act="pick" data-id="${v.id}" role="checkbox" aria-checked="${on}" title="${on ? 'In view: tap to leave it out' : 'Left out: tap to include'}">
             <i class="box ${on ? 'on' : ''}" aria-hidden="true"></i><span class="ell">${v.name}</span></button>`;
         })}</div>
       </div>`;

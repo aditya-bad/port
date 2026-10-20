@@ -6,6 +6,7 @@ import { api } from '../../core/api.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price, hhmmss, hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
+import { hasOwn } from '../../data/geek.js';
 import { head, nextMove, gauge, stateChip, table, tiles, poll, svg, path, money, tone } from './ui.js';
 
 function ruler(k) {
@@ -43,6 +44,7 @@ function balance(series, eod, cont) {
   return svg(W, H, s, 'Smaller side over bigger side through this cycle');
 }
 
+const show = val => (val == null ? '—' : typeof val === 'boolean' ? (val ? 'Yes' : 'No') : typeof val === 'object' ? JSON.stringify(val) : String(val));
 const age = s => (s == null ? '—' : s < 60 ? `${s.toFixed(1)}s` : s < 3600 ? `${Math.round(s / 60)}m` : `${Math.round(s / 3600)}h`);
 const STATE_LABEL = {
   cycle_id: 'Cycle', contract_expiry: 'Locked expiry', cycle_realized_pnl: 'Realized this cycle', converged: 'Converged',
@@ -75,10 +77,10 @@ export function strikesBlock(k) {
 }
 export function legsBlock(eng) {
   const legs = table([['Leg', 'minmax(176px,1.6fr)'], ['Role', '110px'], ['Entry', '80px', 'num'], ['LTP', '80px', 'num'], ['Last tick', '80px', 'num'], ['P&L', '96px', 'num']],
-    eng.legs.map(l => [html`<b class="${l.opt === 'CE' ? 'leg-ce' : 'leg-pe'}">${l.symbol}</b>`, l.role || '—', price(l.entry), price(l.ltp), age(l.tick_age_s), html`<span class="${tone(l.pnl)}">${money(l.pnl)}</span>`]), { minw: 620 });
+    eng.legs.map(l => [html`<b class="${l.opt === 'CE' ? 'leg-ce' : l.opt === 'PE' ? 'leg-pe' : ''}">${l.symbol}</b>`, l.role || '—', price(l.entry), price(l.ltp), age(l.tick_age_s), html`<span class="${tone(l.pnl)}">${money(l.pnl)}</span>`]), { minw: 620 });
   return html`${eng.legs.length ? legs : empty('', 'No open legs.')}
     ${eng.hedges && eng.hedges.length ? html`<p class="gk-note">Hedges: ${eng.hedges.map(h => `${h.symbol} @${price(h.entry)}`).join(' · ')}</p>` : ''}
-    ${eng.running ? html`<p class="gk-note">${eng.cooldowns.length ? html`<b>Waiting on quotes:</b> ${eng.cooldowns.map(c => `${c.rule.replace(/_/g, ' ')} until ${hhmmss(c.until)}`).join(' · ')}` : 'No trigger is waiting on a quote check.'} Decisions wait until every leg has traded this session.</p>` : ''}`;
+    ${eng.running && eng.rules && eng.rules.length ? html`<p class="gk-note">${eng.cooldowns.length ? html`<b>Waiting on quotes:</b> ${eng.cooldowns.map(c => `${c.rule.replace(/_/g, ' ')} until ${hhmmss(c.until)}`).join(' · ')}` : 'No trigger is waiting on a quote check.'} Decisions wait until every leg has traded this session.</p>` : ''}`;
 }
 
 export default {
@@ -89,7 +91,7 @@ export default {
       const k = eng.strikes, rules = eng.rules || [];
       const eod = rules.find(r => r.key === 'eod_gap_check'), cont = rules.find(r => r.key === 'continuous_50pct_trigger');
       mount(el, html`
-        ${head('Engine', 'Every rule the strategy checks, in the order it checks them, and how close each one is to acting.', `updated ${hhmmss(at)}`)}
+        ${head('Engine', rules.length ? 'Every rule the strategy checks, in the order it checks them, and how close each one is to acting.' : 'Where the strategy stands: its own readings, the open legs and what it remembers.', `updated ${hhmmss(at)}`)}
         ${rulesBlock(eng)}
         ${k ? html`<div class="gk-two even">
           <div class="gk-panel"><h3>Where the strikes sit <span class="s">credit ${k.credit.toFixed(1)} pts</span></h3>
@@ -97,19 +99,21 @@ export default {
           <div class="gk-panel"><h3>Side balance, this cycle <span class="s">smaller side ÷ bigger side, every 5 minutes · shaded: where rolls aim</span></h3>
             ${prem === null ? loading(3) : prem.series && prem.series.length ? balance(prem.series, eod, cont) : empty('', 'Appears after the first 5-minute snapshot of this cycle.')}</div>
         </div>` : ''}
-        <div class="gk-two">
+        ${eng.fields && eng.fields.length ? html`<div class="gk-panel"><h3>Strategy readings <span class="s">${eng.fields_source === 'live' ? 'live, from the running strategy' : 'last saved, while not running'}</span></h3>
+          ${tiles(eng.fields.map(f => [f.label, show(f.value), '']))}</div>` : ''}
+        <div class="${eng.state ? 'gk-two' : ''}">
           <div class="gk-panel"><h3>Legs &amp; price feed <span class="s">${eng.running ? 'live' : 'not running: no live prices'}</span></h3>
             ${legsBlock(eng)}
           </div>
-          <div class="gk-panel"><h3>Strategy state <span class="s">what it remembers</span></h3>
+          ${eng.state || rules.length ? html`<div class="gk-panel"><h3>Strategy state <span class="s">what it remembers</span></h3>
             ${eng.state ? table([['', 'minmax(0,1fr)'], ['', 'minmax(0,1fr)', 'num']],
-              Object.entries(eng.state).map(([key, val]) => [STATE_LABEL[key] || key, key === 'cycle_realized_pnl' ? inr(val) : val == null ? '—' : typeof val === 'boolean' ? (val ? 'Yes' : 'No') : String(val)]), { minw: 0, cls: 'kv' })
+              Object.entries(eng.state).map(([key, val]) => [STATE_LABEL[key] || key.replace(/_/g, ' '), key === 'cycle_realized_pnl' ? inr(val) : show(val)]), { minw: 0, cls: 'kv' })
               : empty('', 'Only while the deployment runs.')}
-          </div>
+          </div>` : ''}
         </div>`);
     }
     const off = g.onEngine(d => { eng = d; at = new Date(); paint(); });
-    const stop = poll(() => api.geek(g.id, 'premium'), 60000, d => { prem = d instanceof Error ? { series: [] } : d; paint(); });
+    const stop = hasOwn(v) ? poll(() => api.geek(g.id, 'premium'), 60000, d => { prem = d instanceof Error ? { series: [] } : d; paint(); }) : () => {};
     paint();
     return () => { off(); stop(); };
   },

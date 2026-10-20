@@ -13,6 +13,7 @@ import { line, upDownBars } from '../../ui/charts.js';
 import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
 import { empty } from '../../ui/components.js';
 import { head, nextMove, tiles, table, poll, LABEL } from './ui.js';
+import { hasOwn } from '../../data/geek.js';
 
 const OUT = { acted: 'Acted', no_action: 'No action', blocked: 'Blocked' };
 
@@ -33,6 +34,7 @@ function equity(v, cycles) {
 export default {
   render(el, v0, g) {
     let cycles = null, adj = null, dec = null;
+    const own = hasOwn(v0);
     function paint() {
       const v = book.find(v0.id) || v0;
       const x = book.live(v);
@@ -51,11 +53,16 @@ export default {
           ['Return', pct(x.ret), `on ${inr(v.cap, { sign: false })}`, toneOf(x.ret)],
           ['Return / drawdown', m.ddp < 0 ? fmtRatio(m.rdd) : '—', m.ddp < 0 ? verdictRdd(m.rdd) : 'no drawdown yet'],
           ['Max drawdown', inr(maxDd), `${pct(maxDd / v.cap * 100)} of capital`, maxDd < 0 ? 'neg' : ''],
-          ['Checkpoints', s ? `${s.ended_by.checkpoint_target || 0} / ${s.closed}` : '—', s && s.median_days_to_checkpoint != null ? `median ${s.median_days_to_checkpoint}d` : 'cycles closed'],
-          ['Rolls paid', adj && adj.summary.net != null ? inr(adj.summary.net) : '—', adj ? (adj.summary.scored ? `${adj.summary.helped} of ${adj.summary.scored} helped` : `${adj.summary.rolls} rolls`) : '', adj && adj.summary.net != null ? toneOf(adj.summary.net) : ''],
+          ...(own ? [
+            ['Checkpoints', s ? `${s.ended_by.checkpoint_target || 0} / ${s.closed}` : '—', s && s.median_days_to_checkpoint != null ? `median ${s.median_days_to_checkpoint}d` : 'cycles closed'],
+            ['Rolls paid', adj && adj.summary.net != null ? inr(adj.summary.net) : '—', adj ? (adj.summary.scored ? `${adj.summary.helped} of ${adj.summary.scored} helped` : `${adj.summary.rolls} rolls`) : '', adj && adj.summary.net != null ? toneOf(adj.summary.net) : ''],
+          ] : [
+            ['Win rate', m.n ? `${Math.round(m.win)}%` : '—', m.n ? `avg win ${inr(m.aw)} · loss ${inr(m.al)}` : 'no closed trades'],
+            ['Checks noted', dec ? String(dec.counts.no_action + dec.counts.blocked) : '—', dec ? `${dec.counts.blocked} blocked · ${dec.counts.acted} acted` : ''],
+          ]),
         ], 8)}
         <div class="gk-two">
-          <div class="gk-panel"><h3>Equity &amp; cycles <span class="s">cumulative realized · shading alternates by cycle, numbered below</span><a href="${g.href('performance')}">Performance →</a></h3>${equity(v, cycles)}</div>
+          <div class="gk-panel"><h3>${own ? html`Equity &amp; cycles <span class="s">cumulative realized · shading alternates by cycle, numbered below</span>` : html`Equity <span class="s">cumulative realized</span>`}<a href="${g.href('performance')}">Performance →</a></h3>${equity(v, cycles)}</div>
           <div class="gk-panel"><h3>Open legs ${liveTag(v.legs)}<a href="${g.href('positions')}">Positions →</a></h3>
             ${v.legs.length ? html`<div class="scroll-x">${legHead()}${v.legs.map(legRow)}</div>` : empty('', 'Flat.')}
             <h3 style="margin-top:14px">Latest decisions <a href="${g.href('decisions')}">Decisions →</a></h3>
@@ -64,13 +71,15 @@ export default {
               : empty('', 'No decisions yet.')}
           </div>
         </div>
-        <div class="gk-panel"><h3>Daily P&L <span class="s">last ${daily.length} trading days with a close</span><a href="${g.href('cycles')}">Cycles →</a></h3>
+        <div class="gk-panel"><h3>Daily P&L <span class="s">last ${daily.length} trading days with a close</span>${own ? html`<a href="${g.href('cycles')}">Cycles →</a>` : ''}</h3>
           ${daily.length ? upDownBars(daily.map(d => d.day), daily.map(d => `${dFull(d.date)}  ${inr(d.day)}`), 110) : empty('', 'No closed trades yet.')}</div>`);
     }
     const stops = [
-      poll(() => api.geek(g.id, 'cycles'), 120000, d => { cycles = d instanceof Error ? null : d; paint(); }),
-      poll(() => api.geek(g.id, 'adjustments'), 120000, d => { adj = d instanceof Error ? null : d; paint(); }),
-      poll(() => api.geek(g.id, 'decisions'), 30000, d => { dec = d instanceof Error ? { rows: [] } : d; paint(); }),
+      ...(own ? [
+        poll(() => api.geek(g.id, 'cycles'), 120000, d => { cycles = d instanceof Error ? null : d; paint(); }),
+        poll(() => api.geek(g.id, 'adjustments'), 120000, d => { adj = d instanceof Error ? null : d; paint(); }),
+      ] : []),
+      poll(() => api.geek(g.id, 'decisions'), 30000, d => { dec = d instanceof Error ? { rows: [], counts: { acted: 0, no_action: 0, blocked: 0 } } : d; paint(); }),
     ];
     let lastNext = '';
     const off = g.onEngine(e => {

@@ -9,7 +9,7 @@ import { listen } from '../../core/store.js';
 import * as book from '../../data/book.js';
 import { sect, empty, loading } from '../../ui/components.js';
 import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
-import { supports as geekOk } from '../../data/geek.js';
+import { hasOwn } from '../../data/geek.js';
 
 // The strangle's engine at a glance (geek mode has the full view).
 function engineCard(eng) {
@@ -55,7 +55,7 @@ export default {
   // `g` is set when geek mode reuses this tab (it has its own engine view).
   render(el, v0, g) {
     let lots = null, openPos = null, status = null, eng = null;
-    const withEngine = !g && geekOk(v0);
+    const withEngine = !g && hasOwn(v0);
     function paint() {
       const v = book.find(v0.id) || v0;
       const x = book.live(v);

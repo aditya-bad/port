@@ -1,11 +1,13 @@
 // Geek mode: a full-screen, strategy-specific view of one deployment
-// (pages/geek/, API app/routers/geek.py). Only strategies with a Geek
-// module on the server get the button.
+// (pages/geek/, API app/routers/geek.py). Every deployment has the
+// shared views; the strategies in GEEK also have views of their own (the
+// same names as app/geek/__init__.py's GEEK).
 
 import { go } from '../core/router.js';
 
 export const GEEK = new Set(['strangle_monthly_v2']);
-export const supports = v => !!v && GEEK.has(v.strategy);
+export const supports = v => !!v && !!v.strategy;
+export const hasOwn = v => !!v && GEEK.has(v.strategy);
 
 const reduced = () => { try { return matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } };
 const store = (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) { /* private mode */ } };

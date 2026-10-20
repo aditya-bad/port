@@ -19,19 +19,19 @@ test('reached from Strategies and from a deployment; every deployment of it is i
   await p.goto(`${BASE}/linck/#/strategies`);
   await p.click('a.str-link:text-is("Monthly strangle")');
   await p.waitForURL(/#\/s\/strangle_monthly_v2$/);
-  await p.waitForSelector('.st-chip');
+  await p.waitForSelector('.pick-chip');
   assert.equal(await p.innerText('.dep-title'), 'Monthly strangle');
   const D = await strangles(ctx);
-  const chips = await p.$$eval('.st-chip', cs => cs.map(c => c.textContent.trim()));
+  const chips = await p.$$eval('.pick-chip', cs => cs.map(c => c.textContent.trim()));
   assert.deepEqual([...chips].sort(), D.map(d => d.deployment_name).sort(), 'every deployment of it, nothing else');
   assert.ok(SEEDED.every(n => chips.includes(n)));
-  assert.ok(await p.$$eval('.st-chip', cs => cs.every(c => c.getAttribute('aria-checked') === 'true')), 'all in view');
+  assert.ok(await p.$$eval('.pick-chip', cs => cs.every(c => c.getAttribute('aria-checked') === 'true')), 'all in view');
   assert.match(await p.innerText('.st-pick'), new RegExp(`All ${D.length} deployments`));
   assert.match(await capOf(p), /of capital, combined as one/);
   // the deployment page links back to its strategy
   await p.goto(`${BASE}/linck/#/d/${IDS['Nifty Strangle A']}/now`);
   await p.click('.dep-head a[href="#/s/strangle_monthly_v2"]');
-  await p.waitForSelector('.st-chip');
+  await p.waitForSelector('.pick-chip');
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
@@ -40,11 +40,11 @@ test('leaving deployments out changes every figure, and is remembered', async ()
   const ctx = await context(b, { width: 1440, height: 900 });
   const p = await ctx.newPage();
   await p.goto(`${BASE}/linck/#/s/strangle_monthly_v2`);
-  await p.waitForSelector('.st-chip');
+  await p.waitForSelector('.pick-chip');
   const n = (await strangles(ctx)).length;
   const before = { cap: await capOf(p), trades: await p.innerText('.st-tbl .tr.tot') };
-  await p.click('.st-chip:has-text("Nifty Strangle A")');
-  await p.waitForSelector('.st-chip:has-text("Nifty Strangle A")[aria-checked="false"]');
+  await p.click('.pick-chip:has-text("Nifty Strangle A")');
+  await p.waitForSelector('.pick-chip:has-text("Nifty Strangle A")[aria-checked="false"]');
   assert.match(await p.innerText('.st-pick'), new RegExp(`${n - 1} of ${n} deployments`));
   assert.notEqual(await capOf(p), before.cap, 'its 10L of capital is out');
   assert.notEqual(await p.innerText('.st-tbl .tr.tot'), before.trades, 'the combined row follows');
@@ -52,22 +52,22 @@ test('leaving deployments out changes every figure, and is remembered', async ()
   assert.equal(await p.locator('.st-tbl .tr.out').count(), 1, 'its row is dimmed, still listed');
   // the table's box does the same
   await p.click('.st-tbl .tr.out .box');
-  await p.waitForSelector('.st-chip:has-text("Nifty Strangle A")[aria-checked="true"]');
+  await p.waitForSelector('.pick-chip:has-text("Nifty Strangle A")[aria-checked="true"]');
   // quick pick: Running leaves the paused one out
   await p.click('.st-pick [data-act=preset][data-k=active]');
-  await p.waitForSelector('.st-chip:has-text("Nifty Strangle B")[aria-checked="false"]');
+  await p.waitForSelector('.pick-chip:has-text("Nifty Strangle B")[aria-checked="false"]');
   assert.equal(await p.getAttribute('.st-pick [data-k=active]', 'aria-pressed'), 'true');
   // remembered on the next visit
   await p.reload();
-  await p.waitForSelector('.st-chip');
-  assert.equal(await p.getAttribute('.st-chip:has-text("Nifty Strangle B")', 'aria-checked'), 'false');
+  await p.waitForSelector('.pick-chip');
+  assert.equal(await p.getAttribute('.pick-chip:has-text("Nifty Strangle B")', 'aria-checked'), 'false');
   // the last one in view can't be left out
-  for (const c of await p.$$('.st-chip')) {
-    if (await c.getAttribute('aria-checked') === 'true') await (await p.$(`.st-chip[data-id="${await c.getAttribute('data-id')}"]`)).click();
+  for (const c of await p.$$('.pick-chip')) {
+    if (await c.getAttribute('aria-checked') === 'true') await (await p.$(`.pick-chip[data-id="${await c.getAttribute('data-id')}"]`)).click();
   }
-  assert.ok((await p.$$eval('.st-chip', cs => cs.filter(c => c.getAttribute('aria-checked') === 'true').length)) === 1);
+  assert.ok((await p.$$eval('.pick-chip', cs => cs.filter(c => c.getAttribute('aria-checked') === 'true').length)) === 1);
   await p.click('.st-pick [data-act=preset][data-k=all]');
-  await p.waitForFunction(() => [...document.querySelectorAll('.st-chip')].every(c => c.getAttribute('aria-checked') === 'true'));
+  await p.waitForFunction(() => [...document.querySelectorAll('.pick-chip')].every(c => c.getAttribute('aria-checked') === 'true'));
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
@@ -105,9 +105,9 @@ test('compare and deploy from here', async () => {
   const ctx = await context(b, { width: 1440, height: 900 });
   const p = await ctx.newPage();
   await p.goto(`${BASE}/linck/#/s/strangle_monthly_v2`);
-  await p.waitForSelector('.st-chip');
+  await p.waitForSelector('.pick-chip');
   // the seeded four (another spec may have added one)
-  for (const d of await strangles(ctx)) if (!SEEDED.includes(d.deployment_name)) await p.click(`.st-chip[data-id="${d.id}"]`);
+  for (const d of await strangles(ctx)) if (!SEEDED.includes(d.deployment_name)) await p.click(`.pick-chip[data-id="${d.id}"]`);
   await p.click('[data-act=compare]');
   await p.waitForURL(/#\/compare/);
   await p.waitForSelector('.verdict');

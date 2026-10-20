@@ -40,19 +40,48 @@ test('the Now tab shows the engine card and Geek mode opens full screen', async 
   await ctx.close();
 });
 
-test('other strategies have no Geek mode', async () => {
-  const ctx = await context(b);
-  const p = await ctx.newPage();
-  await p.goto(`${BASE}/linck/#/d/${IDS['BankNifty DTT Plain']}/now`);
-  await p.waitForSelector('.dep-head');
-  assert.equal(await p.locator('[data-act="geek"]').count(), 0);
-  await p.keyboard.press('g');
-  await p.waitForTimeout(500);
-  assert.doesNotMatch(p.url(), /geek/);
-  await p.goto(`${BASE}/linck/#/d/${IDS['BankNifty DTT Plain']}/geek`);
-  await p.waitForSelector('.gk .empty');
-  assert.match(await p.locator('.gk .empty').innerText(), /No Geek mode for this strategy/);
-  await ctx.close();
+test('every strategy has Geek mode: the shared views, without the strangle\'s own', async () => {
+  const DTT = IDS['BankNifty DTT Plain'];
+  const SHARED = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'settings'];
+  for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
+    const ctx = await context(b, { width, height: 860 });
+    const p = await ctx.newPage();
+    await p.goto(`${BASE}/linck/#/d/${DTT}/now`);
+    await p.waitForSelector('.dep-head');
+    assert.equal(await p.locator('.dep-head [data-act="geek"]').count(), 1, `${label}: the button is there`);
+    assert.equal(await p.locator('[data-engine]').count(), 0, `${label}: the engine card stays a strangle thing`);
+    await p.keyboard.press('g');
+    await p.waitForURL(/\/geek$/);
+    await p.waitForSelector('.gk-rail a.on');
+    const menu = await p.$$eval('.gk-rail a', as => as.map(a => a.getAttribute('href').split('/geek/')[1]));
+    assert.deepEqual(menu, SHARED, `${label}: the menu`);
+    if (width > 800) assert.doesNotMatch(await p.locator('.gk-top').innerText(), /Cycle/, 'no cycle figure');
+    await p.keyboard.press('c');
+    await p.waitForTimeout(300);
+    assert.match(p.url(), /\/geek$/, 'C (Cycles) does nothing here');
+    for (const v of SHARED) {
+      await p.goto(`${BASE}/linck/#/d/${DTT}/geek/${v}`);
+      await p.waitForSelector(`.gk-rail a.on[href$="/geek/${v}"]`);
+      await p.waitForFunction(() => {
+        const el = document.querySelector('#gkView');
+        return el && el.children.length && !el.querySelector('.skel');
+      }, null, { timeout: 10000 });
+      const text = await p.locator('#gkView').innerText();
+      assert.doesNotMatch(text, /undefined|NaN|\[object/, `${label} ${v}: no broken values`);
+      const sw = await p.evaluate(() => document.documentElement.scrollWidth);
+      assert.ok(sw <= width, `${label} ${v}: page ${sw}px wide at ${width}px`);
+      if (v === 'overview') assert.match(text, /Win rate/);
+      if (v === 'engine') assert.match(text, /Paused|Stopped|Not running|Flat|Holding/);
+      if (v === 'decisions') assert.ok(await p.locator('#gkView .oc.acted').count() > 0, 'its trades, as decisions');
+      if (v === 'settings') { assert.match(text, /Lots/); assert.match(text, /Rules that traded/); }
+    }
+    await p.goto(`${BASE}/linck/#/d/${DTT}/geek/cycles`);
+    await p.waitForSelector('.gk-rail a.on');
+    assert.match(p.url(), /\/geek\/cycles$/);
+    assert.equal(await p.locator('.gk-rail a.on').getAttribute('href').then(h => h.split('/geek/')[1]), 'overview', 'an unknown view falls back to Overview');
+    assert.deepEqual(ctx.errors, []);
+    await ctx.close();
+  }
 });
 
 for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {

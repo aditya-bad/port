@@ -13,32 +13,19 @@ import { go, href } from '../../core/router.js';
 import * as book from '../../data/book.js';
 import { prices, isLive } from '../../data/live.js';
 import { indexByName } from '../../data/config.js';
-import { supports, takeEntry, exit } from '../../data/geek.js';
+import { supports, hasOwn, takeEntry, exit } from '../../data/geek.js';
 import { empty } from '../../ui/components.js';
 
-// [key, label, group, shortcut, load, reused deployment tab?, hidden from the menu?]
-export const VIEWS = [
-  ['overview', 'Overview', 'Basics', '1', () => import('./overview.js')],
-  ['positions', 'Positions', 'Basics', '2', () => import('../deployment/now.js'), true],
-  ['trades', 'Trades & replay', 'Basics', '3', () => import('../deployment/trades.js'), true],
-  ['performance', 'Performance', 'Basics', '4', () => import('../deployment/performance.js'), true],
-  ['engine', 'Engine', 'Live', 'E', () => import('./engine.js')],
-  ['decisions', 'Decisions', 'Live', 'D', () => import('./decisions.js')],
-  ['map', 'Cycle map', 'Anatomy', 'M', () => import('../deployment/days.js'), true],
-  ['cycles', 'Cycles', 'Anatomy', 'C', () => import('./cycles.js')],
-  ['cycle', 'Cycle', 'Anatomy', '', () => import('./cycle.js'), false, true],   // one cycle, from Cycles or Adjustments
-  ['adjustments', 'Adjustments', 'Anatomy', 'A', () => import('./adjustments.js')],
-  ['premium', 'Premium & decay', 'Anatomy', 'P', () => import('./premium.js')],
-  ['entries', 'Entries', 'Anatomy', 'N', () => import('./entries.js')],
-  ['settings', 'Settings at work', 'Exposure', 'S', () => import('./settings.js')],
-];
-const GROUPS = ['Basics', 'Live', 'Anatomy', 'Exposure'];
+import { BASICS, GROUPS, viewsFor } from './views.js';
+
+export { viewsFor };
 
 export default {
   title: () => 'Geek mode',
   render(main, params) {
     const id = params.id;
-    const view = VIEWS.find(x => x[0] === params.view) || VIEWS[0];
+    let views = BASICS, view = null;
+    const pick = v => { views = viewsFor(v.strategy); view = views.find(x => x[0] === params.view) || views[0]; };
     const entry = takeEntry();
     let engine = null, viewCleanup = null, mounted = false;
     const subs = new Set();
@@ -62,7 +49,7 @@ export default {
         <span class="grow"></span>
         ${ix ? html`<span class="gk-kv hide-m"><span>${v.index}</span><b data-gk="spot">${spot ? price(spot.price) : '—'}${spot && spot.prevClose ? html` <span class="${tone(spot.price / spot.prevClose - 1)}">${pct((spot.price / spot.prevClose - 1) * 100)}</span>` : ''}</b></span>` : ''}
         <span class="gk-kv"><span>Today</span><b class="${tone(x.today)}" data-gk="today">${v.rawStatus === 'stopped' ? '—' : inr(x.today)}</b></span>
-        <span class="gk-kv hide-m"><span>${cycle ? `Cycle ${cycle}` : 'Cycle'}</span><b class="${ck ? tone(ck.value) : ''}" data-gk="cycle">${ck ? inr(ck.value) : '—'}</b></span>
+        ${hasOwn(v) || cycle ? html`<span class="gk-kv hide-m"><span>${cycle ? `Cycle ${cycle}` : 'Cycle'}</span><b class="${ck ? tone(ck.value) : ''}" data-gk="cycle">${ck ? inr(ck.value) : '—'}</b></span>` : ''}
         <span class="gk-kv hide-m"><span>Overall</span><b class="${tone(x.overall)}" data-gk="overall">${inr(x.overall)}</b></span>
         <span class="gk-kv hide-m"><span>IST</span><b data-gk="clock">${hhmmss(new Date())}</b></span>
         <button type="button" class="gk-exit" data-act="exit">Exit <kbd>Esc</kbd></button>`;
@@ -70,8 +57,8 @@ export default {
 
     function rail() {
       const armed = engine && engine.rules && engine.rules.some(r => r.state === 'armed');
-      const cur = view[0] === 'cycle' ? 'cycles' : view[0];
-      return html`${GROUPS.map(gr => html`<div class="gk-grp"><h4>${gr}</h4>${VIEWS.filter(x => x[2] === gr && !x[6]).map(([k, l, , key]) => html`
+      const cur = !view ? '' : view[0] === 'cycle' ? 'cycles' : view[0];
+      return html`${GROUPS.filter(gr => views.some(x => x[2] === gr)).map(gr => html`<div class="gk-grp"><h4>${gr}</h4>${views.filter(x => x[2] === gr && !x[6]).map(([k, l, , key]) => html`
         <a href="${g.href(k)}" class="${k === cur ? 'on' : ''}" ${k === cur ? html`aria-current="page"` : ''}>${l}${k === 'engine' && armed ? html`<span class="dot" title="A rule is about to act"></span>` : ''}<span class="k">${key}</span></a>`)}</div>`)}
         <div class="foot">Keys switch views · Esc leaves<br>Pause, Close and Stop stay on the normal page</div>`;
     }
@@ -84,7 +71,7 @@ export default {
       const v = book.find(id);
       if (!v || !supports(v)) {
         mount(main, html`<div class="gk"><div class="gk-top"><img class="mark gk-mark" src="/icons/linck-mark.svg" alt="" width="24" height="24"><img class="mark gk-mark mark-paper" src="/icons/linck-mark-paper.svg" alt="" width="24" height="24"><span class="gk-badge">GEEK</span><span class="grow"></span><button type="button" class="gk-exit" data-act="exit">Exit <kbd>Esc</kbd></button></div><nav class="gk-rail"></nav>
-          <div class="gk-main"><div class="gk-view">${empty(v ? 'No Geek mode for this strategy yet' : 'This deployment doesn’t exist', v ? `${v.strategy} has no strategy-specific views. strangle_monthly_v2 is the first.` : 'It may have been deleted.')}</div></div></div>`);
+          <div class="gk-main"><div class="gk-view">${empty('This deployment doesn’t exist', 'It may have been deleted.')}</div></div></div>`);
         return;
       }
       if (mounted) {
@@ -93,6 +80,7 @@ export default {
         return;
       }
       mounted = true;
+      pick(v);
       document.title = `${v.name} · Geek · Linck`;
       mount(main, html`<div class="gk ${entry ? 'gk-in' : ''}" ${entry ? html`style="--ox:${entry.x}px;--oy:${entry.y}px"` : ''}>
         <div class="gk-top">${top(v)}</div>
@@ -116,8 +104,8 @@ export default {
     const offKeys = on(document, 'keydown', 'body', e => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select, [contenteditable]')) return;
       if (e.key === 'Escape') { e.preventDefault(); exit(id, $('.gk', main), $('[data-act="exit"]', main)); return; }
-      const hit = VIEWS.find(x => x[3] && x[3].toLowerCase() === e.key.toLowerCase());
-      if (hit && hit[0] !== view[0]) { e.preventDefault(); go(`d/${id}/geek/${hit[0]}`); }
+      const hit = views.find(x => x[3] && x[3].toLowerCase() === e.key.toLowerCase());
+      if (hit && (!view || hit[0] !== view[0])) { e.preventDefault(); go(`d/${id}/geek/${hit[0]}`); }
     });
     const stopEngine = (() => {
       let alive = true;

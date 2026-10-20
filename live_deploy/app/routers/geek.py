@@ -1,6 +1,6 @@
 """Geek mode API: strategy-specific analytics for one deployment (see
-app/geek/). Read-only. 404 for a strategy with no Geek module, so the
-UI only offers Geek mode where there's something behind it."""
+app/geek/). Read-only. Every registered strategy has the shared views
+(app/geek/common.py); some have views of their own."""
 
 import logging
 from uuid import UUID
@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from .. import clock
 from ..db import queries
-from ..geek import GEEK
+from ..geek import module_for
 
 logger = logging.getLogger("live_deploy.geek")
 
@@ -22,7 +22,7 @@ async def get_view(deployment_id: UUID, view: str, request: Request):
     dep = await queries.get_deployment(pool, deployment_id)
     if dep is None:
         raise HTTPException(404, "No such deployment")
-    mod = GEEK.get(dep["strategy_name"])
+    mod = module_for(dep["strategy_name"])
     if mod is None:
         raise HTTPException(404, f"Geek mode isn't available for {dep['strategy_name']}")
     build = mod.VIEWS.get(view)
