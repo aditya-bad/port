@@ -10,6 +10,7 @@ import { go } from '../../core/router.js';
 import { inr, dShort } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
 import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, LABEL, yLabels, wide } from './ui.js';
+import { band, dayTable, hoursOf, smooth } from './paths.js';
 
 const endTag = r => html`<span class="oc ${r.ended_by === 'checkpoint_target' ? '' : r.ended_by === 'open' ? 'no_action' : 'blocked'}">${LABEL[r.ended_by] || r.ended_by.replace(/_/g, ' ')}</span>`;
 
@@ -52,6 +53,106 @@ export function journeys(rows, target, one = false) {
       .map(([k, l]) => html`<span class="row" style="gap:6px"><i style="width:14px;height:3px;background:${endColour(k)}"></i>${l}</span>`)}
       ${R.some(r => r.path_kind === 'booked') ? html`<span class="row" style="gap:6px"><i style="width:14px;border-top:2px dashed var(--ink)"></i>no prices stored: steps at what each leg booked</span>` : ''}
       ${R.some(r => r.path_gaps && r.path_gaps.length) ? html`<span class="row" style="gap:6px"><i style="width:14px;border-top:2px dotted var(--ink)"></i>market open, no prices (Kite offline)</span>` : ''}</div>`;
+}
+
+// Spotlight: the same journeys, calmed. Past cycles faint and smoothed to
+// one point every 2 hours, the typical (median) past cycle bold, the
+// running one blue; hovering a line lights it up and names it below.
+const SPOT = [['all', 'All'], ['last5', 'Last 5'], ['checkpoint', 'Reached checkpoint'], ['stopped', 'Stopped / expired']];
+export function spotPast(rows, filter) {
+  const past = rows.filter(r => r.status !== 'open' && r.path && r.path.length > 1);   // newest first
+  if (filter === 'last5') return past.slice(0, 5);
+  if (filter === 'checkpoint') return past.filter(r => r.ended_by === 'checkpoint_target');
+  if (filter === 'stopped') return past.filter(r => r.ended_by !== 'checkpoint_target');
+  return past;
+}
+export const spotText = r => `#${r.cycle_id} · ${(LABEL[r.ended_by] || r.ended_by.replace(/_/g, ' ')).toLowerCase()} · ${inr(r.realized_pnl)} after ${(hoursOf(r) / 24).toFixed(1)} days · ${r.rolls} rolls · click to open`;
+
+function spotlight(rows, target, filter) {
+  const past = spotPast(rows, filter), run = rows.find(r => r.status === 'open' && r.path && r.path.length > 1);
+  const R = [...past, ...(run ? [run] : [])];
+  const chips = html`<div class="sp-chips" role="group" aria-label="Which past cycles">${SPOT.map(([k, l]) => html`<button type="button" data-spot="${k}" class="${k === filter ? 'on' : ''}" aria-pressed="${k === filter}">${l}</button>`)}</div>`;
+  if (!R.length) return html`${chips}${empty('', 'No cycles match this filter.')}`;
+  const W = 1200, H = 280, all = R.flatMap(r => r.path.map(p => p[1]));
+  const dx = Math.max(1, ...R.map(r => hoursOf(r) / 24)), hi = Math.max(target, ...all), lo = Math.min(0, ...all);
+  const pad = (hi - lo || 1) * 0.06, top = hi + pad, bot = lo - pad;
+  const x = d => 64 + d / dx * (W - 150), y = v => 12 + (top - v) / (top - bot) * (H - 46);
+  const pts = r => smooth(r.path).map(p => [x(p[0] / 24), y(p[1])]);
+  let s = '';
+  for (let d = 0; d <= dx; d += Math.max(1, Math.round(dx / 10))) s += `<line x1="${x(d)}" x2="${x(d)}" y1="12" y2="${H - 34}" stroke="var(--line)"/><text x="${x(d)}" y="${H - 18}" text-anchor="middle">day ${d}</text>`;
+  s += yLabels([0, target, bot, top], y, 58);
+  s += `<line x1="64" x2="${W - 86}" y1="${y(0)}" y2="${y(0)}" stroke="var(--ink)"/>`;
+  s += `<line x1="64" x2="${W - 86}" y1="${y(target)}" y2="${y(target)}" stroke="var(--g)" stroke-dasharray="5 3"/><text class="lab" x="${W - 86}" y="${y(target) - 5}" text-anchor="end" style="fill:var(--g)">checkpoint</text>`;
+  past.forEach(r => {
+    const d = path(r.path_kind === 'booked' ? steps(pts(r)) : pts(r));
+    s += `<g class="sp" data-c="${r.cycle_id}" data-info="${spotText(r).replace(/"/g, '&quot;')}" style="--c:${endColour(r.ended_by)}"><path class="v" d="${d}"/><path class="hit" d="${d}"/></g>`;
+  });
+  const typ = band(past);
+  if (typ.length > 1) {
+    const tp = typ.map(b => [x(b.h / 24), y(b.med)]), L = tp[tp.length - 1];
+    s += `<path class="sp-typ" d="${path(tp)}" fill="none" stroke="var(--ink)" stroke-width="2.4"/><text class="lab" x="${L[0] + 6}" y="${L[1] + 4}" style="fill:var(--ink)">typical</text>`;
+  }
+  if (run) {
+    const rp = pts(run), L = rp[rp.length - 1];
+    s += `<g class="sp-run" data-c="${run.cycle_id}"><path d="${path(rp)}" fill="none" stroke="var(--b)" stroke-width="2.8"/><circle cx="${L[0]}" cy="${L[1]}" r="4.5" fill="var(--b)"/><text class="lab" x="${L[0] + 7}" y="${L[1] + 4}" style="fill:var(--b)">#${run.cycle_id} now</text></g>`;
+  }
+  return html`${chips}${wide(svg(W, H, s, 'Past cycles faint, the typical cycle bold, the running cycle blue'))}
+    <div class="row wrap tiny" style="gap:16px"><span class="row" style="gap:6px"><i style="width:14px;height:3px;background:var(--ink);opacity:.25"></i>past cycles (${past.length})</span>
+      <span class="row" style="gap:6px"><i style="width:14px;height:3px;background:var(--ink)"></i>typical: the median past cycle, while at least 3 were still open</span>
+      ${run ? html`<span class="row" style="gap:6px"><i style="width:14px;height:3px;background:var(--b)"></i>running</span>` : ''}</div>
+    <p class="sp-info small" aria-live="polite">Hover a line to see which cycle it is; click it to open that cycle.</p>`;
+}
+
+// Is the running cycle normal? Where past cycles were, day by day (middle
+// half dark, best to worst light, the median as a line), and the running
+// cycle drawn over it.
+function normalBand(rows, target) {
+  const B = band(rows), run = rows.find(r => r.status === 'open' && r.path && r.path.length > 1);
+  if (B.length < 2) return empty('', 'Appears once at least 3 cycles have closed.');
+  const all = [...B.flatMap(b => [b.lo, b.hi]), ...(run ? run.path.map(p => p[1]) : [])];
+  const W = 1200, H = 280, dx = Math.max(1, B[B.length - 1].h / 24, run ? hoursOf(run) / 24 : 0);
+  const hi = Math.max(target, ...all), lo = Math.min(0, ...all), pad = (hi - lo || 1) * 0.06, top = hi + pad, bot = lo - pad;
+  const x = d => 64 + d / dx * (W - 170), y = v => 12 + (top - v) / (top - bot) * (H - 46);
+  const area = (a, b) => `${path([...B.map(z => [x(z.h / 24), y(z[a])]), ...[...B].reverse().map(z => [x(z.h / 24), y(z[b])])])}Z`;
+  let s = '';
+  for (let d = 0; d <= dx; d += Math.max(1, Math.round(dx / 10))) s += `<line x1="${x(d)}" x2="${x(d)}" y1="12" y2="${H - 34}" stroke="var(--line)"/><text x="${x(d)}" y="${H - 18}" text-anchor="middle">day ${d}</text>`;
+  s += `<path class="nb-range" d="${area('hi', 'lo')}" fill="var(--ink)" opacity=".07"/><path class="nb-mid" d="${area('q3', 'q1')}" fill="var(--ink)" opacity=".15"/>`;
+  s += yLabels([0, target, bot, top], y, 58);
+  s += `<line x1="64" x2="${W - 106}" y1="${y(0)}" y2="${y(0)}" stroke="var(--ink)"/>`;
+  s += `<line x1="64" x2="${W - 106}" y1="${y(target)}" y2="${y(target)}" stroke="var(--g)" stroke-dasharray="5 3"/>`;
+  s += `<path d="${path(B.map(z => [x(z.h / 24), y(z.med)]))}" fill="none" stroke="var(--ink)" stroke-width="2"/>`;
+  const E = B[B.length - 1], ex = x(E.h / 24) + 6;
+  s += `<text class="lab" x="${ex}" y="${y(E.med) + 4}" style="fill:var(--ink)">typical</text>`;
+  if (Math.abs(y(E.hi) - y(E.med)) > 14) s += `<text x="${ex}" y="${y(E.hi) + 4}">best past</text>`;
+  if (Math.abs(y(E.lo) - y(E.med)) > 14) s += `<text x="${ex}" y="${y(E.lo) + 4}">worst past</text>`;
+  if (run) {
+    const rp = smooth(run.path).map(p => [x(p[0] / 24), y(p[1])]), L = rp[rp.length - 1];
+    s += `<g class="nb-run"><path d="${path(rp)}" fill="none" stroke="var(--b)" stroke-width="2.8"/><circle cx="${L[0]}" cy="${L[1]}" r="4.5" fill="var(--b)"/><text class="lab" x="${L[0] + 7}" y="${L[1] - 8}" style="fill:var(--b)">#${run.cycle_id} now ${inr(run.pnl ?? L[1])}</text></g>`;
+  }
+  return html`${wide(svg(W, H, s, 'Where past cycles were each day, and the running cycle'))}
+    <div class="row wrap tiny" style="gap:16px"><span class="row" style="gap:6px"><i style="width:14px;height:10px;background:var(--ink);opacity:.2"></i>middle half of past cycles</span>
+      <span class="row" style="gap:6px"><i style="width:14px;height:10px;background:var(--ink);opacity:.08"></i>best to worst</span>
+      <span class="row" style="gap:6px"><i style="width:14px;height:3px;background:var(--ink)"></i>typical</span>
+      ${run ? html`<span class="row" style="gap:6px"><i style="width:14px;height:3px;background:var(--b)"></i>running</span>` : ''}</div>
+    <p class="gk-note">The band ends where fewer than 3 past cycles were still open: cycles that reach the checkpoint early drop out, so later days rest on fewer cycles.</p>`;
+}
+
+// The consolidated table under both: past cycles day by day, and the
+// running cycle against them.
+function dayRows(rows) {
+  const T = dayTable(rows);
+  if (!T.length) return '';
+  const run = rows.some(r => r.status === 'open' && r.path && r.path.length > 1);
+  const PLACE = { 'above every past cycle': 'pos', 'top quarter': 'pos', 'middle half': '', 'bottom quarter': 'neg', 'below every past cycle': 'neg' };
+  return table([['Day', '128px'], ['Past cycles open', '120px', 'num'], ['Typical', '100px', 'num'], ['Middle half', 'minmax(150px,1fr)', 'num'],
+    ['Best / worst', 'minmax(150px,1fr)', 'num'], ['Reached checkpoint by then', '170px', 'num'], ...(run ? [['Running cycle', '110px', 'num'], ['Where it stands', '170px']] : [])],
+    T.map(r => [html`<b class="${r.now ? 'mono' : ''}">${r.label}</b>`, `${r.open} of ${r.closed}`,
+      r.med == null ? html`<span class="mute">too few</span>` : html`<span class="${tone(r.med)}">${inr(r.med)}</span>`,
+      r.q1 == null ? '—' : `${inr(r.q1)} to ${inr(r.q3)}`,
+      r.hi == null ? '—' : html`<span class="pos">${inr(r.hi)}</span> / <span class="${tone(r.lo)}">${inr(r.lo)}</span>`,
+      r.closed ? `${r.reached} · ${Math.round(r.reached / r.closed * 100)}%` : '—',
+      ...(run ? [r.run == null ? '—' : html`<b class="${tone(r.run)}">${inr(r.run)}</b>`, r.place ? html`<span class="${PLACE[r.place]}">${r.place}</span>` : '—'] : [])]),
+    { minw: run ? 1100 : 820, cls: 'day-tbl', rowCls: i => (T[i].now ? 'att' : '') });
 }
 
 // Each cycle as a range from its worst dip to its best peak, and where it
@@ -118,13 +219,14 @@ function monthChart(m) {
 
 export default {
   render(el, v, g) {
-    let data = null;
+    let data = null, spotFilter = 'all';
     function paint() {
       if (data === null) { mount(el, html`${head('Cycles')}${loading(6)}`); return; }
       if (data instanceof Error) { mount(el, html`${head('Cycles')}${empty('Couldn’t load cycles', data.message)}`); return; }
       const s = data.summary;
       if (!data.rows.length) { mount(el, html`${head('Cycles')}${empty('No cycles yet', 'A cycle starts at the first entry.')}`); return; }
       const ck = s.ended_by.checkpoint_target || 0;
+      const spot = spotFilter;
       const others = Object.entries(s.ended_by).filter(([k]) => k !== 'checkpoint_target').map(([k, n]) => `${(LABEL[k] || k).toLowerCase()} ${n}`).join(' · ');
       mount(el, html`
         ${head('Cycles', 'How each cycle was born, lived and ended: is the checkpoint doing the work, or are expiries and stops?', 'fills · 5-minute price marks')}
@@ -135,6 +237,9 @@ export default {
           ['Avg worst dip / best peak', s.avg_mae != null ? html`<span class="neg">${inr(s.avg_mae)}</span> / <span class="pos">${inr(s.avg_mfe)}</span>` : '—', s.worst_mae != null ? `worst dip ${inr(s.worst_mae)}` : 'from price marks'],
         ])}
         <div class="gk-panel"><h3>Every cycle’s journey <span class="s">P&L against days since it opened · click a line or a row to open that cycle</span></h3>${journeys(data.rows, data.checkpoint_target)}</div>
+        <div class="gk-panel" id="spot"><h3>Spotlight <span class="s">the same journeys, calmer: past cycles faint and smoothed · bold black: the typical cycle · blue: running · hover a line to light it up</span></h3>${spotlight(data.rows, data.checkpoint_target, spot)}</div>
+        <div class="gk-panel"><h3>Is this cycle normal? <span class="s">the running cycle against where past cycles were on the same day</span></h3>${normalBand(data.rows, data.checkpoint_target)}</div>
+        <div class="gk-panel"><h3>Day by day <span class="s">past cycles’ P&L at the end of each day since opening, and the running cycle against them</span></h3>${dayRows(data.rows)}</div>
         <div class="gk-panel"><h3>Range and result <span class="s">shaded: worst dip and best peak · bar: where it ended · dashed: checkpoint</span></h3>${ranges(data.rows, data.checkpoint_target)}</div>
         <div class="gk-panel"><h3>What ends cycles <span class="s">${s.closed} closed</span></h3>${endings(s)}</div>
         ${table([['#', '44px'], ['Opened → closed', 'minmax(150px,1.2fr)'], ['Expiry', '96px'], ['Days', '56px', 'num'], ['Ended by', '130px'],
@@ -152,7 +257,18 @@ export default {
     }
     const stop = poll(() => api.geek(g.id, 'cycles'), 60000, d => { data = d; paint(); });
     const open = (e, t) => { if (!e.target.closest('a')) go(`d/${g.id}/geek/cycle?c=${t.dataset.c}`); };
-    const offs = [on(el, 'click', '[data-c]', open), on(el, 'keydown', '.tr[data-c]', (e, t) => { if (e.key === 'Enter') open(e, t); })];
+    const info = el => el.querySelector('.sp-info');
+    const offs = [on(el, 'click', '[data-c]', open), on(el, 'keydown', '.tr[data-c]', (e, t) => { if (e.key === 'Enter') open(e, t); }),
+      on(el, 'click', '[data-spot]', (e, t) => { spotFilter = t.dataset.spot; paint(); }),
+      // the lit line goes on top of the rest; a class, as moving it drops :hover
+      on(el, 'mouseover', '.sp', (e, t) => {
+        if (t.classList.contains('lit')) return;
+        el.querySelectorAll('.sp.lit').forEach(x => x.classList.remove('lit'));
+        t.classList.add('lit');
+        if (t.nextElementSibling) t.parentNode.appendChild(t);
+        const i = info(el); if (i) { i.textContent = t.dataset.info; i.classList.add('on'); }
+      }),
+      on(el, 'mouseout', '.sp', (e, t) => { if (!t.contains(e.relatedTarget)) t.classList.remove('lit'); })];
     return () => { stop(); offs.forEach(f => f()); };
   },
 };

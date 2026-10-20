@@ -179,3 +179,17 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 .gk-wide { overflow-x: auto; }
 .gk-wide > .gk-chart { min-width: 760px; }
 .gk-tile .v.sm { font-size: 20px; white-space: normal; overflow: visible; text-overflow: clip; }
+
+/* Cycles · Spotlight: faint past cycles that light up on hover, filter chips */
+.sp-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.sp-chips button { font: 12px var(--f-mono); border: 1px solid var(--line); padding: 3px 9px; background: none; color: var(--ink); cursor: pointer; }
+.sp-chips button.on { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.sp-chips button:focus-visible { outline: 2px solid var(--b); outline-offset: 2px; }
+.sp .v { fill: none; stroke: var(--ink); stroke-width: 1.2; opacity: .18; transition: opacity .12s, stroke-width .12s; }
+.sp .hit { fill: none; stroke: transparent; stroke-width: 10; pointer-events: stroke; cursor: pointer; }
+.sp.lit .v { stroke: var(--c); opacity: 1; stroke-width: 2.4; }
+.gk-chart:has(.sp.lit) .sp-typ { opacity: .3; }
+.sp-run { cursor: pointer; }
+.sp-info { margin: 6px 0 0; color: var(--mute); min-height: 1.4em; }
+.sp-info.on { color: var(--ink); font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .sp .v { transition: none; } }

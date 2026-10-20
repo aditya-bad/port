@@ -47,3 +47,19 @@ test('a P&L line breaks where prices are missing, and the breaks come back dotte
   assert.deepEqual(gapped(pts, [2, 3]), { solid: 'M0.0 0.0L1.0 1.0M3.0 3.0L4.0 4.0', gaps: 'M1.0 1.0L2.0 2.0M2.0 2.0L3.0 3.0' });
   assert.deepEqual(steps([[0, 0], [2, 5], [3, 1]]), [[0, 0], [2, 0], [2, 5], [3, 5], [3, 1]]);
 });
+
+test('spotlight filters pick which past cycles are drawn', async () => {
+  const { spotPast, spotText } = await import('../../static/linck/js/pages/geek/cycles.js');
+  const p = [[0, 0], [10, 5]];
+  const rows = [
+    { cycle_id: 8, status: 'open', ended_by: 'open', path: p },
+    ...[7, 6, 5, 4, 3, 2].map(id => ({ cycle_id: id, status: 'closed', ended_by: id === 5 ? 'convergence_stop' : id === 3 ? 'contract_expiry_backstop' : 'checkpoint_target', path: p, realized_pnl: 100, rolls: 1 })),
+    { cycle_id: 1, status: 'closed', ended_by: 'checkpoint_target', path: [[0, 0]] },   // no journey
+  ];
+  assert.deepEqual(spotPast(rows, 'all').map(r => r.cycle_id), [7, 6, 5, 4, 3, 2], 'closed with a path; the running one is drawn separately');
+  assert.deepEqual(spotPast(rows, 'last5').map(r => r.cycle_id), [7, 6, 5, 4, 3]);
+  assert.deepEqual(spotPast(rows, 'checkpoint').map(r => r.cycle_id), [7, 6, 4, 2]);
+  assert.deepEqual(spotPast(rows, 'stopped').map(r => r.cycle_id), [5, 3]);
+  assert.equal(spotText({ cycle_id: 5, ended_by: 'convergence_stop', realized_pnl: -3852, path: [[0, 0], [218.4, -3852]], rolls: 2 }),
+    '#5 · convergence stop · −₹3,852 after 9.1 days · 2 rolls · click to open');
+});

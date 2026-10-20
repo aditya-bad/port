@@ -91,8 +91,8 @@ test('the views show this strategy\'s own analytics', async () => {
   const outcomes = await p.$$eval('#gkView .gk-tbl .tr:not(.th) .oc', els => [...new Set(els.map(e => e.textContent))]);
   assert.deepEqual(outcomes, ['No action'], 'the filter keeps only checks that did nothing');
   await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycles`);
-  await p.waitForSelector('#gkView .gk-tbl .tr:not(.th)');
-  const cycles = await p.locator('#gkView .gk-tbl .tr:not(.th)').count();
+  await p.waitForSelector('#gkView .gk-tbl .tr[data-c]');
+  const cycles = await p.locator('#gkView .gk-tbl .tr[data-c]').count();   // the cycles table, not the day-by-day one
   assert.equal(cycles, 10, 'nine closed cycles and the open one');
   assert.match(await p.locator('#gkView').innerText(), /Convergence stop/);
   await p.goto(`${BASE}/linck/#/d/${ID}/geek/adjustments`);
@@ -210,6 +210,52 @@ test('a cycle from before prices were stored still shows its P&L', async () => {
   await p.waitForSelector('.gk-h h2:has-text("Cycle 3")');
   assert.match(await p.locator('#gkView').innerText(), /15-minute candle close/);
   assert.doesNotMatch(await p.locator('#gkView').innerText(), /Appears after/, 'drawn from the candles');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+// Cycles keeps the full journeys chart and adds a calmer Spotlight, the
+// running cycle against past ones, and a day-by-day table.
+test('cycles: spotlight, is-this-normal band and the day-by-day table', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycles`);
+  await p.waitForSelector('#spot .sp');
+  assert.equal(await p.locator('.gk-chart .jr[data-kind]').count(), 10, 'the original journeys chart is still there');
+  // spotlight: 9 past cycles faint, a typical line, the running one
+  assert.equal(await p.locator('#spot .sp').count(), 9);
+  assert.equal(await p.locator('#spot .sp-typ').count(), 1);
+  assert.match(await p.locator('#spot .sp-run').innerHTML(), /#10 now/);
+  // filters
+  for (const [k, n] of [['last5', 5], ['checkpoint', 7], ['stopped', 2], ['all', 9]]) {
+    await p.click(`[data-spot="${k}"]`);
+    await p.waitForFunction(([k, n]) => document.querySelector(`[data-spot="${k}"]`)?.classList.contains('on')
+      && document.querySelectorAll('#spot .sp').length === n, [k, n]);
+  }
+  // hover lights a line and names it; clicking opens it
+  const line = p.locator('#spot .sp[data-c="5"]');
+  await line.scrollIntoViewIfNeeded();
+  const pt = await line.locator('.hit').evaluate(e => { const q = e.getPointAtLength(e.getTotalLength() * 0.85), m = e.getScreenCTM(); return { x: q.x * m.a + m.e, y: q.y * m.d + m.f }; });
+  await p.mouse.move(pt.x, pt.y);
+  await p.waitForFunction(() => document.querySelector('#spot .sp[data-c="5"]').classList.contains('lit'));
+  assert.match(await p.locator('#spot .sp-info').innerText(), /^#5 · convergence stop · −₹3,852 after/);
+  assert.equal(await line.locator('.v').evaluate(e => getComputedStyle(e).opacity), '1');
+  // the band: past cycles' range with the running cycle over it
+  const nb = p.locator('.gk-panel', { hasText: 'Is this cycle normal?' });
+  assert.equal(await nb.locator('.nb-mid').count(), 1);
+  assert.equal(await nb.locator('.nb-range').count(), 1);
+  assert.match(await nb.locator('.nb-run').innerHTML(), /#10 now/);
+  // the table: a row per day and one for now, highlighted
+  const dt = p.locator('.gk-panel', { hasText: 'Day by day' });
+  const rows = await dt.locator('.tr:not(.th)').allInnerTexts();
+  assert.match(rows[0], /^Day 1/);
+  assert.ok(rows.some(r => /^Now · day \d/.test(r)), 'a row for the running cycle now');
+  assert.equal(await dt.locator('.tr.att').count(), 1);
+  assert.match(rows.join('\n'), /below every past cycle|bottom quarter|middle half|top quarter|above every past cycle/);
+  const text = await p.locator('#gkView').innerText();
+  assert.doesNotMatch(text, /undefined|NaN|\[object/);
+  await p.mouse.click(pt.x, pt.y);
+  await p.waitForURL(/cycle\?c=5$/);
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
