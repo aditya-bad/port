@@ -20,3 +20,11 @@ test('only strategies with a Geek module offer it', () => {
   assert.equal(supports({ strategy: 'intraday_dtt_simple' }), false);
   assert.equal(supports(null), false);
 });
+
+test('checkpoint chip: a percentage only while in profit, "In loss" (red) while behind', async () => {
+  const { stateChip } = await import('../../static/linck/js/pages/geek/ui.js');
+  const s = r => String(stateChip({ key: 'checkpoint_target', ...r }));
+  assert.match(s({ state: 'ok', pct: 40 }), /class="st-chip ok">40% there/);
+  assert.match(s({ state: 'behind', pct: null }), /class="st-chip behind">In loss/);
+  assert.doesNotMatch(s({ state: 'behind', pct: null }), /%/);
+});

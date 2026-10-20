@@ -121,6 +121,7 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 .st-chip.idle, .st-chip.off, .st-chip.done { color: var(--mute); }
 .st-chip.armed { background: var(--ys); border-color: var(--wr); color: var(--wt); }
 .st-chip.ok { border-color: var(--g); color: var(--g); }
+.st-chip.behind { border-color: var(--r); color: var(--r); }
 
 /* the engine card on the normal Now tab, and the Geek mode button */
 .btn-geek kbd { font-family: var(--f-mono); font-size: 11px; padding: 0 5px; border: 1px solid currentColor; opacity: .6; font-weight: 500; }

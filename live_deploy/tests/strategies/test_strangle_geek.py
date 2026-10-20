@@ -61,6 +61,27 @@ def test_engine_checkpoint_reading_is_the_cycle_profit(pool_run, monkeypatch):
     pool_run(go)
 
 
+def test_engine_checkpoint_in_loss_is_behind_not_a_negative_percentage(pool_run, monkeypatch):
+    """A cycle in loss read "-357% there" in green, as if on track."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        await sim.tick("11:00", spot=25150)
+        eng = await G.engine(await ctx(sim))
+        ck = rule(eng, "checkpoint_target")
+        assert ck["value"] < 0, "the move put the short strangle in loss"
+        assert ck["state"] == "behind" and ck["pct"] is None
+        assert "% there" not in eng["next"]["text"]
+        assert "short of the checkpoint" in eng["next"]["text"]
+    pool_run(go)
+
+
+def test_checkpoint_progress_words():
+    assert G._checkpoint_progress(-2675, 750) == "cycle is −₹2,675, ₹3,425 short of the checkpoint"
+    assert G._checkpoint_progress(375, 750) == "checkpoint 50% there"
+    assert G._checkpoint_progress(0, 750) == "checkpoint 0% there"
+    assert G._checkpoint_progress(100, 0) == "no checkpoint set"
+
+
 def test_engine_forecasts_the_eod_roll_and_the_strategy_then_makes_it(pool_run, monkeypatch):
     async def go(pool):
         sim = await start(pool, monkeypatch)

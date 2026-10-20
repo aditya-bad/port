@@ -301,6 +301,16 @@ def _age(now: datetime, traded_at) -> Optional[float]:
     return max(0.0, (now - _ist(traded_at)).total_seconds())
 
 
+
+def _checkpoint_progress(profit: float, target: float) -> str:
+    """How far the cycle is toward the checkpoint, in words: a percentage
+    while in profit, the loss and the distance while in loss."""
+    if target <= 0:
+        return "no checkpoint set"
+    if profit < 0:
+        return f"cycle is {_rupees(profit)}, {_rupees(target - profit)} short of the checkpoint"
+    return f"checkpoint {round(profit / target * 100)}% there"
+
 def engine_from_strategy(s, runner, now: datetime) -> dict:
     """Live readings off a running StrangleMonthlyV2Strategy. Pure apart
     from reading the strategy and the dispatcher's last prices."""
@@ -381,7 +391,10 @@ def engine_from_strategy(s, runner, now: datetime) -> dict:
         "left": "₹0", "mid": f"{_rupees(profit)} of {_rupees(target)}", "right": _rupees(target),
         "reading": ("reached · exits wait until " + _hhmm(s.checkpoint_exit_not_before)) if reached and gated
         else "reached" if reached else f"{_rupees(target - profit)} to go",
-        "state": "armed" if reached else "ok", "pct": round(profit / target * 100) if target > 0 else None,
+        # A cycle in loss isn't on its way to the checkpoint: "behind", no
+        # percentage (a negative "-357% there" in green read as good news).
+        "state": "armed" if reached else "behind" if profit < 0 else "ok",
+        "pct": round(profit / target * 100) if target > 0 and profit >= 0 else None,
         "value": round(profit, 2), "target": target,
     })
     # 3 convergence stop
@@ -493,10 +506,10 @@ def engine_from_strategy(s, runner, now: datetime) -> dict:
         if sums is not None and not frozen:
             big, small, bsum, ssum = sums
             nxt = {"text": f"Nothing due. Closest: {small} can lose {ssum - s.adjustment_trigger_ratio * bsum:.1f} "
-                           f"more before a roll; checkpoint {round(profit / target * 100) if target else 0}% there",
+                           f"more before a roll; {_checkpoint_progress(profit, target)}",
                    "at": None}
         else:
-            nxt = {"text": f"Nothing due. Checkpoint {round(profit / target * 100) if target else 0}% there", "at": None}
+            nxt = {"text": f"Nothing due. {_checkpoint_progress(profit, target).capitalize()}", "at": None}
     out["next"] = nxt
     return out
 
