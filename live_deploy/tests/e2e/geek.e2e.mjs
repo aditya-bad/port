@@ -41,7 +41,7 @@ test('the Now tab shows the engine card and Geek mode opens full screen', async 
 });
 
 test('every strategy has Geek mode: the shared views, without the strangle\'s own', async () => {
-  const DTT = IDS['BankNifty DTT Plain'];
+  const DTT = IDS['Sensex Credit Spread'];
   const SHARED = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
@@ -72,7 +72,13 @@ test('every strategy has Geek mode: the shared views, without the strangle\'s ow
       assert.ok(sw <= width, `${label} ${v}: page ${sw}px wide at ${width}px`);
       if (v === 'overview') assert.match(text, /Win rate/);
       if (v === 'engine') assert.match(text, /Paused|Stopped|Not running|Flat|Holding/);
-      if (v === 'decisions') assert.ok(await p.locator('#gkView .oc.acted').count() > 0, 'its trades, as decisions');
+      if (v === 'decisions') {
+        if (await p.locator('#gkView [data-act="scope"][data-k="all"]').count()) {   // running: today first
+          await p.click('#gkView [data-act="scope"][data-k="all"]');
+          await p.waitForSelector('#gkView [data-act="scope"][data-k="all"].on');
+        }
+        assert.ok(await p.locator('#gkView .oc.acted').count() > 0, 'its trades, as decisions');
+      }
       if (v === 'settings') { assert.match(text, /Lots/); assert.match(text, /Rules that traded/); }
     }
     await p.goto(`${BASE}/linck/#/d/${DTT}/geek/cycles`);
@@ -379,7 +385,8 @@ test('SuperTrend options: engine ladder, signals, exits, days and one trade end 
   assert.ok(tiles.includes(String(sig.summary.trades)) && tiles.includes(`${Math.round(sig.summary.win_rate)}%`));
   // one trade: from the list, then older and newer
   await p.locator('#gkView a[href*="/geek/trade?p="]').nth(1).click();
-  await p.waitForSelector('#gkView .gk-chart');
+  await p.waitForURL(/\/geek\/trade\?p=/);
+  await p.waitForFunction(() => document.querySelector('#gkView').innerText.includes('All trades') && document.querySelector('#gkView .gk-chart'));
   const second = sig.trades[1];
   assert.match(await p.locator('#gkView').innerText(), new RegExp(`${sig.trades.length - 1} of ${sig.trades.length}`));
   assert.match(await p.locator('#gkView').innerText(), new RegExp(second.symbol));
@@ -400,6 +407,72 @@ test('SuperTrend options: engine ladder, signals, exits, days and one trade end 
   await p.waitForSelector('#gkView .gk-tbl .tr:not(.th)');
   assert.equal(await p.locator('#gkView .gk-tbl .tr:not(.th)').count(), sig.days.length);
   assert.ok(await p.locator('#gkView .gk-tbl .tr.att').count() >= 1, 'a day the cap turned a signal away stands out');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('DTT straddle: engine, straddles, exits & timing, and one straddle end to end', async () => {
+  const DD = IDS['BankNifty DTT Plain'];
+  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'straddles', 'timing', 'settings'];
+  for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
+    const ctx = await context(b, { width, height: 860 });
+    const p = await ctx.newPage();
+    await p.goto(`${BASE}/linck/#/d/${DD}/geek`);
+    await p.waitForSelector('.gk-rail a.on');
+    assert.deepEqual(await p.$$eval('.gk-rail a', as => as.map(a => a.getAttribute('href').split('/geek/')[1])), OWN, `${label}: menu`);
+    for (const v of OWN.concat(['straddle'])) {
+      await p.goto(`${BASE}/linck/#/d/${DD}/geek/${v}`);
+      await p.waitForSelector(`.gk-rail a.on[href$="/geek/${v === 'straddle' ? 'straddles' : v}"]`);
+      await p.waitForFunction(() => {
+        const el = document.querySelector('#gkView');
+        return el && el.children.length && !el.querySelector('.skel');
+      }, null, { timeout: 10000 });
+      const text = await p.locator('#gkView').innerText();
+      assert.doesNotMatch(text, /undefined|NaN|\[object|Infinity/, `${label} ${v}: no broken values`);
+      const sw = await p.evaluate(() => document.documentElement.scrollWidth);
+      assert.ok(sw <= width, `${label} ${v}: page ${sw}px wide at ${width}px`);
+    }
+    assert.deepEqual(ctx.errors, []);
+    await ctx.close();
+  }
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  const api = async v => (await ctx.request.get(`${BASE}/v2/deployments/${DD}/geek/${v}`)).json();
+  // engine: the straddle panel, and its rules in the strategy's order while it runs or holds
+  await p.goto(`${BASE}/linck/#/d/${DD}/geek/engine`);
+  await p.waitForSelector('[data-dd]');
+  const rules = await p.$$eval('.gk-rules [data-rule]', rs => rs.map(r => r.dataset.rule));
+  assert.ok(rules.length === 0 || rules.join() === 'entry,force_exit,stop_ce,stop_pe,profit_target', rules.join());
+  // straddles: every one listed, numbers from the API
+  const all = await api('straddles');
+  assert.ok(all.straddles.length >= 20 && all.summary.closed >= 20);
+  assert.ok(all.straddles.every(r => !r.ce || !r.pe || r.ce.symbol.slice(0, -2) === r.pe.symbol.slice(0, -2)), 'one strike per straddle');
+  await p.goto(`${BASE}/linck/#/d/${DD}/geek/straddles`);
+  await p.waitForSelector('#gkView a[href*="/geek/straddle?s="]');
+  assert.equal(await p.locator('#gkView a[href*="/geek/straddle?s="]').count(), all.straddles.length);
+  const tiles = await p.locator('.gk-tiles').first().innerText();
+  assert.ok(tiles.includes(String(all.summary.straddles)) && tiles.includes(`${Math.round(all.summary.win_rate)}%`));
+  // one closed straddle: legs, combined and index charts; older and newer
+  const i = all.straddles.findIndex(r => !r.open);
+  await p.locator('#gkView a[href*="/geek/straddle?s="]').nth(i).click();
+  await p.waitForURL(/\/geek\/straddle\?s=/);
+  await p.waitForFunction(() => document.querySelector('#gkView').innerText.includes('All straddles') && document.querySelectorAll('#gkView .gk-chart').length >= 3);
+  const one = all.straddles[i];
+  const text = await p.locator('#gkView').innerText();
+  assert.match(text, new RegExp(`${all.straddles.length - i} of ${all.straddles.length}`));
+  assert.match(text, new RegExp(one.strike.toLocaleString('en-IN')));
+  assert.equal(await p.locator('#gkView svg.gk-chart').count(), 3, 'the legs, the combined premium and the index');
+  assert.equal(await p.locator('.gk-rail a.on').getAttribute('href').then(h => h.split('/geek/')[1]), 'straddles');
+  await p.click('a:has-text("← Older")');
+  await p.waitForFunction(n => document.querySelector('#gkView').innerText.includes(`${n} of `), all.straddles.length - i - 1);
+  await p.goto(`${BASE}/linck/#/d/${DD}/geek/straddle?s=nope`);
+  await p.waitForSelector('#gkView .empty');
+  assert.match(await p.locator('#gkView').innerText(), /There’s no such straddle/);
+  // exits & timing: one tile per way it ended, the endings chart
+  await p.goto(`${BASE}/linck/#/d/${DD}/geek/timing`);
+  await p.waitForSelector('#gkView .gk-chart');
+  const ex = await p.locator('#gkView .gk-tiles').innerText();
+  for (const g of Object.values(all.by_exit)) assert.ok(ex.includes(g.label) && ex.includes(String(g.n)), g.label);
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });

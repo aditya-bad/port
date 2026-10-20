@@ -66,7 +66,7 @@ DEPS = [
     ("Nifty Strangle A", "strangle_monthly_v2", "positional", 1_000_000, "NIFTY", "active", ["Strangles"], 200, "pos"),
     ("Nifty Strangle B", "strangle_monthly_v2", "positional", 1_000_000, "NIFTY", "paused", ["Strangles"], 150, "pos"),
     ("BankNifty DTT Adjusted", "intraday_dtt_adjusted", "intraday", 500_000, "BANKNIFTY", "active", ["DTT"], 120, "intra"),
-    ("BankNifty DTT Plain", "intraday_dtt_simple", "intraday", 500_000, "BANKNIFTY", "active", ["DTT"], 120, "intra"),
+    ("BankNifty DTT Plain", "intraday_dtt_simple", "intraday", 500_000, "BANKNIFTY", "active", ["DTT"], 120, "dtt"),
     ("Sensex Credit Spread", "trend_credit_spread", "positional", 500_000, "SENSEX", "active", ["Spreads"], 90, "pos"),
     ("Pivot Supertrend Options", "pivot_supertrend_options", "intraday", 300_000, "NIFTY", "stopped", [], 60, "st"),
     ("Bankex Strangle", "strangle_monthly_v2", "positional", 500_000, "BANKEX", "active", ["Strategy Lab"], 6, "pos"),
@@ -131,6 +131,8 @@ async def seed():
         day = created + timedelta(days=1)
         if style == "st":
             await seed_supertrend(pool, d["id"], created)
+        elif style == "dtt":
+            await seed_dtt(pool, d["id"], created)
         elif style == "intra":
             while day < TODAY:
                 if day.weekday() < 5 and R.random() < 0.85:
@@ -165,10 +167,18 @@ async def seed():
         ix, q = dep[4], LOT[dep[4]]
         k = round(SPOT[ix] / STEP[ix]) * STEP[ix]
         when = datetime.combine((TODAY if dep[2] == "intraday" else TODAY - timedelta(days=3)).date(), time(9, 21), IST)
-        for ot, off, act in [("CE", 8, "sell"), ("PE", -8, "sell"), ("CE", 12, "buy"), ("PE", -12, "buy")][:n]:
+        legs = [("CE", 0, "sell"), ("PE", 0, "sell")] if dep[1] == "intraday_dtt_simple" else \
+            [("CE", 8, "sell"), ("PE", -8, "sell"), ("CE", 12, "buy"), ("PE", -12, "buy")]   # a straddle sells one strike
+        for ot, off, act in legs[:n]:
             t = ntok()
             px = R.uniform(90, 160) if act == "sell" else R.uniform(25, 50)
-            await fill(pool, ids[name], sym(ix, TODAY + timedelta(days=30), k + off * STEP[ix], ot), t, act, q, px, when, "entry")
+            if dep[1] == "intraday_dtt_simple":
+                await queries.record_fill(pool, ids[name], sym(ix, TODAY + timedelta(days=30), k, ot), t, act, q, round(px, 2), when, reason="entry",
+                                          metadata={"trigger": "entry_time_reached", "action": f"sell_open_{ot}", "strike": k,
+                                                    "expiry": (TODAY + timedelta(days=(2 - TODAY.weekday()) % 7)).date().isoformat(),
+                                                    "entry_spot": SPOT[ix], "leg": ot, "trigger_values": {"late_start_today": False}})
+            else:
+                await fill(pool, ids[name], sym(ix, TODAY + timedelta(days=30), k + off * STEP[ix], ot), t, act, q, px, when, "entry")
             if name == MARKED_ONLY:
                 # never live: only yesterday's last recorded price (a holiday / Kite down)
                 pos = await pool.fetchval("SELECT id FROM positions WHERE deployment_id=$1 AND instrument_token=$2", ids[name], t)
@@ -199,6 +209,81 @@ async def seed():
     await close_pool(pool)
     Path(os.environ.get("E2E_IDS") or HERE / ".ids.json").write_text(json.dumps({"ids": ids, "password": PASSWORD, "port": PORT}, indent=1))
     return prices
+
+
+# intraday_dtt_simple the way it really trades: an ATM straddle at
+# 10:00 every weekday, both legs bought back at the profit target, on a
+# leg's stop or at 15:00, with the metadata its fills carry, the legs'
+# and the index's 1-minute candles, and its half-hourly exit checks.
+async def seed_dtt(pool, dep, created):
+    ix, q, tok, step = "BANKNIFTY", LOT["BANKNIFTY"], TOKEN["BANKNIFTY"], STEP["BANKNIFTY"]
+    rnd = random.Random(11)
+    day, n = max(created + timedelta(days=1), TODAY - timedelta(days=45)), 0
+    while day < TODAY - timedelta(days=1):
+        if day.weekday() >= 5 or n >= 30:
+            day += timedelta(days=1)
+            continue
+        open_ = datetime.combine(day.date(), time(9, 15), IST)
+        base, ph, amp = SPOT[ix] + rnd.uniform(-600, 600), rnd.uniform(0, 6.28), rnd.choice([rnd.uniform(40, 120), rnd.uniform(40, 120), rnd.uniform(150, 380)])
+        spot = lambda m: base + amp * math.sin((m - open_).total_seconds() / 60 / 70 + ph)  # noqa: E731
+        t0 = datetime.combine(day.date(), time(10, 0), IST)
+        s0 = spot(t0)
+        k = round(s0 / step) * step
+        expiry = day + timedelta(days=(2 - day.weekday()) % 7)
+        ce_s, pe_s = f"BANKNIFTY{expiry.strftime('%y%b').upper()}{k}CE", f"BANKNIFTY{expiry.strftime('%y%b').upper()}{k}PE"
+        ce_t, pe_t = ntok(), ntok()
+        ce0, pe0 = round(rnd.uniform(160, 260), 2), round(rnd.uniform(160, 260), 2)
+        # premiums: decay with time, CE up when the index rises, PE when it
+        # falls, and both up on a big move either way (a short straddle's gamma)
+        prem = lambda m, e0, sgn: max(5.0, e0 * (1 - 0.3 * (m - t0).total_seconds() / 18000)  # noqa: E731
+                                      + sgn * 0.5 * (spot(m) - s0) + 0.0005 * (spot(m) - s0) ** 2)
+        end = datetime.combine(day.date(), time(15, 0), IST)
+        m, reason, tv = t0 + timedelta(minutes=1), "force_exit", None
+        while m < end:
+            ce, pe = prem(m, ce0, 1), prem(m, pe0, -1)
+            if ce >= ce0 * 1.4 or pe >= pe0 * 1.4:
+                reason = "leg_spike_stop"
+                tv = {"ce_now": round(ce, 2), "pe_now": round(pe, 2), "ce_entry_price": ce0, "pe_entry_price": pe0,
+                      "per_leg_stop_loss_pct": 0.4, "ce_threshold": round(ce0 * 1.4, 2), "pe_threshold": round(pe0 * 1.4, 2)}
+                break
+            if ce + pe <= (ce0 + pe0) * 0.9:
+                reason = "profit_target_decay"
+                tv = {"combined_entry": round(ce0 + pe0, 2), "combined_now": round(ce + pe, 2),
+                      "combined_premium_profit_pct": 0.1, "target_combined": round((ce0 + pe0) * 0.9, 2)}
+                break
+            m += timedelta(minutes=1)
+        out = m if reason != "force_exit" else end
+        if reason == "force_exit":
+            tv = {"tick_time": "15:00:00", "force_exit_time": "15:00:00"}
+        tvx = {"tick_time": "10:00:00", "entry_time": "10:00:00", "late_start_today": False, "switched_to_next_week": False}
+        for sym_, t_, e0, ot in ((ce_s, ce_t, ce0, "CE"), (pe_s, pe_t, pe0, "PE")):
+            await queries.record_fill(pool, dep, sym_, t_, "sell", q, e0, t0, reason="entry", metadata={
+                "trigger": "entry_time_reached", "action": f"sell_open_{ot}", "trigger_values": tvx,
+                "resulting_state": {ot: {"strike": k, "entry_price": e0}},
+                "target_basis": {"selection_basis": "ATM", "selected_strike": k, "underlying_price": round(s0, 2), "fill_premium": e0},
+                "strike": k, "expiry": expiry.date().isoformat(), "entry_spot": round(s0, 2), "leg": ot, "exchange": "NFO"})
+        for sym_, t_, e0, ot, sgn in ((ce_s, ce_t, ce0, "CE", 1), (pe_s, pe_t, pe0, "PE", -1)):
+            await queries.record_fill(pool, dep, sym_, t_, "buy", q, round(prem(out, e0, sgn), 2), out, reason=reason, metadata={
+                "trigger": reason, "action": f"buy_close_{ot}", "trigger_values": {**tv, "price_source": "live"},
+                "resulting_state": {"position": "flat"}})
+        rows = []
+        for i in range(int((out - open_).total_seconds() / 60) + 31):
+            mm = open_ + timedelta(minutes=i)
+            rows.append((tok, mm, *(round(spot(mm), 2),) * 4, None))
+            if t0 <= mm <= out:
+                rows.append((ce_t, mm, *(round(prem(mm, ce0, 1), 2),) * 4, None))
+                rows.append((pe_t, mm, *(round(prem(mm, pe0, -1), 2),) * 4, None))
+        await queries.upsert_candles(pool, rows, "kite")
+        for hh in (10, 11, 12, 13, 14):
+            mm = datetime.combine(day.date(), time(hh, 30), IST)
+            if mm < out:
+                ce, pe = prem(mm, ce0, 1), prem(mm, pe0, -1)
+                await queries.record_decision(pool, dep, mm, "exit_checks", "no_action",
+                                              f"Combined {ce + pe:.1f} (entry {ce0 + pe0:.1f}, target {(ce0 + pe0) * 0.9:.1f}) · CE {ce:.1f} / stop {ce0 * 1.4:.1f} · PE {pe:.1f} / stop {pe0 * 1.4:.1f}",
+                                              {"combined_entry": round(ce0 + pe0, 2), "combined_now": round(ce + pe, 2),
+                                               "target_combined": round((ce0 + pe0) * 0.9, 2), "ce_now": round(ce, 2), "pe_now": round(pe, 2)})
+        n += 1
+        day += timedelta(days=1)
 
 
 # pivot_supertrend_options the way it really trades: one ATM option at a

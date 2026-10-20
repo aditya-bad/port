@@ -8,6 +8,7 @@ import { inr, price, hhmmss, hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
 import { hasView } from './views.js';
 import { stPanel } from './st.js';
+import { ddPanel } from './dtt.js';
 import { head, nextMove, gauge, stateChip, table, tiles, poll, svg, path, money, tone } from './ui.js';
 
 function ruler(k) {
@@ -101,6 +102,7 @@ export default {
             ${prem === null ? loading(3) : prem.series && prem.series.length ? balance(prem.series, eod, cont) : empty('', 'Appears after the first 5-minute snapshot of this cycle.')}</div>
         </div>` : ''}
         ${eng.supertrend ? stPanel(eng.supertrend) : ''}
+        ${eng.straddle ? ddPanel(eng.straddle) : ''}
         ${eng.fields && eng.fields.length && !eng.supertrend ? html`<div class="gk-panel"><h3>Strategy readings <span class="s">${eng.fields_source === 'live' ? 'live, from the running strategy' : 'last saved, while not running'}</span></h3>
           ${tiles(eng.fields.map(f => [f.label, show(f.value), '']))}</div>` : ''}
         <div class="${eng.state ? 'gk-two' : ''}">

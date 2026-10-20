@@ -21,20 +21,21 @@ test('every deployment offers Geek mode; some strategies have views of their own
   assert.equal(supports({ strategy: 'pivot_supertrend_options' }), true);
   assert.equal(supports(null), false);
   assert.equal(hasOwn({ strategy: 'strangle_monthly_v2' }), true);
-  assert.equal(hasOwn({ strategy: 'intraday_dtt_simple' }), false);
+  assert.equal(hasOwn({ strategy: 'trend_credit_spread' }), false);
+  assert.equal(hasOwn({ strategy: 'intraday_dtt_simple' }), true);
 });
 
 test('the view menu: shared views for all, the strangle adds its own between Live and Settings', async () => {
   const { viewsFor } = await import('../../static/linck/js/pages/geek/views.js');
   const keys = s => viewsFor(s).map(v => v[0]);
   const shared = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'settings'];
-  assert.deepEqual(keys('intraday_dtt_simple'), shared);
+  assert.deepEqual(keys('trend_credit_spread'), shared);
   assert.deepEqual(keys('no_such_strategy'), shared);
   const st = keys('strangle_monthly_v2');
   assert.deepEqual(st.filter(k => shared.includes(k)), shared);
   for (const k of ['cycles', 'cycle', 'adjustments', 'premium', 'entries', 'map']) assert.ok(st.includes(k), k);
   assert.equal(st[st.length - 1], 'settings');
-  for (const s of ['intraday_dtt_simple', 'strangle_monthly_v2']) {
+  for (const s of ['trend_credit_spread', 'strangle_monthly_v2', 'intraday_dtt_simple', 'pivot_supertrend_options']) {
     const ks = viewsFor(s).map(v => v[3]).filter(Boolean);
     assert.equal(new Set(ks.map(k => k.toLowerCase())).size, ks.length, `${s}: shortcut keys are unique`);
   }
@@ -120,4 +121,33 @@ test('SuperTrend ladder and formats', async () => {
   assert.match(s, /index 25,050/);
   assert.match(s, /ST 24,950/);
   assert.equal(String(ladder({ ladder: [], close: 1, line: 1 })), '', 'nothing to draw without levels');
+});
+
+test('DTT straddle: its own views, the one-straddle page under Straddles', async () => {
+  const { viewsFor } = await import('../../static/linck/js/pages/geek/views.js');
+  const vs = viewsFor('intraday_dtt_simple');
+  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'straddles', 'straddle', 'timing', 'settings']);
+  assert.equal(vs.find(v => v[0] === 'straddle')[6], 'straddles');
+  assert.deepEqual(viewsFor('intraday_dtt_adjusted').map(v => v[0]).slice(-2), ['decisions', 'settings'], 'the adjusted one: shared views only');
+});
+
+test('DTT straddle: progress toward a line, names and the straddle panel', async () => {
+  const { progress, exitName, ddPanel } = await import('../../static/linck/js/pages/geek/dtt.js');
+  assert.equal(progress(100, 140, 120), 0.5, 'a leg halfway to its stop');
+  assert.equal(progress(200, 180, 190), 0.5, 'the combined premium halfway down to its target');
+  assert.equal(progress(100, 140, 90), 0, 'below its entry: nowhere near');
+  assert.equal(progress(100, 140, 150), 1);
+  assert.equal(progress(100, 140, null), 0);
+  assert.equal(exitName('profit_target_decay'), 'Profit target');
+  assert.equal(exitName('leg_spike_stop'), 'Leg stop');
+  assert.equal(exitName(null), 'Open');
+  const open = String(ddPanel({ entry_time: '10:00', force_exit: '15:00', profit_pct: 0.1, stop_pct: 0.4, entered_today: true, state: {
+    legs: { CE: { symbol: 'X26OCT25000CE', entry: 100, now: 120, stop: 140, to_stop: 20 }, PE: { symbol: 'X26OCT25000PE', entry: 100, now: 80, stop: 140, to_stop: 60 } },
+    combined: { entry: 200, now: 200, target: 180, to_target: 20, decay_pct: 0 } } }));
+  assert.match(open, /stop 140\.00/);
+  assert.match(open, /target 180\.00/);
+  assert.match(open, /width:50\.0%/, 'the CE is halfway to its stop');
+  const flat = String(ddPanel({ entry_time: '10:00', force_exit: '15:00', profit_pct: 0.1, stop_pct: 0.4, entered_today: false, state: null, last: null }));
+  assert.match(flat, /Sells the ATM CE and PE at 10:00/);
+  assert.match(flat, /10% decay/);
 });

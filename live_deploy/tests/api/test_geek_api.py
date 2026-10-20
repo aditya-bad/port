@@ -15,7 +15,7 @@ VIEWS = ["engine", "decisions", "cycles", "cycle", "adjustments", "entries", "pr
 
 
 def test_other_strategies_have_the_shared_views_only(client):
-    d = make_deployment(client, name="dtt")
+    d = make_deployment(client, name="spread", strategy="trend_credit_spread", mode="positional")
     for view in ("engine", "decisions", "settings"):
         r = client.get(f"/v2/deployments/{d['id']}/geek/{view}")
         assert r.status_code == 200, (view, r.text)
@@ -24,6 +24,7 @@ def test_other_strategies_have_the_shared_views_only(client):
     assert e["next"]["text"].startswith("Paused")
     r = client.get(f"/v2/deployments/{d['id']}/geek/cycles")
     assert r.status_code == 404 and "No such Geek view" in r.json()["detail"]
+    assert client.get(f"/v2/deployments/{d['id']}/geek/straddles").status_code == 404
 
 
 def _decide(client, dep_id, at, rule, outcome, summary, data):
@@ -168,3 +169,45 @@ def test_supertrend_options_one_trade_through_the_api(client):
     assert one["no"] == one["n"] == 1 and one["trade"]["pivots"] == piv
     dec = client.get(f"/v2/deployments/{d['id']}/geek/decisions").json()["rows"]
     assert [(r["kind"], r["label"]) for r in dec] == [("exit", "SuperTrend flip"), ("entry", "Pivot break · sold a PE")]
+
+
+DTT_VIEWS = ["engine", "decisions", "settings", "straddles", "straddle"]
+
+
+@pytest.mark.parametrize("view", DTT_VIEWS)
+def test_dtt_views_answer_with_no_history(client, view):
+    d = make_deployment(client, name=f"dtt empty {view}")
+    r = client.get(f"/v2/deployments/{d['id']}/geek/{view}")
+    assert r.status_code == 200, r.text
+    if view == "straddles":
+        assert r.json()["straddles"] == [] and r.json()["summary"]["straddles"] == 0
+    if view == "straddle":
+        assert r.json() == {"straddle": None, "n": 0}
+    if view == "engine":
+        e = r.json()
+        assert e["rules"] == [] and e["straddle"]["state"] is None and e["next"]["text"].startswith("Paused")
+
+
+def test_dtt_one_straddle_through_the_api(client):
+    d = make_deployment(client, name="dtt one straddle")
+    t0, t1 = T("2026-10-19T10:00:00+05:30"), T("2026-10-19T11:42:00+05:30")
+    tvx = {"tick_time": "10:00:00", "entry_time": "10:00:00", "late_start_today": False, "switched_to_next_week": False}
+    for sym, tok, px in (("NIFTY26OCT25000CE", 9101, 100.0), ("NIFTY26OCT25000PE", 9102, 120.0)):
+        add_fill(client, d["id"], sym, tok, "sell", 75, px, t0, "entry",
+                 {"trigger": "entry_time_reached", "action": f"sell_open_{sym[-2:]}", "trigger_values": tvx,
+                  "strike": 25000, "expiry": "2026-10-20", "entry_spot": 25012.4, "leg": sym[-2:]})
+    tv = {"ce_now": 141.0, "pe_now": 70.0, "ce_threshold": 140.0, "pe_threshold": 168.0, "per_leg_stop_loss_pct": 0.4}
+    for sym, tok, px in (("NIFTY26OCT25000CE", 9101, 141.0), ("NIFTY26OCT25000PE", 9102, 70.0)):
+        add_fill(client, d["id"], sym, tok, "buy", 75, px, t1, "leg_spike_stop",
+                 {"trigger": "leg_spike_stop", "action": f"buy_close_{sym[-2:]}", "trigger_values": {**tv, "price_source": "live"}})
+    body = client.get(f"/v2/deployments/{d['id']}/geek/straddles").json()
+    (r,) = body["straddles"]
+    assert (r["strike"], r["dte"], r["weekday"], r["combined_entry"], r["combined_exit"]) == (25000.0, 1, "Mon", 220.0, 211.0)
+    assert (r["reason"], r["stop_leg"], r["held_min"], r["decay_pct"]) == ("leg_spike_stop", "CE", 102.0, 4.1)
+    assert r["pnl"] == round((100 - 141) * 75 + (120 - 70) * 75, 2)
+    assert body["by_exit"]["leg_spike_stop"]["label"] == "Leg stop" and body["by_exit"]["leg_spike_stop"]["median_exit"] == "11:42"
+    assert body["stop_leg"] == {"CE": 1, "PE": 0, "both": 0}
+    one = client.get(f"/v2/deployments/{d['id']}/geek/straddle?s={r['pe']['id']}").json()
+    assert one["no"] == 1 and one["lines"] == {"target": 198.0, "stops": {"CE": 140.0, "PE": 168.0}}
+    rows = client.get(f"/v2/deployments/{d['id']}/geek/decisions").json()["rows"]
+    assert [(x["kind"], x["label"]) for x in rows] == [("exit", "Leg stop"), ("entry", "Entry")]

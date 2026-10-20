@@ -258,7 +258,8 @@ async def engine(ctx: Ctx) -> dict:
     else:
         nxt = {"text": "Flat: watching for an entry", "at": None}
     if nxt and last:
-        nxt["detail"] = f"Last check: {last['label']}, {last['summary']}"
+        at = _ist(datetime.fromisoformat(last["t"]))
+        nxt["detail"] = f"Last check {at.day} {at:%b %H:%M}: {last['label']}, {last['summary']}"
     return {"running": running, "now": now.isoformat(), "legs": open_legs, "hedges": [], "rules": [],
             "state": _state(ctx.strategy), "cooldowns": [], "strikes": None, "spot": _spot(ctx),
             "fields": fields, "fields_source": source, "last_decision": last, "next": nxt,

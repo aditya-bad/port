@@ -28,6 +28,11 @@ const OWN = {
     ['exits', 'Exits', 'Anatomy', 'X', () => import('./exits.js')],
     ['days', 'Days', 'Anatomy', 'Y', () => import('./days.js')],
   ],
+  intraday_dtt_simple: [
+    ['straddles', 'Straddles', 'Anatomy', 'I', () => import('./straddles.js')],
+    ['straddle', 'Straddle', 'Anatomy', '', () => import('./straddle.js'), false, 'straddles'],   // one straddle, from Straddles or Exits
+    ['timing', 'Exits & timing', 'Anatomy', 'X', () => import('./timing.js')],
+  ],
 };
 export const viewsFor = strategy => [...BASICS, ...(OWN[strategy] || []), SETTINGS];
 export const hasView = (strategy, key) => viewsFor(strategy).some(x => x[0] === key);

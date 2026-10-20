@@ -20,6 +20,7 @@ def test_ui_and_api_agree_on_which_strategies_have_geek_mode():
 CALLS = {
     "strangle_monthly_v2": {"cycles", "cycle", "adjustments", "entries", "premium"},
     "pivot_supertrend_options": {"signals", "trade"},
+    "intraday_dtt_simple": {"straddles", "straddle"},
 }
 
 
