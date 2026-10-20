@@ -13,7 +13,7 @@ import { line, upDownBars } from '../../ui/charts.js';
 import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
 import { empty } from '../../ui/components.js';
 import { head, nextMove, tiles, table, poll, LABEL } from './ui.js';
-import { hasOwn } from '../../data/geek.js';
+import { hasView } from './views.js';
 
 const OUT = { acted: 'Acted', no_action: 'No action', blocked: 'Blocked' };
 
@@ -34,7 +34,7 @@ function equity(v, cycles) {
 export default {
   render(el, v0, g) {
     let cycles = null, adj = null, dec = null;
-    const own = hasOwn(v0);
+    const own = hasView(v0.strategy, 'cycles');
     function paint() {
       const v = book.find(v0.id) || v0;
       const x = book.live(v);

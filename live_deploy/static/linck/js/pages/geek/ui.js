@@ -26,7 +26,7 @@ export function gauge(r) {
 
 const STATE = { idle: 'Idle', ok: 'On track', behind: 'In loss', armed: 'About to act', off: 'Off', done: 'Done today' };
 export function stateChip(r) {
-  let label = STATE[r.state] || r.state;
+  let label = r.chip || STATE[r.state] || r.state;
   if (r.key === 'eod_gap_check' && r.state === 'armed') label = `Fires at ${(r.label.split('·')[1] || '').trim() || 'the check'}`;
   if (r.key === 'checkpoint_target' && r.state === 'ok' && r.pct != null) label = `${r.pct}% there`;
   return html`<span class="st-chip ${r.state}">${label}</span>`;

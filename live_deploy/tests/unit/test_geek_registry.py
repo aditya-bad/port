@@ -16,9 +16,17 @@ def test_ui_and_api_agree_on_which_strategies_have_geek_mode():
     assert all(is_registered(name) for name in GEEK)
 
 
+# The API views each strategy's own pages call (static/linck/js/pages/geek/views.js).
+CALLS = {
+    "strangle_monthly_v2": {"cycles", "cycle", "adjustments", "entries", "premium"},
+    "pivot_supertrend_options": {"signals", "trade"},
+}
+
+
 def test_every_geek_module_has_the_views_the_ui_calls():
-    for mod in GEEK.values():
-        assert {"engine", "decisions", "cycles", "adjustments", "entries", "premium", "settings"} <= set(mod.VIEWS)
+    assert set(CALLS) == set(GEEK)
+    for name, mod in GEEK.items():
+        assert {"engine", "decisions", "settings"} | CALLS[name] <= set(mod.VIEWS), name
 
 
 def test_every_strategy_has_the_shared_views():

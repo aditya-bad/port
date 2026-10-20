@@ -68,7 +68,7 @@ DEPS = [
     ("BankNifty DTT Adjusted", "intraday_dtt_adjusted", "intraday", 500_000, "BANKNIFTY", "active", ["DTT"], 120, "intra"),
     ("BankNifty DTT Plain", "intraday_dtt_simple", "intraday", 500_000, "BANKNIFTY", "active", ["DTT"], 120, "intra"),
     ("Sensex Credit Spread", "trend_credit_spread", "positional", 500_000, "SENSEX", "active", ["Spreads"], 90, "pos"),
-    ("Pivot Supertrend Options", "pivot_supertrend_options", "intraday", 300_000, "NIFTY", "stopped", [], 60, "intra"),
+    ("Pivot Supertrend Options", "pivot_supertrend_options", "intraday", 300_000, "NIFTY", "stopped", [], 60, "st"),
     ("Bankex Strangle", "strangle_monthly_v2", "positional", 500_000, "BANKEX", "active", ["Strategy Lab"], 6, "pos"),
 ]
 OPEN_LEGS = {"Nifty Strangle A": 4, "BankNifty DTT Plain": 2, "Bankex Strangle": 2}
@@ -129,7 +129,9 @@ async def seed():
         await pool.execute("UPDATE deployments SET created_at=$2, tags=$3 WHERE id=$1", d["id"], created, tags)
         ids[name] = str(d["id"])
         day = created + timedelta(days=1)
-        if style == "intra":
+        if style == "st":
+            await seed_supertrend(pool, d["id"], created)
+        elif style == "intra":
             while day < TODAY:
                 if day.weekday() < 5 and R.random() < 0.85:
                     o = datetime.combine(day.date(), time(10, 0), IST)
@@ -197,6 +199,94 @@ async def seed():
     await close_pool(pool)
     Path(os.environ.get("E2E_IDS") or HERE / ".ids.json").write_text(json.dumps({"ids": ids, "password": PASSWORD, "port": PORT}, indent=1))
     return prices
+
+
+# pivot_supertrend_options the way it really trades: one ATM option at a
+# time, sold on a pivot break in the SuperTrend's direction and bought
+# back on a flip or at 15:00, with the metadata its fills carry, the
+# index's 1-minute candles through each trade, the checks it noted and
+# the SuperTrend state it saved when it stopped.
+async def seed_supertrend(pool, dep, created):
+    ix, q, tok = "NIFTY", LOT["NIFTY"], TOKEN["NIFTY"]
+    rnd = random.Random(7)
+    day, n = created + timedelta(days=1), 0
+    last = None
+    while day < TODAY - timedelta(days=1):
+        if day.weekday() >= 5:
+            day += timedelta(days=1)
+            continue
+        P = 25000 + rnd.uniform(-300, 300)
+        piv = {"P": P, "R1": P + 70, "R2": P + 140, "R3": P + 210, "S1": P - 70, "S2": P - 140, "S3": P - 210}
+        piv = {k: round(v, 2) for k, v in piv.items()}
+        trades = rnd.choice([1, 1, 2, 2, 3, 3]) if n < 22 else 0
+        # one smooth index path for the session; every entry reads it
+        open_ = datetime.combine(day.date(), time(9, 15), IST)
+        ph, amp = rnd.uniform(0, 6.28), rnd.uniform(110, 190)
+        path = lambda m: P + amp * math.sin((m - open_).total_seconds() / 60 / 55 + ph) + 25 * math.sin((m - open_).total_seconds() / 60 / 9)  # noqa: E731
+        await queries.upsert_candles(pool, [(tok, open_ + timedelta(minutes=i), *(round(path(open_ + timedelta(minutes=i)), 2),) * 4, None)
+                                            for i in range(376)], "kite")
+        t, done = datetime.combine(day.date(), time(9, 35), IST), 0
+        while done < trades and t.time() < time(14, 30):
+            close = path(t)
+            up = close > piv["R1"]
+            if not up and close >= piv["S1"]:
+                t += timedelta(minutes=5)      # nothing broken: no entry
+                continue
+            k_ = max((x for x in ("R1", "R2", "R3") if piv[x] < close), key=lambda x: piv[x]) if up else \
+                min((x for x in ("S1", "S2", "S3") if piv[x] > close), key=lambda x: piv[x])
+            st = close - rnd.uniform(40, 160) if up else close + rnd.uniform(40, 160)
+            ot = "PE" if up else "CE"
+            k = round(close / 50) * 50
+            s_ = f"NIFTY{day.strftime('%y%b').upper()}{k}{ot}"
+            ot_tok = ntok()
+            prem = round(rnd.uniform(70, 140), 2)
+            hold = rnd.uniform(20, 170)
+            force = t + timedelta(minutes=hold) >= datetime.combine(day.date(), time(15, 0), IST) or (done == trades - 1 and rnd.random() < 0.3)
+            out = datetime.combine(day.date(), time(15, 0), IST) if force else t + timedelta(minutes=hold)
+            win = rnd.random() < 0.6
+            exit_px = round(prem * (rnd.uniform(0.45, 0.95) if win else rnd.uniform(1.05, 1.6)), 2)
+            tv = {"close": round(close, 2), "trend": "up" if up else "down", "supertrend_value": round(st, 2),
+                  "pivot_point": piv["P"], "broken_level_key": k_, "broken_level": piv[k_],
+                  ("r_levels" if up else "s_levels"): {x: piv[x] for x in (("R1", "R2", "R3") if up else ("S1", "S2", "S3"))}}
+            meta = {"trigger": "pivot_break_long" if up else "pivot_break_short", "action": f"sell_open_{ot}",
+                    "trigger_values": tv, "resulting_state": {"leg": ot, "strike": k, "symbol": s_},
+                    "target_basis": {"selection_basis": "ATM", "selected_strike": k, "fill_premium": prem},
+                    "signal_side": "long" if up else "short", "option_type": ot, "strike": k,
+                    "expiry": (day + timedelta(days=(3 - day.weekday()) % 7)).date().isoformat(), "exchange": "NFO", "pivots": piv}
+            await queries.record_fill(pool, dep, s_, ot_tok, "sell", q, prem, t, reason="entry", metadata=meta)
+            reason = "force_exit" if force else "st_flip"
+            xtv = ({"candle_time": out.time().isoformat(), "force_exit_time": "15:00:00"} if force else
+                   {"prev_trend": "up" if up else "down", "new_trend": "down" if up else "up", "close": round(path(out), 2),
+                    "final_upper": round(path(out) + 200, 2), "final_lower": round(path(out) + 3, 2)})
+            await queries.record_fill(pool, dep, s_, ot_tok, "buy", q, exit_px, out, reason=reason,
+                                      metadata={"trigger": reason, "action": f"buy_close_{ot}",
+                                                "trigger_values": {**xtv, "price_source": "ltp"}, "resulting_state": {"position": "flat"}})
+            mins_ = max(1, int((out - t).total_seconds() / 60))
+            await queries.upsert_candles(pool, [(ot_tok, t + timedelta(minutes=i), *(round(prem + (exit_px - prem) * i / mins_ + 1.5 * math.sin(i / 7), 2),) * 4, None)
+                                                for i in range(mins_ + 1)], "kite")
+            n += 1
+            done += 1
+            t = out + timedelta(minutes=rnd.choice([5, 25, 60]))
+        if trades == 3 and done == 3:
+            await queries.record_decision(pool, dep, datetime.combine(day.date(), time(14, 10), IST), "max_trades", "blocked",
+                                          f"R1 broken at {piv['R1'] + 12:.2f} (would sell a PE) but today's 3 entries are used",
+                                          {"close": piv["R1"] + 12, "broken_level_key": "R1", "side": "long", "trades_today": 3, "max_trades_per_day": 3})
+        await queries.record_decision(pool, dep, datetime.combine(day.date(), time(15, 0), IST), "force_exit", "no_action",
+                                      "15:00 square-off: nothing open", {})
+        if rnd.random() < 0.4:
+            await queries.record_decision(pool, dep, datetime.combine(day.date(), time(12, 35), IST), "st_flip", "no_action",
+                                          f"SuperTrend flipped up → down at {P - 20:.2f}: nothing open to close",
+                                          {"prev_trend": "up", "new_trend": "down", "close": round(P - 20, 2)})
+        last = (piv, P)
+        day += timedelta(days=1)
+    piv, P = last
+    await queries.save_deployment_state(pool, dep, {
+        "version": 1, "supertrend": {"period": 7, "multiplier": 3, "atr_method": "wilder", "atr": 31.4,
+                                     "final_upper": round(P + 160, 2), "final_lower": round(P - 95, 2), "trend": "up",
+                                     "prev_close": round(P + 20, 2), "tr_buffer": []},
+        "prev_trend": "up", "prev_day_ohlc": {"high": P + 120, "low": P - 110, "close": P + 15}, "pivots": piv,
+        "pivots_source_day": (TODAY - timedelta(days=2)).date().isoformat(), "today": None,
+        "today_high": None, "today_low": None, "today_last_close": round(P + 20, 2), "trades_today": 0})
 
 
 # A strangle_monthly_v2 deployment with the history Geek mode reads:

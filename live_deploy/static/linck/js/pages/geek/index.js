@@ -13,10 +13,10 @@ import { go, href } from '../../core/router.js';
 import * as book from '../../data/book.js';
 import { prices, isLive } from '../../data/live.js';
 import { indexByName } from '../../data/config.js';
-import { supports, hasOwn, takeEntry, exit } from '../../data/geek.js';
+import { supports, takeEntry, exit } from '../../data/geek.js';
 import { empty } from '../../ui/components.js';
 
-import { BASICS, GROUPS, viewsFor } from './views.js';
+import { BASICS, GROUPS, viewsFor, hasView } from './views.js';
 
 export { viewsFor };
 
@@ -49,7 +49,7 @@ export default {
         <span class="grow"></span>
         ${ix ? html`<span class="gk-kv hide-m"><span>${v.index}</span><b data-gk="spot">${spot ? price(spot.price) : '—'}${spot && spot.prevClose ? html` <span class="${tone(spot.price / spot.prevClose - 1)}">${pct((spot.price / spot.prevClose - 1) * 100)}</span>` : ''}</b></span>` : ''}
         <span class="gk-kv"><span>Today</span><b class="${tone(x.today)}" data-gk="today">${v.rawStatus === 'stopped' ? '—' : inr(x.today)}</b></span>
-        ${hasOwn(v) || cycle ? html`<span class="gk-kv hide-m"><span>${cycle ? `Cycle ${cycle}` : 'Cycle'}</span><b class="${ck ? tone(ck.value) : ''}" data-gk="cycle">${ck ? inr(ck.value) : '—'}</b></span>` : ''}
+        ${hasView(v.strategy, 'cycles') || cycle ? html`<span class="gk-kv hide-m"><span>${cycle ? `Cycle ${cycle}` : 'Cycle'}</span><b class="${ck ? tone(ck.value) : ''}" data-gk="cycle">${ck ? inr(ck.value) : '—'}</b></span>` : ''}
         <span class="gk-kv hide-m"><span>Overall</span><b class="${tone(x.overall)}" data-gk="overall">${inr(x.overall)}</b></span>
         <span class="gk-kv hide-m"><span>IST</span><b data-gk="clock">${hhmmss(new Date())}</b></span>
         <button type="button" class="gk-exit" data-act="exit">Exit <kbd>Esc</kbd></button>`;
@@ -57,7 +57,7 @@ export default {
 
     function rail() {
       const armed = engine && engine.rules && engine.rules.some(r => r.state === 'armed');
-      const cur = !view ? '' : view[0] === 'cycle' ? 'cycles' : view[0];
+      const cur = !view ? '' : view[6] || view[0];
       return html`${GROUPS.filter(gr => views.some(x => x[2] === gr)).map(gr => html`<div class="gk-grp"><h4>${gr}</h4>${views.filter(x => x[2] === gr && !x[6]).map(([k, l, , key]) => html`
         <a href="${g.href(k)}" class="${k === cur ? 'on' : ''}" ${k === cur ? html`aria-current="page"` : ''}>${l}${k === 'engine' && armed ? html`<span class="dot" title="A rule is about to act"></span>` : ''}<span class="k">${key}</span></a>`)}</div>`)}
         <div class="foot">Keys switch views · Esc leaves<br>Pause, Close and Stop stay on the normal page</div>`;

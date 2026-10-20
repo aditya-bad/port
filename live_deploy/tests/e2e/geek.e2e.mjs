@@ -330,3 +330,76 @@ test('a cycle’s own page has everything, set against the other cycles', async 
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+test('SuperTrend options: engine ladder, signals, exits, days and one trade end to end', async () => {
+  const ST = IDS['Pivot Supertrend Options'];
+  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'signals', 'exits', 'days', 'settings'];
+  for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
+    const ctx = await context(b, { width, height: 860 });
+    const p = await ctx.newPage();
+    await p.goto(`${BASE}/linck/#/d/${ST}/now`);
+    await p.waitForSelector('[data-engine] .er');
+    assert.equal(await p.locator('[data-engine] .er').count(), 4, `${label}: its four rules on the Now tab`);
+    await p.goto(`${BASE}/linck/#/d/${ST}/geek`);
+    await p.waitForSelector('.gk-rail a.on');
+    assert.deepEqual(await p.$$eval('.gk-rail a', as => as.map(a => a.getAttribute('href').split('/geek/')[1])), OWN, `${label}: menu`);
+    for (const v of OWN.concat(['trade'])) {
+      await p.goto(`${BASE}/linck/#/d/${ST}/geek/${v}`);
+      await p.waitForSelector(`.gk-rail a.on[href$="/geek/${v === 'trade' ? 'signals' : v}"]`);
+      await p.waitForFunction(() => {
+        const el = document.querySelector('#gkView');
+        return el && el.children.length && !el.querySelector('.skel');
+      }, null, { timeout: 10000 });
+      const text = await p.locator('#gkView').innerText();
+      assert.doesNotMatch(text, /undefined|NaN|\[object|Infinity/, `${label} ${v}: no broken values`);
+      const sw = await p.evaluate(() => document.documentElement.scrollWidth);
+      assert.ok(sw <= width, `${label} ${v}: page ${sw}px wide at ${width}px`);
+    }
+    assert.deepEqual(ctx.errors, []);
+    await ctx.close();
+  }
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  const api = async v => (await ctx.request.get(`${BASE}/v2/deployments/${ST}/geek/${v}`)).json();
+  // the engine: four rules, the ladder S3..R3 with the index and the line, as last saved (it's stopped)
+  await p.goto(`${BASE}/linck/#/d/${ST}/geek/engine`);
+  await p.waitForSelector('[data-st] svg');
+  assert.equal(await p.locator('.gk-rules [data-rule]').count(), 4);
+  assert.deepEqual(await p.$$eval('.gk-rules [data-rule]', rs => rs.map(r => r.dataset.rule)), ['st_flip', 'force_exit', 'pivot_break', 'max_trades']);
+  const ladder = await p.locator('[data-st]').innerText();
+  for (const k of ['S3', 'S2', 'S1', 'P', 'R1', 'R2', 'R3', 'as last saved', 'Up', 'sells PEs on R breaks']) assert.ok(ladder.includes(k), k);
+  assert.match(await p.locator('.gk-next').innerText(), /Stopped/);
+  // signals: every trade listed, and the numbers are the API's
+  const sig = await api('signals');
+  await p.goto(`${BASE}/linck/#/d/${ST}/geek/signals`);
+  await p.waitForSelector('#gkView .gk-tbl a[href*="/geek/trade?p="]');
+  assert.equal(await p.locator('#gkView a[href*="/geek/trade?p="]').count(), sig.trades.length);
+  assert.ok(sig.trades.length >= 10 && sig.trades.every(t => t.past_level > 0 && t.from_st > 0));
+  const tiles = await p.locator('.gk-tiles').first().innerText();
+  assert.ok(tiles.includes(String(sig.summary.trades)) && tiles.includes(`${Math.round(sig.summary.win_rate)}%`));
+  // one trade: from the list, then older and newer
+  await p.locator('#gkView a[href*="/geek/trade?p="]').nth(1).click();
+  await p.waitForSelector('#gkView .gk-chart');
+  const second = sig.trades[1];
+  assert.match(await p.locator('#gkView').innerText(), new RegExp(`${sig.trades.length - 1} of ${sig.trades.length}`));
+  assert.match(await p.locator('#gkView').innerText(), new RegExp(second.symbol));
+  assert.equal(await p.locator('.gk-rail a.on').getAttribute('href').then(h => h.split('/geek/')[1]), 'signals');
+  await p.click('a:has-text("Newer →")');
+  await p.waitForFunction(n => document.querySelector('#gkView').innerText.includes(`${n} of ${n}`), sig.trades.length);
+  assert.equal(await p.locator('a:has-text("Newer →")').count(), 0, 'the newest has no newer');
+  assert.equal(await p.locator('#gkView svg.gk-chart').count(), 2, 'the index and the premium');
+  await p.goto(`${BASE}/linck/#/d/${ST}/geek/trade?p=nope`);
+  await p.waitForSelector('#gkView .empty');
+  assert.match(await p.locator('#gkView').innerText(), /There’s no such trade/);
+  // exits and days add up to the same trades
+  await p.goto(`${BASE}/linck/#/d/${ST}/geek/exits`);
+  await p.waitForSelector('#gkView .gk-tiles');
+  const ex = await p.locator('#gkView .gk-tiles').innerText();
+  for (const [k, g] of Object.entries(sig.by_exit)) assert.ok(ex.includes(g.label) && ex.includes(String(g.n)), k);
+  await p.goto(`${BASE}/linck/#/d/${ST}/geek/days`);
+  await p.waitForSelector('#gkView .gk-tbl .tr:not(.th)');
+  assert.equal(await p.locator('#gkView .gk-tbl .tr:not(.th)').count(), sig.days.length);
+  assert.ok(await p.locator('#gkView .gk-tbl .tr.att').count() >= 1, 'a day the cap turned a signal away stands out');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

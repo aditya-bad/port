@@ -129,3 +129,42 @@ def test_every_view_answers_with_a_cycle_and_a_roll(client, view):
         # the cycle is picked by ?c=
         assert client.get(f"/v2/deployments/{d['id']}/geek/cycle?c=1").json()["cycle_id"] == 1
         assert client.get(f"/v2/deployments/{d['id']}/geek/cycle?c=7").json()["found"] is False
+
+
+ST_VIEWS = ["engine", "decisions", "settings", "signals", "trade"]
+
+
+@pytest.mark.parametrize("view", ST_VIEWS)
+def test_supertrend_options_views_answer_with_no_history(client, view):
+    d = make_deployment(client, name=f"st empty {view}", strategy="pivot_supertrend_options")
+    r = client.get(f"/v2/deployments/{d['id']}/geek/{view}")
+    assert r.status_code == 200, r.text
+    if view == "signals":
+        assert r.json()["trades"] == [] and r.json()["summary"]["trades"] == 0
+    if view == "trade":
+        assert r.json() == {"trade": None, "n": 0}
+    if view == "engine":
+        assert r.json()["supertrend"]["source"] == "unavailable" and r.json()["rules"] == []
+
+
+def test_supertrend_options_one_trade_through_the_api(client):
+    d = make_deployment(client, name="st one trade", strategy="pivot_supertrend_options")
+    piv = {"P": 25000.0, "R1": 25070.0, "R2": 25140.0, "R3": 25210.0, "S1": 24930.0, "S2": 24860.0, "S3": 24790.0}
+    tv = {"close": 25092.5, "trend": "up", "supertrend_value": 24990.0, "pivot_point": 25000.0,
+          "broken_level_key": "R1", "broken_level": 25070.0}
+    add_fill(client, d["id"], "NIFTY26OCT25100PE", 8101, "sell", 75, 120.0, T("2026-10-19T10:05:00+05:30"), "entry",
+             {"trigger": "pivot_break_long", "action": "sell_open_PE", "trigger_values": tv, "signal_side": "long",
+              "option_type": "PE", "strike": 25100, "expiry": "2026-10-22", "pivots": piv})
+    add_fill(client, d["id"], "NIFTY26OCT25100PE", 8101, "buy", 75, 90.0, T("2026-10-19T11:35:00+05:30"), "st_flip",
+             {"trigger": "st_flip", "action": "buy_close_PE",
+              "trigger_values": {"prev_trend": "up", "new_trend": "down", "close": 24985.0, "price_source": "ltp"}})
+    s = client.get(f"/v2/deployments/{d['id']}/geek/signals").json()
+    t = s["trades"][0]
+    assert (t["level"], t["past_level"], t["from_st"]) == ("R1", 22.5, 102.5)
+    assert (t["exit_reason"], t["hold_min"], t["kept_pct"], t["pnl"]) == ("st_flip", 90.0, 25.0, 2250.0)
+    assert t["price_source"] == "ltp" and "price_source" not in t["exit_values"]
+    assert s["by_exit"]["st_flip"]["label"] == "SuperTrend flip" and s["summary"]["win_rate"] == 100.0
+    one = client.get(f"/v2/deployments/{d['id']}/geek/trade?p={t['id']}").json()
+    assert one["no"] == one["n"] == 1 and one["trade"]["pivots"] == piv
+    dec = client.get(f"/v2/deployments/{d['id']}/geek/decisions").json()["rows"]
+    assert [(r["kind"], r["label"]) for r in dec] == [("exit", "SuperTrend flip"), ("entry", "Pivot break · sold a PE")]

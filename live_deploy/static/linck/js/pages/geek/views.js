@@ -2,7 +2,7 @@
 // views of a strategy's own. Pure (the views load lazily), so it's tested
 // on its own.
 
-// [key, label, group, shortcut, load, reused deployment tab?, hidden from the menu?]
+// [key, label, group, shortcut, load, reused deployment tab?, hidden: the menu entry it sits under]
 export const BASICS = [
   ['overview', 'Overview', 'Basics', '1', () => import('./overview.js')],
   ['positions', 'Positions', 'Basics', '2', () => import('../deployment/now.js'), true],
@@ -17,11 +17,18 @@ const OWN = {
   strangle_monthly_v2: [
     ['map', 'Cycle map', 'Anatomy', 'M', () => import('../deployment/days.js'), true],
     ['cycles', 'Cycles', 'Anatomy', 'C', () => import('./cycles.js')],
-    ['cycle', 'Cycle', 'Anatomy', '', () => import('./cycle.js'), false, true],   // one cycle, from Cycles or Adjustments
+    ['cycle', 'Cycle', 'Anatomy', '', () => import('./cycle.js'), false, 'cycles'],   // one cycle, from Cycles or Adjustments
     ['adjustments', 'Adjustments', 'Anatomy', 'A', () => import('./adjustments.js')],
     ['premium', 'Premium & decay', 'Anatomy', 'P', () => import('./premium.js')],
     ['entries', 'Entries', 'Anatomy', 'N', () => import('./entries.js')],
   ],
+  pivot_supertrend_options: [
+    ['signals', 'Signals', 'Anatomy', 'I', () => import('./signals.js')],
+    ['trade', 'Trade', 'Anatomy', '', () => import('./trade.js'), false, 'signals'],   // one trade, from Signals or Exits
+    ['exits', 'Exits', 'Anatomy', 'X', () => import('./exits.js')],
+    ['days', 'Days', 'Anatomy', 'Y', () => import('./days.js')],
+  ],
 };
 export const viewsFor = strategy => [...BASICS, ...(OWN[strategy] || []), SETTINGS];
+export const hasView = (strategy, key) => viewsFor(strategy).some(x => x[0] === key);
 export const GROUPS = ['Basics', 'Live', 'Anatomy', 'Exposure'];

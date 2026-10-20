@@ -72,8 +72,9 @@ def _age(now: datetime, t) -> Optional[float]:
     return max(0.0, round((now - _ist(t)).total_seconds(), 1))
 
 
-def label(rule: Optional[str]) -> str:
-    return humanize(rule or "trade")
+def label(rule: Optional[str], names: Optional[dict] = None) -> str:
+    """A rule's name: the strategy's own (`names`), else from its key."""
+    return (names or {}).get(rule) or humanize(rule or "trade")
 
 
 def _num(v) -> str:
@@ -260,7 +261,8 @@ async def engine(ctx: Ctx) -> dict:
         nxt["detail"] = f"Last check: {last['label']}, {last['summary']}"
     return {"running": running, "now": now.isoformat(), "legs": open_legs, "hedges": [], "rules": [],
             "state": _state(ctx.strategy), "cooldowns": [], "strikes": None, "spot": _spot(ctx),
-            "fields": fields, "fields_source": source, "last_decision": last, "next": nxt}
+            "fields": fields, "fields_source": source, "last_decision": last, "next": nxt,
+            "quote_guard": False}
 
 
 def _spot(ctx: Ctx) -> Optional[float]:
@@ -269,15 +271,15 @@ def _spot(ctx: Ctx) -> Optional[float]:
     return (getattr(disp, "last_prices", {}) or {}).get(toks[0]) if disp is not None and toks else None
 
 
-async def decisions(ctx: Ctx, limit: int = 300) -> dict:
+async def decisions(ctx: Ctx, limit: int = 300, names: Optional[dict] = None) -> dict:
     b = await book(ctx)
     rows = []
     for a in b["actions"]:
         what, why = action_text(a)
-        rows.append({"t": _iso(a["t"]), "rule": a["trigger"], "label": label(a["trigger"]), "outcome": "acted",
+        rows.append({"t": _iso(a["t"]), "rule": a["trigger"], "label": label(a["trigger"], names), "outcome": "acted",
                      "kind": a["kind"], "summary": what, "why": why, "data": a["trigger_values"], "cycle_id": None})
     for d in await queries.list_decisions(ctx.pool, ctx.dep["id"], limit=limit):
-        rows.append({"t": _iso(d["decided_at"]), "rule": d["rule"], "label": label(d["rule"]),
+        rows.append({"t": _iso(d["decided_at"]), "rule": d["rule"], "label": label(d["rule"], names),
                      "outcome": d["outcome"], "kind": "check", "summary": d["summary"], "why": saw(d["data"]),
                      "data": d["data"], "cycle_id": None})
     rows.sort(key=lambda r: r["t"], reverse=True)

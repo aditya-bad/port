@@ -82,3 +82,42 @@ test('spotlight filters pick which past cycles are drawn', async () => {
   assert.equal(spotText({ cycle_id: 5, ended_by: 'convergence_stop', realized_pnl: -3852, path: [[0, 0], [218.4, -3852]], rolls: 2 }),
     '#5 · convergence stop · −₹3,852 after 9.1 days · 2 rolls · click to open');
 });
+
+test('SuperTrend options: its own views, with the one-trade page under Signals', async () => {
+  const { viewsFor, hasView } = await import('../../static/linck/js/pages/geek/views.js');
+  const vs = viewsFor('pivot_supertrend_options');
+  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'signals', 'trade', 'exits', 'days', 'settings']);
+  assert.equal(vs.find(v => v[0] === 'trade')[6], 'signals', 'hidden from the menu, Signals stays lit');
+  assert.ok(hasView('pivot_supertrend_options', 'signals') && !hasView('pivot_supertrend_options', 'cycles'));
+  assert.ok(!hasView('pivot_supertrend_options_inverse', 'signals'), 'the inverse one has the shared views only');
+  assert.equal(viewsFor('strangle_monthly_v2').find(v => v[0] === 'cycle')[6], 'cycles');
+  const ks = vs.map(v => v[3]).filter(Boolean);
+  assert.equal(new Set(ks.map(k => k.toLowerCase())).size, ks.length);
+});
+
+test('SuperTrend ladder and formats', async () => {
+  const { ladderScale, spread, mins, pts, exitLabel, ladder } = await import('../../static/linck/js/pages/geek/st.js');
+  const levels = ['S3', 'S2', 'S1', 'P', 'R1', 'R2', 'R3'].map((key, i) => ({ key, value: 24700 + i * 100 }));
+  const x = ladderScale(levels, [25050, 24950]);
+  assert.ok(x(24700) > 0 && x(25300) < 1, 'padded both ends');
+  assert.ok(x(24700) < x(25000) && x(25000) < x(25300));
+  const wide = ladderScale(levels, [26000]);
+  assert.ok(wide(26000) < 1 && wide(25300) < wide(26000), 'a close off the ladder still fits');
+  assert.deepEqual(spread([100, 105, 50], 12), [100, 112, 50], 'labels pushed apart, order kept');
+  assert.deepEqual(spread([10, 10, 10], 12), [10, 22, 34]);
+  assert.equal(mins(42.4), '42m');
+  assert.equal(mins(59.6), '1h 00m', 'never "60m"');
+  assert.equal(mins(133), '2h 13m');
+  assert.equal(mins(null), '—');
+  assert.equal(pts(21.4), '+21');
+  assert.equal(pts(-1500), '−1,500');
+  assert.equal(pts(0), '0');
+  assert.equal(exitLabel('st_flip'), 'SuperTrend flip');
+  assert.equal(exitLabel('force_exit'), 'Square-off');
+  assert.equal(exitLabel(null), 'Open');
+  const s = String(ladder({ ladder: levels, close: 25050, line: 24950, trigger: { key: 'R1', value: 25100 }, trend: 'up' }));
+  assert.equal((s.match(/>(S3|S2|S1|P|R1|R2|R3)</g) || []).length, 7, 'every level labelled');
+  assert.match(s, /index 25,050/);
+  assert.match(s, /ST 24,950/);
+  assert.equal(String(ladder({ ladder: [], close: 1, line: 1 })), '', 'nothing to draw without levels');
+});
