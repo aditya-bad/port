@@ -30,5 +30,5 @@ async def get_view(deployment_id: UUID, view: str, request: Request):
         raise HTTPException(404, f"No such Geek view: {view}")
     runner = request.app.state.deployment_manager.get_runner(deployment_id)
     ctx = mod.Ctx(pool=pool, dep=dict(dep), runner=runner, now=clock.now_ist(),
-                  candles=getattr(request.app.state, "candles", None))
+                  candles=getattr(request.app.state, "candles", None), params=dict(request.query_params))
     return await build(ctx)

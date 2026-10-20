@@ -5,7 +5,7 @@ import { api } from '../../core/api.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
-import { head, tiles, poll, svg, path, tone } from './ui.js';
+import { head, tiles, poll, svg, path, tone, bars } from './ui.js';
 
 function sides(series) {
   const W = 560, H = 200, n = series.length;
@@ -20,15 +20,6 @@ function sides(series) {
   s += `<text class="lab" x="${x(n - 1) - 4}" y="${y(L.pe) + 14}" text-anchor="end" style="fill:var(--c4)">PE ${L.pe.toFixed(1)}</text>`;
   s += `<text x="40" y="${H - 6}">${new Date(series[0].t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })} ${hhmm(series[0].t)}</text><text x="${W - 10}" y="${H - 6}" text-anchor="end">${hhmm(L.t)}</text>`;
   return svg(W, H, s, 'Call and put side premium through the open cycle');
-}
-
-function bars(items) {
-  const mx = Math.max(1, ...items.map(([, v]) => Math.abs(v || 0)));
-  return html`<div class="col" style="gap:10px">${items.map(([l, v]) => html`
-    <div style="display:grid;grid-template-columns:150px minmax(0,1fr) 100px;gap:10px;align-items:center" class="small">
-      <b>${l}</b>
-      <div style="position:relative;height:16px;background:var(--soft)"><i style="position:absolute;top:0;bottom:0;${v >= 0 ? 'left:50%' : `right:50%`};width:${(Math.abs(v || 0) / mx * 50).toFixed(1)}%;background:${v >= 0 ? 'var(--g)' : 'var(--r)'}"></i><i style="position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:var(--ink)"></i></div>
-      <span class="mono tiny right ${tone(v)}">${v == null ? 'none' : inr(v)}</span></div>`)}</div>`;
 }
 
 export default {

@@ -340,3 +340,89 @@ def test_side_series_pairs_marks_written_seconds_apart(pool_run, monkeypatch):
         await sim.tick("10:20", spot=25000)
         assert len((await G.premium(await ctx(sim)))["series"]) == 1
     pool_run(go)
+
+
+# ── one cycle, end to end ───────────────────────────────────────────────
+
+def test_cycle_page_has_everything_about_one_cycle(pool_run, monkeypatch):
+    """Entry, legs, the roll scored, every action and check in order, the
+    P&L path, the side balance and the money: all for that cycle only."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        legs = await sim.open_positions()
+        base = legs[0]["opened_at"]
+        await queries.record_position_marks(pool, [
+            (p["id"], sim.dep_id, base + timedelta(minutes=5), float(p["avg_entry_price"]) - 2) for p in legs])
+        up = await find_spot(sim, lambda p: side_sum(p, "PE") <= 0.48 * side_sum(p, "CE"), step=25)
+        await sim.tick("11:00", spot=up)
+        await sim.tick("15:13", spot=up)
+        c = await ctx(sim)
+        c.params = {"c": "1"}
+        cy = await G.cycle(c)
+        assert cy["found"] and cy["cycle_id"] == 1 and cy["ids"] == [1]
+        assert cy["prev"] is None and cy["next"] is None
+        assert cy["row"]["status"] == "open" and cy["row"]["rolls"] == 1
+        # every leg: 2 entered, the rolled-away PE closed by the continuous rule, the new PE open
+        assert len(cy["legs"]) == 3
+        closed = [l for l in cy["legs"] if l["status"] == "closed"]
+        assert len(closed) == 1 and closed[0]["opt"] == "PE" and closed[0]["closed_by"] == "continuous_50pct_trigger"
+        assert closed[0]["pnl"] is not None
+        # the timeline, oldest first: entry, roll, then the EOD check that did nothing
+        assert [(x["kind"], x["outcome"]) for x in cy["timeline"]] == [("entry", "acted"), ("roll", "acted"), ("check", "no_action")]
+        assert cy["timeline"] == sorted(cy["timeline"], key=lambda x: x["t"])
+        assert cy["entry"]["cycle_id"] == 1 and [l["opt"] for l in cy["entry"]["legs"]] == ["CE", "PE"]
+        assert len(cy["rolls"]) == 1 and cy["rolls"][0]["side"] == "PE" and cy["rolls"][0]["direction"] == "in"
+        assert cy["path"] and all(set(p) == {"t", "pnl"} for p in cy["path"])
+        assert cy["side"] and 0 < cy["side"][0]["ratio"] <= 1
+        lots = await queries.list_deployment_lots(pool, sim.dep_id)
+        sold = sum(float(l["price"]) * float(l["qty"]) for l in lots if l["position_side"] == "short" and l["action"] == "sell")
+        assert abs(cy["money"]["premium_sold"] - sold) < 0.01
+        assert cy["money"]["open"] is not None
+        assert cy["rules"] == {"trigger": 0.5, "floor": 0.8, "band": [0.8, 0.95]}
+    pool_run(go)
+
+
+def test_cycle_page_defaults_to_the_newest_and_knows_its_neighbours(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        sim.market.vol = 0.13
+        await sim.tick("11:00", spot=25000)       # cycle 1 hits its checkpoint, cycle 2 starts
+        cy = await G.cycle(await ctx(sim))
+        assert cy["cycle_id"] == 2 and cy["ids"] == [1, 2] and cy["prev"] == 1 and cy["next"] is None
+        c = await ctx(sim)
+        c.params = {"c": "1"}
+        one = await G.cycle(c)
+        assert one["row"]["ended_by"] == "checkpoint_target" and one["next"] == 2
+        assert one["timeline"][-1]["kind"] == "exit" and "≥" in one["timeline"][-1]["why"]
+        assert all(l["status"] == "closed" for l in one["legs"])
+        assert one["money"]["open"] is None
+        assert one["money"]["net"] == round(one["money"]["gross"] - one["money"]["charges"] - one["money"]["slippage"], 2)
+        for bad in ("9", "x"):
+            c = await ctx(sim)
+            c.params = {"c": bad}
+            assert (await G.cycle(c))["found"] is False
+    pool_run(go)
+
+
+def test_cycles_rows_carry_their_pnl_path_and_rolls_their_direction(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        legs = await sim.open_positions()
+        base = legs[0]["opened_at"]
+        await queries.record_position_marks(pool, [
+            (p["id"], sim.dep_id, base + timedelta(minutes=m), float(p["avg_entry_price"]) - m / 5)
+            for p in legs for m in (5, 10, 15)])
+        await sim.tick("10:30", spot=25000)
+        row = (await G.cycles(await ctx(sim)))["rows"][0]
+        assert len(row["path"]) == 3
+        hrs = [p[0] for p in row["path"]]
+        assert hrs == sorted(hrs) and hrs[0] > 0
+        assert row["path"][-1][1] > row["path"][0][1], "premium decayed: P&L rose"
+    pool_run(go)
+
+
+def test_thin_keeps_the_ends():
+    pts = list(range(1000))
+    t = G._thin(pts, 50)
+    assert len(t) == 50 and t[0] == 0 and t[-1] == 999
+    assert G._thin([1, 2, 3], 50) == [1, 2, 3]

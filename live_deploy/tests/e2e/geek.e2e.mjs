@@ -59,9 +59,10 @@ for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
   test(`every Geek view loads with no errors or sideways scroll (${label})`, async () => {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
-    for (const v of VIEWS) {
+    // the cycle page isn't in the menu: Cycles stays highlighted on it
+    for (const [v, on] of [...VIEWS.map(x => [x, x]), ['cycle?c=9', 'cycles'], ['cycle', 'cycles']]) {
       await p.goto(`${BASE}/linck/#/d/${ID}/geek/${v}`);
-      await p.waitForSelector(`.gk-rail a.on[href$="/geek/${v}"]`);
+      await p.waitForSelector(`.gk-rail a.on[href$="/geek/${on}"]`);
       await p.waitForFunction(() => {
         const el = document.querySelector('#gkView');
         return el && el.children.length && !el.querySelector('.skel');
@@ -114,4 +115,59 @@ test('geek mode keeps the chosen theme', async () => {
     assert.deepEqual(geek, [normal, theme], `${theme}: same ground as the normal page`);
     await ctx.close();
   }
+});
+
+// One cycle end to end, reached from Cycles (a row or a line) and from
+// Adjustments (a roll), with everything about it on one page.
+test('a cycle opens end to end from Cycles and from Adjustments', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycles`);
+  await p.waitForSelector('.gk-tbl .tr[data-c]');
+  // the new charts are there, and every cycle line opens its cycle
+  assert.ok(await p.locator('.gk-chart .jr').count() >= 10, 'journeys and ranges, one mark per cycle');
+  await p.locator('.gk-tbl .tr[data-c="9"]').click();
+  await p.waitForURL(/\/geek\/cycle\?c=9$/);
+  await p.waitForSelector('.cy-tl .cy-ev');
+  const text = await p.locator('#gkView').innerText();
+  for (const want of [/Cycle 9/, /Checkpoint/, /P&L through the cycle/, /Side balance/, /Call and put premium/, /Strikes over time/,
+    /Everything that happened/, /How it was entered/, /Where the money went/, /Rolls in this cycle/, /Every leg/]) {
+    assert.match(text, want);
+  }
+  assert.doesNotMatch(text, /undefined|NaN|\[object/);
+  const evs = await p.locator('.cy-tl .cy-ev').allInnerTexts();
+  assert.match(evs[0], /Entry/, 'oldest first: the entry');
+  assert.match(evs[evs.length - 1], /Flattened cycle 9/, 'and the exit last');
+  assert.ok(await p.locator('.gk-tbl .tr:not(.th)').count() >= 3, 'its legs');
+  // previous / next walk the cycles
+  await p.click('a.btn:has-text("Next")');
+  await p.waitForURL(/cycle\?c=10$/);
+  await p.waitForSelector('.gk-h h2:has-text("Cycle 10")');
+  assert.match(await p.locator('.gk-h').innerText(), /Running/);
+  await p.click('a.btn:has-text("Previous")');
+  await p.waitForURL(/cycle\?c=9$/);
+  // the price chart, legs and orders open from here
+  await p.waitForSelector('[data-act=chart]');
+  await p.click('[data-act=chart]');
+  await p.waitForSelector('.ss-plot', { timeout: 15000 });
+  await p.keyboard.press('Escape');
+  // from Adjustments: a roll opens its own cycle
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/adjustments`);
+  await p.waitForSelector('.gk-tbl .tr[data-c]');
+  assert.match(await p.locator('#gkView').innerText(), /What rolling has earned[\s\S]*Balance when it rolled vs what it paid[\s\S]*By side and direction[\s\S]*By hour of day/);
+  const c = await p.locator('.gk-tbl .tr[data-c]').first().getAttribute('data-c');
+  await p.locator('.gk-tbl .tr[data-c]').first().click();
+  await p.waitForURL(new RegExp(`cycle\\?c=${c}$`));
+  await p.waitForSelector(`.gk-h h2:has-text("Cycle ${c}")`);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('an unknown cycle says so and links back', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/cycle?c=999`);
+  await p.waitForSelector('#gkView a[href$="/geek/cycles"]');
+  assert.match(await p.locator('#gkView').innerText(), /There’s no cycle 999/);
+  await ctx.close();
 });

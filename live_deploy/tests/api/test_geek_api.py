@@ -10,7 +10,7 @@ import pytest
 from tests.conftest import add_fill, make_deployment
 
 T = datetime.fromisoformat
-VIEWS = ["engine", "decisions", "cycles", "adjustments", "entries", "premium", "settings"]
+VIEWS = ["engine", "decisions", "cycles", "cycle", "adjustments", "entries", "premium", "settings"]
 
 
 def test_other_strategies_have_no_geek_mode(client):
@@ -66,3 +66,11 @@ def test_every_view_answers_with_a_cycle_and_a_roll(client, view):
         assert body["rows"][0]["rolls_by_kind"]["eod"] == 1
     if view == "entries":
         assert body["rows"][0]["target"] == 230.8 and body["rows"][0]["long_days"] is True
+    if view == "cycle":
+        assert body["found"] and body["cycle_id"] == 1
+        assert [x["kind"] for x in body["timeline"]] == ["entry", "roll"]
+        assert body["rolls"][0]["side"] == "PE" and body["rolls"][0]["direction"] == "in"
+        assert len(body["legs"]) == 3
+        # the cycle is picked by ?c=
+        assert client.get(f"/v2/deployments/{d['id']}/geek/cycle?c=1").json()["cycle_id"] == 1
+        assert client.get(f"/v2/deployments/{d['id']}/geek/cycle?c=7").json()["found"] is False

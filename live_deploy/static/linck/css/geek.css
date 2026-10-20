@@ -161,3 +161,21 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
   .gk-tbl .tr { min-width: var(--minw, 560px); }
   .eng-card .er { grid-template-columns: 110px minmax(0, 1fr) 84px; }
 }
+
+/* One cycle, end to end (pages/geek/cycle.js): the timeline of every
+ * action and check, by day. */
+.cy-tl { display: flex; flex-direction: column; max-height: 640px; overflow: auto; border-top: 1px solid var(--line); }
+.cy-day { position: sticky; top: 0; z-index: 1; background: var(--paper); font-family: var(--f-mono); font-size: 11px; font-weight: 700; color: var(--mute); padding: 10px 0 4px; border-bottom: 1px solid var(--line); }
+.cy-ev { display: grid; grid-template-columns: 44px 104px minmax(0, 1fr); gap: 10px; align-items: start; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.cy-ev.check { opacity: .75; }
+.cy-ev.roll { box-shadow: inset 3px 0 0 var(--b); padding-left: 6px; }
+.cy-ev.exit, .cy-ev.entry { box-shadow: inset 3px 0 0 var(--ink); padding-left: 6px; }
+.cy-ev > .oc { justify-self: start; }
+@media (max-width: 760px) { .cy-ev { grid-template-columns: 40px minmax(0, 1fr); } .cy-ev > .oc { display: none; } }
+/* Chart marks that open a cycle (Cycles journeys and ranges). */
+.gk-chart .jr { cursor: pointer; }
+.gk-chart .jr:hover path { stroke-width: 3; opacity: 1; }
+.gk-chart .jr:hover rect { opacity: .75; }
+.gk-wide { overflow-x: auto; }
+.gk-wide > .gk-chart { min-width: 760px; }
+.gk-tile .v.sm { font-size: 20px; white-space: normal; overflow: visible; text-overflow: clip; }

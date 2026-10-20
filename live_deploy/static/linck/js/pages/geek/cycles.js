@@ -1,14 +1,78 @@
 // Cycles: one row per checkpoint cycle — how it was born, lived and ended,
 // the worst dip and best peak it went through (from the 5-minute price
 // marks), its P&L — and how the months compare with the monthly target.
+// Charts: every cycle's P&L journey on one axis, each cycle's range and
+// result, and what ends them. A row (or a line) opens that cycle end to end.
 
 import { api } from '../../core/api.js';
-import { html, mount } from '../../core/dom.js';
+import { html, mount, on } from '../../core/dom.js';
+import { go } from '../../core/router.js';
 import { inr, dShort } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
-import { head, tiles, table, poll, svg, money, tone, LABEL } from './ui.js';
+import { head, tiles, table, poll, svg, path, money, tone, LABEL, yLabels, wide } from './ui.js';
 
 const endTag = r => html`<span class="oc ${r.ended_by === 'checkpoint_target' ? '' : r.ended_by === 'open' ? 'no_action' : 'blocked'}">${LABEL[r.ended_by] || r.ended_by.replace(/_/g, ' ')}</span>`;
+
+const END_C = { checkpoint_target: 'var(--ink)', open: 'var(--b)', contract_expiry_backstop: 'var(--wr)', convergence_stop: 'var(--r)' };
+const endColour = k => END_C[k] || 'var(--mute)';
+
+// Every cycle's P&L against days since it opened: do they climb steadily
+// to the checkpoint, or dip first? The open one is blue.
+function journeys(rows, target) {
+  const R = rows.filter(r => r.path && r.path.length > 1).slice(0, 24);
+  if (!R.length) return empty('', 'Appears once cycles have 5-minute price marks.');
+  const W = 1200, H = 280, all = R.flatMap(r => r.path);
+  const dx = Math.max(1, ...all.map(p => p[0] / 24)), hi = Math.max(target, ...all.map(p => p[1])), lo = Math.min(0, ...all.map(p => p[1]));
+  const pad = (hi - lo || 1) * 0.06, top = hi + pad, bot = lo - pad;
+  const x = d => 64 + d / dx * (W - 140), y = v => 12 + (top - v) / (top - bot) * (H - 46);
+  let s = '';
+  for (let d = 0; d <= dx; d += Math.max(1, Math.round(dx / 10))) s += `<line x1="${x(d)}" x2="${x(d)}" y1="12" y2="${H - 34}" stroke="var(--line)"/><text x="${x(d)}" y="${H - 18}" text-anchor="middle">day ${d}</text>`;
+  s += yLabels([0, target, bot, top], y, 58);
+  s += `<line x1="64" x2="${W - 76}" y1="${y(0)}" y2="${y(0)}" stroke="var(--ink)"/>`;
+  s += `<line x1="64" x2="${W - 76}" y1="${y(target)}" y2="${y(target)}" stroke="var(--g)" stroke-dasharray="5 3"/><text class="lab" x="${W - 76}" y="${y(target) - 5}" text-anchor="end" style="fill:var(--g)">checkpoint</text>`;
+  [...R].reverse().forEach(r => {
+    const open = r.status === 'open', c = endColour(r.ended_by);
+    const pts = r.path.map(p => [x(p[0] / 24), y(p[1])]), L = pts[pts.length - 1];
+    s += `<g class="jr" data-c="${r.cycle_id}"><path d="${path(pts)}" fill="none" stroke="${c}" stroke-width="${open ? 2.6 : 1.3}" opacity="${open ? 1 : 0.55}"/>`;
+    s += `<circle cx="${L[0]}" cy="${L[1]}" r="${open ? 4.5 : 3}" fill="${c}"/><text x="${L[0] + 6}" y="${L[1] + 3}" style="fill:${c}">#${r.cycle_id}</text></g>`;
+  });
+  return html`${wide(svg(W, H, s, 'Every cycle’s P&L against days since it opened'))}
+    <div class="row wrap tiny" style="gap:16px">${[['checkpoint_target', 'reached the checkpoint'], ['contract_expiry_backstop', 'expiry'], ['convergence_stop', 'convergence stop'], ['open', 'running']]
+      .map(([k, l]) => html`<span class="row" style="gap:6px"><i style="width:14px;height:3px;background:${endColour(k)}"></i>${l}</span>`)}</div>`;
+}
+
+// Each cycle as a range from its worst dip to its best peak, and where it
+// ended: a long red tail under a green result means it was rescued.
+function ranges(rows, target) {
+  const R = [...rows].reverse().slice(-30);
+  if (!R.length) return empty('', 'Appears after the first cycle.');
+  const W = 1200, H = 230, vals = R.flatMap(r => [r.mae ?? 0, r.mfe ?? 0, r.pnl ?? 0]);
+  const hi = Math.max(target, ...vals), lo = Math.min(0, ...vals), pad = (hi - lo || 1) * 0.06, top = hi + pad, bot = lo - pad;
+  const bw = Math.min(34, (W - 90) / R.length - 8), x = i => 70 + i * ((W - 90) / R.length), y = v => 10 + (top - v) / (top - bot) * (H - 40);
+  let s = `<line x1="64" x2="${W - 10}" y1="${y(0)}" y2="${y(0)}" stroke="var(--ink)"/>`;
+  s += `<line x1="64" x2="${W - 10}" y1="${y(target)}" y2="${y(target)}" stroke="var(--g)" stroke-dasharray="5 3"/>`;
+  s += yLabels([0, target, bot, top], y, 58);
+  R.forEach((r, i) => {
+    const cx = x(i) + bw / 2, p = r.pnl ?? 0;
+    if (r.mae != null && r.mfe != null) {
+      s += `<rect x="${cx - 2}" y="${y(Math.max(0, r.mfe))}" width="4" height="${y(0) - y(Math.max(0, r.mfe))}" fill="var(--gs)"/>`;
+      s += `<rect x="${cx - 2}" y="${y(0)}" width="4" height="${y(Math.min(0, r.mae)) - y(0)}" fill="var(--rs)"/>`;
+    }
+    s += `<g class="jr" data-c="${r.cycle_id}"><rect x="${x(i)}" y="${Math.min(y(0), y(p))}" width="${bw}" height="${Math.max(1.5, Math.abs(y(p) - y(0)))}" fill="${r.status === 'open' ? 'var(--b)' : p >= 0 ? 'var(--pos)' : 'var(--r)'}" opacity="${r.status === 'open' ? 0.7 : 1}"/>`;
+    s += `<text x="${cx}" y="${H - 14}" text-anchor="middle">#${r.cycle_id}</text></g>`;
+  });
+  return wide(svg(W, H, s, 'Each cycle’s worst dip, best peak and result'));
+}
+
+// What ends cycles: one bar, split by how each closed cycle ended.
+function endings(s) {
+  const E = Object.entries(s.ended_by).sort((a, b) => b[1] - a[1]), n = E.reduce((a, [, k]) => a + k, 0);
+  if (!n) return '';
+  return html`<div class="col" style="gap:8px">
+    <div style="display:flex;height:22px;border:1px solid var(--ink)">${E.map(([k, c]) => html`<i style="width:${c / n * 100}%;background:${endColour(k)};opacity:${k === 'checkpoint_target' ? 1 : 0.8}" title="${LABEL[k] || k}: ${c}"></i>`)}</div>
+    <div class="row wrap tiny" style="gap:16px">${E.map(([k, c]) => html`<span class="row" style="gap:6px"><i style="width:10px;height:10px;background:${endColour(k)}"></i>${LABEL[k] || k.replace(/_/g, ' ')} <b>${c}</b> · ${Math.round(c / n * 100)}%</span>`)}</div>
+  </div>`;
+}
 
 function daysChart(rows) {
   const d = rows.filter(r => r.ended_by === 'checkpoint_target').map(r => r.days);
@@ -57,13 +121,16 @@ export default {
           ['Median days to checkpoint', s.median_days_to_checkpoint ?? '—', s.fastest_checkpoint_days != null ? `fastest ${s.fastest_checkpoint_days} · slowest ${s.slowest_checkpoint_days}` : ''],
           ['Avg worst dip / best peak', s.avg_mae != null ? html`<span class="neg">${inr(s.avg_mae)}</span> / <span class="pos">${inr(s.avg_mfe)}</span>` : '—', s.worst_mae != null ? `worst dip ${inr(s.worst_mae)}` : 'from price marks'],
         ])}
+        <div class="gk-panel"><h3>Every cycle’s journey <span class="s">P&L against days since it opened · click a line or a row to open that cycle</span></h3>${journeys(data.rows, data.checkpoint_target)}</div>
+        <div class="gk-panel"><h3>Range and result <span class="s">shaded: worst dip and best peak · bar: where it ended · dashed: checkpoint</span></h3>${ranges(data.rows, data.checkpoint_target)}</div>
+        <div class="gk-panel"><h3>What ends cycles <span class="s">${s.closed} closed</span></h3>${endings(s)}</div>
         ${table([['#', '44px'], ['Opened → closed', 'minmax(150px,1.2fr)'], ['Expiry', '96px'], ['Days', '56px', 'num'], ['Ended by', '130px'],
           ['Rolls', '60px', 'num'], ['EOD · no-op', '90px', 'num'], ['Worst dip', '96px', 'num'], ['Best peak', '96px', 'num'], ['P&L', '110px', 'num']],
-          data.rows.map(r => [html`<b class="mono">${r.cycle_id}</b>`, `${dShort(r.start)} → ${r.end ? dShort(r.end) : 'now'}`, r.contract_expiry || '—', r.days,
+          data.rows.map(r => [html`<a class="mono b" href="${g.href(`cycle?c=${r.cycle_id}`)}">${r.cycle_id}</a>`, `${dShort(r.start)} → ${r.end ? dShort(r.end) : 'now'}`, r.contract_expiry || '—', r.days,
             endTag(r), r.rolls, `${r.rolls_by_kind.eod + r.rolls_by_kind.rollout} · ${r.eod_checks_no_action}`,
-            html`<span class="neg">${money(r.mae)}</span>`, html`<span class="pos">${money(r.mfe)}</span>`,
+            html`<span class="${tone(r.mae)}">${money(r.mae)}</span>`, html`<span class="${tone(r.mfe)}">${money(r.mfe)}</span>`,
             html`<span class="${tone(r.pnl)} b">${money(r.pnl)}</span>${r.status === 'open' ? html` <span class="tiny mute">open</span>` : ''}`]),
-          { minw: 960, rowCls: i => (data.rows[i].ended_by === 'convergence_stop' ? 'att' : '') })}
+          { minw: 960, rowCls: i => `click ${data.rows[i].ended_by === 'convergence_stop' ? 'att' : ''}`, rowAttrs: i => html`data-c="${data.rows[i].cycle_id}" role="link" tabindex="0"` })}
         <p class="gk-note">P&L is gross (before charges) for closed cycles and the live cycle P&L for the open one. Worst dip and best peak come from the 5-minute price marks, so a spike between two marks isn’t seen.</p>
         <div class="gk-two even">
           <div class="gk-panel"><h3>Days to checkpoint <span class="s">each cycle that reached it</span></h3>${daysChart(data.rows)}</div>
@@ -71,6 +138,8 @@ export default {
         </div>`);
     }
     const stop = poll(() => api.geek(g.id, 'cycles'), 60000, d => { data = d; paint(); });
-    return stop;
+    const open = (e, t) => { if (!e.target.closest('a')) go(`d/${g.id}/geek/cycle?c=${t.dataset.c}`); };
+    const offs = [on(el, 'click', '[data-c]', open), on(el, 'keydown', '.tr[data-c]', (e, t) => { if (e.key === 'Enter') open(e, t); })];
+    return () => { stop(); offs.forEach(f => f()); };
   },
 };

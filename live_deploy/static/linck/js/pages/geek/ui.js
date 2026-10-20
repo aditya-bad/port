@@ -33,11 +33,12 @@ export function stateChip(r) {
 }
 
 // A grid table: cols = [[label, width, cls]], rows = [[cells...], ...].
-export function table(cols, rows, { minw = 560, cls = '', rowCls = () => '' } = {}) {
+// rowAttrs(i) can add attributes to a row (e.g. data-c to make it a link).
+export function table(cols, rows, { minw = 560, cls = '', rowCls = () => '', rowAttrs = () => '' } = {}) {
   const tpl = cols.map(c => c[1]).join(' ');
   return html`<div class="gk-tbl ${cls}" style="--minw:${minw}px">
     <div class="tr th" style="grid-template-columns:${tpl}">${cols.map(c => html`<span class="${c[2] || ''}">${c[0]}</span>`)}</div>
-    ${rows.map((r, i) => html`<div class="tr ${rowCls(i)}" style="grid-template-columns:${tpl}">${r.map((cell, j) => html`<span class="${cols[j][2] || ''}">${cell}</span>`)}</div>`)}
+    ${rows.map((r, i) => html`<div class="tr ${rowCls(i)}" style="grid-template-columns:${tpl}" ${rowAttrs(i)}>${r.map((cell, j) => html`<span class="${cols[j][2] || ''}">${cell}</span>`)}</div>`)}
   </div>`;
 }
 
@@ -48,6 +49,8 @@ export const ratio = r => (r == null ? '—' : `${(r * 100).toFixed(0)}%`);
 export const LABEL = {
   checkpoint_target: 'Checkpoint', contract_expiry_backstop: 'Expiry', convergence_stop: 'Convergence stop',
   open: 'Open', other: 'Other', continuous: 'Continuous', eod: 'EOD check', rollout: 'EOD roll-out',
+  continuous_50pct_trigger: 'Continuous', eod_gap_check: 'EOD check', eod_rollout: 'EOD roll-out',
+  initial_entry: 'Entry', close_everything: 'Close everything', manual_close: 'Closed by hand',
 };
 
 // Fetch now and every `ms`; stops on cleanup. fn gets the data or an Error.
@@ -63,4 +66,31 @@ export function poll(load, ms, fn) {
 export function svg(w, h, body, label = '') {
   return html`<svg class="gk-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${label}">${raw(body)}</svg>`;
 }
+// A wide chart (1200-unit viewbox): on a phone it keeps a readable
+// minimum width and scrolls sideways inside its panel.
+export const wide = chart => html`<div class="gk-wide">${chart}</div>`;
 export const path = pts => pts.map((p, i) => `${i ? 'L' : 'M'}${p[0].toFixed(1)} ${p[1].toFixed(1)}`).join('');
+
+// Signed bars around a centre line: [[label, ₹ or null], ...].
+export function bars(items) {
+  const mx = Math.max(1, ...items.map(([, v]) => Math.abs(v || 0)));
+  return html`<div class="col" style="gap:10px">${items.map(([l, v]) => html`
+    <div style="display:grid;grid-template-columns:150px minmax(0,1fr) 100px;gap:10px;align-items:center" class="small">
+      <b>${l}</b>
+      <div style="position:relative;height:16px;background:var(--soft)"><i style="position:absolute;top:0;bottom:0;${v >= 0 ? 'left:50%' : `right:50%`};width:${(Math.abs(v || 0) / mx * 50).toFixed(1)}%;background:${v >= 0 ? 'var(--g)' : 'var(--r)'}"></i><i style="position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:var(--ink)"></i></div>
+      <span class="mono tiny right ${tone(v)}">${v == null ? 'none' : inr(v)}</span></div>`)}</div>`;
+}
+
+// Y-axis labels at x for the given values, skipping any closer than 12px
+// to one already drawn (0 and a small max would overlap). Rounded ₹.
+export function yLabels(vals, y, x, fmt = v => inr(Math.round(v))) {
+  const done = [];
+  let s = '';
+  for (const v of vals) {
+    const Y = y(v);
+    if (done.some(d => Math.abs(d - Y) < 12)) continue;
+    done.push(Y);
+    s += `<text x="${x}" y="${Y + 3}" text-anchor="end">${fmt(v)}</text>`;
+  }
+  return s;
+}

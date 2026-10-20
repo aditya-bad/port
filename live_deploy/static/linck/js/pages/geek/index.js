@@ -16,7 +16,7 @@ import { indexByName } from '../../data/config.js';
 import { supports, takeEntry, exit } from '../../data/geek.js';
 import { empty } from '../../ui/components.js';
 
-// [key, label, group, shortcut, load, reused deployment tab?]
+// [key, label, group, shortcut, load, reused deployment tab?, hidden from the menu?]
 export const VIEWS = [
   ['overview', 'Overview', 'Basics', '1', () => import('./overview.js')],
   ['positions', 'Positions', 'Basics', '2', () => import('../deployment/now.js'), true],
@@ -26,6 +26,7 @@ export const VIEWS = [
   ['decisions', 'Decisions', 'Live', 'D', () => import('./decisions.js')],
   ['map', 'Cycle map', 'Anatomy', 'M', () => import('../deployment/days.js'), true],
   ['cycles', 'Cycles', 'Anatomy', 'C', () => import('./cycles.js')],
+  ['cycle', 'Cycle', 'Anatomy', '', () => import('./cycle.js'), false, true],   // one cycle, from Cycles or Adjustments
   ['adjustments', 'Adjustments', 'Anatomy', 'A', () => import('./adjustments.js')],
   ['premium', 'Premium & decay', 'Anatomy', 'P', () => import('./premium.js')],
   ['entries', 'Entries', 'Anatomy', 'N', () => import('./entries.js')],
@@ -42,7 +43,7 @@ export default {
     let engine = null, viewCleanup = null, mounted = false;
     const subs = new Set();
     const g = {
-      id, href: k => href(`d/${id}/geek/${k}`),
+      id, href: k => href(`d/${id}/geek/${k}`), params,
       engine: () => engine,
       onEngine: fn => { subs.add(fn); return () => subs.delete(fn); },
     };
@@ -69,8 +70,9 @@ export default {
 
     function rail() {
       const armed = engine && engine.rules && engine.rules.some(r => r.state === 'armed');
-      return html`${GROUPS.map(gr => html`<div class="gk-grp"><h4>${gr}</h4>${VIEWS.filter(x => x[2] === gr).map(([k, l, , key]) => html`
-        <a href="${g.href(k)}" class="${k === view[0] ? 'on' : ''}" ${k === view[0] ? html`aria-current="page"` : ''}>${l}${k === 'engine' && armed ? html`<span class="dot" title="A rule is about to act"></span>` : ''}<span class="k">${key}</span></a>`)}</div>`)}
+      const cur = view[0] === 'cycle' ? 'cycles' : view[0];
+      return html`${GROUPS.map(gr => html`<div class="gk-grp"><h4>${gr}</h4>${VIEWS.filter(x => x[2] === gr && !x[6]).map(([k, l, , key]) => html`
+        <a href="${g.href(k)}" class="${k === cur ? 'on' : ''}" ${k === cur ? html`aria-current="page"` : ''}>${l}${k === 'engine' && armed ? html`<span class="dot" title="A rule is about to act"></span>` : ''}<span class="k">${key}</span></a>`)}</div>`)}
         <div class="foot">Keys switch views · Esc leaves<br>Pause, Close and Stop stay on the normal page</div>`;
     }
 
@@ -114,7 +116,7 @@ export default {
     const offKeys = on(document, 'keydown', 'body', e => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select, [contenteditable]')) return;
       if (e.key === 'Escape') { e.preventDefault(); exit(id, $('.gk', main), $('[data-act="exit"]', main)); return; }
-      const hit = VIEWS.find(x => x[3].toLowerCase() === e.key.toLowerCase());
+      const hit = VIEWS.find(x => x[3] && x[3].toLowerCase() === e.key.toLowerCase());
       if (hit && hit[0] !== view[0]) { e.preventDefault(); go(`d/${id}/geek/${hit[0]}`); }
     });
     const stopEngine = (() => {

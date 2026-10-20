@@ -8,7 +8,10 @@ Views, each `async (ctx) -> dict`:
   decisions  every check: trades (from fills' metadata) and checks that
              didn't trade (strategy_decisions)
   cycles     one row per checkpoint cycle (cycle_id): how it ended, rolls,
-             worst dip / best peak, P&L; monthly progress
+             worst dip / best peak, P&L and its path; monthly progress
+  cycle      one cycle end to end (?c=<cycle_id>): its entry, every leg,
+             every action and check in order, its rolls scored, its P&L
+             path and side balance, and the money
   adjustments  every roll against keeping the leg it closed
   entries    why each contract and strike was picked
   premium    premium sold and kept, P&L by leg role, the current cycle's
@@ -57,6 +60,7 @@ class Ctx:
     runner: Any = None          # DeploymentRunner when running, else None
     now: Optional[datetime] = None
     candles: Any = None         # CandleService, to fill a rolled-away leg's prices
+    params: dict = field(default_factory=dict)   # the request's query (?c=<cycle_id>)
     _cache: dict = field(default_factory=dict)
 
     @property
@@ -575,6 +579,39 @@ def _cycle_at(windows: list, t: datetime) -> Optional[int]:
 
 # ── cycles ──────────────────────────────────────────────────────────────
 
+def _thin(path: list, n: int = 120) -> list:
+    """At most n points, evenly picked, always keeping the last."""
+    if len(path) <= n:
+        return path
+    step = (len(path) - 1) / (n - 1)
+    return [path[round(i * step)] for i in range(n)]
+
+
+def _side_series(prs: list, mark_rows: list) -> list[dict]:
+    """CE and PE totals of the short legs open at each mark, and the
+    smaller ÷ bigger balance. One snapshot's marks share a minute, if not
+    always the exact instant."""
+    marks: dict = {}
+    for r in mark_rows:
+        marks.setdefault(r["marked_at"].replace(second=0, microsecond=0), {})[r["position_id"]] = r["price"]
+    by_id = {p["id"]: p for p in prs}
+    out = []
+    for t in sorted(marks):
+        ce = pe = 0.0
+        for pid, px in marks[t].items():
+            p = by_id.get(pid)
+            if p is None or p["hedge"]:
+                continue
+            if p["opened_at"] <= t and (p["closed_at"] is None or p["closed_at"] > t):
+                if p["opt"] == "CE":
+                    ce += float(px)
+                elif p["opt"] == "PE":
+                    pe += float(px)
+        if ce > 0 and pe > 0:
+            out.append({"t": _iso(t), "ce": round(ce, 2), "pe": round(pe, 2),
+                        "ratio": round(min(ce, pe) / max(ce, pe), 4)})
+    return out
+
 def _pnl_path(positions: list, marks: dict, start: datetime, end: datetime) -> list[tuple[datetime, float]]:
     """Cycle P&L at every mark time: closed legs at their realized P&L,
     open legs marked to that time's price."""
@@ -635,6 +672,9 @@ async def cycles(ctx: Ctx) -> dict:
         charges = sum(float(p["estimated_charges"]) for p in closed)
         slip = sum(float(p["estimated_slippage"]) for p in closed)
         path = _pnl_path(prs, marks, start, end or now)
+        if end is not None:   # a closed cycle ends at its result, not at its last mark
+            path = [p for p in path if p[0] < end] + [(end, sum(float(p["realized_pnl"]) for p in prs))]
+        ctx._cache.setdefault("cycle_parts", {})[cid] = {"prs": prs, "acts": acts, "path": path, "marks": marks}
         expiry = next((a["contract_expiry"] for a in acts if a["contract_expiry"]), None)
         eod_checks = [d for d in decs if d["rule"] == "eod_gap_check" and d["decided_at"] >= start
                       and (end is None or d["decided_at"] <= end)]
@@ -660,6 +700,8 @@ async def cycles(ctx: Ctx) -> dict:
             "pnl": round(gross, 2) if not is_open else open_pnl,
             "pnl_net": round(gross - charges - slip, 2) if not is_open else None,
             "legs": len([p for p in prs if not p["hedge"]]),
+            # cycle P&L over its life, for the journeys chart: [hours since start, ₹]
+            "path": [[round((t - start).total_seconds() / 3600, 2), round(v, 2)] for t, v in _thin(path, 80)],
         })
     closed_rows = [r for r in rows if r["status"] == "closed"]
     ck_days = [r["days"] for r in closed_rows if r["ended_by"] == "checkpoint_target"]
@@ -724,7 +766,11 @@ async def adjustments(ctx: Ctx) -> dict:
             continue
         closed, opened = _shorts(a["fills"], False), _shorts(a["fills"], True)
         tv = a["trigger_values"] or {}
+        side = (opened or closed or [{}])[0].get("opt")
         row = {"t": _iso(a["t"]), "rule": ROLL_KIND[a["reason"]], "reason": a["reason"], "cycle_id": a["cycle_id"],
+               "side": side,
+               "direction": _direction(side or "", closed[0]["strike"] if closed else None,
+                                       opened[0]["strike"] if opened else None) or None,
                "closed": [{k: f[k] for k in ("symbol", "opt", "strike", "price", "pnl")} for f in closed],
                "opened": [{k: f[k] for k in ("symbol", "opt", "strike", "price")} for f in opened],
                "ratio_before": None, "ratio_after": None, "costs": None, "if_held": None,
@@ -846,22 +892,7 @@ async def premium(ctx: Ctx) -> dict:
         prs = [p for p in shorts if p["cycle_id"] == open_cycle]
         start = min(p["opened_at"] for p in prs)
         rows = await queries.list_marks_for_positions(ctx.pool, [p["id"] for p in prs], start, now)
-        marks: dict = {}
-        for r in rows:   # one snapshot's marks share a minute, if not always the exact instant
-            marks.setdefault(r["marked_at"].replace(second=0, microsecond=0), {})[r["position_id"]] = r["price"]
-        by_id = {p["id"]: p for p in prs}
-        for t in sorted(marks):
-            ce = pe = 0.0
-            for pid, px in marks[t].items():
-                p = by_id[pid]
-                if p["opened_at"] <= t and (p["closed_at"] is None or p["closed_at"] > t):
-                    if p["opt"] == "CE":
-                        ce += px
-                    elif p["opt"] == "PE":
-                        pe += px
-            if ce > 0 and pe > 0:
-                series.append({"t": _iso(t), "ce": round(ce, 2), "pe": round(pe, 2),
-                               "ratio": round(min(ce, pe) / max(ce, pe), 4)})
+        series = _side_series(prs, rows)
     return {
         "premium_sold": round(sold, 2), "kept": round(gross - charges - slip, 2), "gross": round(gross, 2),
         "charges": round(charges, 2), "slippage": round(slip, 2),
@@ -933,7 +964,98 @@ async def settings(ctx: Ctx) -> dict:
     return {"rows": rows, "quote_refutes": refuted}
 
 
+# ── one cycle, end to end ───────────────────────────────────────────────
+
+async def cycle(ctx: Ctx) -> dict:
+    """Everything about one cycle (?c=<cycle_id>, default the newest): its
+    row from cycles(), how it was entered, every leg, every action and
+    check in order, its rolls scored, its P&L path with the moments that
+    moved it, the side balance and CE/PE premium, and the money."""
+    all_cycles = await cycles(ctx)
+    rows = {r["cycle_id"]: r for r in all_cycles["rows"]}
+    if not rows:
+        return {"found": False, "cycle_id": None, "ids": []}
+    ids = sorted(rows)
+    try:
+        cid = int(ctx.params.get("c")) if ctx.params.get("c") not in (None, "") else ids[-1]
+    except ValueError:
+        cid = None
+    if cid not in rows:
+        return {"found": False, "cycle_id": cid, "ids": ids}
+    row = rows[cid]
+    parts = ctx._cache["cycle_parts"][cid]
+    prs, acts, path = parts["prs"], parts["acts"], parts["path"]
+    now = ctx.now or datetime.now(IST)
+    start = min(p["opened_at"] for p in prs)
+    end = None if row["status"] == "open" else max(p["closed_at"] for p in prs)
+
+    # every action, and every check that didn't trade, in order
+    timeline = []
+    for a in acts:
+        what, why = _action_text(a)
+        timeline.append({"t": _iso(a["t"]), "kind": a["kind"], "rule": a["reason"],
+                         "label": RULE_LABELS.get(a["reason"], a["reason"].replace("_", " ").capitalize())
+                         if a["kind"] != "entry" else "Entry",
+                         "outcome": "acted", "summary": what, "why": why})
+    for d in await queries.list_decisions(ctx.pool, ctx.dep["id"], since=start, limit=5000):
+        if end is not None and d["decided_at"] > end:
+            continue
+        timeline.append({"t": _iso(d["decided_at"]), "kind": "check", "rule": d["rule"],
+                         "label": RULE_LABELS.get(d["rule"], d["rule"].replace("_", " ").capitalize()),
+                         "outcome": d["outcome"], "summary": d["summary"], "why": ""})
+    timeline.sort(key=lambda x: x["t"])
+
+    # every leg, in the order it was opened
+    close_reason = {}
+    for a in acts:
+        for f in a["fills"]:
+            if not f["open"]:
+                close_reason[f["position_id"]] = a["reason"]
+    legs = []
+    for p in sorted(prs, key=lambda p: (p["opened_at"], p["opt"] or "")):
+        legs.append({
+            "symbol": p["symbol"], "opt": p["opt"], "strike": p["strike"], "side": p["side"], "role": p["role"],
+            "hedge": p["hedge"], "qty": float(p["total_qty"] or p["qty"] or 0),
+            "opened_at": _iso(p["opened_at"]), "closed_at": _iso(p["closed_at"]), "status": p["status"],
+            "entry": float(p["avg_entry_price"]), "exit": _f(p.get("exit_price")),
+            "pnl": round(float(p["realized_pnl"]), 2) if p["status"] == "closed" else None,
+            "charges": round(float(p["estimated_charges"]), 2) if p["status"] == "closed" else None,
+            "slippage": round(float(p["estimated_slippage"]), 2) if p["status"] == "closed" else None,
+            "closed_by": close_reason.get(str(p["id"])),
+        })
+
+    rolls = [r for r in (await adjustments(ctx))["rows"] if r["cycle_id"] == cid]
+    entry = next((e for e in (await entries(ctx))["rows"] if e["cycle_id"] == cid), None)
+    marks = await queries.list_marks_for_positions(ctx.pool, [p["id"] for p in prs], start, end or now)
+    side = _side_series(prs, marks)
+    sold = sum(f["price"] * f["qty"] for a in acts for f in a["fills"] if not f["hedge"] and f["open"])
+    roles: dict = {}
+    for p in prs:
+        if p["status"] == "closed":
+            k = "hedge" if p["hedge"] else ("original" if (p["role"] or "original") == "original" else "adjustment")
+            roles[k] = round(roles.get(k, 0.0) + float(p["realized_pnl"]), 2)
+    i = ids.index(cid)
+    target = all_cycles["checkpoint_target"]
+    cfg = {**_defaults(), **ctx.config}
+    return {
+        "found": True, "cycle_id": cid, "ids": ids,
+        "prev": ids[i - 1] if i > 0 else None, "next": ids[i + 1] if i < len(ids) - 1 else None,
+        "row": {k: v for k, v in row.items() if k != "path"},
+        "checkpoint_target": target, "capital": ctx.capital,
+        "entry": entry, "legs": legs, "timeline": timeline, "rolls": list(reversed(rolls)),
+        "path": [{"t": _iso(t), "pnl": round(v, 2)} for t, v in _thin(path, 400)],
+        "side": _thin(side, 400),
+        "money": {
+            "premium_sold": round(sold, 2), "gross": row["realized_pnl"], "charges": row["charges"],
+            "slippage": row["slippage"], "net": round(row["realized_pnl"] - row["charges"] - row["slippage"], 2),
+            "open": row["pnl"] if row["status"] == "open" else None, "by_role": roles,
+        },
+        "rules": {"trigger": float(cfg["adjustment_trigger_ratio"]), "floor": float(cfg["eod_gap_floor"]),
+                  "band": [float(cfg["adjustment_band_min"]), float(cfg["adjustment_band_max"])]},
+    }
+
+
 VIEWS = {
-    "engine": engine, "decisions": decisions, "cycles": cycles, "adjustments": adjustments,
+    "engine": engine, "decisions": decisions, "cycles": cycles, "cycle": cycle, "adjustments": adjustments,
     "entries": entries, "premium": premium, "settings": settings,
 }

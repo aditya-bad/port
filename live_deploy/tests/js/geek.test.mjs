@@ -28,3 +28,12 @@ test('checkpoint chip: a percentage only while in profit, "In loss" (red) while 
   assert.match(s({ state: 'behind', pct: null }), /class="st-chip behind">In loss/);
   assert.doesNotMatch(s({ state: 'behind', pct: null }), /%/);
 });
+
+test('chart y labels skip values that would print on top of each other', async () => {
+  const { yLabels } = await import('../../static/linck/js/pages/geek/ui.js');
+  const y = v => 200 - v / 10;                     // 10 ₹ per px
+  const s = yLabels([0, 100, 5000], y, 40);
+  assert.equal((s.match(/<text/g) || []).length, 2, '₹100 sits 10px from ₹0: dropped');
+  assert.match(s, /₹0/);
+  assert.match(s, /₹5,000/);
+});
