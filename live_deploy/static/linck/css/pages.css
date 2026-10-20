@@ -232,6 +232,12 @@ a.cell-name:hover b { text-decoration: underline; }
 .cmp-chip { display: inline-flex; align-items: center; gap: 6px; padding: 5px 4px 5px 9px; border: 1.5px solid var(--ink); font-size: 13px; font-weight: 700; white-space: nowrap; }
 .cmp-chip > button { padding: 0 6px; color: var(--mute); }
 .cmp-chip.dashed { border-style: dashed; border-color: var(--mute); padding: 6px 12px; }
+/* A group: several deployments compared as one. Double rule, member count, split. */
+.cmp-chip.group { border-style: double; border-width: 3px; padding: 3px 3px 3px 8px; }
+.cmp-chip .linkish { padding: 0 2px; font-weight: 600; text-decoration: underline; color: var(--mute); }
+.tile-box.in-group { background: var(--soft); color: var(--ink); border-style: dashed; }
+.cmp-groups { display: flex; flex-direction: column; gap: 4px; }
+.cmp-groups > p { margin: 0; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; text-wrap: pretty; }
 .corr { display: grid; gap: 3px; min-width: 420px; }
 .corr-h { font-size: 12px; font-weight: 700; display: flex; align-items: center; gap: 5px; white-space: nowrap; overflow: hidden; }
 .corr-h > .swatch { width: 10px; }

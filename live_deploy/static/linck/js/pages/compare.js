@@ -1,6 +1,9 @@
 // Compare — how does A compare to B. Starts empty with quick picks;
 // results lead with a verdict, then best-for, equity (₹ or % of capital,
 // optional combined line), correlation, month by month and metric winners.
+// Each side is a deployment or a group of them combined into one
+// (data/groups.js): a whole strategy against another, or some of a
+// strategy's deployments against the rest.
 
 import { html, raw, mount, $, actions, on } from '../core/dom.js';
 import { inr, inrS, pct, dShort, MONTHS, ist, fromDay, plural, tone } from '../core/format.js';
@@ -13,71 +16,107 @@ import { seg, check, empty } from '../ui/components.js';
 import { registerScrub } from '../ui/tooltip.js';
 import { yOf } from '../ui/charts.js';
 import { say } from '../ui/toast.js';
+import { resolve, decode, encode, keyOf } from '../data/groups.js';
 
-const st = ui('compare', { ids: [], p: 'all', norm: false, comb: false, mode: 'all', q: '', view: false });
+const st = ui('compare', { items: [], p: 'all', norm: false, comb: false, mode: 'all', q: '', view: false });
+if (!Array.isArray(st.get().items)) st.set({ items: (st.get().ids || []).map(id => ({ ids: [id] })) });   // saved before groups
 const C = ['var(--ink)', 'var(--wr)', 'var(--b)', 'var(--c4)', 'var(--c5)'];
 const MAX = 5;
 const short = n => (n.length > 16 ? n.replace(/^(Nifty|BankNifty|Sensex|FinNifty|Midcap|Bankex) /, '') : n);
+const label = s => (book.strategy(s) || { label: s }).label;
+const byStrategy = all => { const o = {}; all.forEach(v => { (o[v.strategy] = o[v.strategy] || []).push(v); }); return o; };
+const records = (items, all) => resolve(items, all, { label, allOfStrategy: (s, n) => all.filter(v => v.strategy === s).length === n });
+const one = ids => ids.map(id => ({ ids: [id] }));
 
+// [title, subtitle, items]; an item with several ids is a combined group.
 function quickPicks(all) {
   const judged = all.filter(v => !v.young && v.trades.length).map(v => ({ v, m: periodMetrics({ trades: v.trades, daily: v.daily, cap: v.cap, pnlOf, period: 'all' }) }))
     .sort((a, b) => b.m.rdd - a.m.rdd);
-  const P = [['Top 3 risk-adjusted', 'best return/drawdown, all-time', judged.slice(0, 3).map(x => x.v.id)]];
-  const byStrat = {};
-  all.forEach(v => { (byStrat[v.strategy] = byStrat[v.strategy] || []).push(v); });
-  Object.entries(byStrat).filter(([, L]) => L.length >= 2).sort((a, b) => b[1].length - a[1].length).slice(0, 2)
-    .forEach(([k, L]) => P.push([`Every ${(book.strategy(k) || { label: k }).label}`, 'same strategy, different settings', L.slice(0, MAX).map(v => v.id)]));
+  const P = [['Top 3 risk-adjusted', 'best return/drawdown, all-time', one(judged.slice(0, 3).map(x => x.v.id))]];
+  const strats = Object.entries(byStrategy(all)).filter(([, L]) => L.some(v => v.trades.length)).sort((a, b) => b[1].length - a[1].length);
+  if (strats.length >= 2) {
+    const top = strats.slice(0, Math.min(3, strats.length));
+    P.push([top.map(([k]) => label(k)).join(' vs '), 'each strategy’s deployments combined', top.map(([, L]) => ({ ids: L.map(v => v.id) }))]);
+  }
+  strats.filter(([, L]) => L.length >= 2).slice(0, 2)
+    .forEach(([k, L]) => P.push([`Every ${label(k)}`, 'same strategy, different settings', one(L.slice(0, MAX).map(v => v.id))]));
   const bi = judged.find(x => x.v.modeKey === 'intraday'), bp = judged.find(x => x.v.modeKey === 'positional');
-  if (bi && bp) P.push(['Best intraday vs best positional', 'which style is working', [bi.v.id, bp.v.id]]);
+  if (bi && bp) P.push(['Best intraday vs best positional', 'which style is working', one([bi.v.id, bp.v.id])]);
+  const ints = all.filter(v => v.modeKey === 'intraday'), poss = all.filter(v => v.modeKey === 'positional');
+  if (ints.length >= 2 && poss.length >= 2) P.push(['All intraday vs all positional', 'each side combined', [{ ids: ints.map(v => v.id) }, { ids: poss.map(v => v.id) }]]);
   book.tags().forEach(t => {
     const L = all.filter(v => v.tags.includes(t.name));
-    if (L.length >= 2) P.push([`Tagged ${t.name}`, `${L.length} deployments`, L.slice(0, MAX).map(v => v.id)]);
+    if (L.length >= 2) P.push([`Tagged ${t.name}`, `${L.length} deployments`, one(L.slice(0, MAX).map(v => v.id))]);
   });
   const byIdx = {};
   all.forEach(v => { (byIdx[v.index] = byIdx[v.index] || []).push(v); });
-  Object.entries(byIdx).filter(([k, L]) => L.length >= 2 && k !== '—').forEach(([k, L]) => P.push([`Everything on ${k}`, 'same index exposure', L.slice(0, MAX).map(v => v.id)]));
-  return P.filter(p => p[2].length >= 2).slice(0, 7);
+  Object.entries(byIdx).filter(([k, L]) => L.length >= 2 && k !== '—').forEach(([k, L]) => P.push([`Everything on ${k}`, 'same index exposure', one(L.slice(0, MAX).map(v => v.id))]));
+  return P.filter(p => p[2].length >= 2).slice(0, 8);
 }
 
 export default {
   title: 'Compare',
   render(main, params) {
-    if (params.ids) st.set({ ids: params.ids.split(',').filter(Boolean).slice(0, MAX), view: true });
+    if (params.ids) st.set({ items: decode(params.ids).slice(0, MAX), view: true });
 
     function picker(all) {
-      const s = st.get(), ids = s.ids;
+      const s = st.get(), items = s.items;
+      const recs = records(items, all);
+      const keys = items.map(it => keyOf(it.ids));
       const q = s.q.toLowerCase();
-      const L = all.filter(v => (s.mode === 'all' || v.modeKey === s.mode) && (!q || `${v.name} ${v.strategy}`.toLowerCase().includes(q)));
+      const tileStats = v => {
+        const m = periodMetrics({ trades: v.trades, daily: v.daily, cap: v.cap, pnlOf, period: 'all' });
+        return html`<span class="row mono tiny" style="gap:14px;padding-top:4px"><span class="${tone(m.ret)}">${pct(m.ret)}</span><span>R/DD ${m.ddp < 0 ? fmtRatio(m.rdd) : '—'}</span><span>Win ${m.n ? `${m.win.toFixed(0)}%` : '—'}</span></span>`;
+      };
+      let tiles;
+      if (s.mode === 'strategy') {
+        const groups = Object.entries(byStrategy(all)).filter(([k, L]) => !q || `${label(k)} ${k} ${L.map(v => v.name).join(' ')}`.toLowerCase().includes(q));
+        tiles = groups.map(([k, L]) => {
+          const [g] = records([{ ids: L.map(v => v.id) }], all);
+          const i = keys.indexOf(keyOf(L.map(v => v.id)));
+          return html`<button type="button" class="tile ${i >= 0 ? 'on' : ''}" data-act="toggleGroup" data-ids="${L.map(v => v.id).join('.')}" aria-pressed="${i >= 0}">
+            <span class="tile-box">${i >= 0 ? i + 1 : ''}</span>
+            <span class="col" style="gap:3px;min-width:0"><b class="ell">${label(k)}</b><span class="mono mute ell" style="font-size:11px">${plural(L.length, 'deployment')} combined · ${inrS(g.cap, { sign: false })}</span>
+              ${tileStats(g)}</span>
+          </button>`;
+        });
+      } else {
+        const L = all.filter(v => (s.mode === 'all' || v.modeKey === s.mode) && (!q || `${v.name} ${v.strategy}`.toLowerCase().includes(q)));
+        tiles = L.map(v => {
+          const i = keys.indexOf(v.id);
+          const gi = i < 0 ? items.findIndex(it => it.ids.length > 1 && it.ids.includes(v.id)) : -1;
+          return html`<button type="button" class="tile ${i >= 0 ? 'on' : ''}" data-act="toggle" data-id="${v.id}" aria-pressed="${i >= 0}">
+            <span class="tile-box ${gi >= 0 ? 'in-group' : ''}" ${gi >= 0 ? html`title="In ${recs[gi] ? recs[gi].name : 'a group'}"` : ''}>${i >= 0 ? i + 1 : gi >= 0 ? gi + 1 : ''}</span>
+            <span class="col" style="gap:3px;min-width:0"><b class="ell">${v.name}</b><span class="mono mute ell" style="font-size:11px">${v.strategy} · ${v.mode}</span>
+              ${tileStats(v)}</span>
+          </button>`;
+        });
+      }
+      const singles = items.filter(it => it.ids.length === 1).length;
       return html`
         <div class="page stack" style="gap:18px;padding-bottom:140px">
           <div class="col" style="gap:6px"><h1 class="t-h1">What do you want to compare?</h1>
-            <span class="mute" style="max-width:720px">Pick 2 to 5 deployments. You’ll see who wins each metric, whether they move together, and how they’d look combined.</span></div>
+            <span class="mute" style="max-width:760px">Pick 2 to 5 deployments or strategies. A strategy counts all its deployments combined into one; tick some deployments and press <b>Combine</b> to make your own group. You’ll see who wins each metric, whether they move together, and how they’d look combined.</span></div>
           <div class="col" style="gap:8px"><b class="small">Quick picks</b><div class="row wrap" style="gap:6px">${quickPicks(all).map((p, i) => html`
             <button type="button" class="quick" data-act="preset" data-i="${i}"><span>${p[0]}</span><span class="tiny mute">${p[1]}</span></button>`)}</div></div>
-          <div class="row wrap"><input class="input" style="width:320px;max-width:100%" type="search" placeholder="Search deployments" value="${s.q}" data-q aria-label="Search deployments">
-            <div class="chips">${[['all', 'All'], ['intraday', 'Intraday'], ['positional', 'Positional']].map(([k, l]) => html`<button type="button" class="chip ${s.mode === k ? 'on' : ''}" data-act="mode" data-v="${k}">${l}</button>`)}</div></div>
-          <div class="tiles">${L.map(v => {
-            const m = periodMetrics({ trades: v.trades, daily: v.daily, cap: v.cap, pnlOf, period: 'all' });
-            const i = ids.indexOf(v.id);
-            return html`<button type="button" class="tile ${i >= 0 ? 'on' : ''}" data-act="toggle" data-id="${v.id}" aria-pressed="${i >= 0}">
-              <span class="tile-box">${i >= 0 ? i + 1 : ''}</span>
-              <span class="col" style="gap:3px;min-width:0"><b class="ell">${v.name}</b><span class="mono mute ell" style="font-size:11px">${v.strategy} · ${v.mode}</span>
-                <span class="row mono tiny" style="gap:14px;padding-top:4px"><span class="${tone(m.ret)}">${pct(m.ret)}</span><span>R/DD ${m.ddp < 0 ? fmtRatio(m.rdd) : '—'}</span><span>Win ${m.n ? `${m.win.toFixed(0)}%` : '—'}</span></span></span>
-            </button>`;
-          })}</div>
+          <div class="row wrap"><input class="input" style="width:320px;max-width:100%" type="search" placeholder="${s.mode === 'strategy' ? 'Search strategies' : 'Search deployments'}" value="${s.q}" data-q aria-label="Search">
+            <div class="chips">${[['all', 'All'], ['intraday', 'Intraday'], ['positional', 'Positional'], ['strategy', 'By strategy']].map(([k, l]) => html`<button type="button" class="chip ${s.mode === k ? 'on' : ''}" data-act="mode" data-v="${k}">${l}</button>`)}</div></div>
+          <div class="tiles">${tiles}</div>
         </div>
         <div class="cmp-bar">
-          <b>${ids.length ? `${ids.length} of ${MAX} selected` : 'Nothing selected yet'}</b>
-          ${ids.map((id, i) => { const v = book.find(id); return v ? html`<span class="cmp-chip"><span class="swatch" style="background:${C[i]}"></span>${v.name}<button type="button" data-act="toggle" data-id="${id}" aria-label="Remove ${v.name}">×</button></span>` : ''; })}
+          <b>${items.length ? `${items.length} of ${MAX} selected` : 'Nothing selected yet'}</b>
+          ${recs.map((r, i) => html`<span class="cmp-chip ${r.isGroup ? 'group' : ''}" ${r.isGroup ? html`data-tip="${r.members.map(v => v.name).join('\n')}"` : ''}><span class="swatch" style="background:${C[i]}"></span>${r.name}${r.isGroup ? html`<span class="mute tiny">· ${r.members.length}</span><button type="button" class="linkish tiny" data-act="split" data-key="${r.key}" aria-label="Split ${r.name}">split</button>` : ''}<button type="button" data-act="drop" data-key="${r.key}" aria-label="Remove ${r.name}">×</button></span>`)}
           <span class="grow"></span>
-          ${s.wasOn && ids.length >= 2 ? html`<button type="button" class="btn btn-quiet" data-act="back">Back to comparison</button>` : ''}
-          <button type="button" class="btn ${ids.length >= 2 ? 'btn-primary' : ''}" data-act="go" ${ids.length >= 2 ? '' : html`aria-disabled="true" data-reason="Pick at least 2 deployments."`}>${ids.length >= 2 ? `Compare ${ids.length}` : 'Pick at least 2'}</button>
+          ${singles >= 2 ? html`<button type="button" class="btn" data-act="combine" data-tip="Treat the ${singles} single deployments as one: P&L added up day by day, capital added up">Combine ${singles} into one</button>` : ''}
+          ${s.wasOn && items.length >= 2 ? html`<button type="button" class="btn btn-quiet" data-act="back">Back to comparison</button>` : ''}
+          <button type="button" class="btn ${items.length >= 2 ? 'btn-primary' : ''}" data-act="go" ${items.length >= 2 ? '' : html`aria-disabled="true" data-reason="Pick at least 2."`}>${items.length >= 2 ? `Compare ${items.length}` : 'Pick at least 2'}</button>
         </div>`;
     }
 
     function results(all) {
       const s = st.get();
-      const deps = s.ids.map(id => all.find(v => v.id === id)).filter(Boolean).map((v, i) => ({ v, c: C[i], m: periodMetrics({ trades: v.trades, daily: v.daily, cap: v.cap, pnlOf, period: s.p }) }));
+      const deps = records(s.items, all).map((v, i) => ({ v, c: C[i], m: periodMetrics({ trades: v.trades, daily: v.daily, cap: v.cap, pnlOf, period: s.p }) }));
+      const groups = deps.filter(x => x.v.isGroup);
       const from = periodStart(s.p);
       // Equity series: cumulative realized from the period start.
       const S = deps.map(x => {
@@ -121,7 +160,8 @@ export default {
         ['Average loss', 'smaller is better', m => inr(m.al), m => m.al],
         ['Win / loss size', 'average win ÷ average loss', m => (m.al ? `${(m.aw / -m.al).toFixed(2)}×` : '—'), m => (m.al ? m.aw / -m.al : 0)],
         ['Current losing streak', 'fewer is better', m => (m.streak ? String(m.streak) : 'none'), m => -m.streak],
-        ['Capital', 'not scored', null, null],
+        ['Capital', groups.length ? 'added up for a group · not scored' : 'not scored', null, null],
+        ...(groups.length ? [['Deployments', 'combined into each · not scored', null, null]] : []),
         ['Trades', 'sample size, not scored', m => String(m.n), null],
       ];
       const wins = deps.map(() => 0);
@@ -131,7 +171,8 @@ export default {
           const vs = deps.map(x => val(x.m)), mx = Math.max(...vs);
           if (vs.filter(q => q === mx).length === 1) { b = vs.indexOf(mx); wins[b]++; }
         }
-        return { l, h, win: b >= 0 ? deps[b].v.name : val ? 'Tie' : '—', cells: deps.map((x, i) => ({ v: l === 'Capital' ? inrS(x.v.cap, { sign: false }) : f(x.m), cls: col ? col(x.m) : '', best: i === b })) };
+        const cell = x => (l === 'Capital' ? inrS(x.v.cap, { sign: false }) : l === 'Deployments' ? String(x.v.isGroup ? x.v.members.length : 1) : f(x.m));
+        return { l, h, win: b >= 0 ? deps[b].v.name : val ? 'Tie' : '—', cells: deps.map((x, i) => ({ v: cell(x), cls: col ? col(x.m) : '', best: i === b })) };
       });
       const scored = R.filter(r => r[3]).length, bi = wins.indexOf(Math.max(...wins)), Ld = deps[bi], others = deps.filter((_, i) => i !== bi);
       const leaders = deps.filter((_, i) => wins[i] === wins[bi]);
@@ -174,13 +215,14 @@ export default {
         <div class="page stack" style="gap:18px;padding-bottom:0">
           <div class="row wrap end" style="gap:14px">
             <h1 class="t-h1">Compare</h1>
-            <div class="row wrap" style="gap:6px">${deps.map(x => html`<span class="cmp-chip"><span class="swatch" style="background:${x.c}"></span>${x.v.name}<button type="button" data-act="remove" data-id="${x.v.id}" aria-label="Remove ${x.v.name}">×</button></span>`)}
+            <div class="row wrap" style="gap:6px">${deps.map(x => html`<span class="cmp-chip ${x.v.isGroup ? 'group' : ''}" ${x.v.isGroup ? html`data-tip="${x.v.members.map(v => v.name).join('\n')}"` : ''}><span class="swatch" style="background:${x.c}"></span>${x.v.name}${x.v.isGroup ? html`<span class="mute tiny">· ${x.v.members.length}</span>` : ''}<button type="button" data-act="remove" data-key="${x.v.key}" aria-label="Remove ${x.v.name}">×</button></span>`)}
               <button type="button" class="cmp-chip dashed" data-act="edit">Change selection</button></div>
             <span class="grow"></span>
             ${seg([['abs', '₹'], ['pct', '% of capital']], s.norm ? 'pct' : 'abs', 'norm')}
             ${seg([['month', 'Month'], ['year', 'Year'], ['all', 'All-time']], s.p, 'period', 'lg')}
           </div>
           <div class="verdict">${verdict}</div>
+          ${groups.length ? html`<div class="cmp-groups small">${groups.map(x => html`<p><span class="swatch" style="background:${x.c}"></span><b>${x.v.name}</b> is ${x.v.members.map(v => v.name).join(' + ')} as one: P&L added up day by day, trades pooled, on their ${inrS(x.v.cap, { sign: false })} of capital together.</p>`)}</div>` : ''}
           <div class="stats" style="grid-template-columns:var(--g-4);border-bottom:1px solid var(--line);padding-bottom:14px">${bestFor.map(([l, b]) => html`
             <div class="col" style="gap:3px"><span class="label">${l}</span><b class="row" style="gap:7px"><span class="swatch" style="background:${b.c}"></span>${b.name}</b><span class="mono tiny">${b.v}</span></div>`)}</div>
           <div>
@@ -238,24 +280,43 @@ export default {
       if (!book.isLoaded('deployments', 'book')) { mount(main, html`<div class="page"><div class="skel" style="height:300px"></div></div>`); return; }
       const all = book.deployments();
       const s = st.get();
-      const ids = s.ids.filter(id => all.some(v => v.id === id));
-      if (ids.length !== s.ids.length) st.set({ ids });
-      mount(main, s.view && ids.length >= 2 ? results(all) : picker(all));
+      const known = new Set(all.map(v => v.id));
+      const items = s.items.map(it => ({ ids: it.ids.filter(id => known.has(id)) })).filter(it => it.ids.length);
+      if (encode(items) !== encode(s.items)) st.set({ items });
+      mount(main, s.view && items.length >= 2 ? results(all) : picker(all));
     }
     const set = p => { st.set(p); paint(); };
+    // Add or remove one item (a deployment, or a group of them).
+    function toggleItem(ids) {
+      const items = st.get().items, k = keyOf(ids);
+      if (items.some(it => keyOf(it.ids) === k)) set({ items: items.filter(it => keyOf(it.ids) !== k) });
+      else if (items.length >= MAX) say(`Compare takes up to ${MAX}.`);
+      else set({ items: [...items, { ids }] });
+    }
     const off = actions(main, {
-      preset: d => { const all = book.deployments(); set({ ids: quickPicks(all)[+d.i][2] }); },
+      preset: d => { const all = book.deployments(); set({ items: quickPicks(all)[+d.i][2] }); },
       mode: d => set({ mode: d.v }),
-      toggle: d => {
-        const ids = st.get().ids;
-        if (ids.includes(d.id)) set({ ids: ids.filter(i => i !== d.id) });
-        else if (ids.length >= MAX) say(`Compare takes up to ${MAX}.`);
-        else set({ ids: [...ids, d.id] });
+      toggle: d => toggleItem([d.id]),
+      toggleGroup: d => toggleItem(d.ids.split('.')),
+      drop: d => set({ items: st.get().items.filter(it => keyOf(it.ids) !== d.key) }),
+      split: d => {
+        const items = st.get().items, i = items.findIndex(it => keyOf(it.ids) === d.key);
+        if (i < 0) return;
+        const parts = items[i].ids.map(id => ({ ids: [id] })).filter(p => !items.some(it => it.ids.length === 1 && it.ids[0] === p.ids[0]));
+        if (items.length - 1 + parts.length > MAX) return say(`Splitting gives more than ${MAX}. Remove some first.`);
+        set({ items: [...items.slice(0, i), ...parts, ...items.slice(i + 1)] });
+      },
+      combine: () => {
+        const items = st.get().items, singles = items.filter(it => it.ids.length === 1);
+        if (singles.length < 2) return;
+        const g = { ids: singles.map(it => it.ids[0]) };   // takes the first one's place
+        set({ items: items.flatMap(it => (it === singles[0] ? [g] : it.ids.length === 1 ? [] : [it])) });
+        say(`Combined ${singles.length} deployments into one. Pick what to compare it with.`);
       },
       go: (d, el) => (el.dataset.reason ? say(el.dataset.reason) : set({ view: true })),
       back: () => set({ view: true }),
       edit: () => set({ view: false, wasOn: true }),
-      remove: d => { const ids = st.get().ids; if (ids.length <= 2) return say('Compare needs at least 2.'); set({ ids: ids.filter(i => i !== d.id) }); },
+      remove: d => { const items = st.get().items; if (items.length <= 2) return say('Compare needs at least 2.'); set({ items: items.filter(it => keyOf(it.ids) !== d.key) }); },
       norm: d => set({ norm: d.v === 'pct' }),
       period: d => set({ p: d.v }),
       comb: () => set({ comb: !st.get().comb }),
