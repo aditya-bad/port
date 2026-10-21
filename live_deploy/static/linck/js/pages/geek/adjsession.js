@@ -4,6 +4,7 @@
 // the index in its break-even band, every move and every check.
 
 import { api } from '../../core/api.js';
+import { notesPanel } from '../../ui/notes.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price, dStamp } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
@@ -18,6 +19,7 @@ export default {
   render(el, v, g) {
     let data = null;
     const want = g.params && g.params.d;
+    let notes = null;
     function paint() {
       if (data === null) { mount(el, html`${head('Session')}${loading(6)}`); return; }
       if (data instanceof Error) { mount(el, html`${head('Session')}${empty('Couldn’t load this day', data.message)}`); return; }
@@ -27,6 +29,7 @@ export default {
           ${data.n ? html`<p><a href="${g.href('sessions')}">← All sessions</a></p>` : ''}`);
         return;
       }
+      if (!notes) notes = notesPanel({ deploymentId: v.id, day: s.day });
       const S = data.series, cfg = data.settings;
       const marks = [{ t: s.entry_t, label: 'Sold', color: 'var(--acc)' },
         ...s.legs.filter(l => l.opened_by && l.opened_by !== 'entry_time_reached').map(l => ({ t: l.opened, label: l.opened_by === 'roll_open' ? 'roll' : 'adj', color: 'var(--ink)' })),
@@ -63,12 +66,15 @@ export default {
             s.legs.map(l => [html`<b class="${l.side === 'CE' ? 'leg-ce' : 'leg-pe'}">${l.symbol}</b>`, ROLE(l.role), html`<span class="mono small">${price(l.entry)} ${l.opened.slice(11, 16)}</span>`,
               l.closed ? html`<span class="mono small">${price(l.exit)} ${l.closed.slice(11, 16)} <span class="mute">${l.closed_by === 'reversal_unwind' ? 'unwind' : l.closed_by === 'roll_close' ? 'roll' : exitName(l.closed_by).toLowerCase()}</span></span>` : 'open',
               l.closed ? mins((new Date(l.closed) - new Date(l.opened)) / 60000) : '—', html`<span class="${tone(l.pnl)}">${l.pnl == null ? '—' : inr(l.pnl)}</span>`]), { minw: 760 })}</div>
+        ${notes.html()}
         <div class="gk-panel"><h3>Checks meanwhile <span class="s">what the strategy noted from 30 minutes before the entry</span></h3>
           ${data.decisions.length ? table([['When', '120px'], ['Rule', '140px'], ['Outcome', '110px'], ['What it saw', 'minmax(0,1fr)']],
             data.decisions.map(d => [html`<span class="mono tiny">${dStamp(d.t)}</span>`, html`<b>${d.label}</b>`, html`<span class="oc ${d.outcome}">${OUT[d.outcome] || d.outcome}</span>`,
               html`<span class="col" style="gap:2px"><span>${d.summary}</span>${d.why ? html`<span class="mono tiny mute">${d.why}</span>` : ''}</span>`]), { minw: 640 })
             : empty('', 'Nothing noted that day.')}</div>`);
+      notes.attach(el);
     }
-    return poll(() => api.geek(g.id, `session${want ? `?d=${encodeURIComponent(want)}` : ''}`), 60000, d => { data = d; paint(); });
+    const stop = poll(() => api.geek(g.id, `session${want ? `?d=${encodeURIComponent(want)}` : ''}`), 60000, d => { data = d; paint(); });
+    return () => { stop(); if (notes) notes.destroy(); };
   },
 };

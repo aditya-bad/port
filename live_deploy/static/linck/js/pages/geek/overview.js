@@ -4,11 +4,12 @@
 
 import { api } from '../../core/api.js';
 import { html, mount, $, setText, setTone } from '../../core/dom.js';
-import { inr, pct, dFull, dStamp, tone as toneOf } from '../../core/format.js';
+import { inr, pct, dFull, dStamp, dayKey, tone as toneOf } from '../../core/format.js';
 import { pnlOf } from '../../core/basis.js';
 import { listen } from '../../core/store.js';
 import * as book from '../../data/book.js';
 import { periodMetrics, dailySeries, ddSeries, fmtRatio, verdictRdd } from '../../data/metrics.js';
+import { dayNotes } from '../../data/journal.js';
 import { line, upDownBars, yOf } from '../../ui/charts.js';
 import { registerScrub } from '../../ui/tooltip.js';
 import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
@@ -39,7 +40,7 @@ function equity(v, cycles) {
 
 export default {
   render(el, v0, g) {
-    let cycles = null, adj = null, dec = null;
+    let cycles = null, adj = null, dec = null, notes = [];
     const own = hasView(v0.strategy, 'cycles');
     function paint() {
       const v = book.find(v0.id) || v0;
@@ -78,13 +79,15 @@ export default {
           </div>
         </div>
         <div class="gk-panel"><h3>Daily P&L <span class="s">last ${daily.length} trading days with a close</span>${own ? html`<a href="${g.href('cycles')}">Cycles →</a>` : ''}</h3>
-          ${daily.length ? upDownBars(daily.map(d => d.day), daily.map(d => `${dFull(d.date)}  ${inr(d.day)}`), 110) : empty('', 'No closed trades yet.')}</div>`);
+          ${daily.length ? upDownBars(daily.map(d => d.day), daily.map(d => [`${dFull(d.date)}  ${inr(d.day)}`, ...dayNotes(notes, dayKey(d.date))].join('\n')), 110) : empty('', 'No closed trades yet.')}
+          ${notes.length ? html`<p class="gk-note">Hover a day to see its journal notes · <a href="${g.href('journal')}">Journal →</a></p>` : ''}</div>`);
     }
     const stops = [
       ...(own ? [
         poll(() => api.geek(g.id, 'cycles'), 120000, d => { cycles = d instanceof Error ? null : d; paint(); }),
         poll(() => api.geek(g.id, 'adjustments'), 120000, d => { adj = d instanceof Error ? null : d; paint(); }),
       ] : []),
+      poll(() => api.journal({ deployment_id: g.id, general: 'true', limit: 500 }), 120000, d => { notes = d instanceof Error ? [] : d.entries; paint(); }),
       poll(() => api.geek(g.id, 'decisions'), 30000, d => { dec = d instanceof Error ? { rows: [], counts: { acted: 0, no_action: 0, blocked: 0 } } : d; paint(); }),
     ];
     let lastNext = '';

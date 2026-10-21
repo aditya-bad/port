@@ -4,6 +4,7 @@
 // check the strategy noted meanwhile.
 
 import { api } from '../../core/api.js';
+import { notesPanel } from '../../ui/notes.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price, dStamp, hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
@@ -54,6 +55,7 @@ export default {
   render(el, v, g) {
     let data = null;
     const p = g.params && g.params.p;
+    let notes = null;
     function paint() {
       if (data === null) { mount(el, html`${head('Trade')}${loading(6)}`); return; }
       if (data instanceof Error) { mount(el, html`${head('Trade')}${empty('Couldn’t load this trade', data.message)}`); return; }
@@ -63,6 +65,7 @@ export default {
           ${data.n ? html`<p><a href="${g.href('signals')}">← All trades</a></p>` : ''}`);
         return;
       }
+      if (!notes) notes = notesPanel({ deploymentId: v.id, day: t.entry_t.slice(0, 10), positionId: t.id, title: 'Notes on this trade' });
       const piv = t.pivots || {};
       const levels = Object.entries(piv).map(([k, val]) => ({ key: k, value: val, bold: k === t.level,
         color: k === t.level ? 'var(--acc)' : k === 'P' ? 'var(--mute)' : k[0] === 'R' ? 'var(--c5)' : 'var(--c4)' }));
@@ -97,12 +100,15 @@ export default {
           <div class="gk-panel"><h3>${t.open ? 'Still open' : `What ended it: ${exitLabel(t.exit_reason)}`}</h3>
             ${t.open ? html`<p class="small">Bought back on a SuperTrend flip or at the square-off.</p>` : html`<p class="small" style="display:flex;flex-wrap:wrap;gap:6px 16px">${saw(ex)}</p>`}</div>
         </div>
+        ${notes.html()}
         <div class="gk-panel"><h3>Checks meanwhile <span class="s">what the strategy noted from 45 minutes before the entry</span></h3>
           ${data.decisions.length ? table([['When', '120px'], ['Rule', '150px'], ['Outcome', '110px'], ['What it saw', 'minmax(0,1fr)']],
             data.decisions.map(d => [html`<span class="mono tiny">${dStamp(d.t)}</span>`, html`<b>${d.label}</b>`, html`<span class="oc ${d.outcome}">${OUT[d.outcome] || d.outcome}</span>`,
               html`<span class="col" style="gap:2px"><span>${d.summary}</span>${d.why ? html`<span class="mono tiny mute">${d.why}</span>` : ''}</span>`]), { minw: 640 })
             : empty('', 'Nothing noted around this trade.')}</div>`);
+      notes.attach(el);
     }
-    return poll(() => api.geek(g.id, `trade${p ? `?p=${encodeURIComponent(p)}` : ''}`), 60000, d => { data = d; paint(); });
+    const stop = poll(() => api.geek(g.id, `trade${p ? `?p=${encodeURIComponent(p)}` : ''}`), 60000, d => { data = d; paint(); });
+    return () => { stop(); if (notes) notes.destroy(); };
   },
 };

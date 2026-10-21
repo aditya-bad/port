@@ -2832,3 +2832,99 @@ async def get_deployment_notifications_enabled(pool: asyncpg.Pool, deployment_id
             "SELECT notifications_enabled FROM deployments WHERE id = $1", deployment_id,
         )
     return True if value is None else bool(value)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# TRADE JOURNAL — notes on days, deployments and trades (0024_journal.sql)
+# ═════════════════════════════════════════════════════════════════════
+
+# The P&L booked that day (IST) by the note's deployment, or by every
+# deployment for a note about the whole day.
+_JOURNAL_SELECT = """
+    SELECT j.*, d.deployment_name, d.strategy_name, p.symbol AS position_symbol,
+           (SELECT COALESCE(SUM(x.realized_pnl), 0)::float8 FROM positions x
+             WHERE x.status = 'closed' AND (x.closed_at AT TIME ZONE 'Asia/Kolkata')::date = j.day
+               AND (j.deployment_id IS NULL OR x.deployment_id = j.deployment_id)) AS day_pnl,
+           (SELECT COUNT(*) FROM positions x
+             WHERE x.status = 'closed' AND (x.closed_at AT TIME ZONE 'Asia/Kolkata')::date = j.day
+               AND (j.deployment_id IS NULL OR x.deployment_id = j.deployment_id)) AS day_closed
+    FROM journal_entries j
+    LEFT JOIN deployments d ON d.id = j.deployment_id
+    LEFT JOIN positions p ON p.id = j.position_id
+"""
+
+
+async def list_journal(
+    pool: asyncpg.Pool, deployment_id: Optional[UUID] = None, day_from=None, day_to=None,
+    tag: Optional[str] = None, q: Optional[str] = None, position_id: Optional[UUID] = None,
+    include_general: bool = False, limit: int = 500,
+) -> list[asyncpg.Record]:
+    """Notes newest day first. With a deployment: its notes, and with
+    `include_general` also the notes about the whole day."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            _JOURNAL_SELECT + """
+            WHERE ($1::uuid IS NULL OR j.deployment_id = $1 OR ($7 AND j.deployment_id IS NULL))
+              AND ($2::date IS NULL OR j.day >= $2) AND ($3::date IS NULL OR j.day <= $3)
+              AND ($4::text IS NULL OR $4 = ANY(j.tags))
+              AND ($5::text IS NULL OR j.body ILIKE '%' || $5 || '%')
+              AND ($6::uuid IS NULL OR j.position_id = $6)
+            ORDER BY j.day DESC, j.created_at DESC
+            LIMIT $8
+            """,
+            deployment_id, day_from, day_to, tag, q, position_id, include_general, limit,
+        )
+
+
+async def get_journal_entry(pool: asyncpg.Pool, entry_id: UUID) -> Optional[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetchrow(_JOURNAL_SELECT + " WHERE j.id = $1", entry_id)
+
+
+async def create_journal_entry(pool: asyncpg.Pool, day, body: str, tags: list, deployment_id: Optional[UUID] = None,
+                               position_id: Optional[UUID] = None, author: Optional[str] = None) -> UUID:
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "INSERT INTO journal_entries (day, deployment_id, position_id, body, tags, author) "
+            "VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+            day, deployment_id, position_id, body, tags, author,
+        )
+
+
+async def update_journal_entry(pool: asyncpg.Pool, entry_id: UUID, fields: dict) -> bool:
+    allowed = {k: v for k, v in fields.items() if k in ("day", "body", "tags", "deployment_id", "position_id")}
+    if not allowed:
+        return True
+    sets = ", ".join(f"{k} = ${i + 2}" for i, k in enumerate(allowed))
+    async with pool.acquire() as conn:
+        res = await conn.execute(f"UPDATE journal_entries SET {sets}, updated_at = now() WHERE id = $1",
+                                 entry_id, *allowed.values())
+    return res.endswith(" 1")
+
+
+async def delete_journal_entry(pool: asyncpg.Pool, entry_id: UUID) -> bool:
+    async with pool.acquire() as conn:
+        res = await conn.execute("DELETE FROM journal_entries WHERE id = $1", entry_id)
+    return res.endswith(" 1")
+
+
+async def journal_tags(pool: asyncpg.Pool, deployment_id: Optional[UUID] = None) -> list[asyncpg.Record]:
+    """Each tag in use: how many notes and days, and the P&L of those days
+    (the note's deployment, or every deployment for a whole-day note)."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            WITH t AS (
+                SELECT DISTINCT ON (tag, j.day, j.deployment_id) tag, j.day, j.deployment_id
+                FROM journal_entries j, unnest(j.tags) AS tag
+                WHERE $1::uuid IS NULL OR j.deployment_id = $1
+            )
+            SELECT tag, COUNT(*) AS days,
+                   (SELECT COUNT(*) FROM journal_entries j WHERE tag = ANY(j.tags) AND ($1::uuid IS NULL OR j.deployment_id = $1)) AS notes,
+                   COALESCE(SUM((SELECT COALESCE(SUM(x.realized_pnl), 0) FROM positions x
+                         WHERE x.status = 'closed' AND (x.closed_at AT TIME ZONE 'Asia/Kolkata')::date = t.day
+                           AND (t.deployment_id IS NULL OR x.deployment_id = t.deployment_id))), 0)::float8 AS pnl
+            FROM t GROUP BY tag ORDER BY COUNT(*) DESC, tag
+            """,
+            deployment_id,
+        )

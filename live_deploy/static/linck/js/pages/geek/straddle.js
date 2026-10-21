@@ -4,6 +4,7 @@
 // strategy noted meanwhile.
 
 import { api } from '../../core/api.js';
+import { notesPanel } from '../../ui/notes.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price, dStamp, dFull } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
@@ -19,6 +20,7 @@ export default {
   render(el, v, g) {
     let data = null;
     const want = g.params && g.params.s;
+    let notes = null;
     function paint() {
       if (data === null) { mount(el, html`${head('Straddle')}${loading(6)}`); return; }
       if (data instanceof Error) { mount(el, html`${head('Straddle')}${empty('Couldn’t load this straddle', data.message)}`); return; }
@@ -28,6 +30,7 @@ export default {
           ${data.n ? html`<p><a href="${g.href('straddles')}">← All straddles</a></p>` : ''}`);
         return;
       }
+      if (!notes) notes = notesPanel({ deploymentId: v.id, day: r.day });
       const S = data.series, L = data.lines;
       const marks = [{ t: r.entry_t, label: 'Sold', color: 'var(--acc)' }];
       if (r.exit_t) marks.push({ t: r.exit_t, label: exitName(r.reason), color: EXIT_COLOR[r.reason] || 'var(--mute)' });
@@ -59,12 +62,15 @@ export default {
           ${S.index.length > 1 ? linesChart([{ name: 'Index', data: S.index, color: 'var(--ink)' }], { levels: r.strike ? [{ key: 'strike', value: r.strike, color: 'var(--acc)', dash: true }] : [], marks, label: 'The index', fmt: x => Math.round(x).toLocaleString('en-IN'), h: 200 })
             : empty('', 'No index prices stored for this day.')}</div>
         ${r.exit_values ? html`<div class="gk-panel"><h3>What ended it: ${exitName(r.reason)}</h3><p class="small" style="display:flex;flex-wrap:wrap;gap:6px 16px">${kv(r.exit_values)}</p></div>` : ''}
+        ${notes.html()}
         <div class="gk-panel"><h3>Checks meanwhile <span class="s">what the strategy noted from 30 minutes before the entry</span></h3>
           ${data.decisions.length ? table([['When', '120px'], ['Rule', '150px'], ['Outcome', '110px'], ['What it saw', 'minmax(0,1fr)']],
             data.decisions.map(d => [html`<span class="mono tiny">${dStamp(d.t)}</span>`, html`<b>${d.label}</b>`, html`<span class="oc ${d.outcome}">${OUT[d.outcome] || d.outcome}</span>`,
               html`<span class="col" style="gap:2px"><span>${d.summary}</span>${d.why ? html`<span class="mono tiny mute">${d.why}</span>` : ''}</span>`]), { minw: 640 })
             : empty('', 'Nothing noted around this straddle.')}</div>`);
+      notes.attach(el);
     }
-    return poll(() => api.geek(g.id, `straddle${want ? `?s=${encodeURIComponent(want)}` : ''}`), 60000, d => { data = d; paint(); });
+    const stop = poll(() => api.geek(g.id, `straddle${want ? `?s=${encodeURIComponent(want)}` : ''}`), 60000, d => { data = d; paint(); });
+    return () => { stop(); if (notes) notes.destroy(); };
   },
 };

@@ -227,3 +227,27 @@ select.input { padding-right: 6px; }
 .tip-guide { position: fixed; z-index: 199; pointer-events: none; width: 1px; background: var(--ink); }
 .tip-dot { position: fixed; z-index: 199; pointer-events: none; width: 10px; height: 10px; border-radius: 50%; margin: -5px 0 0 -5px; border: 2.5px solid var(--ink); background: var(--paper); }
 [data-scrub] { cursor: crosshair; touch-action: pan-y; }
+
+/* the trade journal (ui/journal.js) */
+.jr-box { display: flex; flex-direction: column; gap: 14px; }
+.jr-new { display: flex; flex-direction: column; gap: 8px; }
+.jr-text { height: auto; min-height: 64px; padding: 10px 12px; resize: vertical; font: inherit; line-height: 1.45; width: 100%; }
+.jr-list { display: flex; flex-direction: column; gap: 10px; }
+.jr-day { display: flex; flex-direction: column; gap: 8px; }
+.jr-day > h4 { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); margin: 6px 0 0; }
+.jr-note { border: 1px solid var(--line); background: var(--card); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.jr-note.editing { border-color: var(--ink); }
+.jr-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
+.jr-dep { font-weight: 700; font-size: 13px; }
+.jr-tag { font-size: 12px; padding: 1px 8px; border: 1px solid var(--line2); background: var(--soft); }
+.jr-note .linkish { background: none; border: 0; padding: 0; color: inherit; font-size: 12px; }
+.jr-note .linkish.neg { color: var(--r); }
+.jr-note .linkish:focus-visible { outline: 2px solid var(--b); outline-offset: 2px; }
+.jr-page { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 28px; align-items: start; }
+@media (max-width: 900px) { .jr-page { grid-template-columns: minmax(0, 1fr); } }
+.jr-tagrow { display: grid; grid-template-columns: minmax(0, 1fr) 60px; grid-template-areas: "t n" "b v"; gap: 2px 8px; align-items: center; text-align: left; background: none; border: 1px solid var(--line); padding: 8px 10px; cursor: pointer; color: inherit; font: inherit; }
+.jr-tagrow b { grid-area: t; font-size: 13px; } .jr-tagrow > .mono:first-of-type { grid-area: n; text-align: right; }
+.jr-tagrow .bar { grid-area: b; position: relative; height: 10px; background: var(--soft); }
+.jr-tagrow .bar i { position: absolute; top: 0; bottom: 0; } .jr-tagrow .bar u { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--ink); }
+.jr-tagrow > .right { grid-area: v; text-align: right; }
+.jr-tagrow.on, .jr-tagrow:hover { border-color: var(--ink); }

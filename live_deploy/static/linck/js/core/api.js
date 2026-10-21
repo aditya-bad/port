@@ -69,6 +69,12 @@ export const api = {
   strategyStatus: id => req(`/deployments/${id}/strategy-status`),
   cycles: id => req(`/deployments/${id}/cycles`),
   geek: (id, view) => req(`/v2/deployments/${id}/geek/${view}`),
+  // the trade journal (app/routers/journal.py)
+  journal: (q = {}) => req(`/v2/journal?${new URLSearchParams(Object.entries(q).filter(([, v]) => v != null && v !== '')).toString()}`),
+  journalTags: depId => req(`/v2/journal/tags${depId ? `?deployment_id=${enc(depId)}` : ''}`),
+  addNote: body => post('/v2/journal', body),
+  editNote: (id, body) => req(`/v2/journal/${enc(id)}`, { method: 'PATCH', body }),
+  deleteNote: id => req(`/v2/journal/${enc(id)}`, { method: 'DELETE' }),
   cycleChart: (id, key) => req(`/deployments/${id}/cycles/${enc(key)}/chart`),
   openPositions: () => req('/positions?status=open'),
   recentTrades: (limit = 60) => req(`/trades/recent?limit=${limit}`),

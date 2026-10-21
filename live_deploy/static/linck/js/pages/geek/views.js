@@ -10,6 +10,7 @@ export const BASICS = [
   ['performance', 'Performance', 'Basics', '4', () => import('../deployment/performance.js'), true],
   ['engine', 'Engine', 'Live', 'E', () => import('./engine.js')],
   ['decisions', 'Decisions', 'Live', 'D', () => import('./decisions.js')],
+  ['journal', 'Journal', 'Live', 'J', () => import('./journal.js')],
 ];
 const SETTINGS = ['settings', 'Settings at work', 'Exposure', 'S', () => import('./settings.js')];
 // The DTT straddles that adjust (and the one that rolls) share their views.

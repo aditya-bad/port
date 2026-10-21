@@ -19,10 +19,10 @@ import { closeEverything, kiteDialog } from './actions.js';
 
 const NAV = [
   ['desk', 'Desk', ''], ['deployments', 'Deployments', ''], ['leaderboard', 'Leaderboard', ''], ['compare', 'Compare', ''],
-  ['reports', 'Reports', 'hide-1320'], ['strategies', 'Strategies', 'hide-1320'], ['tools', 'Tools', 'hide-1320'],
+  ['reports', 'Reports', 'hide-1320'], ['strategies', 'Strategies', 'hide-1320'], ['journal', 'Journal', 'hide-1320'], ['tools', 'Tools', 'hide-1320'],
 ];
 const BNAV = [['desk', 'Desk'], ['deployments', 'Deploys'], ['leaderboard', 'Leaders'], ['compare', 'Compare']];
-const IN_MORE = ['reports', 'strategies', 'tools', 'account'];
+const IN_MORE = ['reports', 'strategies', 'journal', 'tools', 'account'];
 
 const app = { route: null, page: null, cleanup: null, me: null };
 
@@ -108,6 +108,7 @@ export function openMore() {
     menu: [
       { l: 'Reports', h: 'Statements, account equity, exposure', run: () => go('reports') },
       { l: 'Strategies', h: 'Catalogue and new deployments', run: () => go('strategies') },
+      { l: 'Journal', h: 'Notes on days, deployments and trades', run: () => go('journal') },
       { l: 'Tools', h: 'Brokerage, SIP, CAGR, instruments', run: () => go('tools') },
       { l: 'Account', h: 'Kite, emergency stop, appearance, notifications, users, server', run: () => go('account') },
       { l: `Theme: ${prefs.themeLabel()}`, h: 'Switch Paper, Slate, Night', run: () => { prefs.cycleTheme(); openMore(); } },
