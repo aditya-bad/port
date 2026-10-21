@@ -387,12 +387,20 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
                              "Kite returned no 1-minute candles for it, and the app stored none")
                              + (f" (asked for {asked})" if asked else "")
                              + "; no earlier price to model it from either. The strategy couldn't see this leg.")
-        elif origin == "model" and (tok in held or tok in disp.subscribed):
+        elif origin == "model":
             md = book.models[tok]
-            out.estimated.append(label)
-            out.notes.append(f"{label}: Kite has no trade in it all day, so it's priced by model — Black-76 off "
-                             f"{md['index']} at {md['iv'] * 100:.1f}% implied volatility, from {md['anchor']} "
-                             f"(₹{md['anchor_price']:,.2f} with {md['index']} at {md['level']:,.2f}).")
+            if tok in held or tok in disp.subscribed:
+                out.estimated.append(label)
+            how = (f"Black-76 off {md['index']} at {md['iv'] * 100:.1f}% implied volatility" if "iv" in md else
+                   f"{md['index']} plus the {md['basis']:+,.2f} basis it last had")
+            out.notes.append(f"{label}: Kite has no trade in it all day, so it's priced by model — {how}, from "
+                             f"{md['anchor']} (₹{md['anchor_price']:,.2f} with {md['index']} at {md['level']:,.2f}).")
+        elif origin == "stale":
+            px, at = book.before[tok]
+            if tok in held or tok in disp.subscribed:
+                out.estimated.append(label)
+            out.notes.append(f"{label}: Kite has no trade in it all day and nothing to model it on; it stood at its "
+                             f"last trade, ₹{px:,.2f} on {at:%d %b %H:%M}.")
         elif origin == "none" and tok in disp.subscribed:
             out.notes.append(f"No 1-minute candles for {label}" + (f" (Kite said “{book.errors[tok]}”)" if tok in book.errors else "") + ".")
         elif origin == "stored" and tok in disp.subscribed:

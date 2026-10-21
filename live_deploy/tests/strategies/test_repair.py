@@ -2,7 +2,7 @@
 1-minute candles through the real runner and fill engine, its plan rolled
 back, applied, and undone."""
 
-from datetime import date, time
+from datetime import date, datetime, time, timedelta
 
 import pytest
 
@@ -395,5 +395,44 @@ def test_legs_kite_never_traded_are_priced_by_model_from_their_fills_and_the_pla
         assert out.fills, "a 300-point run should move the strategy"
         rep = await engine.apply(pool, sim.dep_id, w, book, sim.kite, out)
         assert rep and await engine.live_repair(pool, sim.dep_id, w.day) is not None
+        await assert_book_consistent(pool, sim.dep_id)
+    pool_run(go)
+
+
+def test_a_sensex_strangle_where_nothing_on_bfo_trades_still_replays_and_adjusts(pool_run, monkeypatch):
+    """The BFO case end to end: Kite has no trade today in any SENSEX
+    contract (legs, new strikes, the future the strangle prices its ATM
+    on), only their last trades the day before. Everything is priced off
+    the index, the 3% swing adjusts into new strikes, and it applies.
+    (The future's own ltp is in test_repair_market.)"""
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "strangle_monthly_v2",
+                               cfg("strangle_monthly_v2", instrument="SENSEX", instrument_tokens=[265]),
+                               mode="positional", underlying="SENSEX", spot=82000)
+        await sim.walk("09:15", "12:15", every_min=5)
+        assert len(await sim.open_positions()) == 2
+        today = sim.market.today
+        prev = datetime.combine(today - timedelta(days=1), time(15, 29))
+        path = lambda m: (82000, 84460, 79540, 82000) if f"{m:%H:%M}" == "13:05" else (82000, 82008, 81992, 82000)
+        good = candles_source(sim, lambda m: (82000,) * 4 if m.date() < today else path(m))
+        asked = set()
+
+        def source(token, start, end):
+            if token == 265:
+                return good(token, start, end)
+            asked.add(token)
+            return good(token, prev, prev + timedelta(minutes=1)) if start.date() < today else []
+        book = MinuteBook(today, source)
+        w = window(sim)
+        out = await engine.plan(pool, sim.dep_id, w, book, sim.kite, {"13:05": "up_first"}, auto=True)
+        assert out.complete and not out.blind and not out.problems
+        held = {int(p["instrument_token"]) for p in await sim.open_positions()}
+        assert all(book.origin[t] == "model" for t in held)
+        assert all(book.origin[t] == "model" for t, s in book.symbols.items() if s.endswith("FUT"))
+        new = {f["token"] for f in out.fills if f["action"] == "sell"}
+        assert new and new - held and all(book.origin[t] == "model" for t in new)
+        notes = " ".join(out.notes)
+        assert "Black-76 off SENSEX" in notes
+        await engine.apply(pool, sim.dep_id, w, book, sim.kite, out)
         await assert_book_consistent(pool, sim.dep_id)
     pool_run(go)

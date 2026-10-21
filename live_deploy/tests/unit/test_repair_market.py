@@ -312,11 +312,72 @@ def test_no_known_price_or_an_unmodelable_contract_stays_without_prices():
     b = model_book(lookup=lambda s: None)
     assert b.load(SX_CE) == {} and b.origin[SX_CE] == "none"
     assert b.tried[SX_CE] == f"token {SX_CE} — not in Kite's instrument list"
-    # expired by its own symbol, a stock option, a future: never modelled
-    for sym in ("SENSEX26O1481000CE", "RELIANCE26OCT3000CE", "SENSEX26NOVFUT"):
+    # expired by its own symbol, a stock option: never modelled
+    for sym in ("SENSEX26O1481000CE", "RELIANCE26OCT3000CE"):
         bb = model_book(symbol_ce=sym)
         bb.anchor(SX_CE, 100.0, at("11:00"), "fill")
         assert bb.load(SX_CE) == {} and bb.origin[SX_CE] == "none", sym
+    # a future 30% off its index isn't a basis
+    bb = model_book(symbol_ce="SENSEX26NOVFUT")
+    bb.anchor(SX_CE, 56000.0, at("11:00"), "fill")
+    assert bb.load(SX_CE) == {} and bb.origin[SX_CE] == "none"
+
+
+def test_a_future_with_no_trade_all_day_moves_with_its_index_at_its_last_basis():
+    """BANKEX/SENSEX futures barely trade: priced off the index, keeping
+    the premium it last traded at."""
+    prev = date(2026, 10, 20)
+    t = datetime.combine(prev, time(15, 20))
+    anchors = {(SX_CE, "before"): [{"date": t, "open": 79900, "high": 79900, "low": 79900, "close": 79900}],
+               ("idx", prev): [{"date": t, "open": 79500, "high": 79500, "low": 79500, "close": 79500}]}
+    b = model_book(anchors, symbol_ce="SENSEX26NOVFUT")
+    rows = b.load(SX_CE)
+    assert b.origin[SX_CE] == "model" and b.models[SX_CE]["basis"] == 400
+    c = rows[at("12:00")]
+    r = 79900 / 79500
+    assert abs(c["open"] - 80000 * r) < 0.05 and abs(c["high"] - 80200 * r) < 0.05 and abs(c["low"] - 79800 * r) < 0.05
+    # it's a future: at SENSEX's high it's at its high
+    assert b.at(SX_CE, at("12:00"), "up") == c["high"]
+
+
+def test_with_nothing_to_model_it_on_a_contract_stands_at_its_last_trade():
+    """What Kite's ltp() answers for a contract that hasn't traded today."""
+    prev = date(2026, 10, 20)
+    t = datetime.combine(prev, time(14, 0))
+    anchors = {(SX_CE, "before"): [{"date": t, "open": 3010, "high": 3010, "low": 3010, "close": 3010}]}
+    b = model_book(anchors, symbol_ce="RELIANCE26OCT3000CE")
+    assert b.load(SX_CE) == {} and b.origin[SX_CE] == "stale"
+    assert b.price(SX_CE, at("12:00"), "close", at("12:00")) == (3010, t + timedelta(seconds=59))
+
+
+def test_kite_ltp_answers_for_a_bfo_future_that_never_traded_today():
+    """The scan's crash: the strangle asks ltp('BFO:BANKEX26NOVFUT') for
+    its ATM, and a future with no trade today was left out of the answer
+    (KeyError in the resolver)."""
+    BANKEX, FUT = 274441, 8801
+    prev = date(2026, 10, 20)
+
+    def source(token, start, end):
+        if token == BANKEX and start.date() == DAY:
+            return [{"date": at("12:00"), "open": 61700, "high": 61800, "low": 61650, "close": 61726}]
+        if token == BANKEX:
+            return [{"date": datetime.combine(prev, time(15, 29)), "open": 61500, "high": 61500, "low": 61500, "close": 61500}]
+        if token == FUT and start.date() < DAY:
+            return [{"date": datetime.combine(prev, time(15, 29)), "open": 61800, "high": 61800, "low": 61800, "close": 61800}]
+        return []
+
+    class Real:
+        def instruments(self, exchange=None):
+            return [{"instrument_token": FUT, "tradingsymbol": "BANKEX26NOVFUT", "exchange": "BFO", "name": "BANKEX",
+                     "instrument_type": "FUT", "strike": 0.0, "expiry": date(2026, 11, 26)}] if exchange == "BFO" else []
+
+    b = M.MinuteBook(DAY, source, lookup=M.kite_lookup(Real()))
+    clock = M.ReplayClock(DAY)
+    clock.set(at("12:00"), M.UP_FIRST, 3)
+    k = M.ReplayKite(Real(), b, clock)
+    got = k.ltp("BFO:BANKEX26NOVFUT")
+    assert b.origin[FUT] == "model"
+    assert abs(got["BFO:BANKEX26NOVFUT"]["last_price"] - 61726 * 61800 / 61500) < 0.05
 
 
 def test_the_master_expiry_is_used_over_the_symbols_month_end():

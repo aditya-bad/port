@@ -125,6 +125,8 @@ class MinuteBook:
         self.anchors: dict[int, list] = {}   # token -> [(price, at, what)]: known prices before the day
         self.models: dict[int, dict] = {}    # token -> how a never-traded contract was priced
         self.tried: dict[int, str] = {}      # token -> what was asked of Kite, when it had nothing
+        self.before: dict[int, tuple] = {}   # token -> (price, at): its last trade before the day, when that's all there is
+        self._prior: dict[int, Optional[tuple]] = {}
         self.rows: dict[int, dict[datetime, dict]] = {}
         self.keys: dict[int, list[datetime]] = {}
         self.origin: dict[int, str] = {}
@@ -194,15 +196,22 @@ class MinuteBook:
                 modelled = self._model(token, row)
                 if modelled:
                     rows, origin = modelled, "model"
+                elif origin == "none" and self.symbols.get(token) not in INDEX_LABELS.values():
+                    # nothing to model it on: it stands at its last trade,
+                    # as Kite's own ltp() would answer for it
+                    prior = self._last_trade(token, row)
+                    if prior:
+                        self.before[token], origin = (prior[0], prior[1]), "stale"
             self.rows[token] = rows
             self.keys[token] = sorted(rows)
             self.origin[token] = origin
             return rows
 
     def _model(self, token: int, row: Optional[dict]) -> Optional[dict]:
-        """A never-traded option's day, minute by minute, from its index's
-        candles: Black-76 at the volatility its latest known price gives.
-        A CE's high is at the index's high, a PE's at its low."""
+        """A never-traded contract's day, minute by minute, from its index's
+        candles. An option: Black-76 at the volatility its latest known
+        price gives (a CE's high at the index's high, a PE's at its low).
+        A future: the index plus the basis it last traded at."""
         from app.candles import parse_contract
         from app.geek.optionmath import fwd_implied_vol, fwd_price, years_to
         c = parse_contract(self.symbols.get(token) or "") or {}
@@ -213,7 +222,8 @@ class MinuteBook:
                  "strike": row.get("strike") or c.get("strike"),
                  "expiry": (e.date() if isinstance(e, datetime) else e if isinstance(e, date)
                             else date.fromisoformat(str(e)[:10])) if e else c.get("expiry")}
-        if c.get("instrument_type") not in ("CE", "PE") or not c.get("strike") or not c.get("expiry"):
+        kind = c.get("instrument_type")
+        if kind not in ("CE", "PE", "FUT") or (kind != "FUT" and not c.get("strike")) or not c.get("expiry"):
             return None
         idx = INDEX_OF.get(c["underlying"])
         if idx is None:
@@ -228,11 +238,22 @@ class MinuteBook:
         prior = self._last_trade(token, row)
         if prior:
             anchors.append(prior)
-        kind, k = c["instrument_type"], float(c["strike"])
         for premium, at, what in sorted(anchors, key=lambda a: a[1], reverse=True):
             level = self._level(idx, at)
-            if level is None:
+            if level is None or level <= 0:
                 continue
+            if kind == "FUT":
+                # a future moves with its index; its premium over it (the
+                # basis) is held at what it was then, as a share of the index
+                ratio = premium / level
+                if not 0.8 <= ratio <= 1.2:
+                    continue
+                out = {m: {**{f: _tick(ic[f] * ratio) for f in ("open", "high", "low", "close")}, "volume": 0, "oi": 0}
+                       for m, ic in index.items()}
+                self.models[token] = {"index": INDEX_LABELS.get(idx, str(idx)), "basis": round(premium - level, 2),
+                                      "anchor": what, "anchor_price": premium, "anchor_at": at, "level": level}
+                return out
+            k = float(c["strike"])
             vol = fwd_implied_vol(kind, premium, level, k, years_to(expiry, at.replace(tzinfo=IST)))
             if vol is None or not 0.01 <= vol <= 5:
                 continue
@@ -250,6 +271,11 @@ class MinuteBook:
 
     def _last_trade(self, token: int, row: Optional[dict]) -> Optional[tuple]:
         """Its last 1-minute candle in the week before the day."""
+        if token not in self._prior:
+            self._prior[token] = self._ask_last_trade(token, row)
+        return self._prior[token]
+
+    def _ask_last_trade(self, token: int, row: Optional[dict]) -> Optional[tuple]:
         tok = int(row["instrument_token"]) if row else token
         start = datetime.combine(self.day - timedelta(days=7), SESSION_OPEN)
         end = datetime.combine(self.day, time(0)) - timedelta(seconds=1)
@@ -304,7 +330,7 @@ class MinuteBook:
             return c[field_for(phase, self.inverse.get(token, False))], now
         prev = self.last_before(token, minute)
         if prev is None:
-            return None
+            return self.before.get(token)
         return prev[1]["close"], prev[0] + timedelta(seconds=59)
 
     def partial(self, token: int, minute: datetime, phases: tuple) -> Optional[dict]:
