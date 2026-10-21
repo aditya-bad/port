@@ -571,3 +571,16 @@ test('Conditions: every trade with its market, dots that show their trade, and t
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+test('Geek’s top bar shows India VIX and what it implies', async () => {
+  const ctx = await context(b, { width: 1440, height: 900 });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${IDS['BankNifty DTT Plain']}/geek/engine`);
+  await p.waitForFunction(() => /^\d+\.\d{2}/.test(document.querySelector('[data-gk="vix"]')?.textContent || ''));
+  const kv = p.locator('.gk-kv', { has: p.locator('[data-gk="vix"]') });
+  const tip = await kv.getAttribute('data-tip');
+  assert.match(tip, /India VIX/);
+  assert.match(tip, /Expected move today {2}±\d+\.\d{2}%/);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

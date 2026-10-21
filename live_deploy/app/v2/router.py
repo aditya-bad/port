@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -61,6 +61,30 @@ async def get_strategy_health(request: Request, fresh: bool = False):
         cached = {"checked_at": now.isoformat(), "deployments": await strategy_health.check_all(request.app.state.db_pool, now)}
         request.app.state.strategy_health = cached
     return cached
+
+
+@router.get("/vix")
+async def get_vix(request: Request, start: Optional[datetime] = None, end: Optional[datetime] = None,
+                  interval: str = "5minute"):
+    """India VIX (app/vix.py): candles for [start, end) (default: today),
+    the latest tick, and the history's state."""
+    from .. import vix
+    from ..candles import INTERVAL_MINUTES
+    if interval not in INTERVAL_MINUTES and interval != "day":
+        raise HTTPException(422, f"interval must be one of {', '.join([*INTERVAL_MINUTES, 'day'])}")
+    svc = getattr(request.app.state, "vix", None) or vix.VixService(request.app.state.db_pool, None)
+    now = datetime.now(vix.IST)
+    start = start or datetime.combine(now.date(), datetime.min.time(), vix.IST)
+    end = end or now + timedelta(minutes=1)
+    if end - start > timedelta(days=800):
+        raise HTTPException(422, "At most 800 days at a time")
+    candles = await svc.series(start, end, interval)
+    stored = await request.app.state.db_pool.fetchrow(
+        "SELECT minute, close::float8 AS c FROM vix_1m WHERE minute <= $1 ORDER BY minute DESC LIMIT 1", now)
+    return {"symbol": vix.SYMBOL, "token": svc.token, "last": svc.last(), "candles": candles,
+            "latest_stored": {"price": stored["c"], "at": stored["minute"].isoformat()} if stored else None,
+            "backfill": {"through": svc.backfilled_through.isoformat() if svc.backfilled_through else None,
+                         "running": svc.progress, "error": svc.last_error}}
 
 
 @router.get("/review")

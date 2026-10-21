@@ -207,6 +207,7 @@ async def seed():
             t += timedelta(minutes=5)
             i += 1
     ids[GEEK_NAME] = await seed_geek(pool, prices, GEEK_LIVE)
+    await seed_vix(pool)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -218,6 +219,31 @@ async def seed():
 # 10:00 every weekday, both legs bought back at the profit target, on a
 # leg's stop or at 15:00, with the metadata its fills carry, the legs'
 # and the index's 1-minute candles, and its half-hourly exit checks.
+def vix_level(d, minute=0):
+    """A deterministic India VIX: 12–19 drifting over weeks, a spike every
+    few weeks, a little intraday wobble. Shared with the tests' checks."""
+    k = d.toordinal()
+    base = 15 + 3 * math.sin(k / 9) + (4 if k % 23 in (0, 1) else 0)
+    return round(base + 0.4 * math.sin(minute / 40 + k), 2)
+
+
+async def seed_vix(pool):
+    """India VIX, a minute at a time, for every weekday of the seeded past
+    up to now (app/vix.py)."""
+    rows, d = [], (TODAY - timedelta(days=210)).date()
+    while d <= TODAY.date():
+        if d.weekday() < 5:
+            open_ = datetime.combine(d, time(9, 15), IST)
+            for i in range(375):
+                t = open_ + timedelta(minutes=i)
+                if t > NOW:
+                    break
+                v = vix_level(d, i)
+                rows.append((t, v, v + 0.05, v - 0.05, v))
+        d += timedelta(days=1)
+    await queries.upsert_vix(pool, rows, "kite")
+
+
 async def seed_dtt(pool, dep, created):
     ix, q, tok, step = "BANKNIFTY", LOT["BANKNIFTY"], TOKEN["BANKNIFTY"], STEP["BANKNIFTY"]
     rnd = random.Random(11)

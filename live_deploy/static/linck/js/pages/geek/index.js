@@ -13,6 +13,7 @@ import { go, href } from '../../core/router.js';
 import * as book from '../../data/book.js';
 import { prices, isLive } from '../../data/live.js';
 import { indexByName } from '../../data/config.js';
+import { loadVix, vixNow, vixTip } from '../../data/vix.js';
 import { supports, takeEntry, exit } from '../../data/geek.js';
 import { empty } from '../../ui/components.js';
 
@@ -48,11 +49,18 @@ export default {
         <span class="gk-live ${isLive() && v.rawStatus === 'active' ? 'on' : ''}"><i></i><span class="hide-m">${v.rawStatus === 'active' ? (isLive() ? 'Live' : 'Not streaming') : v.rawStatus === 'paused' ? 'Paused' : 'Stopped'}</span></span>
         <span class="grow"></span>
         ${ix ? html`<span class="gk-kv hide-m"><span>${v.index}</span><b data-gk="spot">${spot ? price(spot.price) : '—'}${spot && spot.prevClose ? html` <span class="${tone(spot.price / spot.prevClose - 1)}">${pct((spot.price / spot.prevClose - 1) * 100)}</span>` : ''}</b></span>` : ''}
+        ${vixKv()}
         <span class="gk-kv"><span>Today</span><b class="${tone(x.today)}" data-gk="today">${v.rawStatus === 'stopped' ? '—' : inr(x.today)}</b></span>
         ${hasView(v.strategy, 'cycles') || cycle ? html`<span class="gk-kv hide-m"><span>${cycle ? `Cycle ${cycle}` : 'Cycle'}</span><b class="${ck ? tone(ck.value) : ''}" data-gk="cycle">${ck ? inr(ck.value) : '—'}</b></span>` : ''}
         <span class="gk-kv hide-m"><span>Overall</span><b class="${tone(x.overall)}" data-gk="overall">${inr(x.overall)}</b></span>
         <span class="gk-kv hide-m"><span>IST</span><b data-gk="clock">${hhmmss(new Date())}</b></span>
         <button type="button" class="gk-exit" data-act="exit">Exit <kbd>Esc</kbd></button>`;
+    }
+
+    function vixKv() {
+      const x = vixNow();
+      const ch = x && x.prevClose ? x.price - x.prevClose : null;
+      return html`<span class="gk-kv hide-m" data-tip="${vixTip(x)}"><span>VIX</span><b data-gk="vix">${x ? x.price.toFixed(2) : '—'}${ch != null ? html` <span class="${ch > 0 ? 'neg' : ch < 0 ? 'pos' : ''}">${ch >= 0 ? '+' : '−'}${Math.abs(ch).toFixed(2)}</span>` : ''}</b></span>`;
     }
 
     function rail() {
@@ -125,6 +133,7 @@ export default {
       return () => { alive = false; clearInterval(iv); };
     })();
     paint();
+    loadVix();
     const offs = [
       listen('data', paint),
       listen('ticks', () => {
@@ -134,6 +143,9 @@ export default {
         const set = (k, val, t) => { const el = $(`[data-gk="${k}"]`, main); if (el) { setText(el, val); if (t !== undefined) setTone(el, tone(t)); } };
         if (v.rawStatus !== 'stopped') set('today', inr(x.today), x.today);
         set('overall', inr(x.overall), x.overall);
+        const vx = vixNow();
+        const vel = $('[data-gk="vix"]', main);
+        if (vel && vx && vx.live && vel.firstChild) vel.firstChild.textContent = `${vx.price.toFixed(2)}${vx.prevClose ? ' ' : ''}`;
       }),
     ];
     const clock = setInterval(() => { const el = $('[data-gk="clock"]', main); if (el) setText(el, hhmmss(new Date())); }, 1000);

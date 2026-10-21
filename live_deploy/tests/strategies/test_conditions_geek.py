@@ -232,3 +232,17 @@ def test_thirds_and_moneyness():
     assert common.otm_pct({"strike_from_spot": 250.0, "spot": 25000.0}, "PE") == -1.0
     assert common.otm_pct({"strike_from_spot": -50.0, "spot": 25000.0}, "PE") == 0.2
     assert common.otm_pct({"spot": 25000.0}, "CE") is None and common.otm_pct({"strike_from_spot": 1, "spot": 1}, None) is None
+
+
+def test_vix_is_stamped_on_every_fill_once_known(pool_run, monkeypatch):
+    from app import vix as V
+
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_simple", cfg("intraday_dtt_simple"), spot=25000, name="vix ctx")
+        at = datetime(2026, 10, 19, 11, 0)
+        V.state["token"] = None
+        assert "vix" not in sim.runner.market_context(at), "not looked up yet: nothing, never a guess"
+        monkeypatch.setitem(V.state, "token", 264969)
+        sim.runner.dispatcher.last_prices[264969] = 14.237
+        assert sim.runner.market_context(at)["vix"] == 14.24
+    pool_run(go)

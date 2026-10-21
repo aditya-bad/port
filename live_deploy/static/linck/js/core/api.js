@@ -103,6 +103,7 @@ export const api = {
   book: () => req('/v2/book'),
   session: () => req('/v2/session'),
   review: week => req(`/v2/review${week ? `?week=${encodeURIComponent(week)}` : ''}`),
+  vix: (q = {}) => req(`/v2/vix?${new URLSearchParams(Object.entries(q).filter(([, x]) => x != null && x !== '')).toString()}`),
   strategyHealth: (fresh = false) => req(`/v2/strategy-health${fresh ? '?fresh=true' : ''}`),
   strategies: () => req('/v2/strategies'),
   prefs: () => req('/v2/preferences'),

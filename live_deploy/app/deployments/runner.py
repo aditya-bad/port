@@ -760,6 +760,11 @@ class DeploymentRunner:
             if s["prev_close"]:
                 ctx["prev_close"] = r2(s["prev_close"])
                 ctx["gap_pct"] = r2((s["open"] - s["prev_close"]) / s["prev_close"] * 100)
+        from .. import vix
+        vtok = vix.state.get("token")
+        vx = self.dispatcher.last_prices.get(vtok) if vtok is not None else None
+        if vx:
+            ctx["vix"] = r2(vx)
         m = metadata or {}
         strike = m.get("strike") or (m.get("target_basis") or {}).get("selected_strike")
         if strike is not None and spot:

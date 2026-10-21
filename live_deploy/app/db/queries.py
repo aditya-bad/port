@@ -2948,3 +2948,79 @@ async def mark_health_alert_sent(pool: asyncpg.Pool, deployment_id: UUID, key: s
             key, deployment_id,
         )
     return res.endswith(" 1")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# INDIA VIX — one row a minute (0027_vix.sql, app/vix.py)
+# ═════════════════════════════════════════════════════════════════════
+
+async def upsert_vix(pool: asyncpg.Pool, rows: list[tuple], source: str) -> int:
+    """rows: [(minute, open, high, low, close)]. Kite rows replace
+    tick-built ones; tick-built rows merge into a tick-built minute and
+    never replace Kite's."""
+    if not rows:
+        return 0
+    if source == "ticks":
+        sql = """
+            INSERT INTO vix_1m (minute, open, high, low, close, source) VALUES ($1, $2, $3, $4, $5, 'ticks')
+            ON CONFLICT (minute) DO UPDATE SET high = GREATEST(vix_1m.high, EXCLUDED.high),
+                low = LEAST(vix_1m.low, EXCLUDED.low), close = EXCLUDED.close
+            WHERE vix_1m.source = 'ticks'
+        """
+    else:
+        sql = """
+            INSERT INTO vix_1m (minute, open, high, low, close, source) VALUES ($1, $2, $3, $4, $5, 'kite')
+            ON CONFLICT (minute) DO UPDATE SET open = EXCLUDED.open, high = EXCLUDED.high,
+                low = EXCLUDED.low, close = EXCLUDED.close, source = 'kite'
+        """
+    async with pool.acquire() as conn:
+        await conn.executemany(sql, rows)
+    return len(rows)
+
+
+async def vix_rows(pool: asyncpg.Pool, start: datetime, end: datetime) -> list[asyncpg.Record]:
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            "SELECT minute, open::float8 AS o, high::float8 AS h, low::float8 AS l, close::float8 AS c "
+            "FROM vix_1m WHERE minute >= $1 AND minute < $2 ORDER BY minute", start, end)
+
+
+async def vix_daily(pool: asyncpg.Pool, start: datetime, end: datetime) -> list[asyncpg.Record]:
+    """One row per IST day: open, high, low, close."""
+    async with pool.acquire() as conn:
+        return await conn.fetch(
+            """
+            SELECT (minute AT TIME ZONE 'Asia/Kolkata')::date AS day,
+                   (array_agg(open ORDER BY minute))[1]::float8 AS o, MAX(high)::float8 AS h,
+                   MIN(low)::float8 AS l, (array_agg(close ORDER BY minute DESC))[1]::float8 AS c, COUNT(*) AS n
+            FROM vix_1m WHERE minute >= $1 AND minute < $2 GROUP BY 1 ORDER BY 1
+            """, start, end)
+
+
+async def vix_day_counts(pool: asyncpg.Pool, start: datetime, end: datetime) -> dict:
+    """{IST day: minutes stored}, to find the days still missing."""
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT (minute AT TIME ZONE 'Asia/Kolkata')::date AS day, COUNT(*) AS n FROM vix_1m "
+            "WHERE minute >= $1 AND minute < $2 GROUP BY 1", start, end)
+    return {r["day"]: r["n"] for r in rows}
+
+
+async def vix_at(pool: asyncpg.Pool, at: datetime) -> Optional[float]:
+    """The VIX close of the last minute at or before `at` (same day or the
+    one before), or None."""
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT close::float8 FROM vix_1m WHERE minute <= $1 AND minute > $1 - interval '4 days' "
+            "ORDER BY minute DESC LIMIT 1", at)
+
+
+async def vix_no_data_days(pool: asyncpg.Pool) -> set:
+    async with pool.acquire() as conn:
+        return {r["day"] for r in await conn.fetch("SELECT day FROM vix_no_data")}
+
+
+async def mark_vix_no_data(pool: asyncpg.Pool, days: list) -> None:
+    if days:
+        async with pool.acquire() as conn:
+            await conn.executemany("INSERT INTO vix_no_data (day) VALUES ($1) ON CONFLICT DO NOTHING", [(d,) for d in days])
