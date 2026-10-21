@@ -208,6 +208,7 @@ async def seed():
             i += 1
     ids[GEEK_NAME] = await seed_geek(pool, prices, GEEK_LIVE)
     await seed_futures(pool)
+    await seed_repair(pool, ids["BankNifty DTT Plain"])
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -593,6 +594,30 @@ async def seed_futures(pool):
                 v = round(fut_path(t, b), 2)
                 rows.append((tok, t, v, v + 2, v - 2, v, 100))
     await queries.upsert_candles(pool, rows, "kite")
+
+
+async def seed_repair(pool, dep):
+    """A stall repair (app/repair) on the DTT's latest closed straddle: its
+    closing fills marked as the repair CLI writes them, and the repair."""
+    last = await pool.fetchval(
+        "SELECT max(closed_at) FROM positions WHERE deployment_id = $1 AND status = 'closed'", dep)
+    lots = await pool.fetch(
+        "SELECT l.id, l.price, l.qty, p.symbol, p.realized_pnl, l.executed_at FROM position_lots l JOIN positions p ON p.id = l.position_id "
+        "WHERE l.deployment_id = $1 AND p.closed_at = $2 AND l.executed_at = p.closed_at", dep, last)
+    day = last.astimezone(IST)
+    rep = {"run": "e2e", "source": "replay-1m", "day": day.date().isoformat(), "from": "12:16", "to": "15:30",
+           "minute": day.strftime("%H:%M"), "phase": "open"}
+    for l in lots:
+        await pool.execute("UPDATE position_lots SET metadata = metadata || $2::jsonb WHERE id = $1", l["id"], {"repair": rep})
+    trades = [{"minute": day.strftime("%H:%M"), "phase": "open", "action": "buy", "symbol": l["symbol"], "qty": float(l["qty"]),
+               "price": float(l["price"]), "reason": "force_exit", "realized": float(l["realized_pnl"])} for l in lots]
+    booked = round(sum(t["realized"] for t in trades), 2)
+    await pool.execute(
+        "INSERT INTO stall_repairs (deployment_id, day, window_from, window_to, choices, summary, undo) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+        dep, day.date(), day.replace(hour=12, minute=16, second=0, microsecond=0), day.replace(hour=15, minute=30, second=0, microsecond=0),
+        {"13:05": "up_first"},
+        {"fills": len(trades), "pnl": booked, "left": round(booked / 2, 2), "change": round(booked / 2, 2), "booked": booked,
+         "reasons": {"force_exit": len(trades)}, "fills_detail": trades}, {})
 
 
 GEEK_NAME = "Nifty Monthly Strangle"

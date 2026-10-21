@@ -294,3 +294,39 @@ def test_strangle_two_way_minute_adjusts_differently_each_way_and_the_choice_car
         assert len(await sim.open_positions()) == 2
         await assert_book_consistent(pool, sim.dep_id)
     pool_run(go)
+
+
+def test_what_a_repair_touched_is_marked_everywhere_and_unmarked_on_undo(pool_run, monkeypatch):
+    """After a repair: the trade (v2 book), the straddle (Geek), and the
+    replay's episode, its repaired events and legs are marked; an undo
+    takes every mark away with the fills."""
+    from app.geek import common, dtt_straddle, replay as RP
+    from app.v2 import book as B
+    from app.db import queries
+
+    async def marks(pool, sim):
+        trades = [t for t in await B.list_trades(pool) if t["deployment_id"] == str(sim.dep_id)]
+        dep = dict(await queries.get_deployment(pool, sim.dep_id))
+        ctx = common.Ctx(pool=pool, dep=dep, now=None)
+        straddles = await dtt_straddle.straddles_of(ctx)
+        rp = await RP.replay(common.Ctx(pool=pool, dep=dep, now=None))
+        return trades, straddles, rp
+
+    async def go(pool):
+        sim = await stalled_dtt(pool, monkeypatch)
+        book = MinuteBook(sim.market.today, candles_source(sim, flat(25000)))
+        w = window(sim)
+        planned = await engine.plan(pool, sim.dep_id, w, book, sim.kite, {})
+        res = await engine.apply(pool, sim.dep_id, w, book, sim.kite, planned)
+        trades, straddles, rp = await marks(pool, sim)
+        assert [t["repaired"] for t in trades] == [True]
+        assert [s["repaired"] for s in straddles] == [True]
+        assert rp["episodes"][-1]["repaired"] is True
+        ev = {e["kind"]: e["repaired"] for e in rp["events"]}
+        assert ev == {"entry": False, "exit": True}, "the live entry isn't marked, the repaired exit is"
+        assert all(l["repaired"] for l in rp["legs"])
+        await engine.undo(pool, res["id"])
+        trades, straddles, rp = await marks(pool, sim)
+        assert trades == [] and [s["repaired"] for s in straddles] == [False]
+        assert not rp["episodes"][-1]["repaired"] and not any(e["repaired"] for e in rp["events"])
+    pool_run(go)

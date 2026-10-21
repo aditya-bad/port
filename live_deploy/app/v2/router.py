@@ -131,6 +131,30 @@ async def get_underlying(deployment_id: UUID, request: Request):
     return await underlying.build(pool, dict(dep), request.app.state.dispatcher)
 
 
+@router.get("/deployments/{deployment_id}/repairs")
+async def get_repairs(deployment_id: UUID, request: Request):
+    """The stall repairs applied to this deployment (custom_scripts/
+    repair_stall.py, app/repair), newest first: the window replayed, the
+    paths chosen, what it did and what it changed. Undone ones are left out."""
+    pool = request.app.state.db_pool
+    if await queries.get_deployment(pool, deployment_id) is None:
+        raise HTTPException(404, "No such deployment")
+    rows = await pool.fetch(
+        "SELECT * FROM stall_repairs WHERE deployment_id = $1 AND undone_at IS NULL ORDER BY window_from DESC", deployment_id)
+    out = []
+    for r in rows:
+        s = r["summary"] or {}
+        out.append({
+            "id": str(r["id"]), "day": r["day"].isoformat(), "from": r["window_from"].isoformat(), "to": r["window_to"].isoformat(),
+            "applied_at": r["applied_at"].isoformat(), "choices": r["choices"] or {},
+            "fills": s.get("fills", 0), "pnl": s.get("pnl"), "left": s.get("left"), "change": s.get("change"),
+            "booked": s.get("booked"), "reasons": s.get("reasons") or {},
+            "trades": [{k: f.get(k) for k in ("minute", "phase", "action", "symbol", "qty", "price", "reason", "realized")}
+                       for f in s.get("fills_detail") or []],
+        })
+    return {"repairs": out}
+
+
 @router.get("/review")
 async def get_review(request: Request, week: Optional[str] = None):
     """The weekly review (app/v2/review.py): ?week=any day of the week

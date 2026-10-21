@@ -70,6 +70,7 @@ export const api = {
   cycles: id => req(`/deployments/${id}/cycles`),
   geek: (id, view) => req(`/v2/deployments/${id}/geek/${view}`),
   underlying: id => req(`/v2/deployments/${id}/underlying`),
+  repairs: id => req(`/v2/deployments/${id}/repairs`),
   // the trade journal (app/routers/journal.py)
   journal: (q = {}) => req(`/v2/journal?${new URLSearchParams(Object.entries(q).filter(([, v]) => v != null && v !== '')).toString()}`),
   journalTags: depId => req(`/v2/journal/tags${depId ? `?deployment_id=${enc(depId)}` : ''}`),

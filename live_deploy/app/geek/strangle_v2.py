@@ -726,6 +726,7 @@ async def cycles(ctx: Ctx) -> dict:
             candles.setdefault(int(r["instrument_token"]), []).append((t - timedelta(minutes=t.minute % 15), r["c"]))
     decs =[dict(d) for d in await queries.list_decisions(ctx.pool, ctx.dep["id"], limit=5000)]
     rows = []
+    fixed = common.repaired_ids(book["lots"])
     for cid, prs in sorted(groups.items()):
         start = min(p["opened_at"] for p in prs)
         is_open = any(p["status"] == "open" for p in prs)
@@ -765,6 +766,7 @@ async def cycles(ctx: Ctx) -> dict:
         thin = _thin(path, 80)
         rows.append({
             "cycle_id": cid, "start": _iso(start), "end": _iso(end), "status": "open" if is_open else "closed",
+            "repaired": any(p["id"] in fixed for p in prs),
             "contract_expiry": expiry, "days": round(((end or now) - start).total_seconds() / 86400, 1),
             "ended_by": ended_by, "rolls": len(rolls),
             "rolls_by_kind": {k: sum(1 for a in rolls if ROLL_KIND[a["reason"]] == k)

@@ -11,7 +11,7 @@ import { api } from '../../core/api.js';
 import { html, mount, actions, on } from '../../core/dom.js';
 import { inr, dStamp, dShort, hhmm, price } from '../../core/format.js';
 import { go } from '../../core/router.js';
-import { empty, loading } from '../../ui/components.js';
+import { empty, loading, fixTag, REPAIRED_TIP } from '../../ui/components.js';
 import { head, table, svg, money, tone } from './ui.js';
 
 const SPEEDS = [[2, '½×'], [5, '1×'], [15, '3×'], [40, '8×']];
@@ -172,10 +172,10 @@ export function stage(D, i, zoom, hover) {
   });
   for (const e of D.events) {
     if (e.frame < a || e.frame > i) continue;
-    const X = x(e.frame), [lab, c, short] = kindOf(e.kind), tw = short.length * 7 + 8;
+    const X = x(e.frame), [lab, c, short0] = kindOf(e.kind), short = e.repaired ? `${short0} R` : short0, tw = short.length * 7 + 8;
     s += `<line x1="${X}" x2="${X}" y1="${PANES.px[0] + 17}" y2="${PANES.vix[0] + PANES.vix[1]}" stroke="${c}" stroke-dasharray="3 3" opacity=".8"/>`;
     s += `<rect x="${X - tw / 2}" y="${PANES.px[0] + 2}" width="${tw}" height="15" fill="${c}"/><text x="${X}" y="${PANES.px[0] + 13}" text-anchor="middle" style="fill:var(--paper);font-weight:700;font-size:10px">${short}</text>`;
-    s += `<rect class="hit" x="${X - Math.max(5, tw / 2)}" y="${PANES.px[0]}" width="${Math.max(10, tw)}" height="18" fill="transparent" data-tip="${attr(`${lab} · ${dStamp(e.t)}\n${e.rule}${e.booked != null ? `\nBooked  ${inr(e.booked)}` : ''}`)}"/>`;
+    s += `<rect class="hit" x="${X - Math.max(5, tw / 2)}" y="${PANES.px[0]}" width="${Math.max(10, tw)}" height="18" fill="transparent" data-tip="${attr(`${lab} · ${dStamp(e.t)}\n${e.rule}${e.booked != null ? `\nBooked  ${inr(e.booked)}` : ''}${e.repaired ? `\n${REPAIRED_TIP}` : ''}`)}"/>`;
   }
   if (cur.idx != null) s += tag(spx.y(Math.max(spx.lo, Math.min(spx.hi, cur.idx))), price(cur.idx), 'var(--ink)');
   if (cur.fut != null) {
@@ -246,7 +246,7 @@ function banner(D, i) {
   const [lab, c] = kindOf(e.kind), here = e.frame === i;
   return html`<div class="rp-banner ${here ? 'here' : ''}" style="--k:${c}">
     <span class="rp-chip" style="--k:${c}">${lab}${e.cycle != null && e.kind === 'new' ? ` ${e.cycle}` : ''}</span>
-    <b class="small">${e.rule}</b>
+    <b class="small">${e.rule}</b> ${fixTag(e.repaired)}
     <span class="mono tiny">${dStamp(e.t)}${here ? '' : ` · ${i - e.frame} bar${i - e.frame === 1 ? '' : 's'} ago`}</span>
     ${e.booked != null ? html`<span class="small">booked <b class="${tone(e.booked)}">${inr(e.booked)}</b></span>` : ''}
     ${e.since ? html`<span class="tiny">since the last event: ${D.index_name} <b>${sgn(e.since.idx)}</b> · VIX <b>${sgn(e.since.vix, 2)}</b> · P&L <b class="${tone(e.since.pnl)}">${e.since.pnl == null ? '—' : inr(e.since.pnl)}</b></span>` : ''}
@@ -262,7 +262,7 @@ function positions(D, i) {
   const sum = xs => xs.reduce((t, p) => t + (p.pnl || 0), 0);
   const by = t => (t ? html`<span class="rp-chip sm" style="--k:${kindOf(t.kind)[1]}">${t.label || kindOf(t.kind)[0]}</span> <span class="tiny mute">${t.rule}</span>` : '—');
   const rows = P.map(p => [
-    html`<b class="mono small" style="color:${legColor(p.l)}">${legName(p.l)}</b>`,
+    html`<b class="mono small" style="color:${legColor(p.l)}">${legName(p.l)}</b> ${fixTag(p.l.repaired)}`,
     html`<span class="small">${p.l.side === 'short' ? 'Sold' : 'Bought'} ${p.l.qty}</span>`,
     html`<span class="mono tiny">${dStamp(p.l.t0)}</span>`, by(p.l.opened_by),
     price(p.l.entry), p.l.s0 ? price(p.l.s0) : '—', ...(D.future ? [p.l.f0 ? price(p.l.f0) : '—'] : []),
@@ -284,7 +284,7 @@ function eventList(D, i) {
     const [lab, c] = kindOf(e.kind);
     return html`${first ? html`<div class="cy-day">${d}</div>` : ''}<button type="button" class="rp-li ${e.frame > i ? 'later' : ''} ${cur === e ? 'on' : ''}" data-act="jump" data-f="${e.frame}">
       <span class="mono tiny">${hhmm(e.t)}</span><span class="rp-chip" style="--k:${c}">${lab}</span>
-      <span class="small" style="min-width:0">${e.rule}${e.booked != null ? html` · <span class="${tone(e.booked)}">${inr(e.booked)}</span>` : ''}</span></button>`;
+      <span class="small" style="min-width:0">${e.rule}${e.booked != null ? html` · <span class="${tone(e.booked)}">${inr(e.booked)}</span>` : ''} ${fixTag(e.repaired)}</span></button>`;
   })}</div>`;
 }
 
@@ -297,7 +297,7 @@ export default {
 
     function picker() {
       const E = D.episodes, [a, z] = D.selected;
-      const opt = sel => E.map(e => html`<option value="${e.n}" ${e.n === sel ? 'selected' : ''}>${e.label} · ${dShort(e.t0)}${e.open ? ' · open' : ''}</option>`);
+      const opt = sel => E.map(e => html`<option value="${e.n}" ${e.n === sel ? 'selected' : ''}>${e.label} · ${dShort(e.t0)}${e.open ? ' · open' : ''}${e.repaired ? ' · repaired' : ''}</option>`);
       return html`<div class="rp-pick">
         <label class="small">From <select data-pick="from">${opt(a)}</select></label>
         <label class="small">to <select data-pick="to">${opt(z)}</select></label>
@@ -308,7 +308,7 @@ export default {
     function episodes() {
       const E = [...D.episodes].reverse().slice(0, 40), [a, z] = D.selected;
       return table([['', 'minmax(110px,1fr)'], ['Opened', '110px'], ['Closed', '110px'], ['Moves', '64px', 'num'], ['Booked', '96px', 'num']],
-        E.map(e => [html`<b class="small">${e.label}</b>${e.n >= a && e.n <= z ? html` <span class="tiny mute">· replaying</span>` : ''}`, html`<span class="mono tiny">${dStamp(e.t0)}</span>`,
+        E.map(e => [html`<b class="small">${e.label}</b> ${fixTag(e.repaired)}${e.n >= a && e.n <= z ? html` <span class="tiny mute">· replaying</span>` : ''}`, html`<span class="mono tiny">${dStamp(e.t0)}</span>`,
           html`<span class="mono tiny">${e.open ? 'open' : dStamp(e.t1)}</span>`, String(e.adjustments), html`<span class="${tone(e.booked)}">${money(e.booked)}</span>`]),
         { minw: 0, rowAttrs: k => html`data-ep="${E[k].n}" role="button" tabindex="0" style="cursor:pointer"` });
     }

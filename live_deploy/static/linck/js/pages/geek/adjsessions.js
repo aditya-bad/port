@@ -5,7 +5,7 @@
 import { api } from '../../core/api.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price } from '../../core/format.js';
-import { empty, loading } from '../../ui/components.js';
+import { empty, loading, fixTag } from '../../ui/components.js';
 import { head, tiles, table, poll, bars, tone, svg, hit, yLabels, wide } from './ui.js';
 import { mins } from './st.js';
 import { exitName, sessionTip, dayName } from './adj.js';
@@ -36,7 +36,7 @@ function split(rows) {
 export function sessionTable(rows, g) {
   return table([['Day', '150px'], ['Strike', '76px', 'num'], ['Sold', '80px', 'num'], ['Moves', '120px'], ['Ended by', '130px'],
     ['Held', '70px', 'num'], ['Original', '90px', 'num'], ['Extra legs', '90px', 'num'], ['P&L', '90px', 'num']],
-  rows.map(r => [html`<a href="${g.href('session')}?d=${r.day}">${dayName(r.day)}</a>`, r.strike ? r.strike.toLocaleString('en-IN') : '—',
+  rows.map(r => [html`<a href="${g.href('session')}?d=${r.day}">${dayName(r.day)}</a> ${fixTag(r.repaired)}`, r.strike ? r.strike.toLocaleString('en-IN') : '—',
     r.combined_entry == null ? '—' : price(r.combined_entry),
     html`<span class="small">${r.adjustments ? `${r.adjustments} adj` : ''}${r.rolls ? ` ${r.rolls} roll` : ''}${r.unwinds ? ` ${r.unwinds} unwind` : ''}${!r.adjustments && !r.rolls && !r.unwinds ? 'none' : ''}${r.adjusted_side ? html` <span class="mute">(${r.adjusted_side})</span>` : ''}</span>`,
     r.open ? html`<span class="oc acted">Open</span>` : exitName(r.reason), mins(r.held_min),

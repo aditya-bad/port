@@ -14,7 +14,7 @@ import { html, mount, actions, on } from '../../core/dom.js';
 import { inr, dStamp, dShort, hhmm, price } from '../../core/format.js';
 import { go } from '../../core/router.js';
 import * as book from '../../data/book.js';
-import { empty, loading } from '../../ui/components.js';
+import { empty, loading, fixTag } from '../../ui/components.js';
 import { loadSession, sessionBody } from '../deployment/session.js';
 import { journeys, spotlight, spotEvents, normalBand, dayRows, ranges, daysChart } from './cycles.js';
 import { vsCompare } from './paths.js';
@@ -272,7 +272,7 @@ export default {
           <span class="mono tiny mute nowrap">${cy.ids.indexOf(cy.cycle_id) + 1} of ${cy.ids.length}</span>
           ${nav(cy.prev, '‹ Previous')}${nav(cy.next, 'Next ›')}
         </div>
-        ${head(html`Cycle ${cy.cycle_id} ${endTag(r)}`, `${dStamp(r.start)} → ${r.end ? dStamp(r.end) : 'now'} · ${r.days} days · expiry ${r.contract_expiry || '—'}`, 'fills · checks · 5-minute marks · candles')}
+        ${head(html`Cycle ${cy.cycle_id} ${endTag(r)} ${fixTag(r.repaired)}`, `${dStamp(r.start)} → ${r.end ? dStamp(r.end) : 'now'} · ${r.days} days · expiry ${r.contract_expiry || '—'}`, 'fills · checks · 5-minute marks · candles')}
         ${tiles([
           [r.status === 'open' ? 'P&L so far' : 'Result', html`<span class="${tone(result)}">${money(result)}</span>`, r.status === 'open' ? 'booked + open legs, gross' : `net ${inr(m.net)} after costs`],
           ['Checkpoint', `${result != null && cy.checkpoint_target ? Math.round(Math.max(0, result) / cy.checkpoint_target * 100) : 0}%`, `of ${inr(cy.checkpoint_target, { sign: false })}${result != null && result < 0 ? ' · in loss' : ''}`],

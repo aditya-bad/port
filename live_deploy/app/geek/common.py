@@ -126,6 +126,13 @@ async def book(ctx: Ctx) -> dict:
     return out
 
 
+def repaired_ids(lots: list) -> set:
+    """Positions a stall repair touched (app/repair): any of their fills
+    carries metadata.repair. An undone repair deletes those fills, so this
+    stays true to what's in the book."""
+    return {l["position_id"] for l in lots if "repair" in (l.get("metadata") or {})}
+
+
 def opening(meta_action, position_side: str, action: str) -> bool:
     """Does this fill open a position? The fill's own metadata says so
     ("open", "sell_open_PE", "buy_close:CE"); otherwise a sell opens a

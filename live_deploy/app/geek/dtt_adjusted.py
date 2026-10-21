@@ -93,6 +93,7 @@ async def sessions_of(ctx: Ctx) -> list[dict]:
     for l in b["lots"]:
         lots_by.setdefault(l["position_id"], []).append(l)
     days: dict = {}
+    fixed = {str(x) for x in common.repaired_ids(b["lots"])}
     for p in sorted((p for p in b["positions"] if p["side"] == "short"), key=lambda x: x["opened_at"]):
         lots = sorted(lots_by.get(p["id"], []), key=lambda x: x["executed_at"])
         ent = next((l for l in lots if l["opening"]), None)
@@ -143,7 +144,7 @@ async def sessions_of(ctx: Ctx) -> list[dict]:
             "rolls": sum(1 for l in extra if l["opened_by"] == "roll_open"),
             "unwinds": sum(1 for l in closes if l["closed_by"] == "reversal_unwind"),
             "max_legs": peak, "legs": sorted(legs, key=lambda l: l["opened"]),
-            "reason": reason, "exit_t": exit_t, "open": is_open,
+            "reason": reason, "exit_t": exit_t, "open": is_open, "repaired": any(l["id"] in fixed for l in legs),
             "held_min": round((datetime.fromisoformat(exit_t) - t0).total_seconds() / 60, 1) if exit_t else None,
             "pnl": round(sum(l["pnl"] for l in legs if l["pnl"] is not None), 2) if not is_open else None,
             "pnl_original": round(sum(l["pnl"] for l in orig if l["pnl"] is not None), 2) if not is_open else None,

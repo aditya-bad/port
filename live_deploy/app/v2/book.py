@@ -50,9 +50,10 @@ def _adjustments(rows: list) -> int:
     return count
 
 
-def episodes_to_trades(dep_id, rows: list, reasons: dict) -> list[dict[str, Any]]:
+def episodes_to_trades(dep_id, rows: list, reasons: dict, repaired: frozenset = frozenset()) -> list[dict[str, Any]]:
     """Pure: one deployment's positions (sorted by opened_at) -> its
-    closed trades. Split out so it can be unit-tested without a DB."""
+    closed trades. Split out so it can be unit-tested without a DB.
+    `repaired`: ids of positions a stall repair touched (app/repair)."""
     out = []
     for ep in queries._group_into_episodes(rows, reasons):
         if ep["end"] is None:
@@ -73,6 +74,7 @@ def episodes_to_trades(dep_id, rows: list, reasons: dict) -> list[dict[str, Any]
             "adjustments": _adjustments(legs),
             "exit_reason": reasons.get(last["id"]) or "",
             "wins": sum(1 for r in legs if _f(r["realized_pnl"]) > 0),
+            "repaired": any(r["id"] in repaired for r in legs),
             "_start": ep["start"], "_end": ep["end"],
         })
     return out
@@ -121,12 +123,14 @@ async def list_trades(pool: asyncpg.Pool, since: Optional[datetime] = None) -> l
             """
         )
         reasons = await queries._fetch_closing_reasons(conn, [r["id"] for r in positions])
+        repaired = frozenset(r["position_id"] for r in await conn.fetch(
+            "SELECT DISTINCT position_id FROM position_lots WHERE metadata ? 'repair'"))
         by_dep: dict = defaultdict(list)
         for r in positions:
             by_dep[r["deployment_id"]].append(r)
         trades = []
         for dep_id, rows in by_dep.items():
-            trades.extend(episodes_to_trades(dep_id, rows, reasons))
+            trades.extend(episodes_to_trades(dep_id, rows, reasons, repaired))
         if since is not None:
             trades = [t for t in trades if t["_end"] >= since]
         await _worst_points(conn, trades)

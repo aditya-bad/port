@@ -116,6 +116,7 @@ def episodes(b: dict, now: datetime, group_by: Optional[str] = None) -> list[dic
         is_open = any(p["closed_at"] is None for p in legs)
         cyc = next((c for c in (_cycle_of(p) for p in legs) if c is not None), None)
         kinds = [kind_of(a, i, acts, legs) for a in acts]
+        fixed = common.repaired_ids(b["lots"])
         out.append({
             "n": i + 1, "cycle": cyc,
             "label": f"Cycle {cyc}" if cyc is not None else
@@ -124,6 +125,7 @@ def episodes(b: dict, now: datetime, group_by: Optional[str] = None) -> list[dic
             "trigger": label(t["trigger"]), "legs": len(legs),
             "adjustments": sum(1 for k in kinds if k in ("adjustment", "roll", "added", "hedge", "leg_closed")),
             "booked": round(sum(float(p["realized_pnl"]) for p in legs if p["closed_at"] is not None), 2),
+            "repaired": any(p["id"] in fixed for p in legs),
         })
     return out
 
@@ -221,6 +223,7 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
     legs = [pos[i] for i in dict.fromkeys(ids) if i in pos]
     idset = set(p["id"] for p in legs)
     lots = [x for x in b["lots"] if x["position_id"] in idset]
+    fixed = {str(x) for x in common.repaired_ids(lots)}
     acts = [a for a in b["actions"] if any(f["position_id"] in idset for f in a["fills"])]
     start = min(_ist(t["t"]) for t in sel)
     end = max([_ist(p["closed_at"]) for p in legs if p["closed_at"] is not None] + [start])
@@ -364,6 +367,8 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
                 "fills": [fill(x) for x in mine],
                 "booked": round(sum(booked), 2) if booked and all(v is not None for v in booked) else None,
                 "idx": spot, "vix": vix_here, "pnl": f.get("pnl"), "cycle": cyc,
+                # written by a stall repair (app/repair), not traded live
+                "repaired": any("repair" in (x.get("metadata") or {}) for x in a["fills"]),
             }
             # the same action also closed the episode before (a checkpoint exit and re-entry)
             if before:
@@ -397,7 +402,7 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
                   "f0": round(g["s0"], 2) if g["fwd"] else None,
                   "opened_by": by_leg.get(g["id"], {}).get("open"), "closed_by": by_leg.get(g["id"], {}).get("close"),
                   "iv": round(g["iv"] * 100, 2) if g["iv"] else None, "cycle": g["cycle"],
-                  "priced": bool(g["px"])} for g in L],
+                  "priced": bool(g["px"]), "repaired": g["id"] in fixed} for g in L],
         "events": events,
         "start": _iso(start), "end": _iso(end),
         "split_legs": sum(1 for g in L if g["iv"]),

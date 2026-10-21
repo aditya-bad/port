@@ -4,7 +4,7 @@
 import { api } from '../../core/api.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price, dFull } from '../../core/format.js';
-import { empty, loading } from '../../ui/components.js';
+import { empty, loading, fixTag } from '../../ui/components.js';
 import { head, tiles, table, poll, bars, tone } from './ui.js';
 import { mins } from './st.js';
 import { exitName } from './dtt.js';
@@ -19,7 +19,7 @@ export const grow = (name, g) => [name, String(g.n), `${Math.round(g.win_rate)}%
 export function straddleTable(rows, g) {
   return table([['Day', '150px'], ['Strike', '80px', 'num'], ['CE in → out', '156px', 'num'], ['PE in → out', '156px', 'num'],
     ['Combined', '96px', 'num'], ['Ended by', '150px'], ['Held', '72px', 'num'], ['P&L', '96px', 'num']],
-  rows.map(r => [html`<a href="${g.href('straddle')}?s=${r.id}">${day(r.day)}</a>`,
+  rows.map(r => [html`<a href="${g.href('straddle')}?s=${r.id}">${day(r.day)}</a> ${fixTag(r.repaired)}`,
     r.strike ? r.strike.toLocaleString('en-IN') : '—',
     html`<span class="mono small">${r.ce ? `${price(r.ce.entry)} → ${r.ce.exit == null ? '…' : price(r.ce.exit)}` : '—'}</span>`,
     html`<span class="mono small">${r.pe ? `${price(r.pe.entry)} → ${r.pe.exit == null ? '…' : price(r.pe.exit)}` : '—'}</span>`,

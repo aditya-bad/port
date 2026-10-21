@@ -36,6 +36,11 @@ export const toggle = (on, act, attrs = {}, label = '') => html`<button type="bu
 
 export const stat = (l, v, s, { cls = '', vcls = '' } = {}) => html`<div class="stat ${cls}"><span class="l">${l}</span><span class="v ${vcls}">${v}</span>${s != null && s !== '' ? html`<span class="s">${s}</span>` : ''}</div>`;
 
+// Marks a trade, cycle or session a stall repair wrote into (app/repair):
+// its fills were replayed from 1-minute candles, not traded live.
+export const REPAIRED_TIP = 'Repaired\nThe app missed ticks here; these fills were replayed\nfrom 1-minute candles by the repair (custom_scripts/repair_stall.py)';
+export const fixTag = on => (on ? html`<span class="fix-tag" data-tip="${REPAIRED_TIP}">Repaired</span>` : '');
+
 export const sect = (title, sub, right, ruled = true) => html`<div class="sect ${ruled ? 'ruled' : ''}"><h3 class="t-h3">${title}</h3>${sub ? html`<span class="mute small">${sub}</span>` : ''}${right ? html`<span class="grow"></span>${right}` : ''}</div>`;
 
 export const empty = (title, text, action) => html`<div class="empty">${title && html`<b>${title}</b>`}<span>${text}</span>${action || ''}</div>`;
