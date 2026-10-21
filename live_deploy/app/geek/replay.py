@@ -27,6 +27,7 @@ Params: from, to (episode numbers, 1-based; default the latest one).
 from __future__ import annotations
 
 import bisect
+import math
 from datetime import date, datetime, time, timedelta
 from typing import Optional
 
@@ -164,6 +165,12 @@ def strike_of(meta: Optional[dict], parsed: dict) -> Optional[float]:
     return None
 
 
+def bar_of(t: datetime, step: timedelta) -> datetime:
+    """The start of the bar `t` falls in, on a grid anchored at 09:15."""
+    base = t.replace(hour=9, minute=15, second=0, microsecond=0)
+    return base + step * math.floor((t - base) / step)
+
+
 class Series:
     """A price over time, read as of any moment (the last value at or
     before it)."""
@@ -215,14 +222,23 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
     if any(p["closed_at"] is None for p in legs):
         end = max(end, now)
 
-    idx = Series([(_ist(c["t"]), float(c["c"])) for c in index])
-    vx = Series([(_ist(c["t"]), float(c["c"])) for c in vix])
+    # a candle's close is known at its end: each series is read as of then
+    idx = Series([(_ist(c["t"]) + step, float(c["c"])) for c in index])
+    vx = Series([(_ist(c["t"]) + step, float(c["c"])) for c in vix])
+    ohlc = {_ist(c["t"]): c for c in index}
     # the steps: the index's candles across the window, else every price we have
-    times = [t for t in idx.t if start - step < t <= end]
+    times = [t for t in ohlc if start - step < t <= end]
     if not times:
         times = sorted({_ist(t) for s in prices.values() for t, _ in s if start - step < _ist(t) <= end})
     if not times:   # no prices at all: step through the events themselves (booked P&L only)
         times = [_ist(a["t"]) - step for a in acts if start - step < _ist(a["t"]) <= end + step]
+    else:           # an event no candle covers (a gap, a stall) gets a bar of its own
+        have = sorted(times)
+        for a in acts:
+            t = _ist(a["t"])
+            k = bisect.bisect_right(have, t) - 1
+            if k < 0 or t >= have[k] + step:
+                times.append(bar_of(t, step))
     times = sorted(set(times))
 
     # each leg: entry, exit, size, strike, and its implied volatility at entry
@@ -274,7 +290,9 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
                 split_ok = False
             else:
                 sp = [a + b for a, b in zip(sp, parts)]
+        c = ohlc.get(T)
         frames.append({"t": _iso(T), "idx": s1, "vix": vx.at(asof), "booked": round(booked, 2),
+                       "o": float(c["o"]) if c else None, "h": float(c["h"]) if c else None, "l": float(c["l"]) if c else None,
                        "pnl": round(booked + openp, 2), "legs": held,
                        "split": [round(x, 2) for x in sp] if split_ok and any(g["iv"] for g in L) else None})
 
@@ -345,11 +363,22 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
             events.append(ev)
             prev = ev
     events.sort(key=lambda e: e["t"])
+    by_leg: dict = {}
+    for a in acts:
+        for x in a["fills"]:
+            pid = str(x["position_id"])
+            if pid in {g["id"] for g in L}:
+                e = next((ev for ev in events if ev["t"] == _iso(a["t"])), None)
+                tag = {"kind": e["kind"] if e else None, "label": e["label"] if e else None, "rule": label(a["trigger"])}
+                by_leg.setdefault(pid, {})["open" if x["opening"] else "close"] = tag
 
     return {
         "frames": frames,
         "legs": [{"symbol": g["symbol"], "side": g["side"], "qty": g["qty"], "entry": round(g["p0"], 2),
                   "kind": g["kind"], "strike": g["k"], "t0": _iso(g["t0"]), "t1": _iso(g["t1"]),
+                  "exit": round(g["p1"], 2) if g["p1"] is not None else None, "realized": g["realized"],
+                  "s0": round(g["s0"], 2) if g["s0"] else None,
+                  "opened_by": by_leg.get(g["id"], {}).get("open"), "closed_by": by_leg.get(g["id"], {}).get("close"),
                   "iv": round(g["iv"] * 100, 2) if g["iv"] else None, "cycle": g["cycle"],
                   "priced": bool(g["px"])} for g in L],
         "events": events,

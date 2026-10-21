@@ -55,3 +55,11 @@ def test_what_each_action_was_within_its_episode():
     acts = [first, adj, roll, hedge, part, ex]
     assert [R.kind_of(x, 0, acts, legs) for x in acts] == ["new", "adjustment", "roll", "hedge", "leg_closed", "leg_closed"]
     assert R.kind_of(ex, 0, acts, [legs[0]]) == "exit"
+
+
+def test_bars_sit_on_a_grid_from_the_open():
+    s5 = timedelta(minutes=5)
+    assert R.bar_of(datetime(2026, 10, 17, 15, 13, 4, tzinfo=IST), s5) == datetime(2026, 10, 17, 15, 10, tzinfo=IST)
+    assert R.bar_of(datetime(2026, 10, 17, 9, 15, tzinfo=IST), s5) == datetime(2026, 10, 17, 9, 15, tzinfo=IST)
+    assert R.bar_of(datetime(2026, 10, 17, 9, 12, tzinfo=IST), s5) == datetime(2026, 10, 17, 9, 10, tzinfo=IST)
+    assert R.bar_of(datetime(2026, 10, 17, 10, 47, tzinfo=IST), timedelta(minutes=1)) == datetime(2026, 10, 17, 10, 47, tzinfo=IST)

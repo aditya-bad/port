@@ -103,6 +103,15 @@ def test_a_cycle_replays_with_labelled_events_and_frames_that_add_up(pool_run, m
             if f["split"] is not None:
                 assert sum(f["split"]) == pytest.approx(f["pnl"], abs=0.5)
         assert out["split_legs"] == len(out["legs"]) and out["unpriced"] == []
+        # each step shows its own candle (not the next one): the fake candles are flat, so close == open
+        moving = [f for f in out["frames"] if f["o"] is not None]
+        assert moving and all(f["idx"] == f["o"] == f["h"] == f["l"] for f in moving)
+        assert len({f["idx"] for f in moving}) > 5
+        # every leg says which event opened it; the adjusted one which closed it
+        assert all(l["opened_by"] and l["opened_by"]["label"] for l in out["legs"])
+        closed = [l for l in out["legs"] if l["t1"]]
+        assert closed and all(l["closed_by"]["label"] == "Adjustment" and l["exit"] is not None and l["realized"] is not None for l in closed)
+        assert all(l["s0"] for l in out["legs"])
         # strikes are known for the chart
         assert all(l["strike"] and l["kind"] in ("CE", "PE") for l in out["legs"])
         # each event points at the frame it happened in
