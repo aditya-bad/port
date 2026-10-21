@@ -15,8 +15,11 @@ export async function browser() {
 }
 
 // A context with its own page-error log; signedIn logs in through the API.
-export async function context(b, { width = 1440, height = 900, signedIn = true } = {}) {
-  const ctx = await b.newContext({ viewport: { width, height } });
+// blockSW: once the app's service worker (static/sw.js, a pass-through
+// for push) controls the page, its requests no longer reach ctx.route —
+// block it in a test that mocks a response across reloads.
+export async function context(b, { width = 1440, height = 900, signedIn = true, blockSW = false } = {}) {
+  const ctx = await b.newContext({ viewport: { width, height }, ...(blockSW ? { serviceWorkers: 'block' } : {}) });
   ctx.errors = [];
   ctx.on('page', p => p.on('pageerror', e => ctx.errors.push(`${p.url()}: ${e.message}`)));
   if (signedIn) {

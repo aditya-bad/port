@@ -2934,3 +2934,17 @@ async def journal_tags(pool: asyncpg.Pool, deployment_id: Optional[UUID] = None)
             """,
             deployment_id,
         )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# STRATEGY HEALTH — findings already pushed (0026_strategy_health_sent.sql)
+# ═════════════════════════════════════════════════════════════════════
+
+async def mark_health_alert_sent(pool: asyncpg.Pool, deployment_id: UUID, key: str) -> bool:
+    """True the first time a key is marked (push it), False after."""
+    async with pool.acquire() as conn:
+        res = await conn.execute(
+            "INSERT INTO strategy_health_sent (key, deployment_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            key, deployment_id,
+        )
+    return res.endswith(" 1")

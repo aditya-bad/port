@@ -102,6 +102,7 @@ export const api = {
   // v2
   book: () => req('/v2/book'),
   session: () => req('/v2/session'),
+  strategyHealth: (fresh = false) => req(`/v2/strategy-health${fresh ? '?fresh=true' : ''}`),
   strategies: () => req('/v2/strategies'),
   prefs: () => req('/v2/preferences'),
   savePrefs: patch => req('/v2/preferences', { method: 'PUT', body: patch }),

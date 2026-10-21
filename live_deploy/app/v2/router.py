@@ -49,6 +49,20 @@ async def get_session(request: Request):
     return await session.build_session(request.app.state.db_pool)
 
 
+@router.get("/strategy-health")
+async def get_strategy_health(request: Request, fresh: bool = False):
+    """Deployments drifting from how they normally trade (app/strategy_health.py):
+    {checked_at, deployments: {id: [findings]}}. The background check's
+    last result, or a fresh one (`fresh`, or before the first check)."""
+    from .. import strategy_health
+    cached = getattr(request.app.state, "strategy_health", None)
+    if fresh or not cached:
+        now = datetime.now(strategy_health.IST)
+        cached = {"checked_at": now.isoformat(), "deployments": await strategy_health.check_all(request.app.state.db_pool, now)}
+        request.app.state.strategy_health = cached
+    return cached
+
+
 @router.get("/strategies")
 async def get_strategies(request: Request):
     enabled = await queries.get_strategy_enabled_map(request.app.state.db_pool)

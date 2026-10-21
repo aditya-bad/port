@@ -3,12 +3,12 @@
 // disappear when resolved. Add a rule by appending to RULES.
 
 import { kite, health } from './live.js';
-import { deployments } from './book.js';
+import { deployments, healthOf } from './book.js';
 import { STREAK_ALERT } from './config.js';
 import { ui } from '../core/store.js';
 import { plural } from '../core/format.js';
 
-const dismissed = ui('alerts', { off: {} });
+const dismissed = ui('alerts', { off: {}, health: {} });
 
 export const RULES = [
   // Active but nothing is running its strategy: no entries, no exits.
@@ -44,6 +44,15 @@ export const RULES = [
       body: `The last ${v.streak} trades closed at a loss.`,
       act: 'Open', action: { type: 'open', id: v.id, tab: 'performance' },
     })),
+  // Drifting from how it normally trades (app/strategy_health.py): one
+  // item per finding, dismissed until the next trade changes it.
+  list => list.filter(v => v.rawStatus !== 'stopped' && !v.isLab).flatMap(v => healthOf(v.id)
+    .filter(f => !(dismissed.get().health || {})[`${v.id}:${f.key}`])
+    .map(f => ({
+      key: `health:${v.id}:${f.key}`, kind: 'health', id: v.id, canDismiss: true, healthKey: `${v.id}:${f.key}`,
+      title: `${v.name}: ${f.title.toLowerCase()}`, body: f.body,
+      act: 'Open', action: { type: 'open', id: v.id, tab: 'performance' },
+    }))),
 ];
 
 export function alerts(list = deployments()) {
@@ -51,10 +60,12 @@ export function alerts(list = deployments()) {
 }
 export function dismiss(a) {
   if (!a.canDismiss) return;
-  dismissed.set({ off: { ...dismissed.get().off, [a.id]: a.streak } });
+  const cur = dismissed.get();
+  if (a.healthKey) dismissed.set({ health: { ...(cur.health || {}), [a.healthKey]: Date.now() } });
+  else dismissed.set({ off: { ...cur.off, [a.id]: a.streak } });
 }
 // How much a deployment needs you, for sorting the Desk.
 export function attention(v) {
   return (v.status === 'error' || v.status === 'down' ? 8 : 0) + (v.rawStatus === 'paused' && v.legs.length ? 4 : 0)
-    + (v.streak >= STREAK_ALERT ? 2 : 0) + (v.quiet ? 1 : 0);
+    + (v.streak >= STREAK_ALERT ? 2 : 0) + (healthOf(v.id).length ? 2 : 0) + (v.quiet ? 1 : 0);
 }

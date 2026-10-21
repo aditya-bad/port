@@ -12,8 +12,8 @@ import { prices, health } from './live.js';
 import { LAB_TAG, YOUNG_DAYS, QUIET_DAYS } from './config.js';
 import { tradeMetrics } from './metrics.js';
 
-const raw = { deployments: [], positions: [], trades: [], daily: [], session: null, strategies: [], tags: [] };
-const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false };
+const raw = { deployments: [], positions: [], trades: [], daily: [], session: null, strategies: [], tags: [], health: {} };
+const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false, health: false };
 const errors = {};
 let version = 0;
 
@@ -24,6 +24,8 @@ const LOADERS = {
   session: async () => { raw.session = await api.session(); },
   strategies: async () => { raw.strategies = await api.strategies(); },
   tags: async () => { raw.tags = await api.tags(); },
+  // strategy health findings (app/strategy_health.py): {deployment id: [findings]}
+  health: async () => { raw.health = (await api.strategyHealth()).deployments || {}; },
 };
 
 export async function load(kinds = Object.keys(LOADERS)) {
@@ -43,11 +45,12 @@ const flush = debounce(() => { const k = [...pending]; pending.clear(); load(k);
 export function refresh(...kinds) { kinds.forEach(k => pending.add(k)); flush(); }
 listen('event', ev => {
   const t = ev.event_type || '';
-  if (/fill|execution|flatten|removed|close/.test(t)) refresh('deployments', 'positions', 'book', 'session');
+  if (/fill|execution|flatten|removed|close/.test(t)) refresh('deployments', 'positions', 'book', 'session', 'health');
   else refresh('deployments', 'session');
 });
 setInterval(() => refresh('deployments', 'session'), 60000);   // snapshots land every 5 min
 setInterval(() => refresh('positions'), 30000);                 // server-side marks when no ticks flow
+setInterval(() => refresh('health'), 600000);                   // the server checks every 10 minutes
 
 // ── Live leg P&L ──────────────────────────────────────────────────
 export function legPrice(p) {
@@ -215,6 +218,7 @@ export function totals(list) {
     return a;
   }, { today: 0, overall: 0, unreal: 0, realized: 0, legs: 0 });
 }
+export const healthOf = id => raw.health[id] || [];
 export const allTrades = () => raw.trades;
 export const allDaily = () => raw.daily;
 export const dataVersion = () => version;

@@ -386,6 +386,11 @@ async def startup() -> None:
     # ── Health watchdog: deployments active but not running, and Kite
     # not connected by 09:05 on a market day — see watchdog_loop.
     app.state.watchdog_task = asyncio.create_task(manager.watchdog_loop(), name="health-watchdog")
+    # ── Strategy health: a deployment drifting from how it normally trades
+    # (win rate, loss size, slippage, drawdown, trade count) — pushed once
+    # each, shown on the Desk. See app/strategy_health.py.
+    from .strategy_health import health_alerts_loop
+    app.state.strategy_health_task = asyncio.create_task(health_alerts_loop(app), name="strategy-health-loop")
     # ── 1-minute candles of held option contracts (Kite drops them at
     # expiry): recorded from live ticks, filled from Kite where missing,
     # backfilled after each close. Indices/stocks come from Kite live.
@@ -447,7 +452,7 @@ async def shutdown() -> None:
     except asyncio.CancelledError:
         pass
 
-    for name in ("index_candles_task", "candle_backfill_task", "watchdog_task"):
+    for name in ("index_candles_task", "candle_backfill_task", "watchdog_task", "strategy_health_task"):
         task = getattr(app.state, name, None)
         if task is None:
             continue

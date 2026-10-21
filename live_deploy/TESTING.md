@@ -119,3 +119,11 @@ the fill's `metadata.context`) and every signal entry its candle and ATR
 simulated sessions with and without it and fail if a single order differs.
 Anything new a strategy records for Geek mode gets the same treatment: add
 it to one of those tests.
+
+## Mocking a response in the browser across reloads
+
+Once the app's service worker (`static/sw.js`, a pass-through needed for
+push notifications) controls a page, that page's requests no longer reach
+Playwright's `ctx.route`, so a mock silently stops applying after the
+first reload. A test that mocks a response and reloads asks for
+`context(b, { blockSW: true })` (`tests/e2e/helper.mjs`).

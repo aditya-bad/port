@@ -47,6 +47,8 @@ function laneNote(v) {
   if (v.issue) return [v.issue.text, true];
   if (v.rawStatus === 'paused' && v.legs.length) return [`Paused while still holding ${plural(v.legs.length, 'leg')}`, true];
   if (v.streak >= STREAK_ALERT) return [`losing streak of ${v.streak}`, true];
+  const h = book.healthOf(v.id);
+  if (h.length) return [`${h[0].title.toLowerCase()}${h.length > 1 ? ` · +${h.length - 1} more` : ''}`, true];
   if (v.quiet) return [`no trade for ${v.quietDays} days`, true];
   return [`${v.strategy} · ${v.mode}`, false];
 }
