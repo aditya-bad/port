@@ -82,20 +82,27 @@ function laneEvents(v, frac) {
   });
 }
 
-function hero(T, list) {
+// The hero's number: today's P&L, or — on a day nothing has traded or
+// moved yet (holiday, weekend, before the open, Kite down) — the P&L of
+// what's open, so it isn't a misleading ₹0.
+export const heroValue = (T, quiet) => (quiet ? T.unreal : T.today);
+function hero(T, list, quiet) {
   const live = kite.state === 'connected';
   const left = sessionLeft();
   const capAll = list.reduce((a, v) => a + (v.rawStatus === 'stopped' ? 0 : v.cap), 0);
   const capUse = list.filter(v => v.legs.length).reduce((a, v) => a + v.cap, 0);
-  const text = inr(T.today);
+  const text = inr(heroValue(T, quiet));
   const scale = Math.min(1, (matchMedia('(max-width:900px)').matches ? 7 : 10) / text.length);
   return html`
     <div class="hero-l">
       <div class="row hero-date"><span class="dot ${live ? 'live' : 'off'}"></span>
-        <span>${dLong(new Date())} · day P&L across ${plural(list.filter(v => v.rawStatus !== 'stopped').length, 'deployment')} <span class="stamp">${basisNow().stamp}</span></span></div>
-      <div class="hero-num ${tone(T.today)} ${live ? '' : 'dim'}" style="zoom:${scale.toFixed(3)}" id="heroNum">${odometer(text)}</div>
+        <span data-hero-label>${quiet
+          ? `${dLong(new Date())} · nothing traded today · open positions’ P&L, ${T.legs ? plural(T.legs, 'leg') : 'none open'}`
+          : `${dLong(new Date())} · day P&L across ${plural(list.filter(v => v.rawStatus !== 'stopped').length, 'deployment')}`} <span class="stamp">${basisNow().stamp}</span></span></div>
+      <div class="hero-num ${tone(heroValue(T, quiet))} ${live ? '' : 'dim'}" style="zoom:${scale.toFixed(3)}" id="heroNum" data-quiet="${quiet ? '1' : ''}"
+        data-tip="${quiet ? `Open positions’ P&L\nToday so far  ${inr(T.today)}\nNo leg has a price since 09:15 and nothing was filled today, so today’s P&L would read ₹0.` : `Today’s P&L\nOpen positions  ${inr(T.unreal)}`}">${odometer(text)}</div>
       <div class="hero-subs">
-        ${[['Realized', inr(T.realized), tone(T.realized), 'subR'], ['Unrealized', inr(T.unreal), tone(T.unreal), 'subU'], ['Overall', inrS(T.overall), tone(T.overall), 'subO'],
+        ${[['Realized', inr(T.realized), tone(T.realized), 'subR'], quiet ? ['Today', inr(T.today), tone(T.today), 'subT'] : ['Unrealized', inr(T.unreal), tone(T.unreal), 'subU'], ['Overall', inrS(T.overall), tone(T.overall), 'subO'],
           ['Capital in use', `${inrS(capUse, { sign: false })} / ${inrS(capAll, { sign: false })}`, '', ''], ['Session left', live ? left || 'closed' : 'not live', '', '']]
           .map(([l, v, c, id]) => html`<div class="col" style="gap:2px"><span class="label">${l}</span><span class="mono hero-sub ${c}" ${id ? html`id="${id}"` : ''}>${v}</span></div>`)}
       </div>
@@ -119,7 +126,7 @@ function attentionPanel(A) {
     </div>`;
 }
 
-function lanesBlock(list, frac) {
+function lanesBlock(list, frac, quiet) {
   const s = st.get();
   const base = list.filter(v => s.lab || !v.isLab);
   const F = [
@@ -146,7 +153,7 @@ function lanesBlock(list, frac) {
         <b class="small">${plural(total, 'deployment')}</b>
         <div class="axis">${HOURS.map((t, i) => html`<span class="${i % 3 ? 'hide-phone' : ''}" style="left:${i * 60 / 375 * 100}%">${t}</span>`)}
           ${isSessionOpen() ? html`<span class="now-chip" style="left:${frac * 100}%">${hhmm(new Date())}</span>` : ''}</div>
-        <b class="small right">Today</b><span></span>
+        <b class="small right">${quiet ? html`<span data-tip="Nothing traded today: each lane shows its open positions’ P&L">Open</span>` : 'Today'}</b><span></span>
       </div>
       <div class="lanes ${compact ? 'compact' : ''}">
         <div class="now-line" style="left:calc(var(--lane-off) + (100% - var(--lane-rest)) * ${frac.toFixed(4)})"></div>
@@ -168,7 +175,7 @@ function lanesBlock(list, frac) {
                 </svg>
                 ${laneEvents(v, frac).map(e => html`<span class="lane-ev" data-tip="${e.tip}" style="left:${e.x}%;background:${e.c}"></span>`)}
               </div>
-              <span class="mono lane-today ${stopped ? 'flat' : tone(x.today)}" data-today="${v.id}">${stopped ? '—' : inr(x.today)}</span>
+              <span class="mono lane-today ${stopped ? 'flat' : tone(quiet ? x.unreal : x.today)}" data-today="${v.id}">${stopped ? '—' : inr(quiet ? x.unreal : x.today)}</span>
               <span class="lane-act hide-phone"><button type="button" class="btn btn-xs" data-act="primary" data-id="${v.id}">${act}</button></span>
             </div>`;
         })}
@@ -247,6 +254,7 @@ export default {
       const all = book.deployments();
       const list = all.filter(v => !v.isLab || st.get().lab);
       const T = book.totals(all.filter(v => v.rawStatus !== 'stopped'));
+      const quiet = book.quiet(all);
       const A = alerts(all);
       const frac = sessionFrac();
       mount(main, html`
@@ -256,8 +264,8 @@ export default {
             <span class="mute grow">Prices and P&L below are frozen. No deployment can enter, adjust or exit until you reconnect. Your daily Kite login expires at about 08:00.</span>
             <button type="button" class="btn btn-primary" data-act="kite">Reconnect Kite</button>
           </div>` : ''}
-        <section class="hero" aria-label="Today">${hero(T, all)}${attentionPanel(A)}</section>
-        <section aria-label="Session lanes">${lanesBlock(all, frac)}</section>
+        <section class="hero" aria-label="Today">${hero(T, all, quiet)}${attentionPanel(A)}</section>
+        <section aria-label="Session lanes">${lanesBlock(all, frac, quiet)}</section>
         <section class="desk-bottom">${positionsBlock(list, T)}${activityBlock(all, recent)}</section>`);
       clearAxis();
     }
@@ -274,16 +282,18 @@ export default {
       if (!book.isLoaded('deployments')) return;
       const all = book.deployments();
       const T = book.totals(all.filter(v => v.rawStatus !== 'stopped'));
-      setOdometer($('#heroNum .odo', main), inr(T.today));
+      const quiet = book.quiet(all);
       const hn = $('#heroNum', main);
-      if (hn) setTone(hn, tone(T.today));
-      [['#subR', T.realized, inr], ['#subU', T.unreal, inr], ['#subO', T.overall, inrS], ['#unrTot', T.unreal, inr]].forEach(([sel, v, f]) => {
+      if (hn && (hn.dataset.quiet === '1') !== quiet) { paint(); return; }   // the first tick of the day: switch back to today's P&L
+      setOdometer($('#heroNum .odo', main), inr(heroValue(T, quiet)));
+      if (hn) setTone(hn, tone(heroValue(T, quiet)));
+      [['#subR', T.realized, inr], ['#subU', T.unreal, inr], ['#subT', T.today, inr], ['#subO', T.overall, inrS], ['#unrTot', T.unreal, inr]].forEach(([sel, v, f]) => {
         const el = $(sel, main); setText(el, f(v)); setTone(el, tone(v));
       });
       all.forEach(v => {
         const x = book.live(v);
         const el = $(`[data-today="${v.id}"]`, main);
-        if (el && v.rawStatus !== 'stopped') { setText(el, inr(x.today)); setTone(el, tone(x.today)); }
+        if (el && v.rawStatus !== 'stopped') { const y = quiet ? x.unreal : x.today; setText(el, inr(y)); setTone(el, tone(y)); }
         const g = $(`[data-grp="${v.id}"]`, main);
         if (g) { setText(g, inr(x.unreal)); setTone(g, tone(x.unreal)); }
       });

@@ -182,3 +182,42 @@ test('the Cycles tab shows the running cycle first, its P&L moving with the tick
   await p.waitForSelector('.ss-plot, .sheet', { timeout: 15000 });
   await ctx.close();
 });
+
+// A holiday, a weekend, before the open, or Kite down with nothing
+// traded today: today's P&L would read ₹0, which says nothing. The Desk
+// shows the open positions' P&L instead, and says so.
+test('nothing traded today: the Desk shows the open positions’ P&L, not ₹0', async () => {
+  const ctx = await context(b);
+  await streamTicks(ctx, [], false);
+  // today's session as on such a day: no fills, nothing booked since the open
+  const deps = await api(ctx, '/deployments');
+  await ctx.route('**/v2/session', async r => {
+    const s = await (await r.fetch()).json();
+    for (const d of deps) {
+      const l = s.lanes[d.id] || (s.lanes[d.id] = { series: [] });
+      l.events = [];
+      l.realized_open = { gross: Number(d.realized_pnl), net: Number(d.realized_pnl_net ?? d.realized_pnl), net_slip: Number(d.realized_pnl_net_slip ?? d.realized_pnl_net ?? d.realized_pnl) };
+      l.equity_open = null;
+    }
+    return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(s) });
+  });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/desk`);
+  await p.waitForSelector('#heroNum[data-quiet="1"]');
+  const label = await p.innerText('[data-hero-label]');
+  assert.match(label, /nothing traded today · open positions’ P&L, \d+ legs?/);
+  const hero = (await p.getAttribute('#heroNum .odo', 'aria-label'));
+  const subT = (await p.innerText('#subT')).trim();
+  assert.equal(subT, '₹0', 'today is still there, as a figure under it');
+  assert.notEqual(hero, '₹0', 'the open legs’ P&L, not a misleading ₹0');
+  assert.equal(await p.locator('#subU').count(), 0);
+  // the lanes too: each shows its open P&L under an "Open" column
+  assert.equal((await p.innerText('.lane-axis b.right')).trim(), 'Open');
+  // each holding lane shows the same open P&L as its group in Open positions
+  const pairs = await p.$$eval('[data-grp]', gs => gs.map(g => [g.textContent.trim(), document.querySelector(`[data-today="${g.dataset.grp}"]`)?.textContent.trim()]));
+  assert.ok(pairs.length, 'some deployment holds legs');
+  for (const [grp, lane] of pairs) if (lane != null) assert.equal(lane, grp, 'a holding lane shows what it holds');
+  assert.ok(pairs.some(([g]) => g !== '₹0'));
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

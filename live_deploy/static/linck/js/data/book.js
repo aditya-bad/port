@@ -162,10 +162,20 @@ function base(d) {
 // today counts; the stored last prices would otherwise show the legs'
 // whole unrealized P&L as today's move. Pure, for tests.
 export function dayPnl({ realized, overall, legs, equityOpen, realizedOpen, openAt, stopped }, priceAt) {
-  if (stopped) return { today: 0, stale: false };
+  if (stopped) return { today: 0, stale: false, fresh: false };
   const fresh = legs.some(p => { const at = priceAt(p.instrument_token); return at != null && at >= openAt; });
-  if (legs.length && !fresh && realizedOpen) return { today: realized - baseOf(realizedOpen), stale: true };
-  return { today: overall - (equityOpen ? baseOf(equityOpen) : realized), stale: false };
+  if (legs.length && !fresh && realizedOpen) return { today: realized - baseOf(realizedOpen), stale: true, fresh };
+  return { today: overall - (equityOpen ? baseOf(equityOpen) : realized), stale: false, fresh };
+}
+
+// Has anything happened today: a leg priced since the open, or a fill,
+// exit or error today? When nothing has (a holiday, a weekend, before
+// 09:15, Kite not connected, a day with no trades and nothing held
+// moving), today's P&L is a misleading ₹0, so the Desk shows what's open
+// instead. Pure, for tests.
+export const tradedToday = (x, events) => !!(x.fresh || (events && events.length) || Math.abs(x.today) >= 0.5);
+export function quietDay(list, liveOf, eventsOf) {
+  return !list.some(v => v.rawStatus !== 'stopped' && tradedToday(liveOf(v), eventsOf(v)));
 }
 
 // Live figures for one deployment in the current basis.
@@ -178,11 +188,11 @@ export function live(v) {
   }
   if (!known && v.legs.length) unreal = pick(v.raw, 'unrealized_pnl') || 0;
   const overall = realized + unreal;
-  const { today, stale } = dayPnl({
+  const { today, stale, fresh } = dayPnl({
     realized, overall, legs: v.legs, equityOpen: v.equityOpen, realizedOpen: v.realizedOpen,
     openAt: raw.session ? raw.session.open_at : Infinity, stopped: v.rawStatus === 'stopped',
   }, tok => { const t = prices.get(tok); return t ? t.at : null; });
-  return { realized, unreal, overall, today, stale, ret: v.cap ? overall / v.cap * 100 : 0 };
+  return { realized, unreal, overall, today, stale, fresh, ret: v.cap ? overall / v.cap * 100 : 0 };
 }
 
 export function deployments() {
@@ -196,6 +206,8 @@ export function deployments() {
 }
 export const find = id => deployments().find(v => v.id === id) || null;
 export const rawDeployment = id => raw.deployments.find(d => d.id === id) || null;
+export const eventsToday = v => (raw.session && raw.session.lanes[v.id] ? raw.session.lanes[v.id].events : []);
+export const quiet = list => quietDay(list, live, eventsToday);
 export function totals(list) {
   return list.reduce((a, v) => {
     const x = live(v);
