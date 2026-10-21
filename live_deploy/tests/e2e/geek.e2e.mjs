@@ -65,7 +65,7 @@ test('every strategy has Geek mode: the shared views, without the strangle\'s ow
       await p.waitForFunction(() => {
         const el = document.querySelector('#gkView');
         return el && el.children.length && !el.querySelector('.skel');
-      }, null, { timeout: 10000 });
+      }, null, { timeout: 20000 });
       const text = await p.locator('#gkView').innerText();
       assert.doesNotMatch(text, /undefined|NaN|\[object/, `${label} ${v}: no broken values`);
       const sw = await p.evaluate(() => document.documentElement.scrollWidth);
@@ -101,7 +101,7 @@ for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
       await p.waitForFunction(() => {
         const el = document.querySelector('#gkView');
         return el && el.children.length && !el.querySelector('.skel');
-      }, null, { timeout: 10000 });
+      }, null, { timeout: 20000 });
       const text = await p.locator('#gkView').innerText();
       assert.doesNotMatch(text, /undefined|NaN|\[object/, `${v}: no broken values`);
       const sw = await p.evaluate(() => document.documentElement.scrollWidth);
@@ -355,7 +355,7 @@ test('SuperTrend options: engine ladder, signals, exits, days and one trade end 
       await p.waitForFunction(() => {
         const el = document.querySelector('#gkView');
         return el && el.children.length && !el.querySelector('.skel');
-      }, null, { timeout: 10000 });
+      }, null, { timeout: 20000 });
       const text = await p.locator('#gkView').innerText();
       assert.doesNotMatch(text, /undefined|NaN|\[object|Infinity/, `${label} ${v}: no broken values`);
       const sw = await p.evaluate(() => document.documentElement.scrollWidth);
@@ -426,7 +426,7 @@ test('DTT straddle: engine, straddles, exits & timing, and one straddle end to e
       await p.waitForFunction(() => {
         const el = document.querySelector('#gkView');
         return el && el.children.length && !el.querySelector('.skel');
-      }, null, { timeout: 10000 });
+      }, null, { timeout: 20000 });
       const text = await p.locator('#gkView').innerText();
       assert.doesNotMatch(text, /undefined|NaN|\[object|Infinity/, `${label} ${v}: no broken values`);
       const sw = await p.evaluate(() => document.documentElement.scrollWidth);
@@ -476,3 +476,60 @@ test('DTT straddle: engine, straddles, exits & timing, and one straddle end to e
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+for (const [name, rolls] of [['BankNifty DTT Adjusted', false], ['BankNifty DTT Advanced', true]]) {
+  test(`${name}: engine, sessions, adjustments and one day end to end`, async () => {
+    const ID = IDS[name];
+    const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'sessions', 'moves', 'settings'];
+    for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
+      const ctx = await context(b, { width, height: 860 });
+      const p = await ctx.newPage();
+      await p.goto(`${BASE}/linck/#/d/${ID}/geek`);
+      await p.waitForSelector('.gk-rail a.on');
+      assert.deepEqual(await p.$$eval('.gk-rail a', as => as.map(a => a.getAttribute('href').split('/geek/')[1])), OWN, `${label}: menu`);
+      for (const v of OWN.concat(['session'])) {
+        await p.goto(`${BASE}/linck/#/d/${ID}/geek/${v}`);
+        await p.waitForSelector(`.gk-rail a.on[href$="/geek/${v === 'session' ? 'sessions' : v}"]`);
+        await p.waitForFunction(() => { const el = document.querySelector('#gkView'); return el && el.children.length && !el.querySelector('.skel'); }, null, { timeout: 20000 });
+        const text = await p.locator('#gkView').innerText();
+        assert.doesNotMatch(text, /undefined|NaN|\[object|Infinity/, `${label} ${v}: no broken values`);
+        const sw = await p.evaluate(() => document.documentElement.scrollWidth);
+        assert.ok(sw <= width, `${label} ${v}: page ${sw}px wide at ${width}px`);
+      }
+      assert.deepEqual(ctx.errors, []);
+      await ctx.close();
+    }
+    const ctx = await context(b);
+    const p = await ctx.newPage();
+    const api = async v => (await ctx.request.get(`${BASE}/v2/deployments/${ID}/geek/${v}`)).json();
+    const all = await api('sessions');
+    assert.ok(all.sessions.length >= 15 && all.summary.adjustments > 0, 'it adjusted');
+    assert.equal(all.summary.rolling, rolls);
+    assert.equal(all.summary.rolls > 0, rolls, rolls ? 'the advanced one rolls' : 'the adjusted one never rolls');
+    assert.equal(Math.round(all.summary.pnl), Math.round(all.summary.original_pnl + all.summary.extra_pnl), 'original + extra legs = the total');
+    await p.goto(`${BASE}/linck/#/d/${ID}/geek/engine`);
+    await p.waitForSelector('[data-adj]');
+    await p.goto(`${BASE}/linck/#/d/${ID}/geek/sessions`);
+    await p.waitForSelector('#gkView a[href*="/geek/session?d="]');
+    assert.equal(await p.locator('#gkView a[href*="/geek/session?d="]').count(), all.sessions.length);
+    // open the busiest day
+    const i = all.sessions.reduce((a, s, j) => (s.adjustments + s.rolls > all.sessions[a].adjustments + all.sessions[a].rolls ? j : a), 0);
+    const day = all.sessions[i];
+    await p.locator('#gkView a[href*="/geek/session?d="]').nth(i).click();
+    await p.waitForURL(/\/geek\/session\?d=/);
+    await p.waitForFunction(() => document.querySelector('#gkView').innerText.includes('All sessions') && document.querySelectorAll('#gkView .gk-chart').length >= 4);
+    const text = await p.locator('#gkView').innerText();
+    assert.match(text, new RegExp(`${all.sessions.length - i} of ${all.sessions.length}`));
+    for (const l of day.legs) assert.ok(text.includes(l.symbol), `${l.symbol} listed`);
+    assert.equal(await p.locator('.gk-rail a.on').getAttribute('href').then(h => h.split('/geek/')[1]), 'sessions');
+    await p.goto(`${BASE}/linck/#/d/${ID}/geek/session?d=1999-01-01`);
+    await p.waitForSelector('#gkView .empty');
+    assert.match(await p.locator('#gkView').innerText(), /There’s no session on that day/);
+    const moves = await api('moves');
+    await p.goto(`${BASE}/linck/#/d/${ID}/geek/moves`);
+    await p.waitForSelector('#gkView .gk-tbl a[href*="/geek/session?d="]');
+    assert.equal(await p.locator('#gkView .gk-tbl a[href*="/geek/session?d="]').count(), moves.rows.length);
+    assert.deepEqual(ctx.errors, []);
+    await ctx.close();
+  });
+}

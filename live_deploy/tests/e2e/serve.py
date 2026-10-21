@@ -65,7 +65,8 @@ TOKEN = {"NIFTY": 256265, "BANKNIFTY": 260105, "SENSEX": 265, "BANKEX": 274441}
 DEPS = [
     ("Nifty Strangle A", "strangle_monthly_v2", "positional", 1_000_000, "NIFTY", "active", ["Strangles"], 200, "pos"),
     ("Nifty Strangle B", "strangle_monthly_v2", "positional", 1_000_000, "NIFTY", "paused", ["Strangles"], 150, "pos"),
-    ("BankNifty DTT Adjusted", "intraday_dtt_adjusted", "intraday", 500_000, "BANKNIFTY", "active", ["DTT"], 120, "intra"),
+    ("BankNifty DTT Adjusted", "intraday_dtt_adjusted", "intraday", 500_000, "BANKNIFTY", "active", ["DTT"], 120, "adj"),
+    ("BankNifty DTT Advanced", "intraday_dtt_advanced", "intraday", 500_000, "BANKNIFTY", "paused", ["DTT"], 60, "adv"),
     ("BankNifty DTT Plain", "intraday_dtt_simple", "intraday", 500_000, "BANKNIFTY", "active", ["DTT"], 120, "dtt"),
     ("Sensex Credit Spread", "trend_credit_spread", "positional", 500_000, "SENSEX", "active", ["Spreads"], 90, "pos"),
     ("Pivot Supertrend Options", "pivot_supertrend_options", "intraday", 300_000, "NIFTY", "stopped", [], 60, "st"),
@@ -133,6 +134,8 @@ async def seed():
             await seed_supertrend(pool, d["id"], created)
         elif style == "dtt":
             await seed_dtt(pool, d["id"], created)
+        elif style in ("adj", "adv"):
+            await seed_adjusted(pool, d["id"], created, rolling=style == "adv")
         elif style == "intra":
             while day < TODAY:
                 if day.weekday() < 5 and R.random() < 0.85:
@@ -282,6 +285,137 @@ async def seed_dtt(pool, dep, created):
                                               f"Combined {ce + pe:.1f} (entry {ce0 + pe0:.1f}, target {(ce0 + pe0) * 0.9:.1f}) · CE {ce:.1f} / stop {ce0 * 1.4:.1f} · PE {pe:.1f} / stop {pe0 * 1.4:.1f}",
                                               {"combined_entry": round(ce0 + pe0, 2), "combined_now": round(ce + pe, 2),
                                                "target_combined": round((ce0 + pe0) * 0.9, 2), "ce_now": round(ce, 2), "pe_now": round(pe, 2)})
+        n += 1
+        day += timedelta(days=1)
+
+
+# intraday_dtt_adjusted / _advanced the way they really trade: the 10:00
+# straddle, then legs added to a side that falls to half the other (the
+# advanced one rolls the cheapest at its cap), unwound when that side
+# recovers, and everything flattened on the day's profit target, a
+# break-even breach or at 15:00 — with the strategy's own metadata,
+# candles for every leg and the index, and its half-hourly checks.
+async def seed_adjusted(pool, dep, created, rolling=False):
+    ix, q, tok, step = "BANKNIFTY", LOT["BANKNIFTY"], TOKEN["BANKNIFTY"], STEP["BANKNIFTY"]
+    rnd = random.Random(23 if rolling else 17)
+    day, n, cap = max(created + timedelta(days=1), TODAY - timedelta(days=40)), 0, 2
+    while day < TODAY - timedelta(days=1):
+        if day.weekday() >= 5 or n >= 25:
+            day += timedelta(days=1)
+            continue
+        open_ = datetime.combine(day.date(), time(9, 15), IST)
+        base, ph, amp = SPOT[ix] + rnd.uniform(-500, 500), rnd.uniform(0, 6.28), rnd.choice([rnd.uniform(60, 160), rnd.uniform(200, 420), rnd.uniform(200, 420)])
+        drift = rnd.uniform(-1.2, 1.2)
+        spot = lambda m: base + amp * math.sin((m - open_).total_seconds() / 60 / 80 + ph) + drift * (m - open_).total_seconds() / 60  # noqa: E731
+        t0 = datetime.combine(day.date(), time(10, 0), IST)
+        s0 = spot(t0)
+        k = round(s0 / step) * step
+        expiry = day + timedelta(days=(2 - day.weekday()) % 7)
+        mon = expiry.strftime("%y%b").upper()
+        decay = lambda m: 1 - 0.3 * max(0.0, (m - t0).total_seconds()) / 18000  # noqa: E731
+        # a leg's premium: its own strike's moneyness at the index now
+        prem = lambda strike, side, m, e0, sp0: max(1.0, e0 * decay(m) + (0.5 if side == "CE" else -0.5) * (spot(m) - sp0) * max(0.2, 1 - abs(strike - sp0) / 600) + 0.0004 * (spot(m) - sp0) ** 2)  # noqa: E731
+        legs = {"CE": [], "PE": []}
+        used, adjusted, realized = 0, None, 0.0
+        tv0 = {"tick_time": "10:00:00", "entry_time": "10:00:00", "late_start_today": False, "switched_to_next_week": False}
+
+        async def sell(side, strike, px, at, trigger, role, tvals, target=None):
+            t_ = ntok()
+            sym_ = f"BANKNIFTY{mon}{strike}{side}"
+            meta = {"trigger": trigger, "action": f"sell_open_{side}", "trigger_values": tvals, "leg_role": role, "leg": side,
+                    "strike": strike, "expiry": expiry.date().isoformat(), "exchange": "NFO",
+                    "resulting_state": {}, "target_basis": {"target_premium": target, "selected_strike": strike, "fill_premium": px} if target else {}}
+            if role == "original":
+                meta["entry_spot"] = round(s0, 2)
+            await queries.record_fill(pool, dep, sym_, t_, "sell", q, round(px, 2), at, reason="entry" if role == "original" else trigger, metadata=meta)
+            legs[side].append({"sym": sym_, "tok": t_, "strike": strike, "e0": px, "sp0": spot(at), "role": role, "opened": at})
+
+        async def buy(side, leg, at, trigger, tvals):
+            px = round(prem(leg["strike"], side, at, leg["e0"], leg["sp0"]), 2)
+            await queries.record_fill(pool, dep, leg["sym"], leg["tok"], "buy", q, px, at, reason=trigger,
+                                          metadata={"trigger": trigger, "action": f"buy_close_{side}", "trigger_values": tvals, "resulting_state": {}})
+            legs[side].remove(leg)
+            return (leg["e0"] - px) * q
+
+        ce0, pe0 = round(rnd.uniform(220, 320), 2), round(rnd.uniform(220, 320), 2)
+        await sell("CE", k, ce0, t0, "entry_time_reached", "original", tv0)
+        await sell("PE", k, pe0, t0, "entry_time_reached", "original", tv0)
+        c_in = ce0 + pe0
+        band = c_in * (1.1 if rolling else 1.0)
+        lo_be, hi_be, target = s0 - band, s0 + band, 0.1 * c_in * q
+        price_of = lambda side, leg, m: prem(leg["strike"], side, m, leg["e0"], leg["sp0"])  # noqa: E731
+        m, end = t0 + timedelta(minutes=1), datetime.combine(day.date(), time(15, 0), IST)
+        reason = "force_exit"
+        while m < end:
+            sp = spot(m)
+            if sp <= lo_be or sp >= hi_be:
+                reason = "breakeven_fallback"
+                break
+            open_pnl = sum((l["e0"] - price_of(sd, l, m)) * q for sd in ("CE", "PE") for l in legs[sd])
+            if realized + open_pnl >= target:
+                reason = "profit_target_total"
+                break
+            tot = {sd: sum(price_of(sd, l, m) for l in legs[sd]) for sd in ("CE", "PE")}
+            if adjusted is None:
+                small, big = ("PE", "CE") if tot["CE"] >= tot["PE"] else ("CE", "PE")
+                bigger_now = tot[big]
+            else:
+                small, big = adjusted, {"CE": "PE", "PE": "CE"}[adjusted]
+                bigger_now = price_of(big, legs[big][0], m)
+            if legs[small] and legs[big] and tot[small] <= 0.5 * bigger_now:
+                side_target = 0.25 * bigger_now
+                held = {l["strike"] for l in legs[small]}
+                strike = k + (1 if small == "CE" else -1) * step * rnd.randint(4, 9)
+                while strike in held:
+                    strike += (1 if small == "CE" else -1) * step
+                tvals = {"side": small, "bigger_now": round(bigger_now, 2), "smaller_total": round(tot[small], 2),
+                         "adjustment_trigger_ratio": 0.5, "trigger_threshold": round(0.5 * bigger_now, 2)}
+                if len(legs[small]) - 1 < cap and (rolling or used < cap):
+                    used += 1
+                    adjusted = small
+                    await sell(small, strike, side_target * rnd.uniform(0.9, 1.1), m, "adjustment", f"adjustment_{used}", tvals, round(side_target, 2))
+                elif rolling:
+                    cheapest = min(legs[small], key=lambda l: price_of(small, l, m))
+                    realized += await buy(small, cheapest, m, "roll_close", {"side": small, "concurrent_legs_before_roll": len(legs[small])})
+                    used += 1
+                    await sell(small, strike, side_target * rnd.uniform(0.9, 1.1), m + timedelta(seconds=2), "roll_open", f"adjustment_{used}",
+                               {"side": small, "bigger_now": round(bigger_now, 2), "concurrent_legs_before_roll_open": len(legs[small])}, round(side_target, 2))
+                elif m.minute % 30 == 0:
+                    await queries.record_decision(pool, dep, m, "adjustment", "blocked",
+                                                  f"{small} side fell to the adjustment trigger but today's {cap} adjustments are used",
+                                                  {"side": small, "bigger_now": round(bigger_now, 2), "adjustments_used": used, "max_adjustments": cap})
+            elif adjusted and len(legs[adjusted]) > 1 and tot[adjusted] >= bigger_now:
+                cheapest = min(legs[adjusted], key=lambda l: price_of(adjusted, l, m))
+                realized += await buy(adjusted, cheapest, m, "reversal_unwind",
+                                      {"side": adjusted, "smaller_total": round(tot[adjusted], 2), "bigger_now": round(bigger_now, 2)})
+            if m.minute in (0, 30) and m.second == 0:
+                await queries.record_decision(pool, dep, m, "exit_checks", "no_action",
+                                              f"Day P&L {realized + open_pnl:,.0f} of the {target:,.0f} target · spot {sp:.1f} between break-evens {lo_be:.1f} and {hi_be:.1f}",
+                                              {"total_profit": round(realized + open_pnl, 2), "target": round(target, 2), "spot": round(sp, 2)})
+            m += timedelta(minutes=1)
+        out = m if reason != "force_exit" else end
+        all_legs = [(sd, l) for sd in ("CE", "PE") for l in list(legs[sd])]
+        tv = {"breakeven_fallback": {"spot_price": round(spot(out), 2), "breakeven_lower": round(lo_be, 2), "breakeven_upper": round(hi_be, 2)},
+              "profit_target_total": {"total_profit": round(target, 2), "target": round(target, 2), "combined_entry_premium": round(c_in, 2)},
+              "force_exit": {"tick_time": "15:00:00", "force_exit_time": "15:00:00"}}[reason]
+        for sd, l in all_legs:
+            await buy(sd, l, out, reason, {**tv, "price_source": "last_tick"})
+        rows = []
+        for i in range(int((out - open_).total_seconds() / 60) + 31):
+            mm = open_ + timedelta(minutes=i)
+            rows.append((tok, mm, *(round(spot(mm), 2),) * 4, None))
+        await queries.upsert_candles(pool, rows, "kite")
+        for p_ in await pool.fetch("SELECT p.instrument_token, p.symbol, p.opened_at, p.closed_at, l.price, l.metadata FROM positions p "
+                                   "JOIN position_lots l ON l.position_id = p.id WHERE p.deployment_id = $1 AND p.opened_at >= $2 AND l.action = 'sell'",
+                                   dep, open_):
+            md = p_["metadata"] if isinstance(p_["metadata"], dict) else json.loads(p_["metadata"] or "{}")
+            sd, strike, e0, at0 = p_["symbol"][-2:], md.get("strike"), float(p_["price"]), p_["opened_at"]
+            sp0 = spot(at0.astimezone(IST))
+            cr, mm = [], at0.astimezone(IST).replace(second=0)
+            while mm <= (p_["closed_at"] or out).astimezone(IST):
+                cr.append((p_["instrument_token"], mm, *(round(prem(strike, sd, mm, e0, sp0), 2),) * 4, None))
+                mm += timedelta(minutes=1)
+            await queries.upsert_candles(pool, cr, "kite")
         n += 1
         day += timedelta(days=1)
 

@@ -9,6 +9,7 @@ import { empty, loading } from '../../ui/components.js';
 import { hasView } from './views.js';
 import { stPanel } from './st.js';
 import { ddPanel } from './dtt.js';
+import { adPanel } from './adj.js';
 import { head, nextMove, gauge, stateChip, table, tiles, poll, svg, path, money, tone, hit, tipAt } from './ui.js';
 
 function ruler(k) {
@@ -113,6 +114,7 @@ export default {
         </div>` : ''}
         ${eng.supertrend ? stPanel(eng.supertrend) : ''}
         ${eng.straddle ? ddPanel(eng.straddle) : ''}
+        ${eng.adjusted ? adPanel(eng.adjusted) : ''}
         ${eng.fields && eng.fields.length && !eng.supertrend ? html`<div class="gk-panel"><h3>Strategy readings <span class="s">${eng.fields_source === 'live' ? 'live, from the running strategy' : 'last saved, while not running'}</span></h3>
           ${tiles(eng.fields.map(f => [f.label, show(f.value), '']))}</div>` : ''}
         <div class="${eng.state ? 'gk-two' : ''}">

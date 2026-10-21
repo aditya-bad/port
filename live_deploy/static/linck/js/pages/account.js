@@ -69,8 +69,10 @@ export default {
       try { hist = await api.backfillStatus(); } catch (e) { hist = { error: e.message }; }
       if (hist && hist.running) noticeBackfill(hist.running);   // the header strip too, not 20 s later
       paint();
-      // every 2 s while a backfill runs, else every 10 s (a 15:45 run shows up on its own)
-      histTimer = setTimeout(loadHist, hist && hist.running ? 2000 : 10000);
+      // every 2 s while a backfill runs; while its section is open every 4 s, so a
+      // run started elsewhere (another tab, the 15:45 schedule) shows up even if
+      // it's quick; else every 10 s
+      histTimer = setTimeout(loadHist, hist && hist.running ? 2000 : key === 'history' ? 4000 : 10000);
     }
     async function loadPush() {
       try {
@@ -110,8 +112,9 @@ export default {
           ['app', st === 'installed' ? 'Installed on this device' : 'Not installed on this device', '', st === 'installed' ? 'Installed' : 'Not installed'],
           ['users', users ? plural(users.length, 'user') : '…', '', users ? String(users.length) : ''],
           ['tags', plural(book.tags().length, 'tag'), '', String(book.tags().length)],
-          ['history', hist && hist.running ? 'Saving now…' : hist && hist.last ? `Last saved ${dDay(hist.last.finished_at)}, ${hhmm(hist.last.finished_at)}${hist.last.complete ? '' : ' · stopped early'}` : '…', histBad ? 'warn' : '',
-            hist && hist.running ? 'Saving…' : histBad ? 'Stopped early' : hist && hist.last ? dDay(hist.last.finished_at) : ''],
+          ['history', hist && hist.running ? 'Saving now…' : hist && hist.last ? `Last saved ${dDay(hist.last.finished_at)}, ${hhmm(hist.last.finished_at)}${hist.last.complete ? '' : ' · stopped early'}`
+            : hist && !hist.error && hist.next_at ? `Not run yet · next ${dDay(hist.next_at)}, ${hhmm(hist.next_at)}` : hist && hist.error ? 'Couldn’t check' : '…', histBad ? 'warn' : '',
+            hist && hist.running ? 'Saving…' : histBad ? 'Stopped early' : hist && hist.last ? dDay(hist.last.finished_at) : hist && hist.next_at ? 'Not run yet' : ''],
           ['log', audit ? (audit.length ? `Last change ${ago(audit[0].occurred_at)} by ${audit[0].username || 'API key'}` : 'Nothing yet') : '…', '', audit && audit.length ? ago(audit[0].occurred_at) : ''],
           ['server', 'Redeploy · delete every deployment', 'danger', ''],
         ];

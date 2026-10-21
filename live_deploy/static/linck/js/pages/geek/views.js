@@ -12,6 +12,12 @@ export const BASICS = [
   ['decisions', 'Decisions', 'Live', 'D', () => import('./decisions.js')],
 ];
 const SETTINGS = ['settings', 'Settings at work', 'Exposure', 'S', () => import('./settings.js')];
+// The DTT straddles that adjust (and the one that rolls) share their views.
+const ADJUSTED = [
+  ['sessions', 'Sessions', 'Anatomy', 'I', () => import('./adjsessions.js')],
+  ['session', 'Session', 'Anatomy', '', () => import('./adjsession.js'), false, 'sessions'],   // one day, from Sessions or Adjustments
+  ['moves', 'Adjustments', 'Anatomy', 'A', () => import('./adjmoves.js')],
+];
 // Views of a strategy's own, between Live and Exposure.
 const OWN = {
   strangle_monthly_v2: [
@@ -33,6 +39,8 @@ const OWN = {
     ['straddle', 'Straddle', 'Anatomy', '', () => import('./straddle.js'), false, 'straddles'],   // one straddle, from Straddles or Exits
     ['timing', 'Exits & timing', 'Anatomy', 'X', () => import('./timing.js')],
   ],
+  intraday_dtt_adjusted: ADJUSTED,
+  intraday_dtt_advanced: ADJUSTED,
 };
 export const viewsFor = strategy => [...BASICS, ...(OWN[strategy] || []), SETTINGS];
 export const hasView = (strategy, key) => viewsFor(strategy).some(x => x[0] === key);

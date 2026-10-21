@@ -5,7 +5,7 @@
 
 import { go } from '../core/router.js';
 
-export const GEEK = new Set(['strangle_monthly_v2', 'pivot_supertrend_options', 'intraday_dtt_simple']);
+export const GEEK = new Set(['strangle_monthly_v2', 'pivot_supertrend_options', 'intraday_dtt_simple', 'intraday_dtt_adjusted', 'intraday_dtt_advanced']);
 export const supports = v => !!v && !!v.strategy;
 export const hasOwn = v => !!v && GEEK.has(v.strategy);
 

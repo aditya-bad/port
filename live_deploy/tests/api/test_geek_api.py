@@ -211,3 +211,21 @@ def test_dtt_one_straddle_through_the_api(client):
     assert one["no"] == 1 and one["lines"] == {"target": 198.0, "stops": {"CE": 140.0, "PE": 168.0}}
     rows = client.get(f"/v2/deployments/{d['id']}/geek/decisions").json()["rows"]
     assert [(x["kind"], x["label"]) for x in rows] == [("exit", "Leg stop"), ("entry", "Entry")]
+
+
+ADJ_VIEWS = ["engine", "decisions", "settings", "sessions", "moves", "session"]
+
+
+@pytest.mark.parametrize("strategy", ["intraday_dtt_adjusted", "intraday_dtt_advanced"])
+@pytest.mark.parametrize("view", ADJ_VIEWS)
+def test_adjusting_straddle_views_answer_with_no_history(client, strategy, view):
+    d = make_deployment(client, name=f"{strategy} {view}", strategy=strategy)
+    r = client.get(f"/v2/deployments/{d['id']}/geek/{view}")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    if view == "sessions":
+        assert body["sessions"] == [] and body["summary"]["rolling"] == (strategy == "intraday_dtt_advanced")
+    if view == "session":
+        assert body == {"session": None, "n": 0}
+    if view == "engine":
+        assert body["rules"] == [] and body["adjusted"]["legs"] == {"CE": [], "PE": []}

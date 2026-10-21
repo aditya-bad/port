@@ -34,6 +34,7 @@ test('the overview shows every section with its state, and each card opens it', 
   const p = await ctx.newPage();
   await p.goto(`${BASE}/linck/#/account`);
   await p.waitForSelector('.ov-card[data-sec="log"]:not(:has-text("…"))');
+  await p.waitForSelector('.ov-card[data-sec="history"] .ov-state:not(:text-is("…"))');
   assert.deepEqual(await p.$$eval('.ov-card', cs => cs.map(c => c.dataset.sec)), SECTIONS);
   assert.deepEqual(await p.$$eval('.ov-grp > h3', hs => hs.map(h => h.textContent)), ['Trading', 'You', 'Workspace', 'Danger zone']);
   // every card says what the section is for and what state it is in
@@ -42,6 +43,7 @@ test('the overview shows every section with its state, and each card opens it', 
     assert.ok((await c.$eval('.ov-state', e => e.textContent.trim())).length > 2);
   }
   assert.match(await p.innerText('.ov-card[data-sec="kite"]'), /Not connected|Connected|Connecting/);
+  assert.match(await p.innerText('.ov-card[data-sec="history"]'), /Last saved|Saving now|Not run yet/, 'says where the history stands, even before the first run');
   assert.match(await p.innerText('.ov-card[data-sec="emergency"]'), /open legs? in \d+ deployments?|No open positions/);
   await p.click('.ov-card[data-sec="tags"]');
   await p.waitForURL(/#\/account\?s=tags$/);

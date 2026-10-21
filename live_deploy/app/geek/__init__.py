@@ -8,12 +8,12 @@ name -> builder(ctx) -> dict); the API (app/routers/geek.py) uses that
 module for it and `common` for the rest.
 """
 
-from . import common, dtt_straddle, strangle_v2, supertrend_options
+from . import common, dtt_adjusted, dtt_straddle, strangle_v2, supertrend_options
 
 # Strategies with views of their own. static/linck/js/data/geek.js lists
 # the same names, to offer their extra views.
 GEEK = {"strangle_monthly_v2": strangle_v2, "pivot_supertrend_options": supertrend_options,
-        "intraday_dtt_simple": dtt_straddle}
+        "intraday_dtt_simple": dtt_straddle, "intraday_dtt_adjusted": dtt_adjusted, "intraday_dtt_advanced": dtt_adjusted}
 
 
 def module_for(strategy_name: str):

@@ -21,6 +21,8 @@ CALLS = {
     "strangle_monthly_v2": {"cycles", "cycle", "adjustments", "entries", "premium"},
     "pivot_supertrend_options": {"signals", "trade"},
     "intraday_dtt_simple": {"straddles", "straddle"},
+    "intraday_dtt_adjusted": {"sessions", "session", "moves"},
+    "intraday_dtt_advanced": {"sessions", "session", "moves"},
 }
 
 

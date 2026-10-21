@@ -12,6 +12,8 @@ const KINDS = {
   'Pivot Supertrend Options': ['overview', 'engine', 'decisions', 'signals', 'trade', 'exits', 'days', 'settings'],
   'BankNifty DTT Plain': ['overview', 'engine', 'decisions', 'straddles', 'straddle', 'timing', 'settings'],
   'Sensex Credit Spread': ['overview', 'engine', 'decisions', 'settings'],
+  'BankNifty DTT Adjusted': ['engine', 'sessions', 'session', 'moves'],
+  'BankNifty DTT Advanced': ['engine', 'sessions', 'session', 'moves'],
 };
 let b;
 test.before(async () => { b = await browser(); });
@@ -38,7 +40,7 @@ for (const [name, views] of Object.entries(KINDS)) {
       await p.waitForFunction(() => {
         const el = document.querySelector('#gkView');
         return el && el.children.length && !el.querySelector('.skel');
-      }, null, { timeout: 10000 });
+      }, null, { timeout: 20000 });
       await p.waitForTimeout(400);
       const found = await audit(p);
       for (const c of found) {

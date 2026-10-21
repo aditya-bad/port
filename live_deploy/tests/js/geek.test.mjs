@@ -128,7 +128,11 @@ test('DTT straddle: its own views, the one-straddle page under Straddles', async
   const vs = viewsFor('intraday_dtt_simple');
   assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'straddles', 'straddle', 'timing', 'settings']);
   assert.equal(vs.find(v => v[0] === 'straddle')[6], 'straddles');
-  assert.deepEqual(viewsFor('intraday_dtt_adjusted').map(v => v[0]).slice(-2), ['decisions', 'settings'], 'the adjusted one: shared views only');
+  for (const st of ['intraday_dtt_adjusted', 'intraday_dtt_advanced']) {
+    const vs = viewsFor(st);
+    assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'sessions', 'session', 'moves', 'settings'], st);
+    assert.equal(vs.find(v => v[0] === 'session')[6], 'sessions', 'one day sits under Sessions');
+  }
 });
 
 test('DTT straddle: progress toward a line, names and the straddle panel', async () => {
