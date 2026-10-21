@@ -72,6 +72,14 @@ export function bestFilter(fs) {
   return `Skipping its ${best.n} trade${best.n === 1 ? '' : 's'} with VIX ${best.skip === 'below' ? `below ${best.level}` : `at ${best.level} or above`} would have added ${inr(best.gain, { sign: false })}: they lost that much together.`;
 }
 
+// Rich against cheap: the richest third of its premium against the cheapest.
+export function richText(groups) {
+  const g = groups.find(x => x.key === 'rich');
+  if (!g || g.buckets.length < 2) return null;
+  const lo = g.buckets[0], hi = g.buckets[g.buckets.length - 1];
+  return `Trades whose premium was richest against VIX (${hi.label.split(' · ')[1]} points) averaged ${inr(hi.avg)}, ${Math.round(hi.win_rate)}% won; the cheapest (${lo.label.split(' · ')[1]}) averaged ${inr(lo.avg)}, ${Math.round(lo.win_rate)}% won.`;
+}
+
 // What-if entry filter: one row per VIX level, P&L had it traded only at
 // or above it (left) or only below it (right), each bar with its numbers.
 export function filterRows(fs, total) {
@@ -86,6 +94,7 @@ export function filterRows(fs, total) {
 }
 
 const tradeTip = r => [`${r.label} · ${dStamp(r.t)}`, `Result  ${r.pnl == null ? 'open' : inr(r.pnl)}`, `VIX at entry  ${pt(r.vix_in)}`,
+  ...(r.iv != null ? [`Implied volatility traded  ${pt(r.iv)}`, `Against VIX  ${sgn(r.iv_spread)} points`] : []),
   `VIX at exit  ${pt(r.vix_out)}`, `Change  ${sgn(r.dvix)}`, `${r.side === 'sold' ? 'Sold' : r.side === 'bought' ? 'Bought' : 'Sold and bought'} premium`, r.symbols.join(', ')].join('\n');
 const dayTip = r => [dDay(r.day), `P&L  ${inr(r.pnl)}`, `VIX  ${pt(r.vix_close)} (${sgn(r.dvix)})`,
   ...(r.implied_pct != null ? [`VIX priced  ±${r.implied_pct.toFixed(2)}%`] : []), ...(r.move_pct != null ? [`Index moved  ${r.move_pct.toFixed(2)}%`] : []),
@@ -118,6 +127,7 @@ export default {
             ${hereText(d.here, n.vix) ? html`<li>${hereText(d.here, n.vix)}</li>` : ''}
             ${d.spikes ? html`<li>On the ${d.spikes.spike_n} day${d.spikes.spike_n === 1 ? '' : 's'} VIX jumped 10% or more, it averaged <b class="${tone(d.spikes.spike_avg)}">${inr(d.spikes.spike_avg)}</b> (worst ${inr(d.spikes.spike_worst)}), against <b class="${tone(d.spikes.rest_avg)}">${inr(d.spikes.rest_avg)}</b> on other days.</li>` : ''}
             ${pp ? html`<li>${perPointText(pp)}.</li>` : ''}
+            ${richText(d.groups) ? html`<li>${richText(d.groups)}</li>` : ''}
             ${bestFilter(d.filters) ? html`<li>${bestFilter(d.filters)} <span class="mute small">In hindsight.</span></li>` : ''}
           </ul></div>` : ''}
         ${d.filters.length ? html`<div class="gk-panel"><h3>If it had only traded at some VIX levels <span class="s">closed trades, in hindsight · hover a row</span></h3>
@@ -133,6 +143,9 @@ export default {
             ${scatter(d.days, { x: 'dvix', y: 'pnl', tip: dayTip, label: 'Daily P&L against VIX change', fit: pp }) || empty('', 'Needs daily equity snapshots and VIX.')}
             ${pp ? html`<p class="gk-note">${perPointText(pp)}. ${d.pnl_source === 'equity' ? 'P&L here is the change in end-of-day equity, so open positions count.' : 'P&L here is what was booked each day (no end-of-day equity recorded yet), so open positions don’t count.'}</p>` : ''}</div>
         </div>
+        ${closed.some(r => r.iv_spread != null) ? html`<div class="gk-panel"><h3>Premium against VIX, and the result <span class="s">implied volatility traded less VIX at entry, in points → P&amp;L · hover a dot</span></h3>
+          ${scatter(closed, { x: 'iv_spread', y: 'pnl', tip: tradeTip, label: 'Implied volatility less VIX against the result' })}
+          <p class="gk-note">Implied volatility is worked out from each leg’s price, strike, the index and days to expiry (Black-Scholes). Right of zero: the premium was richer than VIX; a seller wants to sell rich. ${d.proxy ? 'For a non-Nifty index its own volatility runs above VIX: compare trades with each other, not with zero.' : ''}</p></div>` : ''}
         ${d.groups.length ? html`<div class="cd-grid">${d.groups.map(gr => html`<div class="gk-panel"><h3>${gr.label} <span class="s">average trade · ${gr.covered} trades</span></h3>${bucketBars(gr)}</div>`)}</div>` : ''}
         <div class="gk-two even">
           <div class="gk-panel"><h3>The market’s move against what VIX priced <span class="s">× priced → day’s P&amp;L</span></h3>

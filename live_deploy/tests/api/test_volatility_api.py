@@ -132,3 +132,33 @@ def test_without_equity_snapshots_it_uses_what_was_booked(client, monkeypatch):
     assert v["pnl_source"] == "booked"
     booked = {x["day"]: x["pnl"] for x in v["days"] if x["pnl"] is not None}
     assert booked[days(12)[2].isoformat()] == -600.0, "a day's P&L: what closed that day"
+
+
+def test_implied_volatility_of_what_was_sold_against_vix(client, monkeypatch):
+    from app.geek.optionmath import implied_vol, years_to
+    cfg = {**default_config("intraday_dtt_simple"), "instrument_tokens": [256265]}
+    d = make_deployment(client, name="vol iv", config=cfg)
+    ds = days(8)
+    kite_history(monkeypatch, client, {day: 14.0 for day in ds}, {day: 22000.0 for day in ds})
+    expiry = "2024-03-28"
+    prices = [200, 240, 280, 320, 360, 400]                  # the same straddle sold richer each day
+    for i, day in enumerate(ds[:6]):
+        t0 = datetime.combine(day, time(10, 0), IST)
+        for sym, tok, off in (("CE", 9700 + 2 * i, 0), ("PE", 9701 + 2 * i, 0)):
+            meta = {"trigger": "entry_time_reached", "action": "sell_open", "expiry": expiry, "context": {"spot": 22000.0}}
+            add_fill(client, d["id"], f"NIFTY24MAR22000{sym}", tok, "sell", 75, float(prices[i]), t0, "entry", meta)
+            add_fill(client, d["id"], f"NIFTY24MAR22000{sym}", tok, "buy", 75, float(prices[i]) * 0.9, t0 + timedelta(hours=3), "exit",
+                     {"trigger": "exit", "action": "buy_close", "context": {"spot": 22000.0}})
+    v = client.get(f"/v2/deployments/{d['id']}/geek/volatility").json()
+    rows = sorted(v["rows"], key=lambda r: r["t"])
+    assert v["summary"]["with_iv"] == 6
+    for i, r in enumerate(rows):
+        t0 = datetime.combine(ds[i], time(10, 0), IST)
+        want = implied_vol("CE", prices[i], 22000.0, 22000.0, years_to(date(2024, 3, 28), t0))
+        want_pe = implied_vol("PE", prices[i], 22000.0, 22000.0, years_to(date(2024, 3, 28), t0))
+        assert abs(r["iv"] - (want + want_pe) / 2 * 100) < 0.05, (i, r["iv"])
+        assert r["iv_spread"] == round(r["iv"] - r["vix_in"], 2)
+    assert [r["iv"] for r in rows] == sorted(r["iv"] for r in rows), "richer premium, higher implied volatility"
+    rich = next(g for g in v["groups"] if g["key"] == "rich")
+    assert [b["n"] for b in rich["buckets"]] == [2, 2, 2] and rich["buckets"][0]["label"].startswith("Cheapest third")
+    assert "thirds" not in {g["key"] for g in v["groups"]}, "VIX the same for every trade: no thirds to tell apart"

@@ -51,3 +51,10 @@ test('the one filter that would have helped most, or none', async () => {
   assert.match(bestFilter([f(13, 100, 200)]), /No VIX level would have helped/);
   assert.equal(bestFilter([]), null);
 });
+
+test('rich against cheap, in words', async () => {
+  const { richText } = await import('../../static/linck/js/pages/geek/volatility.js');
+  const g = { key: 'rich', buckets: [{ label: 'Cheapest third · up to −1.2', avg: -300, win_rate: 40 }, { label: 'Middle · −1.2 to +0.8', avg: 100, win_rate: 50 }, { label: 'Richest third · above +0.8', avg: 900, win_rate: 75 }] };
+  assert.equal(richText([g]), 'Trades whose premium was richest against VIX (above +0.8 points) averaged +₹900, 75% won; the cheapest (up to −1.2) averaged −₹300, 40% won.');
+  assert.equal(richText([]), null);
+});

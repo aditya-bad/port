@@ -643,3 +643,18 @@ test('a VIX panel on one straddle, one session, one trade and one cycle, at thei
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+test('Volatility: the implied volatility of what was sold, against VIX', async () => {
+  const ST = IDS['Pivot Supertrend Options'];
+  const ctx = await context(b, { width: 1440, height: 900 });
+  const body = await (await ctx.request.get(`${BASE}/v2/deployments/${ST}/geek/volatility`)).json();
+  const withIv = body.rows.filter(r => r.iv != null);
+  assert.ok(withIv.length >= 10, `implied volatility worked out from the fills (${withIv.length})`);
+  assert.ok(withIv.every(r => r.iv > 1 && r.iv < 300), 'in a sane range');
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ST}/geek/volatility`);
+  await p.waitForFunction(() => /Premium against VIX, and the result/.test(document.querySelector('#gkView')?.innerText || ''));
+  if (body.groups.some(g => g.key === 'rich')) assert.match(await p.locator('#gkView').innerText(), /richest against VIX/);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

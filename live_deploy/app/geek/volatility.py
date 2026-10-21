@@ -190,6 +190,61 @@ def spikes(days: list[dict], jump: float = 0.10) -> Optional[dict]:
             "rest_n": len(rest), "rest_avg": round(sum(rest) / len(rest), 2)}
 
 
+def spot_of(meta: dict) -> Optional[float]:
+    """The index level a fill recorded, if it did."""
+    m = meta or {}
+    for v in ((m.get("context") or {}).get("spot"), m.get("entry_spot"), (m.get("target_basis") or {}).get("underlying_price"),
+              (m.get("trigger_values") or {}).get("underlying_price")):
+        if v:
+            return float(v)
+    return None
+
+
+def expiry_of(meta: dict, contract_expiry, symbol: str) -> Optional[date]:
+    """A leg's expiry: what the fill recorded, else the contract list, else
+    a weekly symbol's own date (a monthly symbol only says the month)."""
+    e = (meta or {}).get("expiry")
+    if e:
+        try:
+            return date.fromisoformat(str(e)[:10])
+        except ValueError:
+            pass
+    if contract_expiry:
+        return contract_expiry if isinstance(contract_expiry, date) else date.fromisoformat(str(contract_expiry)[:10])
+    from ..candles import _WEEKLY, parse_contract
+    if _WEEKLY.match(symbol or ""):
+        c = parse_contract(symbol)
+        return c["expiry"] if c else None
+    return None
+
+
+def leg_of(p: dict, lots: list[dict], expiry: Optional[date], spot_at) -> Optional[dict]:
+    """One position as an option leg: kind, strike, expiry, entry (time,
+    index, premium), exit if closed, quantity and side. None when it isn't
+    an option or the strike, expiry or index level can't be known."""
+    from ..candles import parse_contract
+    c = parse_contract(p["symbol"])
+    if not c or c["instrument_type"] not in ("CE", "PE") or not c.get("strike") or expiry is None:
+        return None
+    opens = [x for x in lots if x["opening"]]
+    closes = [x for x in lots if not x["opening"]]
+    if not opens:
+        return None
+    t0 = opens[0]["executed_at"]
+    s0 = spot_of(opens[0]["metadata"]) or spot_at(t0)
+    if not s0:
+        return None
+    qty = sum(float(x["qty"]) for x in opens)
+    leg = {"kind": c["instrument_type"], "k": c["strike"], "expiry": expiry, "t0": t0, "s0": s0,
+           "p0": float(p["avg_entry_price"]), "qty": qty, "sold": p["side"] == "short", "symbol": p["symbol"]}
+    if p["closed_at"] is not None and closes:
+        cq = sum(float(x["qty"]) for x in closes)
+        leg["t1"] = closes[-1]["executed_at"]
+        leg["p1"] = sum(float(x["price"]) * float(x["qty"]) for x in closes) / cq if cq else None
+        leg["s1"] = spot_of(closes[-1]["metadata"]) or spot_at(leg["t1"])
+    return leg
+
+
 def side_of(fills: list[dict]) -> str:
     """Sold or bought premium, net: what the opening fills took in against
     what they paid. A hedged strangle or a credit spread takes in more
@@ -216,7 +271,7 @@ async def volatility(ctx: Ctx) -> dict:
     from .. import vix as vixmod
     from ..options import NoKiteSession
     svc = vixmod.state.get("service")
-    v15, vday, iday, vix_error = [], [], [], None
+    v15, vday, iday, i15, vix_error = [], [], [], [], None
     try:
         if svc is None:
             raise NoKiteSession("no VIX service")
@@ -224,6 +279,7 @@ async def volatility(ctx: Ctx) -> dict:
         vday = await svc.vix(start.date(), now.date(), "day", now)
         if index_token is not None:
             iday = await svc.candles(index_token, start.date(), now.date(), "day", now)
+            i15 = await svc.candles(index_token, start.date(), now.date(), "15minute", now)
         if svc.token is None:
             vix_error = svc.last_error
     except NoKiteSession:
@@ -236,6 +292,37 @@ async def volatility(ctx: Ctx) -> dict:
             return None
         i = bisect.bisect_right(vt, t) - 1
         return round(vc[i], 2) if i >= 0 and t - vt[i] <= timedelta(days=4) else None
+
+    it = [r["t"] + timedelta(minutes=15) for r in i15]
+    ic = [r["c"] for r in i15]
+
+    def spot_at(t) -> Optional[float]:
+        if t is None or not it:
+            return None
+        i = bisect.bisect_right(it, t) - 1
+        if i < 0:   # before the first finished candle: that candle's open
+            return i15[0]["o"] if it[0] - t <= timedelta(minutes=15) else None
+        return ic[i] if t - it[i] <= timedelta(days=4) else None
+
+    # each option leg's strike, expiry and index level, for its implied volatility
+    from .optionmath import attribute, implied_vol, years_to
+    lots_by: dict = defaultdict(list)
+    for lot in b["lots"]:
+        lots_by[lot["position_id"]].append(lot)
+    contract_exp = {r["instrument_token"]: r["expiry"] for r in await ctx.pool.fetch(
+        "SELECT instrument_token, expiry FROM contracts WHERE instrument_token = ANY($1::bigint[])",
+        list({int(p["instrument_token"]) for p in b["positions"]}))} if b["positions"] else {}
+    legs = {}
+    for p in b["positions"]:
+        ls = sorted(lots_by.get(p["id"], []), key=lambda x: x["executed_at"])
+        first_meta = ls[0]["metadata"] if ls else {}
+        lg = leg_of(p, ls, expiry_of(first_meta, contract_exp.get(int(p["instrument_token"])), p["symbol"]), spot_at)
+        if lg:
+            lg["iv0"] = implied_vol(lg["kind"], lg["p0"], lg["s0"], lg["k"], years_to(lg["expiry"], lg["t0"]))
+            if lg.get("p1") is not None and lg.get("s1"):
+                lg["attr"] = attribute(lg["kind"], lg["k"], lg["expiry"], lg["t0"], lg["s0"], lg["p0"],
+                                       lg["t1"], lg["s1"], lg["p1"], lg["qty"], lg["sold"])
+            legs[p["id"]] = lg
 
     vix_days = {r["t"].date(): (r["o"], r["h"], r["l"], r["c"]) for r in vday}
     idx_days = {r["t"].date(): (r["o"], r["h"], r["l"], r["c"]) for r in iday}
@@ -264,16 +351,21 @@ async def volatility(ctx: Ctx) -> dict:
         fills = [f for a in tr["actions"] for f in a["fills"]]
         vin = (tr["first"]["metadata"].get("context") or {}).get("vix") or vix_at(tr["t"])
         vout = vix_at(end) if end else None
-        rows.append({"t": _iso(tr["t"]), "end": _iso(end), "label": label(tr["trigger"]), "symbols": [p["symbol"] for p in ps],
+        lgs = [legs[p["id"]] for p in ps if p["id"] in legs and legs[p["id"]].get("iv0")]
+        w = sum(lg["p0"] * lg["qty"] for lg in lgs)
+        iv = round(sum(lg["iv0"] * lg["p0"] * lg["qty"] for lg in lgs) / w * 100, 2) if w else None
+        rows.append({"iv": iv, "iv_legs": len(lgs),
+                     "t": _iso(tr["t"]), "end": _iso(end), "label": label(tr["trigger"]), "symbols": [p["symbol"] for p in ps],
                      "side": side_of(fills), "open": is_open,
                      "pnl": None if is_open else round(sum(float(p["realized_pnl"] or 0) for p in ps), 2),
                      "vix_in": vin, "vix_out": vout,
                      "dvix": round(vout - vin, 2) if vin is not None and vout is not None else None})
+    for r in rows:
+        r["iv_spread"] = round(r["iv"] - r["vix_in"], 2) if r["iv"] is not None and r["vix_in"] is not None else None
     known = [r for r in rows if r["vix_in"] is not None]
-    third = sorted(r["vix_in"] for r in known if r["pnl"] is not None)
-    thirds = None
-    if len(third) >= 6:
-        thirds = (third[len(third) // 3], third[2 * len(third) // 3])
+    thirds = common.thirds([r["vix_in"] for r in known if r["pnl"] is not None])
+    if thirds and thirds[0] >= thirds[1]:
+        thirds = None   # VIX barely varied: no thirds to tell apart
     specs = [("band", "VIX at entry", lambda r: bucket(r["vix_in"], BANDS), BANDS[0]),
              ("change", "What VIX did during the trade", lambda r: bucket(r["dvix"], CHANGE), CHANGE[0])]
     if thirds:
@@ -281,6 +373,14 @@ async def volatility(ctx: Ctx) -> dict:
         order = [f"Low · up to {a:g}", f"Middle · {a:g}–{c:g}", f"High · above {c:g}"]
         specs.insert(1, ("thirds", "VIX at entry, in thirds of this deployment’s trades",
                          lambda r: None if r["vix_in"] is None else order[0] if r["vix_in"] <= a else order[1] if r["vix_in"] <= c else order[2], order))
+
+    cuts = common.thirds([r["iv_spread"] for r in known if r["pnl"] is not None and r["iv_spread"] is not None])
+    if cuts and cuts[0] < cuts[1]:
+        a2, c2 = cuts
+        f = lambda x: f"{'+' if x >= 0 else '−'}{abs(x):g}"  # noqa: E731
+        rich = [f"Cheapest third · up to {f(a2)}", f"Middle · {f(a2)} to {f(c2)}", f"Richest third · above {f(c2)}"]
+        specs.append(("rich", "Premium against VIX: implied volatility less VIX, in points",
+                      lambda r: None if r["iv_spread"] is None else rich[0] if r["iv_spread"] <= a2 else rich[1] if r["iv_spread"] <= c2 else rich[2], rich))
 
     days = daily(vix_days, idx_days, equity)
     pairs = [(r["dvix"], r["pnl"]) for r in days if r["dvix"] is not None and r["pnl"] is not None]
@@ -315,6 +415,6 @@ async def volatility(ctx: Ctx) -> dict:
         "rows": rows, "groups": groups([r for r in known if not r["open"]], specs),
         "per_point": per_point, "here": here, "filters": filters(closed_known), "spikes": spikes(days),
         "days": days[-260:], "moved": move_groups, "weeks": weekly(days, rows)[-26:],
-        "summary": {"trades": len(rows), "with_vix": len(known),
+        "summary": {"trades": len(rows), "with_vix": len(known), "with_iv": sum(1 for r in rows if r["iv"] is not None),
                     "days_moved_more": sum(1 for r in moved if r["ratio"] > 1), "days_compared": len(moved)},
     }
