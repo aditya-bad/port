@@ -391,10 +391,13 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
             md = book.models[tok]
             if tok in held or tok in disp.subscribed:
                 out.estimated.append(label)
-            how = (f"Black-76 off {md['index']} at {md['iv'] * 100:.1f}% implied volatility" if "iv" in md else
-                   f"{md['index']} plus the {md['basis']:+,.2f} basis it last had")
-            out.notes.append(f"{label}: Kite has no trade in it all day, so it's priced by model — {how}, from "
+            out.notes.append(f"{label}: Kite has no trade in it all day, so it's priced by model — Black-76 off "
+                             f"{md['index']} at {md['iv'] * 100:.1f}% implied volatility, from "
                              f"{md['anchor']} (₹{md['anchor_price']:,.2f} with {md['index']} at {md['level']:,.2f}).")
+        elif origin == "kite" and book.before.get(tok) and book.keys.get(tok):
+            px, at = book.before[tok]
+            out.notes.append(f"{label}: no trade until {book.keys[tok][0]:%H:%M}; before that, its last trade on Kite, "
+                             f"₹{px:,.2f} on {at:%d %b %H:%M}.")
         elif origin == "stale":
             px, at = book.before[tok]
             if tok in held or tok in disp.subscribed:

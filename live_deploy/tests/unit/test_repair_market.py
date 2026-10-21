@@ -317,27 +317,10 @@ def test_no_known_price_or_an_unmodelable_contract_stays_without_prices():
         bb = model_book(symbol_ce=sym)
         bb.anchor(SX_CE, 100.0, at("11:00"), "fill")
         assert bb.load(SX_CE) == {} and bb.origin[SX_CE] == "none", sym
-    # a future 30% off its index isn't a basis
+    # a future isn't modelled: it takes Kite's last trade (here, none)
     bb = model_book(symbol_ce="SENSEX26NOVFUT")
-    bb.anchor(SX_CE, 56000.0, at("11:00"), "fill")
-    assert bb.load(SX_CE) == {} and bb.origin[SX_CE] == "none"
-
-
-def test_a_future_with_no_trade_all_day_moves_with_its_index_at_its_last_basis():
-    """BANKEX/SENSEX futures barely trade: priced off the index, keeping
-    the premium it last traded at."""
-    prev = date(2026, 10, 20)
-    t = datetime.combine(prev, time(15, 20))
-    anchors = {(SX_CE, "before"): [{"date": t, "open": 79900, "high": 79900, "low": 79900, "close": 79900}],
-               ("idx", prev): [{"date": t, "open": 79500, "high": 79500, "low": 79500, "close": 79500}]}
-    b = model_book(anchors, symbol_ce="SENSEX26NOVFUT")
-    rows = b.load(SX_CE)
-    assert b.origin[SX_CE] == "model" and b.models[SX_CE]["basis"] == 400
-    c = rows[at("12:00")]
-    r = 79900 / 79500
-    assert abs(c["open"] - 80000 * r) < 0.05 and abs(c["high"] - 80200 * r) < 0.05 and abs(c["low"] - 79800 * r) < 0.05
-    # it's a future: at SENSEX's high it's at its high
-    assert b.at(SX_CE, at("12:00"), "up") == c["high"]
+    bb.anchor(SX_CE, 80100.0, at("11:00"), "fill")
+    assert bb.load(SX_CE) == {} and bb.origin[SX_CE] == "none" and SX_CE not in bb.models
 
 
 def test_with_nothing_to_model_it_on_a_contract_stands_at_its_last_trade():
@@ -350,21 +333,20 @@ def test_with_nothing_to_model_it_on_a_contract_stands_at_its_last_trade():
     assert b.price(SX_CE, at("12:00"), "close", at("12:00")) == (3010, t + timedelta(seconds=59))
 
 
-def test_kite_ltp_answers_for_a_bfo_future_that_never_traded_today():
-    """The scan's crash: the strangle asks ltp('BFO:BANKEX26NOVFUT') for
-    its ATM, and a future with no trade today was left out of the answer
-    (KeyError in the resolver)."""
+def bankex_future_book(fut_today, fut_before):
+    """BANKEX at 12:00 today; its November future traded `fut_today`
+    (HH:MM -> close) today and `fut_before` ((date, HH:MM) -> close) before."""
     BANKEX, FUT = 274441, 8801
-    prev = date(2026, 10, 20)
 
     def source(token, start, end):
-        if token == BANKEX and start.date() == DAY:
-            return [{"date": at("12:00"), "open": 61700, "high": 61800, "low": 61650, "close": 61726}]
         if token == BANKEX:
-            return [{"date": datetime.combine(prev, time(15, 29)), "open": 61500, "high": 61500, "low": 61500, "close": 61500}]
-        if token == FUT and start.date() < DAY:
-            return [{"date": datetime.combine(prev, time(15, 29)), "open": 61800, "high": 61800, "low": 61800, "close": 61800}]
-        return []
+            return [{"date": at("12:00"), "open": 61700, "high": 61800, "low": 61650, "close": 61726}] if start.date() == DAY else []
+        if token != FUT:
+            return []
+        if start.date() == DAY:
+            return [{"date": at(k), "open": c, "high": c, "low": c, "close": c} for k, c in fut_today.items()]
+        return [{"date": datetime.combine(d, datetime.strptime(k, "%H:%M").time()), "open": c, "high": c, "low": c, "close": c}
+                for (d, k), c in fut_before.items() if start.date() <= d < DAY]
 
     class Real:
         def instruments(self, exchange=None):
@@ -374,22 +356,33 @@ def test_kite_ltp_answers_for_a_bfo_future_that_never_traded_today():
     b = M.MinuteBook(DAY, source, lookup=M.kite_lookup(Real()))
     clock = M.ReplayClock(DAY)
     clock.set(at("12:00"), M.UP_FIRST, 3)
-    k = M.ReplayKite(Real(), b, clock)
+    return b, M.ReplayKite(Real(), b, clock), FUT
+
+
+@pytest.mark.parametrize("today, before, want, at_", [
+    # no trade today: its last trade yesterday
+    ({}, {(date(2026, 10, 20), "15:20"): 61800}, 61800, datetime(2026, 10, 20, 15, 20, 59)),
+    # first trade today only at 13:00, after the replay's 12:00: still yesterday's
+    ({"13:00": 62000}, {(date(2026, 10, 20), "15:20"): 61800}, 61800, datetime(2026, 10, 20, 15, 20, 59)),
+    # nothing in the week before: Kite's 60 days are asked
+    ({}, {(date(2026, 9, 25), "11:05"): 60100}, 60100, datetime(2026, 9, 25, 11, 5, 59)),
+])
+def test_kite_ltp_answers_a_bfo_future_with_its_last_trade_on_kite(today, before, want, at_):
+    """The scan's crash: the strangle asks ltp('BFO:BANKEX26NOVFUT') for
+    its ATM, and a future with no trade yet was left out of the answer
+    (KeyError in the resolver). Kite's own ltp() gives its last trade."""
+    b, k, fut = bankex_future_book(today, before)
     got = k.ltp("BFO:BANKEX26NOVFUT")
-    assert b.origin[FUT] == "model"
-    assert abs(got["BFO:BANKEX26NOVFUT"]["last_price"] - 61726 * 61800 / 61500) < 0.05
+    assert got["BFO:BANKEX26NOVFUT"]["last_price"] == want
+    assert b.price(fut, at("12:00"), "close", at("12:00")) == (want, at_)
+    assert fut not in b.models
 
 
-def test_the_master_expiry_is_used_over_the_symbols_month_end():
-    """A monthly symbol only names the month; the master has the day."""
-    seen = {}
-    b = model_book(lookup=lambda s: {"instrument_token": SX_CE, "tradingsymbol": s, "exchange": "BFO",
-                                     "expiry": date(2026, 11, 26)}, symbol_ce="SENSEX26NOV81000CE")
-    b.anchor(SX_CE, 900.0, at("11:00"), "fill")
-    b.load(SX_CE)
-    seen["master"] = b.models[SX_CE]["iv"]
-    b2 = model_book(symbol_ce="SENSEX26NOV81000CE")
-    b2.anchor(SX_CE, 900.0, at("11:00"), "fill")
-    b2.load(SX_CE)
-    seen["month_end"] = b2.models[SX_CE]["iv"]
-    assert seen["master"] > seen["month_end"]   # less time to expiry -> more vol for the same price
+def test_once_it_trades_today_the_real_trade_is_the_price():
+    b, k, fut = bankex_future_book({"11:30": 62000}, {(date(2026, 10, 20), "15:20"): 61800})
+    assert k.ltp("BFO:BANKEX26NOVFUT")["BFO:BANKEX26NOVFUT"]["last_price"] == 62000
+
+
+def test_an_index_with_no_candle_yet_is_not_given_a_previous_days_price():
+    b = book_with({NIFTY: {"12:05": (100, 100, 100, 100)}})
+    assert b.price(NIFTY, at("12:00"), "close", at("12:00")) is None

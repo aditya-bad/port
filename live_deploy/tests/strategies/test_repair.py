@@ -402,8 +402,8 @@ def test_legs_kite_never_traded_are_priced_by_model_from_their_fills_and_the_pla
 def test_a_sensex_strangle_where_nothing_on_bfo_trades_still_replays_and_adjusts(pool_run, monkeypatch):
     """The BFO case end to end: Kite has no trade today in any SENSEX
     contract (legs, new strikes, the future the strangle prices its ATM
-    on), only their last trades the day before. Everything is priced off
-    the index, the 3% swing adjusts into new strikes, and it applies.
+    on), only their last trades the day before. Options are priced off
+    the index, the future at its last trade, the 3% swing adjusts into new strikes, and it applies.
     (The future's own ltp is in test_repair_market.)"""
     async def go(pool):
         sim = await Sim.create(pool, monkeypatch, "strangle_monthly_v2",
@@ -428,7 +428,8 @@ def test_a_sensex_strangle_where_nothing_on_bfo_trades_still_replays_and_adjusts
         assert out.complete and not out.blind and not out.problems
         held = {int(p["instrument_token"]) for p in await sim.open_positions()}
         assert all(book.origin[t] == "model" for t in held)
-        assert all(book.origin[t] == "model" for t, s in book.symbols.items() if s.endswith("FUT"))
+        # a future isn't modelled: it's at its last trade on Kite
+        assert all(book.origin[t] == "stale" and book.before[t] for t, s in book.symbols.items() if s.endswith("FUT"))
         new = {f["token"] for f in out.fills if f["action"] == "sell"}
         assert new and new - held and all(book.origin[t] == "model" for t in new)
         notes = " ".join(out.notes)

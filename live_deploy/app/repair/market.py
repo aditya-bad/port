@@ -26,7 +26,9 @@ A contract Kite has no trade in all day (a far strike on BSE's thin
 SENSEX/BANKEX monthlies) is priced by model instead: Black-76 off its
 index's own candles, at the implied volatility its last known price
 gives (the deployment's own fill, or its last trade in the sessions
-before). The plan says which legs were priced that way.
+before). The plan says which legs were priced that way. Anything else
+with no trade yet today (a thin future) is at its last trade in Kite's
+history, as Kite's own ltp() would answer.
 
 Nothing here reaches the future: Kite's history is cut at the replay's
 own "now", and today's candles are built from the 1-minute candles up to
@@ -127,6 +129,7 @@ class MinuteBook:
         self.tried: dict[int, str] = {}      # token -> what was asked of Kite, when it had nothing
         self.before: dict[int, tuple] = {}   # token -> (price, at): its last trade before the day, when that's all there is
         self._prior: dict[int, Optional[tuple]] = {}
+        self._row: dict[int, Optional[dict]] = {}
         self.rows: dict[int, dict[datetime, dict]] = {}
         self.keys: dict[int, list[datetime]] = {}
         self.origin: dict[int, str] = {}
@@ -202,16 +205,28 @@ class MinuteBook:
                     prior = self._last_trade(token, row)
                     if prior:
                         self.before[token], origin = (prior[0], prior[1]), "stale"
+            self._row[token] = row
             self.rows[token] = rows
             self.keys[token] = sorted(rows)
             self.origin[token] = origin
             return rows
 
+    def last_trade_before_day(self, token: int) -> Optional[tuple[float, datetime]]:
+        """(price, at) of its last trade before the day, from Kite's history
+        — what Kite's ltp() shows for a contract with no trade yet today."""
+        token = int(token)
+        with self._lock:
+            if token not in self.before:
+                self.load(token)
+                row = self._row.get(token) or self._master(token)
+                got = self._last_trade(token, row)
+                self.before[token] = (got[0], got[1]) if got else None
+            return self.before[token]
+
     def _model(self, token: int, row: Optional[dict]) -> Optional[dict]:
-        """A never-traded contract's day, minute by minute, from its index's
-        candles. An option: Black-76 at the volatility its latest known
-        price gives (a CE's high at the index's high, a PE's at its low).
-        A future: the index plus the basis it last traded at."""
+        """A never-traded option's day, minute by minute, from its index's
+        candles: Black-76 at the volatility its latest known price gives
+        (a CE's high at the index's high, a PE's at its low)."""
         from app.candles import parse_contract
         from app.geek.optionmath import fwd_implied_vol, fwd_price, years_to
         c = parse_contract(self.symbols.get(token) or "") or {}
@@ -223,7 +238,7 @@ class MinuteBook:
                  "expiry": (e.date() if isinstance(e, datetime) else e if isinstance(e, date)
                             else date.fromisoformat(str(e)[:10])) if e else c.get("expiry")}
         kind = c.get("instrument_type")
-        if kind not in ("CE", "PE", "FUT") or (kind != "FUT" and not c.get("strike")) or not c.get("expiry"):
+        if kind not in ("CE", "PE") or not c.get("strike") or not c.get("expiry"):
             return None
         idx = INDEX_OF.get(c["underlying"])
         if idx is None:
@@ -242,17 +257,6 @@ class MinuteBook:
             level = self._level(idx, at)
             if level is None or level <= 0:
                 continue
-            if kind == "FUT":
-                # a future moves with its index; its premium over it (the
-                # basis) is held at what it was then, as a share of the index
-                ratio = premium / level
-                if not 0.8 <= ratio <= 1.2:
-                    continue
-                out = {m: {**{f: _tick(ic[f] * ratio) for f in ("open", "high", "low", "close")}, "volume": 0, "oi": 0}
-                       for m, ic in index.items()}
-                self.models[token] = {"index": INDEX_LABELS.get(idx, str(idx)), "basis": round(premium - level, 2),
-                                      "anchor": what, "anchor_price": premium, "anchor_at": at, "level": level}
-                return out
             k = float(c["strike"])
             vol = fwd_implied_vol(kind, premium, level, k, years_to(expiry, at.replace(tzinfo=IST)))
             if vol is None or not 0.01 <= vol <= 5:
@@ -277,9 +281,13 @@ class MinuteBook:
 
     def _ask_last_trade(self, token: int, row: Optional[dict]) -> Optional[tuple]:
         tok = int(row["instrument_token"]) if row else token
-        start = datetime.combine(self.day - timedelta(days=7), SESSION_OPEN)
         end = datetime.combine(self.day, time(0)) - timedelta(seconds=1)
-        got = [c for c in self._fetch_quiet(tok, start, end) if minute_of(c["date"]).date() < self.day and c["close"]]
+        got = []
+        for days in (7, 59):   # a week first; the 60 days Kite serves in one request if it's thinner than that
+            start = datetime.combine(self.day - timedelta(days=days), SESSION_OPEN)
+            got = [c for c in self._fetch_quiet(tok, start, end) if minute_of(c["date"]).date() < self.day and c["close"]]
+            if got:
+                break
         if not got:
             return None
         last = max(got, key=lambda c: naive_ist(c["date"]))
@@ -329,8 +337,10 @@ class MinuteBook:
         if c is not None:
             return c[field_for(phase, self.inverse.get(token, False))], now
         prev = self.last_before(token, minute)
-        if prev is None:
-            return self.before.get(token)
+        if prev is None:   # no trade yet today: Kite's last trade before it
+            if self.symbols.get(token) in INDEX_LABELS.values():
+                return None
+            return self.last_trade_before_day(token)
         return prev[1]["close"], prev[0] + timedelta(seconds=59)
 
     def partial(self, token: int, minute: datetime, phases: tuple) -> Optional[dict]:
