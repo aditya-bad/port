@@ -406,19 +406,48 @@ DIMENSIONS = [
     ("move", "Index since the open", (["Down > 0.5%", "Down 0–0.5%", "Up 0–0.5%", "Up > 0.5%"], [-0.5, 0, 0.5])),
     ("held", "Held for", (["< 30 min", "30 min–2 h", "2 h–1 day", "1–5 days", "> 5 days"], [30, 120, 1440, 7200])),
     ("legs", "Options sold or bought", None),
+    ("money", "Strike against the index", (["In the money", "At the money (±0.25%)", "0.25–1% out of the money", "> 1% out of the money"], [-0.25, 0.25, 1.0])),
+    ("atr", "ATR at the signal", "thirds"),
+    ("candle", "Signal candle’s size", "thirds"),
 ]
+# Split into thirds of this deployment's own trades (points mean different
+# things on different indices and timeframes); needs this many trades.
+_THIRDS_MIN = 6
+
+
+def thirds(values: list) -> Optional[tuple[float, float]]:
+    """The two cut points that split the values into thirds, or None."""
+    v = sorted(x for x in values if x is not None)
+    if len(v) < _THIRDS_MIN:
+        return None
+    return v[len(v) // 3 - (1 if len(v) % 3 == 0 else 0)], v[2 * len(v) // 3 - (1 if len(v) % 3 == 0 else 0)]
+
+
+def third_labels(cuts: tuple[float, float]) -> list[str]:
+    a, b = (_num(round(x, 2)) for x in cuts)
+    return [f"Low · up to {a}", f"Middle · {a}–{b}", f"High · above {b}"]
+
+
+def otm_pct(c: dict, opt: Optional[str]) -> Optional[float]:
+    """How far the strike is out of the money, % of the index (negative:
+    in the money): above the index for a call, below it for a put."""
+    if c.get("strike_from_spot") is None or not c.get("spot") or opt not in ("CE", "PE"):
+        return None
+    return round(c["strike_from_spot"] / c["spot"] * 100 * (1 if opt == "CE" else -1), 3)
 
 
 def _dims(row: dict) -> dict:
     c = row["context"]
     t = _ist(datetime.fromisoformat(row["t"]))
     out = {"hour": _hour(t), "weekday": _WD[t.weekday()], "legs": row["opt"]}
+    partial = bool(c.get("partial"))   # the day only since a restart: its range and move aren't the day's
     for key, _, spec in DIMENSIONS:
-        if spec is None:
+        if not isinstance(spec, tuple):
             continue
         labels, edges = spec
-        v = {"dte": c.get("dte"), "gap": c.get("gap_pct"), "move": c.get("from_open_pct"), "held": row["held_min"],
-             "range": round(c["range_pts"] / c["spot"] * 100, 3) if c.get("range_pts") is not None and c.get("spot") else None}[key]
+        v = {"dte": c.get("dte"), "gap": c.get("gap_pct"), "move": None if partial else c.get("from_open_pct"),
+             "held": row["held_min"], "money": row["otm_pct"],
+             "range": round(c["range_pts"] / c["spot"] * 100, 3) if not partial and c.get("range_pts") is not None and c.get("spot") else None}[key]
         out[key] = _bucket(v, edges + [float("inf")], labels)
     return out
 
@@ -478,13 +507,22 @@ async def conditions(ctx: Ctx, limit: int = 300) -> dict:
                "opt": "Calls and puts" if opts == {"CE", "PE"} else "Calls" if opts == {"CE"} else "Puts" if opts == {"PE"} else "Other",
                "context": c, "has_context": bool(m.get("context")),
                "candle_pts": round(candle["high"] - candle["low"], 2) if candle and candle.get("high") is not None and candle.get("low") is not None else None,
-               "atr": _f(tv.get("atr")), "band_width": _f(tv.get("band_width"))}
+               "atr": _f(tv.get("atr")), "band_width": _f(tv.get("band_width")),
+               "otm_pct": otm_pct(c, _opt(tr["first"].get("symbol") or ""))}
         row["dims"] = _dims(row)
         rows.append(row)
     closed = [r for r in rows if r["pnl"] is not None]
+    third_order = {}
+    for key, field in (("atr", "atr"), ("candle", "candle_pts")):
+        cuts = thirds([r[field] for r in closed])
+        if cuts is None:
+            continue
+        third_order[key] = labs = third_labels(cuts)
+        for r in rows:
+            r["dims"][key] = _bucket(r[field], [cuts[0] + 1e-9, cuts[1] + 1e-9, float("inf")], labs)
     groups = []
     for key, name, spec in DIMENSIONS:
-        order = spec[0] if spec else {"weekday": _WD, "hour": _HOURS}.get(key)
+        order = spec[0] if isinstance(spec, tuple) else third_order.get(key) or {"weekday": _WD, "hour": _HOURS}.get(key)
         agg: dict = {}
         for r in closed:
             k = r["dims"].get(key)

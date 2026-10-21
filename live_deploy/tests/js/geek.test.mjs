@@ -194,6 +194,11 @@ test('conditions: every dot of the excursion charts carries its trade, and nothi
     assert.ok(tip.includes(s), `${s} in:\n${tip}`);
   }
   assert.ok(conditionTip(row(null, null, null)).includes('Result  open'));
+  const more = conditionTip(row(100, -50, 200, { otm_pct: 0.8, candle_pts: 42.5, context: { from_open_pct: 0.2, partial: true } }));
+  for (const s of ['Strike  0.80% out of the money', 'Signal candle  42.5 points', 'Index since the open  +0.20% (since a restart)']) assert.ok(more.includes(s), `${s} in:\n${more}`);
+  const { moneyness } = await import('../../static/linck/js/pages/geek/conditions.js');
+  assert.equal(moneyness(-1.2), '1.20% in the money');
+  assert.equal(moneyness(0.1), 'at the money (+0.10%)');
   const bare = row(-750, -750, 0, { path: false });
   assert.ok(conditionTip(bare).includes('No prices recorded on the way') && !conditionTip(bare).includes('MAE'));
   assert.equal(excursionChart([bare], 'mae'), '', 'a trade without prices on the way sits out the MAE chart');

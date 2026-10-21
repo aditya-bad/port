@@ -194,3 +194,41 @@ def test_buckets_are_in_their_natural_order():
     assert common._hour(datetime(2026, 10, 19, 9, 30)) == "9:15–10"
     assert common._hour(datetime(2026, 10, 19, 15, 10)) == "15–15:30"
     assert common._hour(datetime(2026, 10, 19, 12, 59)) == "12–13"
+
+
+def test_a_restart_mid_day_keeps_the_days_market_from_the_ticks_ohlc(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_simple", cfg("intraday_dtt_simple"), spot=25000, name="restart ctx")
+        r, tok = sim.runner, sim.runner.config["instrument_tokens"][0]
+        r._session.clear()                               # a fresh process at 11:00
+        at = datetime(2026, 10, 19, 11, 0)
+        r._note_session({"instrument_token": tok, "last_price": 25100.0, "exchange_timestamp": at})
+        c = r.market_context(at)
+        assert c["partial"] is True and "gap_pct" not in c, "only what it saw since 11:00, and no previous close"
+        # a full-mode tick: the exchange's own open/high/low and previous close
+        r._note_session({"instrument_token": tok, "last_price": 25120.0, "exchange_timestamp": at + timedelta(seconds=5),
+                         "ohlc": {"open": 24900.0, "high": 25150.0, "low": 24850.0, "close": 25000.0}})
+        c = r.market_context(at + timedelta(seconds=5))
+        assert "partial" not in c
+        assert (c["day_open"], c["day_high"], c["day_low"], c["prev_close"]) == (24900.0, 25150.0, 24850.0, 25000.0)
+        assert (c["gap_pct"], c["range_pts"], c["from_open_pct"]) == (-0.4, 300.0, 0.88)
+        # a later tick above the exchange's high widens it; a new day starts over
+        r._note_session({"instrument_token": tok, "last_price": 25200.0, "exchange_timestamp": at + timedelta(minutes=1)})
+        assert r.market_context(at + timedelta(minutes=1))["day_high"] == 25200.0
+        nxt = datetime(2026, 10, 20, 9, 15, 30)
+        r._note_session({"instrument_token": tok, "last_price": 25210.0, "exchange_timestamp": nxt})
+        c = r.market_context(nxt)
+        assert "partial" not in c and c["prev_close"] == 25200.0 and c["gap_pct"] == 0.04, "seen from the open: a whole day"
+    pool_run(go)
+
+
+def test_thirds_and_moneyness():
+    assert common.thirds([5, 1, 3]) is None, "too few trades to split"
+    assert common.thirds([1, 2, 3, 4, 5, 6]) == (2, 4)
+    assert common.thirds(list(range(1, 10))) == (3, 6)
+    assert common.third_labels((31.25, 45.0)) == ["Low · up to 31.25", "Middle · 31.25–45", "High · above 45"]
+    # a call above the index and a put below it are out of the money
+    assert common.otm_pct({"strike_from_spot": 250.0, "spot": 25000.0}, "CE") == 1.0
+    assert common.otm_pct({"strike_from_spot": 250.0, "spot": 25000.0}, "PE") == -1.0
+    assert common.otm_pct({"strike_from_spot": -50.0, "spot": 25000.0}, "PE") == 0.2
+    assert common.otm_pct({"spot": 25000.0}, "CE") is None and common.otm_pct({"strike_from_spot": 1, "spot": 1}, None) is None

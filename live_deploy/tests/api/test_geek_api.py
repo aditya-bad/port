@@ -260,7 +260,8 @@ def test_conditions_one_trade_with_its_market_and_its_excursion(client):
     assert (r["pnl"], r["mae"], r["mfe"], r["held_min"], r["path"]) == (750.0, -2250.0, 2250.0, 60.0, True)
     assert r["label"] == "Trend flip up" and r["opt"] == "Puts" and r["candle_pts"] == 50 and r["atr"] == 41.5
     assert r["dims"] == {"hour": "10–11", "weekday": "Mon", "legs": "Puts", "dte": "1 day", "gap": "Gap down > 0.5%",
-                         "range": "0.6–1%", "move": "Up 0–0.5%", "held": "30 min–2 h"}
+                         "range": "0.6–1%", "move": "Up 0–0.5%", "held": "30 min–2 h", "money": None}
+    assert r["otm_pct"] is None, "no strike recorded on this fill"
     assert body["summary"] == {"trades": 1, "closed": 1, "open": 0, "wins": 1, "with_context": 1, "avg_mae": -2250.0,
                                "avg_mfe": 2250.0, "gave_back": 1500.0, "losers_were_up": 0, "with_path": 1}
     g = {x["key"]: x for x in body["groups"]}
@@ -289,3 +290,29 @@ def test_conditions_fall_back_to_the_contracts_candles_and_order_the_hours(clien
     assert body["summary"]["with_path"] == 1 and body["summary"]["avg_mae"] == -2250.0
     hours = next(g for g in body["groups"] if g["key"] == "hour")
     assert [b["label"] for b in hours["buckets"]] == ["9:15–10", "11–12"], "in the day's order"
+
+
+def test_conditions_split_atr_and_candle_into_thirds_and_place_the_strike(client):
+    d = make_deployment(client, name="st conditions thirds", strategy="pivot_supertrend_options")
+    # six one-hour trades: ATR 20..70, a bigger candle each time; the
+    # first three on a partial day (the runner restarted mid-session)
+    for i in range(6):
+        t0 = T(f"2026-10-{12 + i:02d}T10:00:00+05:30")
+        ctx = {"spot": 25000.0, "minute": 45, "weekday": t0.weekday(), "range_pts": 200.0, "from_open_pct": 0.3,
+               "strike_from_spot": [-200.0, 0.0, 50.0, 100.0, 300.0, 400.0][i], **({"partial": True} if i < 3 else {})}
+        sym, tok = f"NIFTY26OCT{25000 + i * 50}PE", 7600 + i
+        add_fill(client, d["id"], sym, tok, "sell", 75, 100.0, t0, "entry",
+                 {"trigger": "pivot_break_long", "action": "sell_open_PE", "context": ctx,
+                  "trigger_values": {"atr": 20.0 + 10 * i, "candle": {"open": 0, "high": 10.0 * (i + 1), "low": 0, "close": 5}}})
+        add_fill(client, d["id"], sym, tok, "buy", 75, 100.0 - (10 if i % 2 else -10), T(f"2026-10-{12 + i:02d}T11:00:00+05:30"),
+                 "st_flip", {"trigger": "st_flip", "action": "buy_close_PE"})
+    body = client.get(f"/v2/deployments/{d['id']}/geek/conditions").json()
+    g = {x["key"]: x for x in body["groups"]}
+    assert [b["label"] for b in g["atr"]["buckets"]] == ["Low · up to 30", "Middle · 30–50", "High · above 50"]
+    assert [b["n"] for b in g["atr"]["buckets"]] == [2, 2, 2]
+    assert [b["label"] for b in g["candle"]["buckets"]] == ["Low · up to 20", "Middle · 20–40", "High · above 40"]
+    # puts: a strike below the index is out of the money (−200: 0.8% out; 0 and +50: at it; +100..+400: in)
+    assert [(b["label"], b["n"]) for b in g["money"]["buckets"]] == [
+        ("In the money", 3), ("At the money (±0.25%)", 2), ("0.25–1% out of the money", 1)]
+    # a partial day's range and move are left out, its gap and time aren't
+    assert g["range"]["covered"] == g["move"]["covered"] == 3 and g["hour"]["covered"] == 6

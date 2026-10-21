@@ -551,7 +551,9 @@ test('Conditions: every trade with its market, dots that show their trade, and t
   assert.equal(await p.locator('#gkView .gk-chart').first().locator('circle').count(), closed.length, 'one dot per closed trade');
   assert.equal(await p.locator('#gkView .cd-grid .gk-panel').count(), body.groups.length);
   const text = await p.locator('#gkView').innerText();
-  for (const s of ['Time of entry', 'Day of the week', 'Days to expiry', 'Today’s gap', 'Index since the open']) assert.ok(text.includes(s), s);
+  for (const s of ['Time of entry', 'Day of the week', 'Days to expiry', 'Today’s gap', 'Index since the open', 'Strike against the index', 'ATR at the signal', 'Signal candle’s size']) assert.ok(text.includes(s), s);
+  const atr = body.groups.find(x => x.key === 'atr');
+  assert.deepEqual(atr.buckets.map(x => x.label.split(' · ')[0]), ['Low', 'Middle', 'High']);
   // a dot shows its trade
   // (dots overlap: aim at the last one drawn, which is on top)
   const dot = p.locator('#gkView .gk-chart').first().locator('circle').last();

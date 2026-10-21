@@ -472,6 +472,10 @@ async def seed_supertrend(pool, dep, created):
                     "target_basis": {"selection_basis": "ATM", "selected_strike": k, "fill_premium": prem},
                     "signal_side": "long" if up else "short", "option_type": ot, "strike": k,
                     "expiry": (day + timedelta(days=(3 - day.weekday()) % 7)).date().isoformat(), "exchange": "NFO", "pivots": piv}
+            # the signal candle and ATR, as StrategyBase.signal_context records them
+            cv = [path(t - timedelta(minutes=5 - i)) for i in range(6)]
+            tv.update({"candle": {"open": round(cv[0], 2), "high": round(max(cv), 2), "low": round(min(cv), 2), "close": round(cv[-1], 2)},
+                       "atr": round(abs(close - st) / 3, 2), "band_width": round(abs(close - st) * 2, 2)})
             # the market at the entry, as the runner stamps it on every fill (Geek → Conditions)
             seen = [path(open_ + timedelta(minutes=i)) for i in range(int((t - open_).total_seconds() / 60) + 1)]
             meta["context"] = {"spot": round(close, 2), "minute": int((t - open_).total_seconds() / 60), "weekday": day.weekday(),

@@ -717,15 +717,29 @@ class DeploymentRunner:
     # a fill.
 
     def _note_session(self, t: dict) -> None:
+        """The day so far from the ticks. A full-mode tick carries the
+        exchange's own open/high/low and previous close (`ohlc`), which
+        hold after a restart; without it the day is only what this runner
+        has seen, and is marked partial if it started after the open."""
         tok, px, ts = t.get("instrument_token"), t.get("last_price"), t.get("exchange_timestamp")
         if tok not in self.tokens or px is None or ts is None:
             return
-        day = (ts.astimezone(self._IST) if ts.tzinfo else ts).date()
+        at = ts.astimezone(self._IST) if ts.tzinfo else ts
         s = self._session.get(tok)
-        if s is None or s["day"] != day:
+        if s is None or s["day"] != at.date():
             prev = s["last"] if s is not None else None
-            s = self._session[tok] = {"day": day, "open": px, "high": px, "low": px, "last": px, "prev_close": prev}
+            s = self._session[tok] = {"day": at.date(), "open": px, "high": px, "low": px, "last": px, "prev_close": prev,
+                                      "partial": at.time() > time(9, 16)}
         s["high"], s["low"], s["last"] = max(s["high"], px), min(s["low"], px), px
+        o = t.get("ohlc") or {}
+        if o.get("open"):
+            s["open"], s["partial"] = float(o["open"]), False
+            if o.get("high"):
+                s["high"] = max(s["high"], float(o["high"]))
+            if o.get("low"):
+                s["low"] = min(s["low"], float(o["low"]))
+        if o.get("close"):
+            s["prev_close"] = float(o["close"])
 
     def market_context(self, at: datetime, metadata: Optional[dict] = None) -> dict:
         at = at.astimezone(self._IST) if at.tzinfo else at
@@ -738,6 +752,8 @@ class DeploymentRunner:
         r2 = lambda v: None if v is None else round(float(v), 2)  # noqa: E731
         ctx = {"spot": r2(spot), "minute": at.hour * 60 + at.minute - (9 * 60 + 15), "weekday": at.weekday()}
         if s:
+            if s.get("partial"):   # high/low/open only since this runner started
+                ctx["partial"] = True
             ctx.update({"day_open": r2(s["open"]), "day_high": r2(s["high"]), "day_low": r2(s["low"]),
                         "range_pts": r2(s["high"] - s["low"]),
                         "from_open_pct": r2((s["last"] - s["open"]) / s["open"] * 100) if s["open"] else None})

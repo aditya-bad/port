@@ -12,14 +12,18 @@ import { head, tiles, table, poll, svg, tone, tipAt } from './ui.js';
 import { mins } from './st.js';
 
 const pct = v => (v == null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`);
+// How far out of the money (− in it), % of the index, in words.
+export const moneyness = v => (Math.abs(v) <= 0.25 ? `at the money (${pct(v)})` : `${Math.abs(v).toFixed(2)}% ${v > 0 ? 'out of' : 'in'} the money`);
 
 export function conditionTip(r) {
   const c = r.context || {};
   return [`${r.label} · ${dStamp(r.t)}`, `Result  ${r.pnl == null ? 'open' : inr(r.pnl)}`,
     ...(r.path === false ? ['No prices recorded on the way'] : [`Worst on the way (MAE)  ${r.mae == null ? '—' : inr(r.mae)}`, `Best on the way (MFE)  ${r.mfe == null ? '—' : inr(r.mfe)}`]),
     ...(r.held_min != null ? [`Held  ${mins(r.held_min)}`] : []),
-    ...(c.gap_pct != null ? [`Gap  ${pct(c.gap_pct)}`] : []), ...(c.from_open_pct != null ? [`Index since the open  ${pct(c.from_open_pct)}`] : []),
-    ...(c.dte != null ? [`Days to expiry  ${c.dte}`] : []), ...(r.atr != null ? [`ATR  ${r.atr}`] : []),
+    ...(c.gap_pct != null ? [`Gap  ${pct(c.gap_pct)}`] : []),
+    ...(c.from_open_pct != null ? [`Index since the open  ${pct(c.from_open_pct)}${c.partial ? ' (since a restart)' : ''}`] : []),
+    ...(c.dte != null ? [`Days to expiry  ${c.dte}`] : []), ...(r.otm_pct != null ? [`Strike  ${moneyness(r.otm_pct)}`] : []),
+    ...(r.atr != null ? [`ATR  ${r.atr}`] : []), ...(r.candle_pts != null ? [`Signal candle  ${r.candle_pts} points`] : []),
     r.symbols.join(', ')].join('\n');
 }
 
@@ -76,6 +80,7 @@ export default {
           ['Losers once up', String(s.losers_were_up), 'losing trades that were in profit first'],
         ], 6)}
         ${s.with_path < s.closed ? html`<p class="gk-note">${s.closed - s.with_path} closed trade${s.closed - s.with_path === 1 ? '' : 's'} have no prices recorded between entry and exit (no 5-minute mark or stored candle), so they sit out the MAE and MFE.</p>` : ''}
+        ${rows.some(r => r.context.partial) ? html`<p class="gk-note">${rows.filter(r => r.context.partial).length} trade${rows.filter(r => r.context.partial).length === 1 ? ' was' : 's were'} opened on a day the app restarted mid-session without the exchange’s day figures, so ${rows.filter(r => r.context.partial).length === 1 ? 'it sits' : 'they sit'} out the range and move-since-open buckets.</p>` : ''}
         ${s.with_context < s.trades ? html`<p class="gk-note">${s.trades - s.with_context} older trade${s.trades - s.with_context === 1 ? '' : 's'} have no market recorded: the gap, range and move are recorded on every fill from now on. Time of day, weekday and days to expiry are known for all.</p>` : ''}
         ${closed.length ? html`<div class="gk-two even">
           <div class="gk-panel"><h3>Worst point against the result <span class="s">MAE → P&amp;L · hover a dot</span></h3>${excursionChart(rows, 'mae') || empty('', 'Needs the 5-minute marks.')}
