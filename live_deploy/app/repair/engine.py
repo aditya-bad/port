@@ -396,15 +396,17 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
             out.notes.append(f"{label}: Kite has no trade in it all day, so it's priced by model — Black-76 off "
                              f"{md['index']} at {md['iv'] * 100:.1f}% implied volatility, from "
                              f"{md['anchor']} (₹{md['anchor_price']:,.2f} with {md['index']} at {md['level']:,.2f}).")
-        elif origin == "kite" and book.before.get(tok) and book.keys.get(tok):
+        elif origin == "kite" and book.before.get(tok) and book.keys.get(tok) and (tok in held or tok in disp.subscribed):
             px, at = book.before[tok]
             out.notes.append(f"{label}: no trade until {book.keys[tok][0]:%H:%M}; before that, its last trade on Kite, "
                              f"₹{px:,.2f} on {at:%d %b %H:%M}.")
         elif origin == "quote":
             px, at = book.before[tok]
             if tok in held or tok in disp.subscribed:
-                out.notes.append(f"{label}: no trade on Kite all day (its last was {at:%d %b %H:%M}), so it stood at "
-                                 f"₹{px:,.2f}, as the app saw it live.")
+                last = "Kite shows no trade in it ever" if tok in book.never_traded else f"its last trade was {at:%d %b %H:%M}"
+                out.notes.append(f"{label}: no trade on Kite all day ({last}), so it stood at ₹{px:,.2f}, Kite's last price. "
+                                 "The strangle makes no decision while a leg hasn't traded that day (its stale-price "
+                                 "guard), so live it would have done nothing with it either.")
         elif origin == "stale" and tok in book.ltp_used:
             px, _ = book.before[tok]
             if tok in held or tok in disp.subscribed:

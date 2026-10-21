@@ -130,6 +130,7 @@ class MinuteBook:
         self.quote = quote                   # ["EXCH:SYMBOL", ...] -> Kite's quote for each (one request for many)
         self.quoted: dict[int, tuple] = {}   # token -> (last_price, last_trade_time) from that quote
         self._key_of: dict[int, str] = {}    # token -> "EXCH:SYMBOL"
+        self.never_traded: set[int] = set()  # tokens Kite's quote shows no trade at all for
         self.say: Optional[Callable] = None  # progress lines for a long fetch
         self._levels: dict = {}
         self.ltp_used: dict[int, str] = {}   # token -> the key ltp() was asked for
@@ -200,7 +201,9 @@ class MinuteBook:
             for k in chunk:
                 q = got.get(k) or {}
                 ltt = q.get("last_trade_time")
-                self.quoted[todo[k]] = (float(q.get("last_price") or 0), naive_ist(ltt) if isinstance(ltt, datetime) else None)
+                # Kite gives an empty (1970) trade time for a contract that has never traded
+                ltt = naive_ist(ltt) if isinstance(ltt, datetime) and ltt.year >= 2000 else None
+                self.quoted[todo[k]] = (float(q.get("last_price") or 0), ltt)
 
     def _quoted_before_day(self, token: int) -> Optional[tuple[float, datetime]]:
         """(price, at) when Kite's quote says its last trade was before the
@@ -220,6 +223,8 @@ class MinuteBook:
         open_ = datetime.combine(self.day, SESSION_OPEN)
         if px <= 0 or (ltt is not None and ltt >= open_):
             return None   # no price, or it traded on/after the day: its history has the day
+        if ltt is None:
+            self.never_traded.add(token)
         return px, (ltt or open_)
 
     def load(self, token: int) -> dict[datetime, dict]:
