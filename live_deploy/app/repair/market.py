@@ -120,13 +120,16 @@ class MinuteBook:
 
     def __init__(self, day: date, source: Callable, stored: Optional[dict] = None,
                  lookup: Optional[Callable] = None, ltp: Optional[Callable] = None,
-                 history: Optional[Callable] = None):
+                 history: Optional[Callable] = None, quote: Optional[Callable] = None):
         self.day = day
         self.source = source
         self.stored = stored or {}
         self.lookup = lookup                 # tradingsymbol -> its row in Kite's master (or None)
         self.ltp = ltp                       # "EXCH:SYMBOL" -> Kite's last price now (or None)
         self.history = history               # (token, from, to, interval) -> Kite candles, for daily lookbacks
+        self.quote = quote                   # ["EXCH:SYMBOL", ...] -> Kite's quote for each (one request for many)
+        self.quoted: dict[int, tuple] = {}   # token -> (last_price, last_trade_time) from that quote
+        self._key_of: dict[int, str] = {}    # token -> "EXCH:SYMBOL"
         self._levels: dict = {}
         self.ltp_used: dict[int, str] = {}   # token -> the key ltp() was asked for
         self.anchors: dict[int, list] = {}   # token -> [(price, at, what)]: known prices before the day
@@ -171,10 +174,62 @@ class MinuteBook:
             self.errors.setdefault(token, f"{type(e).__name__}: {e}")
             return None
 
+    def prefetch(self, pairs) -> None:
+        """Kite's quote for every (token, "EXCH:SYMBOL") not loaded yet, in
+        one request per 400: a strike ladder costs one request, not one
+        history lookup per strike."""
+        if not self.quote:
+            return
+        todo = {}
+        for tok, key in pairs:
+            tok = int(tok)
+            if ":" in str(key) and tok not in INDEX_LABELS:
+                self._key_of.setdefault(tok, str(key))
+                if tok not in self.rows and tok not in self.quoted:
+                    todo[str(key)] = tok
+        keys = list(todo)
+        for i in range(0, len(keys), 400):
+            chunk = keys[i:i + 400]
+            try:
+                got = self.quote(chunk) or {}
+            except Exception as e:
+                for k in chunk:
+                    self.history_errors.setdefault(todo[k], f"{type(e).__name__}: {e}")
+                continue
+            for k in chunk:
+                q = got.get(k) or {}
+                ltt = q.get("last_trade_time")
+                self.quoted[todo[k]] = (float(q.get("last_price") or 0), naive_ist(ltt) if isinstance(ltt, datetime) else None)
+
+    def _quoted_before_day(self, token: int) -> Optional[tuple[float, datetime]]:
+        """(price, at) when Kite's quote says its last trade was before the
+        day: then that's the price it showed all day, and there's nothing in
+        the day's history to fetch."""
+        if not self.quote or token in INDEX_LABELS or self.symbols.get(token) in INDEX_LABELS.values():
+            return None
+        if token not in self.quoted:
+            key = self._key_of.get(token)
+            if not key:
+                row = self._master(token)
+                key = f"{row.get('exchange')}:{row['tradingsymbol']}" if row and row.get("exchange") else None
+            if not key:
+                return None
+            self.prefetch([(token, key)])
+        px, ltt = self.quoted.get(token, (0.0, None))
+        open_ = datetime.combine(self.day, SESSION_OPEN)
+        if px <= 0 or (ltt is not None and ltt >= open_):
+            return None   # no price, or it traded on/after the day: its history has the day
+        return px, (ltt or open_)
+
     def load(self, token: int) -> dict[datetime, dict]:
         token = int(token)
         with self._lock:
             if token in self.rows:
+                return self.rows[token]
+            q = self._quoted_before_day(token)
+            if q is not None:
+                self.before[token] = q
+                self.rows[token], self.keys[token], self.origin[token] = {}, [], "quote"
                 return self.rows[token]
             open_, close = datetime.combine(self.day, SESSION_OPEN), datetime.combine(self.day, SESSION_CLOSE)
             got = self._fetch(token, open_, close)
@@ -502,6 +557,13 @@ class ReplayKite:
     def _priced(self, keys):
         keys = [keys] if isinstance(keys, (str, int)) else list(keys)
         out = {}
+        pairs = []
+        for k in keys:
+            tok = self._token(k)
+            if tok is not None:
+                self.book.note(tok, self._symbol(tok, str(k)))
+                pairs.append((tok, str(k)))
+        self.book.prefetch(pairs)
         for k in keys:
             tok = self._token(k)
             if tok is None:
@@ -725,6 +787,13 @@ def kite_minute_source(gate: KiteGate) -> Callable:
         except Exception:
             return gate.historical_data(token, start, end, "minute") or []
     return fetch
+
+
+def kite_quote(gate: KiteGate) -> Callable:
+    """["EXCH:SYMBOL", ...] -> Kite's quote for each, in one request."""
+    def quote(keys: list) -> dict:
+        return gate.call(gate.kite.quote, list(keys)) or {}
+    return quote
 
 
 def kite_ltp(gate: KiteGate) -> Callable:
