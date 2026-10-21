@@ -330,3 +330,35 @@ def test_what_a_repair_touched_is_marked_everywhere_and_unmarked_on_undo(pool_ru
         assert trades == [] and [s["repaired"] for s in straddles] == [False]
         assert not rp["episodes"][-1]["repaired"] and not any(e["repaired"] for e in rp["events"])
     pool_run(go)
+
+
+def test_legs_with_no_prices_make_the_plan_untrustworthy_and_it_cant_be_applied(pool_run, monkeypatch):
+    """The Bankex case: Kite had nothing for the held legs (one empty, one
+    an error) and the app stored none. The strategy saw nothing, so its
+    "nothing to do" means nothing: the plan names the blind legs with
+    Kite's reason, and apply refuses it."""
+    async def go(pool):
+        sim = await stalled_dtt(pool, monkeypatch)
+        legs = await sim.open_positions()
+        ce = next(int(p["instrument_token"]) for p in legs if p["symbol"].endswith("CE"))
+        pe = next(int(p["instrument_token"]) for p in legs if p["symbol"].endswith("PE"))
+        good = candles_source(sim, flat(25000))
+
+        def source(token, start, end):
+            if token == ce:
+                return []
+            if token == pe:
+                raise Exception("Invalid `token`")
+            return good(token, start, end)
+        book = MinuteBook(sim.market.today, source)
+        w = window(sim)
+        out = await engine.plan(pool, sim.dep_id, w, book, sim.kite, {})
+        assert out.complete and sorted(s[-2:] for s in out.blind) == ["CE", "PE"]
+        notes = " ".join(out.notes)
+        assert "Kite returned no 1-minute candles" in notes and "Kite said “Exception: Invalid `token`”" in notes
+        assert out.index_name == "NIFTY 50"
+        assert engine.summarize(out)["blind"] == out.blind
+        with pytest.raises(engine.PlanChanged, match="no prices"):
+            await engine.apply(pool, sim.dep_id, w, book, sim.kite, out)
+        assert await engine.live_repair(pool, sim.dep_id, w.day) is None
+    pool_run(go)

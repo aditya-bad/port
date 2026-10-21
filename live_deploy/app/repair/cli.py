@@ -34,7 +34,12 @@ from . import engine
 from .market import MinuteBook
 
 BARS = "▁▂▃▄▅▆▇█"
-ORDER_WORDS = {"up_first": "Nifty went UP first", "down_first": "Nifty went DOWN first"}
+ORDER_WORDS = {"up_first": "UP first", "down_first": "DOWN first"}
+
+
+def went(order: str, index: str = "the index") -> str:
+    """'NIFTY 50 went UP first'."""
+    return f"{index} went {ORDER_WORDS[order]}"
 PHASE_WORDS = {"open": "open", "close": "close", "up": "↑ high", "down": "↓ low"}
 
 
@@ -175,7 +180,7 @@ class RepairCLI:
         w = self.window.as_dict()
         self.say(self.p.bold(f"STALL REPAIR · {self.window.day:%a %d %b %Y} · replaying {w['from']} → {w['to']} on 1-minute candles"))
         self.say(self.p.dim("Each minute is played as open → one extreme → the other → close; a CE is at its high and a PE at "
-                            "its low when Nifty is at its high. Where the order inside a minute changes what the strategy "
+                            "its low when the index is at its high. Where the order inside a minute changes what the strategy "
                             "does, you choose."))
         await self.scan()
         while True:
@@ -226,6 +231,9 @@ class RepairCLI:
                 self.say(head + "  " + p.warn(f"replay failed: {sc['error'][:60]}"))
                 continue
             s, o = sc["summary"], sc["outcome"]
+            if o.blind:
+                self.say(head + "  " + p.warn(f"no prices for {len(o.blind)} leg(s): can't be repaired — pick it to see why"))
+                continue
             if not o.fills and not r["legs"]:
                 self.say(head + "  " + p.dim("nothing to repair"))
                 continue
@@ -277,7 +285,7 @@ class RepairCLI:
 
     def ask_path(self, o: engine.Outcome) -> Optional[str]:
         a, p = o.ambiguity, self.p
-        self.say("\n" + p.warn(f"⚠ {a.minute} — the 1-minute candle can't tell which way Nifty went first, and the strategy "
+        self.say("\n" + p.warn(f"⚠ {a.minute} — the 1-minute candle can't tell which way {o.index_name} went first, and the strategy "
                                "acts differently each way."))
         self.say(f"   {'Candle ' + a.minute:<28} {'open':>10} {'high':>10} {'low':>10} {'close':>10}")
         for c in a.candles:
@@ -291,7 +299,7 @@ class RepairCLI:
                 first, then = (idx["high"], idx["low"]) if order == "up_first" else (idx["low"], idx["high"])
                 how = f" (to {inr(first, sign=False, dp=2)}, then {inr(then, sign=False, dp=2)})"
             usual = p.dim("  · the usual reading of this candle") if order == a.natural else ""
-            self.say(f"\n   [{n}] {ORDER_WORDS[order]}{how}{usual}")
+            self.say(f"\n   [{n}] {went(order, o.index_name)}{how}{usual}")
             if not v["fills"]:
                 self.say("       no trade this minute")
             for f in v["fills"]:
@@ -315,8 +323,12 @@ class RepairCLI:
         s = engine.summarize(o, row["capital"])
         w = self.window.as_dict()
         self.say("\n" + p.bold(f"━━ Repair plan — {row['name']}"))
+        if o.blind:
+            self.say(p.warn(f"⚠ CAN'T BE TRUSTED: no prices at all for {', '.join(o.blind)}. The strategy couldn't see "
+                            "these legs, so what it did (or didn't do) below means nothing. It can't be applied; the notes "
+                            "at the end say why the prices are missing."))
         if o.choices:
-            self.say("Paths you chose: " + ", ".join(f"{k} {ORDER_WORDS[v].split(' went ')[1].lower()}" for k, v in sorted(o.choices.items())))
+            self.say("Paths you chose: " + ", ".join(f"{k} {ORDER_WORDS[v].lower()}" for k, v in sorted(o.choices.items())))
         else:
             self.say("No minute needed a choice.")
         self.say(p.bold(f"\nTrades the strategy would have made ({len(o.fills)}):"))
@@ -341,7 +353,7 @@ class RepairCLI:
         self.say(f"   {'P&L path (as left)':<28}{spark([c['left'] for c in o.curve])}")
         if s["index"]:
             i = s["index"]
-            self.say(f"   {'Nifty':<28}{spark([c['idx'] for c in o.curve])}  {inr(i['first'], sign=False)} → {inr(i['last'], sign=False)}"
+            self.say(f"   {o.index_name:<28}{spark([c['idx'] for c in o.curve])}  {inr(i['first'], sign=False)} → {inr(i['last'], sign=False)}"
                      f" (range {inr(i['low'], sign=False)}–{inr(i['high'], sign=False)})")
         if s["vix"]:
             self.say(f"   {'India VIX':<28}{s['vix']['first']:.2f} → {s['vix']['last']:.2f}")
@@ -365,6 +377,9 @@ class RepairCLI:
         while True:
             a = self.ask("\na apply to this deployment · c change a choice · b back › ").lower()
             if a in ("a", "apply"):
+                if o.blind:
+                    self.say(p.warn("   Not applicable: the replay had no prices for " + ", ".join(o.blind) + "."))
+                    continue
                 return "apply"
             if a == "c":
                 if o.choices:
@@ -376,7 +391,7 @@ class RepairCLI:
     def change(self, choices: dict) -> Optional[dict]:
         keys = sorted(choices)
         for n, k in enumerate(keys, 1):
-            self.say(f"   [{n}] {k} — {ORDER_WORDS[choices[k]]}")
+            self.say(f"   [{n}] {k} — {went(choices[k])}")
         a = self.ask("Which choice to flip (number) · b back › ").lower()
         if not a.isdigit() or not 1 <= int(a) <= len(keys):
             return None
@@ -434,7 +449,7 @@ class RepairCLI:
         s = r["summary"]
         self.say("\n" + p.bold(f"━━ {row['name']} — repaired at {r['applied_at'].astimezone(engine.IST):%H:%M}"))
         if r["choices"]:
-            self.say("Paths chosen: " + ", ".join(f"{k} {ORDER_WORDS[v]}" for k, v in sorted(r["choices"].items())))
+            self.say("Paths chosen: " + ", ".join(f"{k} {went(v)}" for k, v in sorted(r["choices"].items())))
         for f in s.get("fills_detail", []):
             self.say("   " + self.fill_line(f))
         self.say(f"Window P&L {p.money(s.get('pnl'))} (as left {p.money(s.get('left'))}), booked {p.money(s.get('booked'))}")

@@ -203,6 +203,8 @@ class Outcome:
     end_positions: list = field(default_factory=list)
     problems: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    blind: list = field(default_factory=list)     # legs it held with no price at all: the plan can't be trusted
+    index_name: str = "Index"
     start_equity: float = 0.0
     charges: float = 0.0
     fingerprint: str = ""
@@ -278,6 +280,8 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         out.notes.append("The window has no minutes.")
         return out
     idx_tok = next(iter(sorted(runner.tokens)), None)
+    from .market import INDEX_LABELS
+    out.index_name = INDEX_LABELS.get(idx_tok, "Index")
 
     with replaying(kite, clock):
         before = minutes[0] - timedelta(minutes=1)
@@ -358,14 +362,25 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         if closed:
             out.charges = round(float(await conn.fetchval(
                 "SELECT COALESCE(SUM(estimated_charges), 0) FROM positions WHERE id = ANY($1::uuid[])", closed) or 0), 2)
+    # every leg it held, before or during the window: one with no price at
+    # all left the strategy blind, so nothing it did (or didn't) can be trusted
+    held = {int(t) for t in start_positions} | {f["token"] for f in out.fills}
     for tok, origin in sorted(book.origin.items()):
         if tok == VIX_TOKEN:
             continue
-        if origin == "none" and (tok in disp.subscribed):
-            label = book.symbols.get(tok, str(tok))
-            out.notes.append(f"No 1-minute candles for {label}: its price stood still at its last known value.")
+        label = book.symbols.get(tok, str(tok))
+        if origin == "none" and tok in held:
+            why = book.errors.get(tok)
+            out.blind.append(label)
+            out.notes.append(f"No prices at all for {label}: " + (f"Kite said “{why}”" if why else
+                             "Kite returned no 1-minute candles for it, and the app stored none")
+                             + ". The strategy couldn't see this leg.")
+        elif origin == "none" and tok in disp.subscribed:
+            out.notes.append(f"No 1-minute candles for {label}" + (f" (Kite said “{book.errors[tok]}”)" if tok in book.errors else "") + ".")
         elif origin == "stored" and tok in disp.subscribed:
-            out.notes.append(f"{book.symbols.get(tok, tok)}: candles from the app's own store (Kite had none).")
+            out.notes.append(f"{label}: candles from the app's own store (Kite had none).")
+        elif tok in held and not any(m >= minutes[0] for m in book.keys.get(tok, [])):
+            out.notes.append(f"{label}: no trade in the window; its price stood still at its last close before it.")
     return out
 
 
@@ -495,6 +510,7 @@ def summarize(o: Outcome, capital: float = 0.0) -> dict:
         "vix": {"first": vix[0], "last": vix[-1]} if vix else None,
         "fills": len(o.fills), "reasons": reasons, "open_after": len(o.end_positions),
         "spikes": sum(1 for f in o.fills if f["phase"] in ("up", "down")),
+        "blind": list(o.blind),
     }
 
 
@@ -538,6 +554,8 @@ async def apply(pool, dep_id, window: Window, book: MinuteBook, real_kite, expec
             out = await replay(conn, dep, window, book, real_kite, expected.choices, run=run)
             if not out.complete:
                 raise PlanChanged(f"the replay found an undecided minute ({out.ambiguity.minute})")
+            if out.blind:
+                raise PlanChanged(f"no prices for {', '.join(out.blind)}: the replay couldn't see them")
             if exact(out.fills) != exact(expected.fills):
                 raise PlanChanged("the replay came out differently from the plan (market data changed?)")
             added = await _added(conn, dep_id, before)

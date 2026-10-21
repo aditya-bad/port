@@ -63,8 +63,8 @@ def test_review_choose_a_path_apply_and_it_shows_repaired(pool_run, monkeypatch)
         text = "\n".join(lines)
         assert "STALL REPAIR" in text and "Scanning 1 deployment(s)" in text
         assert "13:05 — the 1-minute candle can't tell" in text
-        assert "[1] Nifty went DOWN first (to 24,550.00, then 25,450.00)" in text
-        assert "[2] Nifty went UP first" in text
+        assert "[1] NIFTY 50 went DOWN first (to 24,550.00, then 25,450.00)" in text
+        assert "[2] NIFTY 50 went UP first" in text
         assert "Paths you chose: 13:05 up first" in text
         assert "leg_spike_stop" in text and "Window P&L" in text and "As left by the stall" in text
         assert "Applied: 2 trade(s)" in text
@@ -137,3 +137,21 @@ def test_formatting_helpers():
     assert inr(24550, sign=False, dp=2) == "24,550.00"
     assert spark([1, 2, 3]) == "▁▄█" and spark([5, 5]) == "▄▄" and spark([]) == ""
     assert len(spark(list(range(500)), width=40)) == 40
+
+
+def test_a_plan_blind_to_its_legs_is_flagged_in_the_list_and_cant_be_applied(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_simple", cfg("intraday_dtt_simple"))
+        await sim.walk("09:15", "12:15", every_min=5)
+        legs = {int(p["instrument_token"]) for p in await sim.open_positions()}
+        good = candles_source(sim, lambda m: (25000, 25004, 24996, 25000))
+        book = MinuteBook(sim.market.today, lambda t, a, b: [] if t in legs else good(t, a, b))
+        w = engine.Window(sim.market.today, time(12, 16))
+        cli, lines = cli_for(pool, sim, book, w, FakeApi(), "1", "a", "b", "q")
+        await cli.run()
+        text = "\n".join(lines)
+        assert "no prices for 2 leg(s): can't be repaired" in text
+        assert "CAN'T BE TRUSTED: no prices at all for" in text
+        assert "Not applicable: the replay had no prices for" in text
+        assert "Applied" not in text and await engine.live_repair(pool, sim.dep_id, w.day) is None
+    pool_run(go)
