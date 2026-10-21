@@ -7,14 +7,14 @@ import { api } from '../../core/api.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price, dStamp, hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
-import { head, tiles, table, poll, svg, path, tone, wide } from './ui.js';
+import { head, tiles, table, poll, svg, path, tone, wide, hit } from './ui.js';
 import { exitLabel, pts, mins, lvl, spread } from './st.js';
 
 const OUT = { acted: 'Acted', no_action: 'No action', blocked: 'Blocked' };
 
 // Price over time with horizontal levels and the entry/exit marked.
 // series: [[iso, value]]; levels: [{key, value, color, dash}].
-export function priceChart(series, { levels = [], marks = [], label = '', fmt = v => Math.round(v).toLocaleString('en-IN') } = {}) {
+export function priceChart(series, { levels = [], marks = [], label = '', name = 'Price', fmt = v => Math.round(v).toLocaleString('en-IN') } = {}) {
   if (series.length < 2) return '';
   const W = 1200, H = 260, L = 70, R = 70, T = 14, B = 26;
   const ts = series.map(p => new Date(p[0]).getTime()), vs = series.map(p => p[1]);
@@ -33,13 +33,18 @@ export function priceChart(series, { levels = [], marks = [], label = '', fmt = 
   for (const m of marks) {
     const mt = new Date(m.t).getTime();
     if (mt < t0 || mt > t1) continue;
+    s += hit(x(mt) - 6, T, 12, H - T - B, `${m.label}  ${hhmm(m.t)}`);
     s += `<line x1="${x(mt)}" x2="${x(mt)}" y1="${T}" y2="${H - B}" stroke="${m.color}" stroke-width="2"/>`;
     s += `<text class="lab" x="${x(mt) + 5}" y="${T + 10}" style="fill:${m.color}">${m.label}</text>`;
   }
   s += `<path d="${path(series.map((p, i) => [x(ts[i]), y(p[1])]))}" fill="none" stroke="var(--ink)" stroke-width="1.8"/>`;
   s += `<text x="${L}" y="${H - 6}">${hhmm(series[0][0])} ${new Date(series[0][0]).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })}</text>`;
   s += `<text x="${W - R}" y="${H - 6}" text-anchor="end">${hhmm(series[series.length - 1][0])}</text>`;
-  return wide(svg(W, H, s, label));
+  const at = t => `${new Date(t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })} ${hhmm(t)}`;
+  return wide(svg(W, H, s, label, {
+    series: [{ name, color: 'var(--ink)', pts: series.map((p, i) => [x(ts[i]), y(p[1]), fmt(p[1]), at(p[0])]) }],
+    extra: X => { const p = series.reduce((a, b, i) => (Math.abs(x(ts[i]) - X) < Math.abs(x(new Date(a[0]).getTime()) - X) ? b : a)); return near.map(l => `${l.key}  ${fmt(l.value)} (${p[1] >= l.value ? '+' : '−'}${fmt(Math.abs(p[1] - l.value))})`); },
+  }));
 }
 
 const saw = vals => (vals ? Object.entries(vals).filter(([, v]) => v != null && typeof v !== 'object')
@@ -82,9 +87,9 @@ export default {
           ['P&L', t.pnl == null ? '—' : inr(t.pnl), t.qty ? `${t.qty} qty` : '', tone(t.pnl)],
         ], 6)}
         <div class="gk-panel"><h3>The index through the trade <span class="s">against the levels it was taken on · dashed: the SuperTrend line at entry</span></h3>
-          ${data.path.index.length > 1 ? priceChart(data.path.index, { levels, marks, label: 'The index through the trade' }) : empty('', 'No index prices stored for this stretch.')}</div>
+          ${data.path.index.length > 1 ? priceChart(data.path.index, { levels, marks, label: 'The index through the trade', name: 'Index' }) : empty('', 'No index prices stored for this stretch.')}</div>
         <div class="gk-panel"><h3>The option’s premium <span class="s">what it was sold at, and what buying it back would have cost</span></h3>
-          ${data.path.option.length > 1 ? priceChart(data.path.option, { levels: [{ key: 'sold', value: t.entry_px, color: 'var(--acc)', dash: true }], marks, label: 'The option premium through the trade', fmt: v => price(v) }) : empty('', 'No premium prices stored for this option.')}</div>
+          ${data.path.option.length > 1 ? priceChart(data.path.option, { levels: [{ key: 'sold', value: t.entry_px, color: 'var(--acc)', dash: true }], marks, label: 'The option premium through the trade', name: t.opt, fmt: v => price(v) }) : empty('', 'No premium prices stored for this option.')}</div>
         <div class="gk-two even">
           <div class="gk-panel"><h3>What the entry saw</h3>
             <p class="small" style="display:flex;flex-wrap:wrap;gap:6px 16px">${saw({ close: t.close, level: t.level, level_price: t.level_px, supertrend: t.st_value, pivot: t.pivot_point })}</p>

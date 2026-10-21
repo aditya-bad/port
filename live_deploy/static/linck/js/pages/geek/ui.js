@@ -1,6 +1,7 @@
 // Small building blocks shared by the Geek views.
 
-import { html, raw } from '../../core/dom.js';
+import { html, raw, esc } from '../../core/dom.js';
+import { registerScrub } from '../../ui/tooltip.js';
 import { inr, dStamp } from '../../core/format.js';
 
 export const head = (title, why, src) => html`<div class="gk-h"><h2>${title}</h2>${why ? html`<span class="why">${why}</span>` : ''}${src ? html`<span class="src">${src}</span>` : ''}</div>`;
@@ -63,9 +64,59 @@ export function poll(load, ms, fn) {
 }
 
 // A plain SVG chart in a fixed viewBox (text stays undistorted).
-export function svg(w, h, body, label = '') {
-  return html`<svg class="gk-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${label}">${raw(body)}</svg>`;
+//
+// EVERY chart is interactable (tests/e2e/charts-hover.e2e.mjs checks each
+// one): a line over time passes `hover` and gets a guide that follows the
+// pointer with every series' value at that point; a chart of separate
+// marks (dots, bars, levels) puts tipAt(...) on each mark.
+//   hover = { series: [{ name, color, pts: [[X, Y, value text, title?]] }],
+//             title: (X, point) => text, extra: X => [lines] }
+//   (X, Y in viewBox units; pts sorted by X)
+let hoverN = 0;
+export function svg(w, h, body, label = '', hover = null) {
+  let key = '';
+  if (hover && (hover.series.some(s => s.pts && s.pts.length) || (hover.title && hover.extra))) {
+    key = `gkh${++hoverN}`;
+    registerScrub(key, scrubber(w, h, hover));
+  }
+  return html`<svg class="gk-chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${label}" ${key ? html`data-scrub="${key}"` : ''}>${raw(body)}</svg>`;
 }
+
+// The point of sorted pts nearest to X.
+export function nearest(pts, X) {
+  if (!pts || !pts.length) return null;
+  let lo = 0, hi = pts.length - 1;
+  while (hi - lo > 1) { const m = (lo + hi) >> 1; if (pts[m][0] < X) lo = m; else hi = m; }
+  return Math.abs(pts[lo][0] - X) <= Math.abs(pts[hi][0] - X) ? pts[lo] : pts[hi];
+}
+
+// f (0..1 across the chart) -> the tooltip: a title, a line per series
+// with its value nearest the pointer, and where each series' dot sits.
+export function scrubber(w, h, { series, title, extra }) {
+  return f => {
+    const X = f * w, lines = [], ys = [], cs = [];
+    let first = null;
+    for (const s of series) {
+      const p = nearest(s.pts, X);
+      const far = p && s.reach != null && Math.abs(p[0] - X) > s.reach;
+      if (!p || far) { ys.push(null); cs.push(s.color); continue; }
+      first = first || p;
+      lines.push(`${s.name}  ${p[2]}`);
+      ys.push(p[1] / h);
+      cs.push(s.color);
+    }
+    if (!first && !(title && extra)) return null;
+    const head = title ? title(X, first) : first[3] || '';
+    return { t: [head, ...lines, ...(extra ? extra(X) : [])].join('\n'), ys, cs };
+  };
+}
+
+// A tip on one mark of an SVG chart (a dot, a bar, a level): lines
+// "Title\nLabel  value", as an attribute for an SVG string.
+export const tipAt = text => ` data-tip="${esc(text)}"`;
+// An invisible column (or box) that carries a tip: for bars and for marks
+// too thin to point at.
+export const hit = (x, y, w, h, text) => `<rect class="hit" x="${x}" y="${y}" width="${Math.max(1, w)}" height="${Math.max(1, h)}" fill="transparent"${tipAt(text)}/>`;
 // A wide chart (1200-unit viewbox): on a phone it keeps a readable
 // minimum width and scrolls sideways inside its panel.
 export const wide = chart => html`<div class="gk-wide">${chart}</div>`;
@@ -89,8 +140,8 @@ export const steps = pts => pts.flatMap((p, i) => (i ? [[p[0], pts[i - 1][1]], p
 // Signed bars around a centre line: [[label, ₹ or null], ...].
 export function bars(items) {
   const mx = Math.max(1, ...items.map(([, v]) => Math.abs(v || 0)));
-  return html`<div class="col" style="gap:10px">${items.map(([l, v]) => html`
-    <div style="display:grid;grid-template-columns:150px minmax(0,1fr) 100px;gap:10px;align-items:center" class="small">
+  return html`<div class="col" style="gap:10px">${items.map(([l, v, tip]) => html`
+    <div style="display:grid;grid-template-columns:150px minmax(0,1fr) 100px;gap:10px;align-items:center" class="small" data-tip="${tip || `${l}\nP&L  ${v == null ? 'none' : inr(v)}`}">
       <b>${l}</b>
       <div style="position:relative;height:16px;background:var(--soft)"><i style="position:absolute;top:0;bottom:0;${v >= 0 ? 'left:50%' : `right:50%`};width:${(Math.abs(v || 0) / mx * 50).toFixed(1)}%;background:${v >= 0 ? 'var(--g)' : 'var(--r)'}"></i><i style="position:absolute;left:50%;top:-3px;bottom:-3px;width:1px;background:var(--ink)"></i></div>
       <span class="mono tiny right ${tone(v)}">${v == null ? 'none' : inr(v)}</span></div>`)}</div>`;

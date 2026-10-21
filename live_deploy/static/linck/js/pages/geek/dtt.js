@@ -4,7 +4,7 @@
 
 import { html } from '../../core/dom.js';
 import { price, hhmm } from '../../core/format.js';
-import { svg, path, tiles, wide } from './ui.js';
+import { svg, path, tiles, wide, hit } from './ui.js';
 import { spread } from './st.js';
 
 export const EXIT = { profit_target_decay: 'Profit target', leg_spike_stop: 'Leg stop', force_exit: 'Square-off' };
@@ -18,7 +18,7 @@ export const progress = (from, to, now) => (from == null || to == null || now ==
 
 function bar(label, from, to, now, color, l, r) {
   const f = progress(from, to, now);
-  return html`<div class="dd-bar">
+  return html`<div class="dd-bar" data-tip="${`${label}\nSold  ${price(from)}\nNow  ${now == null ? 'no price' : price(now)}\n${r.startsWith('target') ? 'Target' : 'Stop'}  ${price(to)}\nOf the way there  ${Math.round(f * 100)}%`}">
     <div class="row" style="gap:8px;align-items:baseline"><b class="small">${label}</b><span class="grow"></span><span class="mono small">${now == null ? 'no price' : price(now)}</span></div>
     <div style="position:relative;height:14px;background:var(--soft);margin:6px 0 4px"><i style="position:absolute;left:0;top:0;bottom:0;width:${(f * 100).toFixed(1)}%;background:${color}"></i></div>
     <div class="row mono tiny mute"><span>${l}</span><span class="grow"></span><span>${r}</span></div></div>`;
@@ -70,6 +70,7 @@ export function linesChart(lines, { levels = [], marks = [], label = '', fmt = v
     const mt = new Date(m.t).getTime();
     if (mt < t0 || mt > t1) continue;
     s += `<line x1="${x(mt)}" x2="${x(mt)}" y1="${T}" y2="${H - B}" stroke="${m.color}" stroke-width="2"/><text class="lab" x="${x(mt) + 5}" y="${T + 10}" style="fill:${m.color}">${m.label}</text>`;
+    s += hit(x(mt) - 6, T, 12, H - T - B, `${m.label}  ${hhmm(new Date(m.t))}`);
   }
   for (const l of lines) {
     if (l.data.length < 2) continue;
@@ -77,5 +78,9 @@ export function linesChart(lines, { levels = [], marks = [], label = '', fmt = v
   }
   s += `<text x="${L}" y="${H - 6}">${hhmm(new Date(t0))} ${new Date(t0).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })}</text>`;
   s += `<text x="${W - R}" y="${H - 6}" text-anchor="end">${hhmm(new Date(t1))}</text>`;
-  return wide(svg(W, H, s, label));
+  const at = t => `${new Date(t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })} ${hhmm(new Date(t))}`;
+  return wide(svg(W, H, s, label, {
+    series: lines.filter(l => l.data.length).map(l => ({ name: l.name || 'Value', color: l.color, pts: l.data.map(p => [x(new Date(p[0]).getTime()), y(p[1]), fmt(p[1]), at(p[0])]) })),
+    extra: () => near.map(l => `${l.key}  ${fmt(l.value)}`),
+  }));
 }

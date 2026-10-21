@@ -9,14 +9,15 @@ import { empty, loading } from '../../ui/components.js';
 import { hasView } from './views.js';
 import { stPanel } from './st.js';
 import { ddPanel } from './dtt.js';
-import { head, nextMove, gauge, stateChip, table, tiles, poll, svg, path, money, tone } from './ui.js';
+import { head, nextMove, gauge, stateChip, table, tiles, poll, svg, path, money, tone, hit, tipAt } from './ui.js';
 
 function ruler(k) {
   const pts = [k.lower_be, k.upper_be, k.pe, k.ce, k.spot].filter(x => x != null);
   const span = Math.max(...pts) - Math.min(...pts);
   const lo = Math.min(...pts) - span * 0.06, hi = Math.max(...pts) + span * 0.06;
   const W = 560, x = v => 16 + (v - lo) / (hi - lo) * (W - 32);
-  let s = `<rect x="${x(k.lower_be)}" y="40" width="${x(k.upper_be) - x(k.lower_be)}" height="26" fill="var(--gs)"/>`;
+  const away = v => (k.spot != null ? `\nFrom spot  ${v >= k.spot ? '+' : '−'}${Math.round(Math.abs(v - k.spot)).toLocaleString('en-IN')} pts (${(Math.abs(v - k.spot) / k.spot * 100).toFixed(2)}%)` : '');
+  let s = `<rect x="${x(k.lower_be)}" y="40" width="${x(k.upper_be) - x(k.lower_be)}" height="26" fill="var(--gs)"${tipAt(`Profit zone at expiry\nBetween  ${Math.round(k.lower_be).toLocaleString('en-IN')} and ${Math.round(k.upper_be).toLocaleString('en-IN')}\nCredit  ${k.credit != null ? k.credit.toFixed(1) : '—'} pts`)}/>`;
   s += `<line x1="16" x2="${W - 16}" y1="53" y2="53" stroke="var(--line2)"/>`;
   const mark = (v, c, l) => `<line x1="${x(v)}" x2="${x(v)}" y1="30" y2="66" stroke="${c}" stroke-width="3"/><text class="lab" x="${x(v)}" y="22" text-anchor="middle" style="fill:${c}">${l}</text>`;
   s += mark(k.pe, 'var(--c4)', `PE ${k.pe.toLocaleString('en-IN')}`) + mark(k.ce, 'var(--c5)', `CE ${k.ce.toLocaleString('en-IN')}`);
@@ -26,6 +27,11 @@ function ruler(k) {
   }
   s += `<text x="${x(k.lower_be)}" y="84" text-anchor="middle">BE ${Math.round(k.lower_be).toLocaleString('en-IN')}</text>`;
   s += `<text x="${x(k.upper_be)}" y="84" text-anchor="middle">BE ${Math.round(k.upper_be).toLocaleString('en-IN')}</text>`;
+  s += hit(x(k.pe) - 7, 14, 14, 56, `PE strike  ${k.pe.toLocaleString('en-IN')}${away(k.pe)}`);
+  s += hit(x(k.ce) - 7, 14, 14, 56, `CE strike  ${k.ce.toLocaleString('en-IN')}${away(k.ce)}`);
+  s += hit(x(k.lower_be) - 7, 70, 14, 20, `Lower break-even  ${Math.round(k.lower_be).toLocaleString('en-IN')}${away(k.lower_be)}`);
+  s += hit(x(k.upper_be) - 7, 70, 14, 20, `Upper break-even  ${Math.round(k.upper_be).toLocaleString('en-IN')}${away(k.upper_be)}`);
+  if (k.spot != null) s += hit(x(k.spot) - 7, 30, 14, 76, `Spot  ${Math.round(k.spot).toLocaleString('en-IN')}`);
   return svg(W, 108, s, 'Spot against the short strikes and break-evens');
 }
 
@@ -43,7 +49,11 @@ function balance(series, eod, cont) {
   s += `<circle cx="${x(n - 1)}" cy="${y(L.ratio)}" r="4" fill="var(--acc)"/>`;
   s += `<text x="34" y="${H - 6}">${hhmm(series[0].t)} ${new Date(series[0].t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })}</text>`;
   s += `<text x="${W - 10}" y="${H - 6}" text-anchor="end">${hhmm(L.t)} · ${Math.round(L.ratio * 100)}%</text>`;
-  return svg(W, H, s, 'Smaller side over bigger side through this cycle');
+  const at = p => `${new Date(p.t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })} ${hhmm(p.t)}`;
+  return svg(W, H, s, 'Smaller side over bigger side through this cycle', {
+    series: [{ name: 'Smaller ÷ bigger', color: 'var(--ink)', pts: series.map((p, i) => [x(i), y(p.ratio), `${Math.round(p.ratio * 100)}%`, at(p)]) }],
+    extra: () => [...(cont ? [`Roll now below  ${Math.round(cont.mark * 100)}%`] : []), ...(eod ? [`EOD floor  ${Math.round(eod.mark * 100)}%`] : [])],
+  });
 }
 
 const show = val => (val == null ? '—' : typeof val === 'boolean' ? (val ? 'Yes' : 'No') : typeof val === 'object' ? JSON.stringify(val) : String(val));

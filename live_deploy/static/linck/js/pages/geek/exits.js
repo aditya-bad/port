@@ -6,9 +6,9 @@ import { api } from '../../core/api.js';
 import { html, mount } from '../../core/dom.js';
 import { inr } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
-import { head, tiles, table, poll, svg, tone, wide } from './ui.js';
+import { head, tiles, table, poll, svg, tone, wide, tipAt } from './ui.js';
 import { exitLabel, mins } from './st.js';
-import { tradeTable } from './signals.js';
+import { tradeTable, tradeTip } from './signals.js';
 
 // Each trade's premium kept (%), one dot per trade on a line per exit.
 function keptStrip(closed) {
@@ -24,7 +24,7 @@ function keptStrip(closed) {
     const y = 16 + i * rowH;
     s += `<text class="lab" x="0" y="${y + 4}">${exitLabel(r)}</text><line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="var(--line)"/>`;
     for (const t of closed.filter(c => c.exit_reason === r && c.kept_pct != null)) {
-      s += `<circle cx="${x(t.kept_pct).toFixed(1)}" cy="${y}" r="5" fill="${t.pnl >= 0 ? 'var(--g)' : 'var(--r)'}" fill-opacity=".75"><title>${t.symbol} · kept ${t.kept_pct}% · ${inr(t.pnl)}</title></circle>`;
+      s += `<circle cx="${x(t.kept_pct).toFixed(1)}" cy="${y}" r="5" fill="${t.pnl >= 0 ? 'var(--g)' : 'var(--r)'}" fill-opacity=".75"${tipAt(`${tradeTip(t)}\nPremium kept  ${t.kept_pct}%`)}/>`;
     }
   });
   return wide(svg(W, H, s, 'Premium kept by each trade, by what closed it'));
@@ -33,7 +33,7 @@ function keptStrip(closed) {
 function holdBars(hold) {
   const mx = Math.max(1, ...hold.map(h => h.n));
   return html`<div class="col" style="gap:8px">${hold.map(h => html`
-    <div style="display:grid;grid-template-columns:80px minmax(0,1fr) 120px;gap:10px;align-items:center" class="small">
+    <div style="display:grid;grid-template-columns:80px minmax(0,1fr) 120px;gap:10px;align-items:center" class="small" data-tip="${`Held ${h.label}\nTrades  ${h.n}\nWon  ${h.wins}\nP&L  ${inr(h.pnl)}`}">
       <b>${h.label}</b>
       <div style="height:16px;background:var(--soft)"><i style="display:block;height:100%;width:${(h.n / mx * 100).toFixed(1)}%;background:var(--ink)"></i></div>
       <span class="mono tiny right">${h.n} · <span class="${tone(h.pnl)}">${inr(h.pnl)}</span></span></div>`)}</div>`;

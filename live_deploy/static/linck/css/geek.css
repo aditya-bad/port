@@ -204,3 +204,9 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 .cy-h { margin: 6px 0 -10px; font-family: var(--f-display); font-size: 22px; letter-spacing: -.02em; border-top: 1.5px solid var(--ink); padding-top: 14px; }
 .cy-h span { font-family: var(--f-body, inherit); font-size: 13px; font-weight: 400; color: var(--mute); margin-left: 10px; letter-spacing: 0; }
 #cy-vs .rg, #cy-vs .sp-run { cursor: pointer; }
+/* every chart is interactable: a guide follows the pointer on lines, marks carry tips */
+.gk-chart[data-scrub] { cursor: crosshair; touch-action: pan-y; }
+.gk-chart [data-tip] { cursor: pointer; }
+.gk-chart rect.hit:hover { fill: var(--ink); fill-opacity: .06; }
+/* axis lines and labels never block the marks under them */
+.gk-chart line, .gk-chart text { pointer-events: none; }

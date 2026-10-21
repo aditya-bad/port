@@ -20,7 +20,7 @@ import { journeys, spotlight, spotEvents, normalBand, dayRows, ranges, daysChart
 import { vsCompare } from './paths.js';
 import { arrows, cumulative, scatter, bySide, byHour, legend } from './adjustments.js';
 import { rulesBlock, strikesBlock, legsBlock } from './engine.js';
-import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, ratio, bars, LABEL, yLabels, wide } from './ui.js';
+import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, ratio, bars, LABEL, yLabels, wide, hit, tipAt } from './ui.js';
 
 // Viewbox widths: half-width panels and full-width ones (text keeps its size).
 const W = 640, WF = 1200;
@@ -47,6 +47,7 @@ function marks(cy, ax, top, bottom) {
     const X = ax.x(r.t);
     s += `<line x1="${X}" x2="${X}" y1="${top}" y2="${bottom}" stroke="var(--b)" stroke-dasharray="3 3"/>`;
     s += `<text class="lab" x="${X + 3}" y="${bottom - 3}" style="fill:var(--b);font-size:10px">${r.side || ''} ${r.direction || ''}</text>`;
+    s += hit(X - 5, top, 10, bottom - top, `Roll · ${dStamp(r.t)}\n${LABEL[r.rule] || LABEL[r.reason] || r.rule || r.reason || ''}  ${r.side || ''} ${r.direction || ''}${r.roll_paid != null ? `\nPaid vs keeping  ${inr(r.roll_paid)}` : ''}`);
   }
   return s;
 }
@@ -93,7 +94,10 @@ function pnlChart(cy) {
     const L = pts[pts.length - 1];
     s += `<circle cx="${L[0]}" cy="${L[1]}" r="4" fill="var(--ink)"/>`;
     s += ax.ticks(H - 8);
-    return wide(svg(WF, H, s, 'Cycle P&L over its life, with every roll'));
+    return wide(svg(WF, H, s, 'Cycle P&L over its life, with every roll', {
+      series: [{ name: booked ? 'Booked' : 'Cycle P&L', color: 'var(--ink)', pts: P.map(p => [ax.x(p.t), y(p.pnl), inr(p.pnl), dStamp(p.t)]) }],
+      extra: () => [`Checkpoint  ${inr(tgt, { sign: false })}`],
+    }));
   }
 }
 
@@ -111,7 +115,10 @@ function balanceChart(cy) {
   s += marks(cy, ax, 6, H - 30);
   s += `<path d="${path(S.map(p => [ax.x(p.t), y(p.ratio)]))}" fill="none" stroke="var(--ink)" stroke-width="1.6"/>`;
   s += ax.ticks(H - 8);
-  return svg(W, H, s, 'Smaller side as a share of the bigger, with the roll rules');
+  return svg(W, H, s, 'Smaller side as a share of the bigger, with the roll rules', {
+    series: [{ name: 'Smaller ÷ bigger', color: 'var(--ink)', pts: S.map(p => [ax.x(p.t), y(p.ratio), ratio(p.ratio), dStamp(p.t)]) }],
+    extra: () => [`Roll now below  ${ratio(R.trigger)}`, `EOD floor  ${ratio(R.floor)}`],
+  });
 }
 
 function premiumChart(cy) {
@@ -130,7 +137,10 @@ function premiumChart(cy) {
   s += `<text class="lab" x="${ax.x(L.t) - 4}" y="${y(L.ce) - 6}" text-anchor="end" style="fill:var(--c5)">CE ${L.ce.toFixed(1)}</text>`;
   s += `<text class="lab" x="${ax.x(L.t) - 4}" y="${y(L.pe) + 14}" text-anchor="end" style="fill:var(--c4)">PE ${L.pe.toFixed(1)}</text>`;
   s += ax.ticks(H - 8);
-  return svg(W, H, s, 'Call side and put side premium through the cycle');
+  return svg(W, H, s, 'Call side and put side premium through the cycle', {
+    series: [{ name: 'CE side', color: 'var(--c5)', pts: S.map(p => [ax.x(p.t), y(p.ce), p.ce.toFixed(1), dStamp(p.t)]) },
+      { name: 'PE side', color: 'var(--c4)', pts: S.map(p => [ax.x(p.t), y(p.pe), p.pe.toFixed(1), dStamp(p.t)]) }],
+  });
 }
 
 // Each leg as a bar at its strike, from opened to closed: rolls show as
@@ -149,6 +159,7 @@ function ladder(cy) {
     s += l.hedge
       ? `<rect x="${a}" y="${y(l.strike) + 3}" width="${Math.max(2, b - a)}" height="6" fill="none" stroke="${c}" stroke-dasharray="3 2"/>`
       : `<rect x="${a}" y="${y(l.strike)}" width="${Math.max(2, b - a)}" height="12" fill="${c}"/>`;
+    s += hit(a, y(l.strike) - 3, b - a, 18, `${l.symbol || legTxt(l)}${l.hedge ? ' · wing' : ''}\nStrike  ${l.strike}\nOpened  ${dStamp(l.opened_at)}\n${l.closed_at ? `Closed  ${dStamp(l.closed_at)}` : 'Still open'}${l.pnl != null ? `\nP&L  ${inr(l.pnl)}` : ''}`);
     s += `<text class="lab" x="${b + 4}" y="${y(l.strike) + 10}" style="font-size:10px">${l.opt}${l.hedge ? ' wing' : ''} ${l.status === 'open' ? '· open' : l.pnl != null ? `· ${inr(l.pnl)}` : ''}</text>`;
   });
   s += ax.ticks(H - 4);

@@ -19,7 +19,12 @@ function sides(series) {
   s += `<text class="lab" x="${x(n - 1) - 4}" y="${y(L.ce) - 6}" text-anchor="end" style="fill:var(--c5)">CE ${L.ce.toFixed(1)}</text>`;
   s += `<text class="lab" x="${x(n - 1) - 4}" y="${y(L.pe) + 14}" text-anchor="end" style="fill:var(--c4)">PE ${L.pe.toFixed(1)}</text>`;
   s += `<text x="40" y="${H - 6}">${new Date(series[0].t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })} ${hhmm(series[0].t)}</text><text x="${W - 10}" y="${H - 6}" text-anchor="end">${hhmm(L.t)}</text>`;
-  return svg(W, H, s, 'Call and put side premium through the open cycle');
+  const at = p => `${new Date(p.t).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', timeZone: 'Asia/Kolkata' })} ${hhmm(p.t)}`;
+  return svg(W, H, s, 'Call and put side premium through the open cycle', {
+    series: [{ name: 'CE side', color: 'var(--c5)', pts: series.map((p, i) => [x(i), y(p.ce), p.ce.toFixed(1), at(p)]) },
+      { name: 'PE side', color: 'var(--c4)', pts: series.map((p, i) => [x(i), y(p.pe), p.pe.toFixed(1), at(p)]) }],
+    extra: X => { const p = series[Math.max(0, Math.min(n - 1, Math.round((X - 40) / ((W - 50) || 1) * (n - 1))))]; return [`Smaller ÷ bigger  ${Math.round(Math.min(p.ce, p.pe) / Math.max(p.ce, p.pe) * 100)}%`]; },
+  });
 }
 
 export default {

@@ -10,7 +10,7 @@ import { html, mount, on } from '../../core/dom.js';
 import { go } from '../../core/router.js';
 import { inr, dStamp, ist } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
-import { head, tiles, table, poll, svg, path, money, tone, ratio, LABEL, yLabels } from './ui.js';
+import { head, tiles, table, poll, svg, path, money, tone, ratio, LABEL, yLabels, tipAt, hit } from './ui.js';
 
 const legs = (xs, verb) => xs.map(f => `${verb} ${f.opt} ${f.strike ?? ''} @${Number(f.price).toFixed(1)}`).join(' · ');
 
@@ -29,6 +29,8 @@ export function arrows(rows, eng) {
     s += `<line x1="${X}" x2="${X}" y1="${b}" y2="${a + dir}" stroke="${c}" stroke-width="1.5"/><circle cx="${X}" cy="${b}" r="3" fill="${c}"/>`;
     s += `<path d="M${X - 4} ${a + dir} L${X} ${a} L${X + 4} ${a + dir}" fill="none" stroke="${c}" stroke-width="1.5"/>`;
   });
+  const cw = pts.length > 1 ? (W - 64) / (pts.length - 1) : 40;
+  pts.forEach((p, i) => { s += hit(x(i) - cw / 2, 8, cw, H - 26, `${dStamp(p.t)} · ${LABEL[p.rule] || p.rule}\nBefore  ${ratio(p.ratio_before)}\nAfter  ${ratio(p.ratio_after)}${p.roll_paid != null ? `\nPaid vs keeping  ${inr(p.roll_paid)}` : ''}`); });
   s += `<g transform="translate(34,${H - 12})"><rect width="9" height="9" fill="var(--ink)"/><text x="13" y="8">continuous</text><rect x="96" width="9" height="9" fill="var(--b)"/><text x="109" y="8">EOD / roll-out</text></g>`;
   return svg(W, H, s, 'Balance before and after each roll');
 }
@@ -47,11 +49,13 @@ export function cumulative(rows) {
   let s = `<line x1="46" x2="${W - 10}" y1="${y(0)}" y2="${y(0)}" stroke="var(--ink)"/>`;
   s += yLabels([0, lo, hi], y, 40);
   s += `<path d="${path(pts.map((v, i) => [x(i), y(v)]))}" fill="none" stroke="var(--ink)" stroke-width="1.8"/>`;
-  R.forEach((r, i) => { s += `<circle cx="${x(i)}" cy="${y(pts[i])}" r="3.5" fill="${RULE_C[r.rule]}"><title>${dStamp(r.t)} · ${LABEL[r.rule]} · ${inr(r.roll_paid)}</title></circle>`; });
+  R.forEach((r, i) => { s += `<circle cx="${x(i)}" cy="${y(pts[i])}" r="3.5" fill="${RULE_C[r.rule]}"/>`; });
   const L = pts[pts.length - 1];
   s += `<text class="lab" x="${x(R.length - 1)}" y="${y(L) - 8}" text-anchor="end" style="fill:${L >= 0 ? 'var(--g)' : 'var(--r)'}">${inr(L)}</text>`;
   s += `<text x="46" y="${H - 8}">${dStamp(R[0].t)}</text><text x="${W - 10}" y="${H - 8}" text-anchor="end">${dStamp(R[R.length - 1].t)}</text>`;
-  return svg(W, H, s, 'Running total of what rolls earned against keeping the old leg');
+  return svg(W, H, s, 'Running total of what rolls earned against keeping the old leg', {
+    series: [{ name: 'Running total', color: 'var(--ink)', pts: R.map((r, i) => [x(i), y(pts[i]), inr(pts[i]), `${dStamp(r.t)} · ${LABEL[r.rule]}\nThis roll  ${inr(r.roll_paid)}`]) }],
+  });
 }
 
 // How lopsided it was when it rolled (x) against what the roll paid (y).
@@ -67,7 +71,7 @@ export function scatter(rows, eng) {
   const fl = eod && eod.band ? eod.band[0] : 0.8;
   s += `<line x1="${x(fl)}" x2="${x(fl)}" y1="10" y2="${H - 30}" stroke="var(--wr)" stroke-dasharray="3 3"/><text class="lab" x="${x(fl) + 4}" y="20" style="fill:var(--wr);font-size:10px">EOD floor</text>`;
   s += yLabels([0, lo, hi], y, 40);
-  R.forEach(r => { s += `<circle cx="${x(Math.max(0.3, r.ratio_before))}" cy="${y(r.roll_paid)}" r="5" fill="${RULE_C[r.rule]}" opacity=".8"><title>${dStamp(r.t)} · balance ${ratio(r.ratio_before)} · ${inr(r.roll_paid)}</title></circle>`; });
+  R.forEach(r => { s += `<circle cx="${x(Math.max(0.3, r.ratio_before))}" cy="${y(r.roll_paid)}" r="5" fill="${RULE_C[r.rule]}" opacity=".8"${tipAt(`${dStamp(r.t)} · ${LABEL[r.rule]}\nBalance when it rolled  ${ratio(r.ratio_before)}\nPaid vs keeping  ${inr(r.roll_paid)}`)}/>`; });
   return svg(W, H, s, 'Balance when the roll fired against what it paid');
 }
 
@@ -78,7 +82,7 @@ export function bySide(rows) {
     return { l: `${sd} ${d}`, n: L.length, net: S.reduce((a, r) => a + r.roll_paid, 0), scored: S.length }; });
   const mx = Math.max(1, ...B.map(b => b.n));
   return html`<div class="col" style="gap:9px">${B.map(b => html`
-    <div style="display:grid;grid-template-columns:70px minmax(0,1fr) 140px;gap:10px;align-items:center" class="small">
+    <div style="display:grid;grid-template-columns:70px minmax(0,1fr) 140px;gap:10px;align-items:center" class="small" data-tip="${`${b.l}\nRolls  ${b.n}\nScored  ${b.scored}\nPaid vs keeping  ${b.scored ? inr(b.net) : '—'}`}">
       <b>${b.l}</b><span class="meter" style="height:14px"><i style="width:${b.n / mx * 100}%;background:var(--ink)"></i></span>
       <span class="mono tiny right">${b.n} roll${b.n === 1 ? '' : 's'} · <span class="${tone(b.net)}">${b.scored ? inr(b.net) : '—'}</span></span></div>`)}
     <p class="gk-note">In: the new strike is closer to the market (more premium); out: further away. The amount is what those rolls paid against keeping the old leg.</p></div>`;
@@ -101,6 +105,7 @@ export function byHour(rows) {
     const tot = cnt[i].continuous + cnt[i].eod + cnt[i].rollout;
     if (tot) s += `<text class="lab" x="${X + bw / 2}" y="${base - 4}" text-anchor="middle">${tot}</text>`;
     s += `<text x="${X + bw / 2}" y="${H - 8}" text-anchor="middle">${h}:00</text>`;
+    s += hit(X - 6, 6, bw + 12, H - 32, `${h}:00–${h + 1}:00\nContinuous  ${cnt[i].continuous}\nEOD check  ${cnt[i].eod}\nEOD roll-out  ${cnt[i].rollout}`);
   });
   s += `<line x1="40" x2="${W - 10}" y1="${H - 26}" y2="${H - 26}" stroke="var(--ink)"/>`;
   return svg(W, H, s, 'Rolls by hour of day');

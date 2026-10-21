@@ -151,3 +151,26 @@ test('DTT straddle: progress toward a line, names and the straddle panel', async
   assert.match(flat, /Sells the ATM CE and PE at 10:00/);
   assert.match(flat, /10% decay/);
 });
+
+test('chart hover: the nearest point to the pointer, every series in the tip', async () => {
+  const { nearest, scrubber, tipAt, hit } = await import('../../static/linck/js/pages/geek/ui.js');
+  const pts = [[10, 50, 'a'], [20, 40, 'b'], [40, 30, 'c']];
+  assert.equal(nearest(pts, 0)[2], 'a');
+  assert.equal(nearest(pts, 16)[2], 'b');
+  assert.equal(nearest(pts, 31)[2], 'c');
+  assert.equal(nearest(pts, 99)[2], 'c');
+  assert.equal(nearest([], 5), null);
+  const f = scrubber(100, 200, {
+    series: [{ name: 'CE', color: 'red', pts: [[10, 100, '120.0', '10:00'], [90, 50, '130.0', '10:05']] },
+      { name: 'PE', color: 'teal', pts: [[10, 150, '80.0'], [90, 20, '75.0']] },
+      { name: 'Far', color: 'x', reach: 5, pts: [[50, 10, 'n/a']] }],
+    extra: () => ['Stop  168.0'],
+  });
+  const r = f(0.85);
+  assert.equal(r.t, '10:05\nCE  130.0\nPE  75.0\nStop  168.0', 'title from the nearest point, then each series');
+  assert.deepEqual(r.ys, [0.25, 0.1, null], 'dots where each series is; a series out of reach has none');
+  assert.deepEqual(r.cs, ['red', 'teal', 'x']);
+  assert.equal(scrubber(100, 100, { series: [{ name: 'x', color: 'c', pts: [] }] })(0.5), null);
+  assert.equal(tipAt('A "b" <c>\nX  1'), ' data-tip="A &quot;b&quot; &lt;c&gt;\nX  1"', 'escaped for an SVG string');
+  assert.match(hit(1, 2, 0, 4, 'tip'), /class="hit" x="1" y="2" width="1" height="4" fill="transparent" data-tip="tip"/, 'never zero-wide');
+});

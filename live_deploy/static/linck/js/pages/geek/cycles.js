@@ -9,7 +9,10 @@ import { html, mount, on } from '../../core/dom.js';
 import { go } from '../../core/router.js';
 import { inr, dShort } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
-import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, LABEL, yLabels, wide } from './ui.js';
+import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, LABEL, yLabels, wide, tipAt, hit } from './ui.js';
+
+// One cycle, for a tooltip.
+export const cycleTip = r => `Cycle #${r.cycle_id} · ${r.status === 'open' ? 'running' : (LABEL[r.ended_by] || r.ended_by.replace(/_/g, ' ')).toLowerCase()}\n${r.status === 'open' ? 'Now' : 'Result'}  ${r.pnl == null ? '—' : inr(r.pnl)}\nDays  ${r.days}\nWorst dip  ${r.mae == null ? '—' : inr(r.mae)}\nBest peak  ${r.mfe == null ? '—' : inr(r.mfe)}\nRolls  ${r.rolls}`;
 import { band, dayTable, heroOf, hoursOf, smooth } from './paths.js';
 
 const endTag = r => html`<span class="oc ${r.ended_by === 'checkpoint_target' ? '' : r.ended_by === 'open' ? 'no_action' : 'blocked'}">${LABEL[r.ended_by] || r.ended_by.replace(/_/g, ' ')}</span>`;
@@ -36,7 +39,7 @@ export function journeys(rows, target, one = false) {
     const open = r.status === 'open', c = endColour(r.ended_by);
     const pts = r.path.map(p => [x(p[0] / 24), y(p[1])]), L = pts[pts.length - 1];
     const w = open || one ? 2.4 : 1.3, op = open || one ? 1 : 0.55;
-    s += one ? `<g class="jr-one" data-kind="${r.path_kind || 'marks'}">` : `<g class="jr" data-c="${r.cycle_id}" data-kind="${r.path_kind || 'marks'}">`;
+    s += one ? `<g class="jr-one" data-kind="${r.path_kind || 'marks'}">` : `<g class="jr" data-c="${r.cycle_id}" data-kind="${r.path_kind || 'marks'}"${tipAt(`${cycleTip(r)}\nclick to open it`)}>`;
     if (r.path_kind === 'booked') {
       s += `<path d="${path(steps(pts))}" fill="none" stroke="${c}" stroke-width="${w}" stroke-dasharray="6 4" opacity="${op}"/>`;
     } else {
@@ -48,7 +51,20 @@ export function journeys(rows, target, one = false) {
   });
   const ends = [['checkpoint_target', 'reached the checkpoint'], ['contract_expiry_backstop', 'expiry'], ['convergence_stop', 'convergence stop'], ['open', 'running']]
     .filter(([k]) => !one || R[0].ended_by === k);
-  return html`${wide(svg(W, H, s, one ? `Cycle ${R[0].cycle_id}’s P&L against days since it opened` : 'Every cycle’s P&L against days since it opened'))}
+  const hover = one ? { series: [{ name: `#${R[0].cycle_id}`, color: endColour(R[0].ended_by), pts: R[0].path.map(p => [x(p[0] / 24), y(p[1]), inr(p[1]), `Day ${(p[0] / 24).toFixed(1)}`]) }] } : {
+    // anywhere on the chart: where every cycle open that day stood
+    series: R.filter(r => r.status === 'open').map(r => ({ name: `#${r.cycle_id} running`, color: endColour(r.ended_by), reach: 30, pts: r.path.map(p => [x(p[0] / 24), y(p[1]), inr(p[1])]) })),
+    title: X => `Day ${Math.max(0, (X - 64) / (W - 140) * dx).toFixed(1)}`,
+    extra: X => {
+      const d = Math.max(0, (X - 64) / (W - 140) * dx) * 24;
+      const at = R.map(r => { const last = r.path[r.path.length - 1]; if (last[0] < d) return null; const p = r.path.reduce((a, b) => (Math.abs(b[0] - d) < Math.abs(a[0] - d) ? b : a)); return [r, p[1]]; }).filter(Boolean);
+      if (!at.length) return ['No cycle lasted this long'];
+      at.sort((a, b) => b[1] - a[1]);
+      const mid = at[Math.floor(at.length / 2)];
+      return [`Still open  ${at.length}`, `Best  #${at[0][0].cycle_id} ${inr(at[0][1])}`, `Typical  ${inr(mid[1])}`, `Worst  #${at[at.length - 1][0].cycle_id} ${inr(at[at.length - 1][1])}`];
+    },
+  };
+  return html`${wide(svg(W, H, s, one ? `Cycle ${R[0].cycle_id}’s P&L against days since it opened` : 'Every cycle’s P&L against days since it opened', hover))}
     <div class="row wrap tiny" style="gap:16px">${ends
       .map(([k, l]) => html`<span class="row" style="gap:6px"><i style="width:14px;height:3px;background:${endColour(k)}"></i>${l}</span>`)}
       ${R.some(r => r.path_kind === 'booked') ? html`<span class="row" style="gap:6px"><i style="width:14px;border-top:2px dashed var(--ink)"></i>no prices stored: steps at what each leg booked</span>` : ''}
@@ -87,7 +103,7 @@ export function spotlight(rows, target, filter, focus = null) {
   s += `<line x1="64" x2="${W - 86}" y1="${y(target)}" y2="${y(target)}" stroke="var(--g)" stroke-dasharray="5 3"/><text class="lab" x="${W - 86}" y="${y(target) - 5}" text-anchor="end" style="fill:var(--g)">checkpoint</text>`;
   past.forEach(r => {
     const d = path(r.path_kind === 'booked' ? steps(pts(r)) : pts(r));
-    s += `<g class="sp" data-c="${r.cycle_id}" data-info="${spotText(r).replace(/"/g, '&quot;')}" style="--c:${endColour(r.ended_by)}"><path class="v" d="${d}"/><path class="hit" d="${d}"/></g>`;
+    s += `<g class="sp" data-c="${r.cycle_id}" data-info="${spotText(r).replace(/"/g, '&quot;')}"${tipAt(`${cycleTip(r)}\nclick to open it`)} style="--c:${endColour(r.ended_by)}"><path class="v" d="${d}"/><path class="hit" d="${d}"/></g>`;
   });
   const typ = band(past);
   if (typ.length > 1) {
@@ -99,7 +115,11 @@ export function spotlight(rows, target, filter, focus = null) {
     const rp = run.path_kind === 'booked' ? steps(pts(run)) : pts(run), L = rp[rp.length - 1];
     s += `<g class="sp-run" ${focus != null ? '' : `data-c="${run.cycle_id}"`}><path d="${path(rp)}" fill="none" stroke="var(--b)" stroke-width="2.8"${run.path_kind === 'booked' ? ' stroke-dasharray="6 4"' : ''}/><circle cx="${L[0]}" cy="${L[1]}" r="4.5" fill="var(--b)"/><text class="lab" x="${L[0] + 7}" y="${L[1] + 4}" style="fill:var(--b)">#${run.cycle_id}${run.status === 'open' ? ' now' : ''}</text></g>`;
   }
-  return html`${chips}${wide(svg(W, H, s, `${word === 'past' ? 'Past' : 'Other'} cycles faint, the typical cycle bold, ${focus != null ? 'this' : 'the running'} cycle blue`))}
+  const sHover = { series: [
+    ...(typ.length > 1 ? [{ name: 'Typical', color: 'var(--ink)', pts: typ.map(b => [x(b.h / 24), y(b.med), inr(b.med), `Day ${(b.h / 24).toFixed(1)}`]) }] : []),
+    ...(run ? [{ name: `#${run.cycle_id}${focus != null ? '' : ' running'}`, color: 'var(--b)', reach: 40, pts: smooth(run.path).map(p => [x(p[0] / 24), y(p[1]), inr(p[1]), `Day ${(p[0] / 24).toFixed(1)}`]) }] : []),
+  ] };
+  return html`${chips}${wide(svg(W, H, s, `${word === 'past' ? 'Past' : 'Other'} cycles faint, the typical cycle bold, ${focus != null ? 'this' : 'the running'} cycle blue`, sHover))}
     <div class="row wrap tiny" style="gap:16px"><span class="row" style="gap:6px"><i style="width:14px;height:3px;background:var(--ink);opacity:.25"></i>${word} cycles (${past.length})</span>
       <span class="row" style="gap:6px"><i style="width:14px;height:3px;background:var(--ink)"></i>typical: the median ${word} cycle, while at least 3 were still open</span>
       ${run ? html`<span class="row" style="gap:6px"><i style="width:14px;height:3px;background:var(--b)"></i>${focus != null ? `this cycle (#${run.cycle_id})` : 'running'}</span>` : ''}</div>
@@ -150,7 +170,11 @@ export function normalBand(rows, target, focus = null) {
     const open = run.status === 'open', v = open ? run.pnl ?? sm[sm.length - 1][1] : sm[sm.length - 1][1];
     s += `<g class="nb-run"><path d="${path(run.path_kind === 'booked' ? steps(rp) : rp)}" fill="none" stroke="var(--b)" stroke-width="2.8"${run.path_kind === 'booked' ? ' stroke-dasharray="6 4"' : ''}/><circle cx="${L[0]}" cy="${L[1]}" r="4.5" fill="var(--b)"/><text class="lab" x="${L[0] + 7}" y="${L[1] - 8}" style="fill:var(--b)">#${run.cycle_id} ${open ? 'now' : 'ended'} ${inr(v)}</text></g>`;
   }
-  return html`${wide(svg(W, H, s, 'Where past cycles were each day, and the running cycle'))}
+  const nHover = { series: [
+    { name: 'Typical', color: 'var(--ink)', pts: B.map(z => [x(z.h / 24), y(z.med), inr(z.med), `Day ${(z.h / 24).toFixed(1)}`]) },
+    ...(run ? [{ name: `#${run.cycle_id}`, color: 'var(--b)', reach: 40, pts: smooth(run.path).map(p => [x(p[0] / 24), y(p[1]), inr(p[1])]) }] : []),
+  ], extra: X => { const z = B.reduce((a, b) => (Math.abs(x(b.h / 24) - X) < Math.abs(x(a.h / 24) - X) ? b : a)); return [`Middle half  ${inr(z.q1)} to ${inr(z.q3)}`, `Best / worst  ${inr(z.hi)} / ${inr(z.lo)}`]; } };
+  return html`${wide(svg(W, H, s, 'Where past cycles were each day, and the running cycle', nHover))}
     <div class="row wrap tiny" style="gap:16px"><span class="row" style="gap:6px"><i style="width:14px;height:10px;background:var(--ink);opacity:.2"></i>middle half of ${word} cycles</span>
       <span class="row" style="gap:6px"><i style="width:14px;height:10px;background:var(--ink);opacity:.08"></i>best to worst</span>
       <span class="row" style="gap:6px"><i style="width:14px;height:3px;background:var(--ink)"></i>typical</span>
@@ -196,8 +220,8 @@ export function ranges(rows, target, focus = null) {
       s += `<rect x="${cx - 2}" y="${y(0)}" width="4" height="${y(Math.min(0, r.mae)) - y(0)}" fill="var(--rs)"/>`;
     }
     const me = focus != null && r.cycle_id === focus, dim = focus != null && !me ? ' opacity=".3"' : '';
-    s += `<g class="${focus != null ? 'rg' : 'jr'}${me ? ' me' : ''}" data-c="${r.cycle_id}"${dim}><rect x="${x(i)}" y="${Math.min(y(0), y(p))}" width="${bw}" height="${Math.max(1.5, Math.abs(y(p) - y(0)))}" fill="${r.status === 'open' ? 'var(--b)' : p >= 0 ? 'var(--pos)' : 'var(--r)'}" opacity="${r.status === 'open' ? 0.7 : 1}"${me ? ' stroke="var(--ink)" stroke-width="2"' : ''}/>`;
-    s += `<text x="${cx}" y="${H - 14}" text-anchor="middle"${me ? ' style="fill:var(--ink);font-weight:700"' : ''}>#${r.cycle_id}</text></g>`;
+    s += `<g class="${focus != null ? 'rg' : 'jr'}${me ? ' me' : ''}" data-c="${r.cycle_id}"${dim}${tipAt(`${cycleTip(r)}\nclick to open it`)}><rect x="${x(i)}" y="${Math.min(y(0), y(p))}" width="${bw}" height="${Math.max(1.5, Math.abs(y(p) - y(0)))}" fill="${r.status === 'open' ? 'var(--b)' : p >= 0 ? 'var(--pos)' : 'var(--r)'}" opacity="${r.status === 'open' ? 0.7 : 1}"${me ? ' stroke="var(--ink)" stroke-width="2"' : ''}/>`;
+    s += `<text x="${cx}" y="${H - 14}" text-anchor="middle"${me ? ' style="fill:var(--ink);font-weight:700"' : ''}>#${r.cycle_id}</text><rect class="hit" x="${x(i) - 3}" y="8" width="${bw + 6}" height="${H - 26}" fill="transparent"/></g>`;
   });
   return wide(svg(W, H, s, 'Each cycle’s worst dip, best peak and result'));
 }
@@ -207,7 +231,7 @@ function endings(s) {
   const E = Object.entries(s.ended_by).sort((a, b) => b[1] - a[1]), n = E.reduce((a, [, k]) => a + k, 0);
   if (!n) return '';
   return html`<div class="col" style="gap:8px">
-    <div style="display:flex;height:22px;border:1px solid var(--ink)">${E.map(([k, c]) => html`<i style="width:${c / n * 100}%;background:${endColour(k)};opacity:${k === 'checkpoint_target' ? 1 : 0.8}" title="${LABEL[k] || k}: ${c}"></i>`)}</div>
+    <div style="display:flex;height:22px;border:1px solid var(--ink)">${E.map(([k, c]) => html`<i style="width:${c / n * 100}%;background:${endColour(k)};opacity:${k === 'checkpoint_target' ? 1 : 0.8}" data-tip="${`${LABEL[k] || k.replace(/_/g, ' ')}\nCycles  ${c}\nShare  ${Math.round(c / n * 100)}%`}"></i>`)}</div>
     <div class="row wrap tiny" style="gap:16px">${E.map(([k, c]) => html`<span class="row" style="gap:6px"><i style="width:10px;height:10px;background:${endColour(k)}"></i>${LABEL[k] || k.replace(/_/g, ' ')} <b>${c}</b> · ${Math.round(c / n * 100)}%</span>`)}</div>
   </div>`;
 }
@@ -220,7 +244,7 @@ export function daysChart(rows, focus = null) {
   let s = `<line x1="30" x2="${W - 20}" y1="120" y2="120" stroke="var(--ink)"/>`;
   for (let v = 0; v <= mx; v += Math.max(1, Math.round(mx / 6))) s += `<text x="${x(v)}" y="136" text-anchor="middle">${v}d</text>`;
   const stack = {};
-  C.forEach(r => { const b = Math.round(r.days); stack[b] = (stack[b] || 0) + 1; s += `<rect class="${r.cycle_id === focus ? 'me' : ''}" x="${x(b) - 8}" y="${120 - stack[b] * 20}" width="16" height="16" fill="${r.cycle_id === focus ? 'var(--b)' : 'var(--ink)'}"><title>#${r.cycle_id} · ${r.days} days</title></rect>`; });
+  C.forEach(r => { const b = Math.round(r.days); stack[b] = (stack[b] || 0) + 1; s += `<rect class="${r.cycle_id === focus ? 'me' : ''}" x="${x(b) - 8}" y="${120 - stack[b] * 20}" width="16" height="16" fill="${r.cycle_id === focus ? 'var(--b)' : 'var(--ink)'}"${tipAt(`Cycle #${r.cycle_id}\nReached the checkpoint in  ${r.days} days\nResult  ${r.pnl == null ? '—' : inr(r.pnl)}`)}/>`; });
   const med = [...d].sort((a, b) => a - b)[Math.floor(d.length / 2)];
   s += `<line x1="${x(med)}" x2="${x(med)}" y1="16" y2="120" stroke="var(--g)" stroke-dasharray="4 3"/><text class="lab" x="${x(med) + 6}" y="26" style="fill:var(--g)">median ${med}d</text>`;
   return svg(W, 144, s, 'Days each cycle took to reach its checkpoint');
@@ -238,6 +262,7 @@ function monthChart(m) {
     s += `<text class="lab" x="${cx + bw / 2}" y="${Math.min(y(0), y(v)) - 5}" text-anchor="middle">${inr(v)}</text>`;
     const [yy, mm] = x.month.split('-');
     s += `<text x="${cx + bw / 2}" y="138" text-anchor="middle">${new Date(+yy, +mm - 1, 1).toLocaleString('en-IN', { month: 'short' })} · ${Math.round(v / m.target * 100)}%</text>`;
+    s += hit(cx - 4, 8, bw + 8, 120, `${new Date(+yy, +mm - 1, 1).toLocaleString('en-IN', { month: 'long', year: 'numeric' })}\nNet P&L  ${inr(v)}\nTarget  ${inr(m.target, { sign: false })}\nOf target  ${Math.round(v / m.target * 100)}%`);
   });
   return svg(W, 146, s, 'Net P&L per month against the monthly target');
 }

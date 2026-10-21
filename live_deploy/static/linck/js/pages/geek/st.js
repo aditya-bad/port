@@ -4,7 +4,7 @@
 
 import { html } from '../../core/dom.js';
 import { inr } from '../../core/format.js';
-import { svg, tiles, tone } from './ui.js';
+import { svg, tiles, tone, tipAt, hit } from './ui.js';
 
 export const EXIT = { st_flip: 'SuperTrend flip', force_exit: 'Square-off' };
 export const exitLabel = k => (k == null ? 'Open' : EXIT[k] || k.replace(/_/g, ' '));
@@ -59,7 +59,13 @@ export function ladder({ ladder: levels, close, line, trigger, trend }) {
     s += `<line x1="${x(line)}" x2="${x(line)}" y1="20" y2="96" stroke="var(--r)" stroke-width="2" stroke-dasharray="5 4"/>`;
     s += `<text class="lab" x="${x(line)}" y="124" text-anchor="middle" style="fill:var(--r)">ST ${Math.round(line).toLocaleString('en-IN')}</text>`;
   }
+  const from = v => (close != null ? `\nFrom the index  ${v >= close ? '+' : '−'}${num(Math.abs(v - close))} pts` : '');
+  const what = { P: 'Pivot point', R1: 'Above it with the trend up: sells a PE', R2: 'Resistance 2', R3: 'Resistance 3',
+    S1: 'Below it with the trend down: sells a CE', S2: 'Support 2', S3: 'Support 3' };
+  for (const l of levels) s += hit(x(l.value) - 8, 30, 16, 80, `${l.key}  ${lvl(l.value)}${from(l.value)}\n${trigger && trigger.key === l.key ? 'The level an entry waits for' : what[l.key] || ''}`);
+  if (line != null) s += hit(x(line) - 6, 16, 12, 112, `SuperTrend line  ${lvl(line)}${from(line)}\nA 5-minute close through it flips the trend`);
   if (close != null) {
+    s += hit(x(close) - 8, 6, 16, 84, `Index  ${lvl(close)}\nTrend  ${trend || '—'}${line != null ? `\nTo a flip  ${num(Math.abs(close - line))} pts` : ''}`);
     s += `<path d="M${x(close)} 66 l-7 -12 h14z" fill="var(--ink)"/><line x1="${x(close)}" x2="${x(close)}" y1="66" y2="88" stroke="var(--ink)" stroke-width="2"/>`;
     s += `<text class="lab" x="${x(close)}" y="18" text-anchor="middle">index ${Math.round(close).toLocaleString('en-IN')}</text>`;
   }
@@ -92,7 +98,7 @@ export function scatter(points, { xLabel = '', yLabel = '', fx = v => num(v), fy
   s += `<text x="${L - 6}" y="${y(y1) + 4}" text-anchor="end">${fy(y1)}</text><text x="${L - 6}" y="${y(y0) + 4}" text-anchor="end">${fy(y0)}</text>`;
   s += `<text x="${x(x0)}" y="${H - 18}" text-anchor="start">${fx(x0)}</text><text x="${x(x1)}" y="${H - 18}" text-anchor="end">${fx(x1)}</text>`;
   s += `<text x="${(L + W - R) / 2}" y="${H - 4}" text-anchor="middle">${xLabel}</text>`;
-  for (const p of points) s += `<circle cx="${x(p.x).toFixed(1)}" cy="${y(p.y).toFixed(1)}" r="5" fill="${p.c}" fill-opacity=".8"><title>${p.tip || ''}</title></circle>`;
+  for (const p of points) s += `<circle cx="${x(p.x).toFixed(1)}" cy="${y(p.y).toFixed(1)}" r="5" fill="${p.c}" fill-opacity=".8"${tipAt(p.tip || `${fx(p.x)} · ${fy(p.y)}`)}/>`;
   return svg(W, H, s, `${yLabel} against ${xLabel}`);
 }
 

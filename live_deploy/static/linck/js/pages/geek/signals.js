@@ -10,6 +10,8 @@ import { head, tiles, table, poll, bars, tone } from './ui.js';
 import { exitLabel, pts, mins, scatter, groupRow, GROUP_COLS } from './st.js';
 
 const LEVELS = ['R1', 'R2', 'R3', 'S1', 'S2', 'S3'];
+// One trade, for a tooltip.
+export const tradeTip = t => `${t.symbol} · ${dStamp(t.entry_t)}\nBroke  ${t.level || '—'}\nPast the level  ${pts(t.past_level)} pts\nFrom the ST line  ${pts(t.from_st)} pts\nEnded by  ${exitLabel(t.exit_reason)}\nHeld  ${mins(t.hold_min)}\nP&L  ${t.pnl == null ? '—' : inr(t.pnl)}`;
 const LEGEND = html`<b style="color:var(--c4)">● PE</b> <b style="color:var(--c5)">● CE</b>`;
 
 export function tradeTable(rows, g) {
@@ -50,14 +52,14 @@ export default {
             ${table(GROUP_COLS, LEVELS.filter(k => data.by_level[k]).map(k => groupRow(k, data.by_level[k])), { minw: 0 })}
           </div>
           <div class="gk-panel"><h3>P&amp;L by hour of entry <span class="s">all trades entered in that hour</span></h3>
-            ${data.by_hour.length ? bars(data.by_hour.map(h => [`${String(h.hour).padStart(2, '0')}:00 · ${h.n} trade${h.n === 1 ? '' : 's'}`, h.pnl])) : empty('', 'No closed trades yet.')}
+            ${data.by_hour.length ? bars(data.by_hour.map(h => [`${String(h.hour).padStart(2, '0')}:00 · ${h.n} trade${h.n === 1 ? '' : 's'}`, h.pnl, `Entered ${String(h.hour).padStart(2, '0')}:00–${String(h.hour + 1).padStart(2, '0')}:00\nTrades  ${h.n}\nWon  ${h.wins} (${Math.round(h.win_rate)}%)\nP&L  ${inr(h.pnl)}\nAverage  ${inr(h.avg)}`])) : empty('', 'No closed trades yet.')}
           </div>
         </div>
         <div class="gk-two even">
           <div class="gk-panel"><h3>Did breaking further pay? <span class="s">points past the level at entry, against P&amp;L · ${LEGEND}</span></h3>
-            ${closed.length ? scatter(closed.filter(t => t.past_level != null).map(t => ({ x: t.past_level, y: t.pnl, c: t.opt === 'CE' ? 'var(--c5)' : 'var(--c4)', tip: `${t.symbol} · ${pts(t.past_level)} pts · ${inr(t.pnl)}` })), { xLabel: 'points past the level' }) : empty('', 'No closed trades yet.')}</div>
+            ${closed.length ? scatter(closed.filter(t => t.past_level != null).map(t => ({ x: t.past_level, y: t.pnl, c: t.opt === 'CE' ? 'var(--c5)' : 'var(--c4)', tip: tradeTip(t) })), { xLabel: 'points past the level' }) : empty('', 'No closed trades yet.')}</div>
           <div class="gk-panel"><h3>Did room to the line pay? <span class="s">points from the SuperTrend line at entry, against P&amp;L · ${LEGEND}</span></h3>
-            ${closed.length ? scatter(closed.filter(t => t.from_st != null).map(t => ({ x: t.from_st, y: t.pnl, c: t.opt === 'CE' ? 'var(--c5)' : 'var(--c4)', tip: `${t.symbol} · ${pts(t.from_st)} pts · ${inr(t.pnl)}` })), { xLabel: 'points from the SuperTrend line' }) : empty('', 'No closed trades yet.')}</div>
+            ${closed.length ? scatter(closed.filter(t => t.from_st != null).map(t => ({ x: t.from_st, y: t.pnl, c: t.opt === 'CE' ? 'var(--c5)' : 'var(--c4)', tip: tradeTip(t) })), { xLabel: 'points from the SuperTrend line' }) : empty('', 'No closed trades yet.')}</div>
         </div>
         <div class="gk-panel"><h3>Every trade <span class="s">newest first · open one end to end</span></h3>${tradeTable(data.trades, g)}</div>`
         : empty('No trades yet', 'Signals appear after its first entry.')}`);

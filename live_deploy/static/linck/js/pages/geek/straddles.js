@@ -10,6 +10,8 @@ import { mins } from './st.js';
 import { exitName } from './dtt.js';
 
 const day = d => dFull(new Date(`${d}T12:00:00+05:30`));
+// One straddle, for a tooltip.
+export const straddleTip = r => `${day(r.day)} · ${r.strike ? r.strike.toLocaleString('en-IN') : ''} straddle\nCE  ${r.ce ? `${price(r.ce.entry)} → ${r.ce.exit == null ? 'open' : price(r.ce.exit)}` : '—'}\nPE  ${r.pe ? `${price(r.pe.entry)} → ${r.pe.exit == null ? 'open' : price(r.pe.exit)}` : '—'}\nCombined  ${r.decay_pct == null ? '—' : `${r.decay_pct > 0 ? 'fell' : 'rose'} ${Math.abs(r.decay_pct)}%`}\nEnded by  ${exitName(r.reason)}${r.stop_leg ? ` (${r.stop_leg})` : ''}${r.exit_t ? ` at ${r.exit_t.slice(11, 16)}` : ''}\nHeld  ${mins(r.held_min)}\nP&L  ${r.pnl == null ? '—' : inr(r.pnl)}`;
 export const GCOLS = [['', 'minmax(110px,1fr)'], ['Straddles', '76px', 'num'], ['Won', '56px', 'num'], ['P&L', '96px', 'num'], ['Avg', '90px', 'num']];
 export const grow = (name, g) => [name, String(g.n), `${Math.round(g.win_rate)}%`,
   html`<span class="${tone(g.pnl)}">${inr(g.pnl)}</span>`, html`<span class="${tone(g.avg)}">${inr(g.avg)}</span>`];
@@ -52,9 +54,9 @@ export default {
             <p class="small">CE <b>${data.stop_leg.CE}</b> · PE <b>${data.stop_leg.PE}</b>${data.stop_leg.both ? html` · both <b>${data.stop_leg.both}</b>` : ''}
               <span class="mute"> · a CE stop means the index rallied, a PE stop that it fell</span></p></div>
           <div class="gk-panel"><h3>By weekday <span class="s">P&amp;L of straddles sold that day</span></h3>
-            ${data.by_weekday.length ? bars(data.by_weekday.map(w => [`${w.day} · ${w.n}`, w.pnl])) : empty('', 'No closed straddles yet.')}
+            ${data.by_weekday.length ? bars(data.by_weekday.map(w => [`${w.day} · ${w.n}`, w.pnl, `Sold on a ${w.day}\nStraddles  ${w.n}\nWon  ${w.wins} (${Math.round(w.win_rate)}%)\nP&L  ${inr(w.pnl)}\nAverage  ${inr(w.avg)}`])) : empty('', 'No closed straddles yet.')}
             <h3 style="margin-top:16px">By days to expiry <span class="s">0 is expiry day</span></h3>
-            ${data.by_dte.length ? bars(data.by_dte.map(w => [`${w.dte} day${w.dte === 1 ? '' : 's'} · ${w.n}`, w.pnl])) : empty('', 'No closed straddles yet.')}</div>
+            ${data.by_dte.length ? bars(data.by_dte.map(w => [`${w.dte} day${w.dte === 1 ? '' : 's'} · ${w.n}`, w.pnl, `${w.dte === 0 ? 'Expiry day' : `${w.dte} day${w.dte === 1 ? '' : 's'} to expiry`}\nStraddles  ${w.n}\nWon  ${w.wins} (${Math.round(w.win_rate)}%)\nP&L  ${inr(w.pnl)}\nAverage  ${inr(w.avg)}`])) : empty('', 'No closed straddles yet.')}</div>
         </div>
         <div class="gk-panel"><h3>Every straddle <span class="s">newest first · open one end to end</span></h3>${straddleTable(data.straddles, g)}</div>`
         : empty('No straddles yet', 'They appear after its first entry.')}`);

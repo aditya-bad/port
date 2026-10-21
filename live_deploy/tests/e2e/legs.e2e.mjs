@@ -123,6 +123,10 @@ test('once ticks arrive, the lane moves with them', async () => {
   // move one leg only: the same move on every leg of a balanced strangle nets to ₹0
   await streamTicks(ctx, legs.slice(0, 1));
   const p = await ctx.newPage();
+  // a tick only counts towards today once the session is open (09:15 IST):
+  // run inside it whatever time the suite runs at
+  const ist = new Date(Date.now() + 5.5 * 3600e3).toISOString().slice(0, 10);
+  await p.clock.install({ time: new Date(`${ist}T11:00:00+05:30`) });
   await p.goto(`${BASE}/linck/#/desk`);
   await p.waitForSelector(`[data-today="${ID}"]`);
   await p.waitForFunction(id => document.querySelector(`[data-today="${id}"]`).textContent.trim() !== '₹0', ID, { timeout: 8000 });

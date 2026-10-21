@@ -97,3 +97,13 @@ next to the closest existing one:
 - a query or the fill engine → `tests/db`, using `pool_run`.
 - a pure function → `tests/unit`.
 - something only visible in the browser → `tests/e2e`.
+
+## Every chart is interactable
+
+Each Geek chart shows what's under the pointer (hover on desktop, tap on a
+phone). A line over time passes `hover` to `svg()` in
+`static/linck/js/pages/geek/ui.js` (a guide with every series' value); a
+chart of separate marks puts `tipAt()` / `hit()` on each mark.
+`tests/e2e/charts-hover.e2e.mjs` opens every Geek view of every kind of
+deployment, hovers every chart and fails on one that shows nothing, so a
+new chart without either fails the gate.

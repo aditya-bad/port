@@ -48,15 +48,15 @@ export default {
           ['P&L', r.pnl == null ? '—' : inr(r.pnl), r.qty ? `${r.qty} qty a leg` : '', tone(r.pnl)],
         ], 6)}
         <div class="gk-panel"><h3>Each leg against its stop <span class="s"><b class="leg-ce">CE</b> · <b class="leg-pe">PE</b> · dashed: the stops</span></h3>
-          ${S.CE.length > 1 || S.PE.length > 1 ? linesChart([{ data: S.CE, color: 'var(--c5)' }, { data: S.PE, color: 'var(--c4)' }],
+          ${S.CE.length > 1 || S.PE.length > 1 ? linesChart([{ name: 'CE', data: S.CE, color: 'var(--c5)' }, { name: 'PE', data: S.PE, color: 'var(--c4)' }],
             { levels: Object.entries(L.stops).map(([k, val]) => ({ key: `${k} stop`, value: val, color: k === 'CE' ? 'var(--c5)' : 'var(--c4)', dash: true })), marks, label: 'Each leg’s premium' })
             : empty('', 'No premium prices stored for these legs.')}</div>
         <div class="gk-panel"><h3>The combined premium <span class="s">CE + PE · dashed: what it was sold at and the target</span></h3>
-          ${S.combined.length > 1 ? linesChart([{ data: S.combined, color: 'var(--ink)', width: 2 }],
+          ${S.combined.length > 1 ? linesChart([{ name: 'Combined', data: S.combined, color: 'var(--ink)', width: 2 }],
             { levels: [{ key: 'sold', value: r.combined_entry, color: 'var(--acc)', dash: true }, { key: 'target', value: L.target, color: 'var(--g)', dash: true }], marks, label: 'Combined premium' })
             : empty('', 'Needs both legs’ prices.')}</div>
         <div class="gk-panel"><h3>The index <span class="s">through the straddle</span></h3>
-          ${S.index.length > 1 ? linesChart([{ data: S.index, color: 'var(--ink)' }], { levels: r.strike ? [{ key: 'strike', value: r.strike, color: 'var(--acc)', dash: true }] : [], marks, label: 'The index', fmt: x => Math.round(x).toLocaleString('en-IN'), h: 200 })
+          ${S.index.length > 1 ? linesChart([{ name: 'Index', data: S.index, color: 'var(--ink)' }], { levels: r.strike ? [{ key: 'strike', value: r.strike, color: 'var(--acc)', dash: true }] : [], marks, label: 'The index', fmt: x => Math.round(x).toLocaleString('en-IN'), h: 200 })
             : empty('', 'No index prices stored for this day.')}</div>
         ${r.exit_values ? html`<div class="gk-panel"><h3>What ended it: ${exitName(r.reason)}</h3><p class="small" style="display:flex;flex-wrap:wrap;gap:6px 16px">${kv(r.exit_values)}</p></div>` : ''}
         <div class="gk-panel"><h3>Checks meanwhile <span class="s">what the strategy noted from 30 minutes before the entry</span></h3>

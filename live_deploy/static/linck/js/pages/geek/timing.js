@@ -5,10 +5,10 @@ import { api } from '../../core/api.js';
 import { html, mount } from '../../core/dom.js';
 import { inr } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
-import { head, tiles, poll, svg, tone, wide } from './ui.js';
+import { head, tiles, poll, svg, tone, wide, tipAt } from './ui.js';
 import { mins } from './st.js';
 import { exitName, EXIT_COLOR } from './dtt.js';
-import { straddleTable } from './straddles.js';
+import { straddleTable, straddleTip } from './straddles.js';
 
 // Each straddle as a dot: the time it ended (x) against how far the
 // combined premium had fallen (y), coloured by what ended it.
@@ -23,7 +23,7 @@ function endings(rows) {
   let s = `<line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" stroke="var(--ink)"/>`;
   for (let m = Math.ceil(t0 / 60) * 60; m <= t1; m += 60) s += `<line x1="${x(m)}" x2="${x(m)}" y1="${T}" y2="${H - B}" stroke="var(--line)"/><text x="${x(m)}" y="${H - 8}" text-anchor="middle">${String(m / 60).padStart(2, '0')}:00</text>`;
   s += `<text x="${L - 8}" y="${y(hi) + 4}" text-anchor="end">−${Math.round(hi)}%</text><text x="${L - 8}" y="${y(0) + 4}" text-anchor="end">0</text><text x="${L - 8}" y="${y(lo) + 4}" text-anchor="end">+${Math.round(-lo)}%</text>`;
-  for (const r of pts) s += `<circle cx="${x(minOf(r)).toFixed(1)}" cy="${y(r.decay_pct).toFixed(1)}" r="6" fill="${EXIT_COLOR[r.reason] || 'var(--mute)'}" fill-opacity=".8"><title>${r.day} · ${exitName(r.reason)} at ${r.exit_t.slice(11, 16)} · combined ${r.decay_pct > 0 ? 'fell' : 'rose'} ${Math.abs(r.decay_pct)}% · ${inr(r.pnl)}</title></circle>`;
+  for (const r of pts) s += `<circle cx="${x(minOf(r)).toFixed(1)}" cy="${y(r.decay_pct).toFixed(1)}" r="6" fill="${EXIT_COLOR[r.reason] || 'var(--mute)'}" fill-opacity=".8"${tipAt(straddleTip(r))}/>`;
   return wide(svg(W, H, s, 'When each straddle ended against how far the combined premium fell'));
 }
 
@@ -44,7 +44,7 @@ export default {
           ${keys.map(k => html`<b style="color:${EXIT_COLOR[k] || 'var(--mute)'}">● ${ex[k].label}</b> `)} · hover a dot</span></h3>${endings(closed)}</div>
         <div class="gk-panel"><h3>Hour it ended <span class="s">straddles · P&amp;L</span></h3>
           <div class="col" style="gap:8px">${hours.map(h => html`
-            <div style="display:grid;grid-template-columns:70px minmax(0,1fr) 140px;gap:10px;align-items:center" class="small">
+            <div style="display:grid;grid-template-columns:70px minmax(0,1fr) 140px;gap:10px;align-items:center" class="small" data-tip="${`Ended ${String(h.hour).padStart(2, '0')}:00–${String(h.hour + 1).padStart(2, '0')}:00\nStraddles  ${h.n}\nWon  ${h.wins} (${Math.round(h.win_rate)}%)\nP&L  ${inr(h.pnl)}\nHeld (median)  ${mins(h.median_held)}`}">
               <b>${String(h.hour).padStart(2, '0')}:00</b>
               <div style="height:16px;background:var(--soft)"><i style="display:block;height:100%;width:${(h.n / mx * 100).toFixed(1)}%;background:var(--ink)"></i></div>
               <span class="mono tiny right">${h.n} · <span class="${tone(h.pnl)}">${inr(h.pnl)}</span></span></div>`)}</div></div>

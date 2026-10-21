@@ -9,7 +9,8 @@ import { pnlOf } from '../../core/basis.js';
 import { listen } from '../../core/store.js';
 import * as book from '../../data/book.js';
 import { periodMetrics, dailySeries, ddSeries, fmtRatio, verdictRdd } from '../../data/metrics.js';
-import { line, upDownBars } from '../../ui/charts.js';
+import { line, upDownBars, yOf } from '../../ui/charts.js';
+import { registerScrub } from '../../ui/tooltip.js';
 import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
 import { empty } from '../../ui/components.js';
 import { head, nextMove, tiles, table, poll, LABEL } from './ui.js';
@@ -20,13 +21,18 @@ const OUT = { acted: 'Acted', no_action: 'No action', blocked: 'Blocked' };
 function equity(v, cycles) {
   const days = dailySeries(v.daily, pnlOf, v.created);
   if (days.length < 2) return empty('', 'The equity curve appears after the first closed trade.');
+  const lo0 = Math.min(0, ...days.map(d => d.cum)), hi0 = Math.max(1, ...days.map(d => d.cum));
+  registerScrub('gkEquity', f => {
+    const d = days[Math.max(0, Math.min(days.length - 1, Math.round(f * (days.length - 1))))];
+    return { t: `${dFull(d.date)}\nCumulative  ${inr(d.cum)}\nThat day  ${inr(d.day)}`, ys: [yOf(d.cum, 190, lo0, hi0) / 190], cs: ['var(--ink)'] };
+  });
   const cum = days.map(d => d.cum);
   const t0 = days[0].date.getTime(), t1 = days[days.length - 1].date.getTime() + 864e5;
   const fx = t => Math.max(0, Math.min(1, (new Date(t).getTime() - t0) / ((t1 - t0) || 1)));
   const bands = (cycles ? cycles.rows : []).slice().reverse().map((c, i) => ({ c, a: fx(c.start), b: c.end ? fx(c.end) : 1, odd: i % 2 }));
   return html`<div style="position:relative">
-    ${bands.map(x => html`<div title="Cycle ${x.c.cycle_id} · ${LABEL[x.c.ended_by] || x.c.ended_by}" style="position:absolute;top:0;bottom:0;left:${(x.a * 100).toFixed(2)}%;width:${((x.b - x.a) * 100).toFixed(2)}%;background:${x.odd ? 'var(--soft)' : 'transparent'};border-left:1px solid var(--line)"></div>`)}
-    <div style="position:relative">${line({ series: [{ values: cum, color: 'var(--ink)', fill: 'var(--gs)', fillNeg: 'var(--rs)', fillTo: 0 }], h: 190, lo: Math.min(0, ...cum), hi: Math.max(1, ...cum), zero: true })}</div>
+    ${bands.map(x => html`<div data-tip="${`Cycle #${x.c.cycle_id}\nEnded by  ${LABEL[x.c.ended_by] || x.c.ended_by}\nP&L  ${x.c.pnl == null ? '—' : inr(x.c.pnl)}`}" style="position:absolute;top:0;bottom:0;left:${(x.a * 100).toFixed(2)}%;width:${((x.b - x.a) * 100).toFixed(2)}%;background:${x.odd ? 'var(--soft)' : 'transparent'};border-left:1px solid var(--line)"></div>`)}
+    <div style="position:relative">${line({ series: [{ values: cum, color: 'var(--ink)', fill: 'var(--gs)', fillNeg: 'var(--rs)', fillTo: 0 }], h: 190, lo: Math.min(0, ...cum), hi: Math.max(1, ...cum), zero: true, key: 'gkEquity' })}</div>
     <div style="position:relative;height:18px">${bands.map(x => html`<span class="mono tiny" style="position:absolute;left:${(((x.a + x.b) / 2) * 100).toFixed(2)}%;transform:translateX(-50%);color:${x.c.ended_by === 'convergence_stop' ? 'var(--r)' : x.c.ended_by === 'contract_expiry_backstop' ? 'var(--b)' : 'var(--mute)'}">${x.c.cycle_id}</span>`)}</div>
   </div>`;
 }

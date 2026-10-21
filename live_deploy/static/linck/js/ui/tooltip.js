@@ -11,7 +11,16 @@
 import { esc } from '../core/dom.js';
 
 const scrubs = new Map();
-export function registerScrub(key, fn) { scrubs.set(key, fn); return () => scrubs.delete(key); }
+export function registerScrub(key, fn) {
+  // charts re-render often (Geek mode polls): drop keys no chart uses any more
+  // (a key registered just now may not be on the page yet: keep it a while)
+  if (scrubs.size > 150 && typeof document !== 'undefined') {
+    const old = Date.now() - 10000;
+    for (const [k, v] of scrubs) if (v.at < old && !document.querySelector(`[data-scrub="${k}"]`)) scrubs.delete(k);
+  }
+  scrubs.set(key, { fn, at: Date.now() });
+  return () => scrubs.delete(key);
+}
 
 let tip, guide, dots = [], touching = false;
 
@@ -33,7 +42,7 @@ function show(e, el) {
   const rect = el.getBoundingClientRect();
   let text, ys = [], cs = [], gx = null, guideBox = null, pts = null;
   if (el.dataset.scrub) {
-    const fn = scrubs.get(el.dataset.scrub);
+    const fn = (scrubs.get(el.dataset.scrub) || {}).fn;
     if (!fn) return hide();
     const f = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const r = fn(f);
