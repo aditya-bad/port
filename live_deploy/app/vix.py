@@ -7,6 +7,9 @@ stored.
   ("INDIA VIX"), never hard-coded, then subscribed like any index, so
   its live value arrives with the ticks and is stamped on every fill's
   market context (DeploymentRunner.market_context, under "vix").
+* A spike — VIX 10% or more above the last session's close, in market
+  hours — is checked every minute, shown on the Desk with what holds sold
+  premium, and pushed once a day (spike_loop).
 * History — VIX's, and each traded index's daily candles — comes from
   Kite's historical API when a view asks, at the interval it needs. Kite
   keeps index history indefinitely, so nothing is stored: finished days
@@ -41,8 +44,51 @@ SPAN = {"minute": 30, "3minute": 90, "5minute": 90, "10minute": 90, "15minute": 
 LIVE_TTL_S = 60            # today's candles are asked for again after a minute
 CACHE_DAYS = 20000         # finished (token, interval, day) entries kept in memory
 
-# The resolved instrument, for the runner's fill context and the API.
+# A spike: VIX this far above the last session's close, in per cent.
+SPIKE_PCT = 10.0
+
+# The resolved instrument, for the runner's fill context and the API;
+# the service; the latest spike check.
 state: dict = {"token": None}
+
+
+async def exposed(pool) -> list[dict]:
+    """Deployments not stopped holding open legs that sold premium, net:
+    the ones a VIX spike hurts. [{id, name, legs, premium}] most exposed first."""
+    rows = await pool.fetch(
+        """
+        SELECT d.id, d.deployment_name AS name, COUNT(*) AS legs,
+               SUM(CASE WHEN p.side = 'short' THEN 1 ELSE -1 END * p.avg_entry_price * p.qty)::float8 AS premium
+        FROM positions p JOIN deployments d ON d.id = p.deployment_id
+        WHERE p.status = 'open' AND d.status <> 'stopped' AND (p.symbol LIKE '%CE' OR p.symbol LIKE '%PE')
+        GROUP BY d.id, d.deployment_name
+        HAVING SUM(CASE WHEN p.side = 'short' THEN 1 ELSE -1 END * p.avg_entry_price * p.qty) > 0
+        ORDER BY 4 DESC
+        """)
+    return [{"id": str(r["id"]), "name": r["name"], "legs": r["legs"], "premium": round(r["premium"], 2)} for r in rows]
+
+
+async def push_spike_once(pool, config: dict, s: dict, now: datetime) -> bool:
+    """Push a spike, once a day (strategy_health_sent remembers it)."""
+    from . import notifications
+    from .db import queries
+    if not notifications.is_push_configured(config):
+        return False
+    if not await queries.mark_health_alert_sent(pool, None, f"vixspike:{now.astimezone(IST).date().isoformat()}"):
+        return False
+    title, body = spike_text(s)
+    await notifications.send_push_for_all(pool, config, title, body)
+    return True
+
+
+def spike_text(s: dict) -> tuple[str, str]:
+    """The push for a spike: title and body."""
+    title = f"VIX up {s['change_pct']:.0f}% today: {s['prev_close']:.2f} → {s['vix']:.2f}"
+    ex = s.get("exposed") or []
+    if not ex:
+        return title, "Nothing open is selling premium."
+    names = ", ".join(e["name"] for e in ex[:3]) + (f" and {len(ex) - 3} more" if len(ex) > 3 else "")
+    return title, f"{len(ex)} deployment{'s' if len(ex) != 1 else ''} hold sold premium that loses as VIX rises: {names}."
 
 
 def expected_move_pct(vix: float, days: float = 1.0) -> float:
@@ -150,6 +196,49 @@ class VixService:
     async def vix(self, start: date, end: date, interval: str = "day", now: Optional[datetime] = None) -> list[dict]:
         token = await self.resolve()
         return [] if token is None else await self.candles(token, start, end, interval, now)
+
+    # ── Spikes ───────────────────────────────────────────────────────
+
+    async def spike(self, now: Optional[datetime] = None) -> Optional[dict]:
+        """During market hours: VIX now against the last session's close.
+        {vix, prev_close, change, change_pct, spiking, at}, or None when
+        either isn't known. Now is the live tick, else Kite's latest
+        5-minute candle."""
+        now = (now or datetime.now(IST)).astimezone(IST)
+        if self.token is None or now.weekday() >= 5 or not (time(9, 15) <= now.time() < time(15, 30)):
+            return None
+        days = await self.candles(self.token, now.date() - timedelta(days=10), now.date() - timedelta(days=1), "day", now)
+        if not days:
+            return None
+        prev = days[-1]["c"]
+        live = self.last()
+        cur = live["price"] if live else None
+        if cur is None:
+            today = await self.candles(self.token, now.date(), now.date(), "5minute", now)
+            cur = today[-1]["c"] if today else None
+        if cur is None or not prev:
+            return None
+        pct = (cur / prev - 1) * 100
+        return {"vix": round(cur, 2), "prev_close": round(prev, 2), "change": round(cur - prev, 2),
+                "change_pct": round(pct, 1), "spiking": pct >= SPIKE_PCT, "at": now.isoformat()}
+
+    async def spike_loop(self, push=None, every_s: float = 60.0) -> None:
+        """Every minute in market hours: check for a spike, keep it for the
+        API and the Desk, and push it once a day with what's exposed."""
+        while True:
+            try:
+                now = datetime.now(IST)
+                s = await self.spike(now)
+                if s and s["spiking"]:
+                    s["exposed"] = await exposed(self.pool)
+                state["spike"] = s
+                if s and s["spiking"] and push is not None:
+                    await push(s, now)
+            except NoKiteSession:
+                pass
+            except Exception:
+                logger.exception("VIX spike check failed — continuing")
+            await asyncio.sleep(every_s)
 
     async def run_loop(self, every_s: float = 60.0) -> None:
         """Once Kite is logged in, find the instrument and subscribe it, so

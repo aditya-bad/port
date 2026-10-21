@@ -3,12 +3,12 @@
 // disappear when resolved. Add a rule by appending to RULES.
 
 import { kite, health } from './live.js';
-import { deployments, healthOf } from './book.js';
+import { deployments, healthOf, vixSpike } from './book.js';
 import { STREAK_ALERT } from './config.js';
 import { ui } from '../core/store.js';
 import { plural } from '../core/format.js';
 
-const dismissed = ui('alerts', { off: {}, health: {} });
+const dismissed = ui('alerts', { off: {}, health: {}, spike: '' });
 
 export const RULES = [
   // Active but nothing is running its strategy: no entries, no exits.
@@ -44,6 +44,19 @@ export const RULES = [
       body: `The last ${v.streak} trades closed at a loss.`,
       act: 'Open', action: { type: 'open', id: v.id, tab: 'performance' },
     })),
+  // VIX jumped 10%+ today (app/vix.py): what holds sold premium loses
+  // as it rises. Dismissed for the day.
+  () => {
+    const s = vixSpike();
+    if (!s || dismissed.get().spike === (s.at || '').slice(0, 10)) return [];
+    const ex = s.exposed || [];
+    return [{
+      key: 'vixspike', kind: 'vix', canDismiss: true, spikeDay: (s.at || '').slice(0, 10),
+      title: `VIX up ${Math.round(s.change_pct)}% today: ${s.prev_close.toFixed(2)} → ${s.vix.toFixed(2)}`,
+      body: ex.length ? `${plural(ex.length, 'deployment')} hold sold premium that loses as VIX rises: ${ex.slice(0, 3).map(e => e.name).join(', ')}${ex.length > 3 ? ` and ${ex.length - 3} more` : ''}.` : 'Nothing open is selling premium.',
+      act: ex.length ? 'See its VIX' : 'Got it', action: ex.length ? { type: 'open', id: ex[0].id, tab: 'geek/volatility' } : { type: 'dismiss' },
+    }];
+  },
   // Drifting from how it normally trades (app/strategy_health.py): one
   // item per finding, dismissed until the next trade changes it.
   list => list.filter(v => v.rawStatus !== 'stopped' && !v.isLab).flatMap(v => healthOf(v.id)
@@ -61,7 +74,8 @@ export function alerts(list = deployments()) {
 export function dismiss(a) {
   if (!a.canDismiss) return;
   const cur = dismissed.get();
-  if (a.healthKey) dismissed.set({ health: { ...(cur.health || {}), [a.healthKey]: Date.now() } });
+  if (a.spikeDay) dismissed.set({ spike: a.spikeDay });
+  else if (a.healthKey) dismissed.set({ health: { ...(cur.health || {}), [a.healthKey]: Date.now() } });
   else dismissed.set({ off: { ...cur.off, [a.id]: a.streak } });
 }
 // How much a deployment needs you, for sorting the Desk.

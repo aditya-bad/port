@@ -315,6 +315,7 @@ export default {
         const ac = a.action;
         if (ac.type === 'kite') kiteDialog();
         else if (ac.type === 'open') go(`d/${ac.id}${ac.tab ? `/${ac.tab}` : ''}`);
+        else if (ac.type === 'dismiss') { dismiss(a); paint(); }
         else if (ac.type === 'resume') { const v = book.find(ac.id); if (v) resume([v]); }
         else if (ac.type === 'restart') restartDeployment(ac.id);
       },

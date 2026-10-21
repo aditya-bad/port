@@ -12,8 +12,8 @@ import { prices, health } from './live.js';
 import { LAB_TAG, YOUNG_DAYS, QUIET_DAYS } from './config.js';
 import { tradeMetrics } from './metrics.js';
 
-const raw = { deployments: [], positions: [], trades: [], daily: [], session: null, strategies: [], tags: [], health: {} };
-const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false, health: false };
+const raw = { deployments: [], positions: [], trades: [], daily: [], session: null, strategies: [], tags: [], health: {}, spike: null };
+const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false, health: false, spike: false };
 const errors = {};
 let version = 0;
 
@@ -26,6 +26,8 @@ const LOADERS = {
   tags: async () => { raw.tags = await api.tags(); },
   // strategy health findings (app/strategy_health.py): {deployment id: [findings]}
   health: async () => { raw.health = (await api.strategyHealth()).deployments || {}; },
+  // a VIX spike now (app/vix.py): {spiking, vix, prev_close, change_pct, exposed}
+  spike: async () => { raw.spike = await api.vixSpike(); },
 };
 
 export async function load(kinds = Object.keys(LOADERS)) {
@@ -51,6 +53,7 @@ listen('event', ev => {
 setInterval(() => refresh('deployments', 'session'), 60000);   // snapshots land every 5 min
 setInterval(() => refresh('positions'), 30000);                 // server-side marks when no ticks flow
 setInterval(() => refresh('health'), 600000);                   // the server checks every 10 minutes
+setInterval(() => refresh('spike'), 60000);                     // and VIX every minute
 
 // ── Live leg P&L ──────────────────────────────────────────────────
 export function legPrice(p) {
@@ -219,6 +222,7 @@ export function totals(list) {
   }, { today: 0, overall: 0, unreal: 0, realized: 0, legs: 0 });
 }
 export const healthOf = id => raw.health[id] || [];
+export const vixSpike = () => (raw.spike && raw.spike.spiking ? raw.spike : null);
 export const allTrades = () => raw.trades;
 export const allDaily = () => raw.daily;
 export const dataVersion = () => version;

@@ -92,6 +92,24 @@ async def get_vix(request: Request, start: Optional[datetime] = None, end: Optio
             "error": error or svc.last_error}
 
 
+@router.get("/vix/spike")
+async def get_vix_spike(request: Request, fresh: bool = False):
+    """The latest VIX spike check (app/vix.py): {vix, prev_close, change,
+    change_pct, spiking, exposed}, or {spiking: false} outside market hours."""
+    from .. import vix
+    from ..options import NoKiteSession
+    s = vix.state.get("spike")
+    svc = getattr(request.app.state, "vix", None)
+    if (fresh or s is None) and svc is not None:
+        try:
+            s = await svc.spike()
+        except NoKiteSession:
+            s = None
+        if s and s["spiking"]:
+            s["exposed"] = await vix.exposed(request.app.state.db_pool)
+    return s or {"spiking": False}
+
+
 @router.get("/review")
 async def get_review(request: Request, week: Optional[str] = None):
     """The weekly review (app/v2/review.py): ?week=any day of the week

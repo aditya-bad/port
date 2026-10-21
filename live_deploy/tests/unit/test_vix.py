@@ -103,3 +103,29 @@ def test_nothing_is_stored():
     from pathlib import Path
     sql = " ".join(p.read_text() for p in sorted(Path("app/db/migrations").glob("*.sql")))
     assert "DROP TABLE IF EXISTS vix_1m" in sql and "DROP TABLE IF EXISTS index_1d" in sql
+
+
+def test_a_spike_against_the_last_close(kite, monkeypatch):
+    svc = V.VixService(None, FakeDispatcher())
+    svc.token = TOKEN
+    # the last close (fake day candles) is 14.5; now the tick says 16.2: +11.7%
+    svc.dispatcher.last_prices[TOKEN] = 16.2
+    s = asyncio.run(svc.spike(NOW))
+    assert (s["prev_close"], s["vix"], s["change"], s["change_pct"], s["spiking"]) == (14.5, 16.2, 1.7, 11.7, True)
+    svc.dispatcher.last_prices[TOKEN] = 15.6
+    assert asyncio.run(svc.spike(NOW))["spiking"] is False, "+7.6%: not a spike"
+    # no tick: Kite's latest 5-minute candle today
+    svc.dispatcher.last_prices.clear()
+    s = asyncio.run(svc.spike(NOW))
+    assert abs(s["vix"] - 14.105) < 0.01 and s["spiking"] is False, "the 10:45 candle's close"
+    # outside market hours: nothing to say
+    assert asyncio.run(svc.spike(NOW.replace(hour=16))) is None
+    assert asyncio.run(svc.spike(NOW + timedelta(days=4))) is None, "a Sunday"
+
+
+def test_the_spike_push():
+    s = {"vix": 16.2, "prev_close": 14.5, "change": 1.7, "change_pct": 11.7, "spiking": True,
+         "exposed": [{"name": "Nifty Strangle"}, {"name": "BankNifty DTT"}, {"name": "Sensex Spread"}, {"name": "Bankex"}]}
+    assert V.spike_text(s) == ("VIX up 12% today: 14.50 → 16.20",
+                               "4 deployments hold sold premium that loses as VIX rises: Nifty Strangle, BankNifty DTT, Sensex Spread and 1 more.")
+    assert V.spike_text({**s, "exposed": []})[1] == "Nothing open is selling premium."

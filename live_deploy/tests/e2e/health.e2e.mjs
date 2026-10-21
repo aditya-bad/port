@@ -54,3 +54,36 @@ test('the server answers for every deployment', async () => {
   for (const fs of Object.values(body.deployments)) for (const f of fs) assert.ok(f.title && f.body && f.key && f.deployment_id);
   await ctx.close();
 });
+
+test('a VIX spike needs you on the Desk: what holds sold premium, dismissed for the day', async () => {
+  const ctx = await context(b, { width: 1440, height: 900, blockSW: true });
+  const ID = IDS['Nifty Strangle A'];
+  let spike = { spiking: true, vix: 16.4, prev_close: 14.5, change: 1.9, change_pct: 13.1, at: '2026-10-21T11:00:00+05:30',
+    exposed: [{ id: ID, name: 'Nifty Strangle A', legs: 4, premium: 52000 }, { id: IDS['BankNifty DTT Plain'], name: 'BankNifty DTT Plain', legs: 2, premium: 30000 }] };
+  await ctx.route('**/v2/vix/spike*', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(spike) }));
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/desk`);
+  const item = p.locator('.attn-row', { hasText: 'VIX up 13% today: 14.50 → 16.40' });
+  await item.waitFor();
+  assert.match(await item.innerText(), /2 deployments hold sold premium that loses as VIX rises: Nifty Strangle A, BankNifty DTT Plain\./);
+  await item.locator('[data-act="alert"]').click();
+  await p.waitForURL(new RegExp(`#/d/${ID}/geek/volatility`));
+  await p.goto(`${BASE}/linck/#/desk`);
+  await item.waitFor();
+  await item.locator('[data-act="dismiss"]').click();
+  await p.waitForFunction(() => ![...document.querySelectorAll('.attn-row')].some(r => /VIX up/.test(r.innerText)));
+  await p.reload();
+  await p.waitForSelector('.attn-head');
+  await p.waitForTimeout(800);
+  assert.equal(await p.locator('.attn-row', { hasText: 'VIX up' }).count(), 0, 'dismissed for the day');
+  // the next day's spike is new
+  spike = { ...spike, at: '2026-10-22T10:30:00+05:30', exposed: [] };
+  await p.reload();
+  const next = p.locator('.attn-row', { hasText: 'VIX up' });
+  await next.waitFor();
+  assert.match(await next.innerText(), /Nothing open is selling premium/);
+  await next.locator('[data-act="alert"]').click();   // "Got it"
+  await p.waitForFunction(() => ![...document.querySelectorAll('.attn-row')].some(r => /VIX up/.test(r.innerText)));
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
