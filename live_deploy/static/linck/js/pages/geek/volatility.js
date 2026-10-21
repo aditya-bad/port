@@ -52,6 +52,14 @@ export function dailyLine(days) {
   return svg(W, H, s, 'India VIX by day', { series, title: (X, p) => (p ? p[3] : '') });
 }
 
+// Open now: what its open legs gain or lose if VIX rises a point.
+export function openText(ex, id) {
+  const mine = ex && ex.deployments ? ex.deployments.find(x => x.id === id) : null;
+  if (!mine) return null;
+  const one = mine.legs === 1, verb = mine.per_point < 0 ? (one ? 'loses' : 'lose') : (one ? 'gains' : 'gain');
+  return `Open now: if VIX rises a point, its ${mine.legs} open leg${one ? '' : 's'} ${verb} about ${inr(Math.abs(mine.per_point), { sign: false })}.`;
+}
+
 // "At this VIX level, its trades…": the line that tells you what today looks like.
 export function hereText(h, vix) {
   if (!h || vix == null) return null;
@@ -167,8 +175,9 @@ export default {
           ['Moved more than priced', d.summary.days_compared ? `${d.summary.days_moved_more} of ${d.summary.days_compared}` : '—', 'days the index closed further than VIX priced'],
           ['Trades with VIX', `${d.summary.with_vix} of ${d.summary.trades}`, 'VIX at entry and exit known'],
         ], 5)}
-        ${d.here || d.spikes ? html`<div class="gk-panel vf-now"><h3>What it says now</h3>
+        ${d.here || d.spikes || openText(d.exposure, v.id) ? html`<div class="gk-panel vf-now"><h3>What it says now</h3>
           <ul class="col" style="gap:6px;margin:0;padding-left:18px">
+            ${openText(d.exposure, v.id) ? html`<li><b>${openText(d.exposure, v.id)}</b></li>` : ''}
             ${hereText(d.here, n.vix) ? html`<li>${hereText(d.here, n.vix)}</li>` : ''}
             ${d.spikes ? html`<li>On the ${d.spikes.spike_n} day${d.spikes.spike_n === 1 ? '' : 's'} VIX jumped 10% or more, it averaged <b class="${tone(d.spikes.spike_avg)}">${inr(d.spikes.spike_avg)}</b> (worst ${inr(d.spikes.spike_worst)}), against <b class="${tone(d.spikes.rest_avg)}">${inr(d.spikes.rest_avg)}</b> on other days.</li>` : ''}
             ${pp ? html`<li>${perPointText(pp)}.</li>` : ''}
@@ -214,6 +223,7 @@ export default {
             : empty('', 'Needs VIX and daily equity.')}
           <p class="gk-note">Change: VIX red when it rose (bad for a seller). P&amp;L: change in end-of-day equity over the week.</p></div>`);
     }
-    return poll(() => api.geek(g.id, 'volatility'), 120000, x => { data = x; paint(); });
+    return poll(() => Promise.all([api.geek(g.id, 'volatility'), api.vixExposure().catch(() => null)])
+      .then(([x, ex]) => ({ ...x, exposure: ex })), 120000, x => { data = x; paint(); });
   },
 };

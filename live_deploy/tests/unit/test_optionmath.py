@@ -53,3 +53,11 @@ def test_attribution_adds_up_and_points_the_right_way():
     b = M.attribute("CE", k, exp, t0, s0, p0, t1, 25250, p1, 75, sold=False)
     assert all(abs(a[x] + b[x]) < 0.02 for x in ("time", "move", "vol", "total"))
     assert M.attribute("CE", k, exp, t0, s0, 0.0, t1, s0, 1.0, 75, sold=True) is None
+
+
+def test_vega_matches_a_one_point_bump():
+    for kind in ("CE", "PE"):
+        s, k, t, v = 25000.0, 25200.0, 9 / 365, 0.14
+        bump = M.price(kind, s, k, t, v + 0.01) - M.price(kind, s, k, t, v)
+        assert abs(M.vega(s, k, t, v) / 100 - bump) < 0.05, "vega ÷ 100 ≈ the price change for +1 point"
+    assert M.vega(25000, 25000, 0, 0.14) == 0, "expired: no vega"

@@ -81,6 +81,76 @@ async def push_spike_once(pool, config: dict, s: dict, now: datetime) -> bool:
     return True
 
 
+async def exposure(pool, dispatcher, svc=None, now: Optional[datetime] = None) -> dict:
+    """What open option legs gain or lose if implied volatility — roughly,
+    VIX — rises one point now: each leg's vega at its current price, signed
+    for side and quantity, per deployment and in total. A leg whose
+    strike, expiry, price or index level isn't known is counted, not
+    guessed. {total, deployments: [{id, name, legs, per_point}], legs, missing}."""
+    from collections import defaultdict as _dd
+
+    from .db import queries
+    from .geek.optionmath import implied_vol, vega, years_to
+    from .geek.volatility import expiry_of
+    from .candles import parse_contract
+    now = (now or datetime.now(IST)).astimezone(IST)
+    rows = await pool.fetch(
+        """
+        SELECT p.id, p.symbol, p.instrument_token, p.side, p.qty::float8 AS qty, p.avg_entry_price::float8 AS entry,
+               p.metadata, d.id AS dep_id, d.deployment_name AS name, d.config,
+               (SELECT l.metadata FROM position_lots l WHERE l.position_id = p.id ORDER BY l.executed_at LIMIT 1) AS first_meta,
+               k.expiry AS contract_expiry
+        FROM positions p JOIN deployments d ON d.id = p.deployment_id
+        LEFT JOIN contracts k ON k.instrument_token = p.instrument_token
+        WHERE p.status = 'open' AND d.status <> 'stopped' AND (p.symbol LIKE '%CE' OR p.symbol LIKE '%PE')
+        """)
+    last = getattr(dispatcher, "last_prices", {}) or {}
+    marks = await queries.latest_marks_at(pool, [r["id"] for r in rows])
+    spots: dict = {}
+
+    async def spot_of(tok):
+        if tok in spots:
+            return spots[tok]
+        v = last.get(tok)
+        if v is None and svc is not None:
+            try:
+                c = await svc.candles(tok, now.date() - timedelta(days=5), now.date(), "15minute", now)
+                v = c[-1]["c"] if c else None
+            except Exception:
+                v = None
+        spots[tok] = v
+        return v
+
+    per = _dd(lambda: {"legs": 0, "per_point": 0.0})
+    names, missing, n = {}, 0, 0
+    for r in rows:
+        n += 1
+        c = parse_contract(r["symbol"])
+        toks = ((r["config"] or {}).get("instrument_tokens") or [])
+        exp = expiry_of(r["first_meta"] or r["metadata"] or {}, r["contract_expiry"], r["symbol"])
+        px = last.get(r["instrument_token"])
+        if px is None and r["id"] in marks:
+            px = marks[r["id"]][0]
+        s0 = await spot_of(int(toks[0])) if toks else None
+        if not c or not c.get("strike") or exp is None or not px or not s0 or not r["qty"]:
+            missing += 1
+            continue
+        t = years_to(exp, now)
+        iv = implied_vol(c["instrument_type"], float(px), float(s0), c["strike"], t)
+        if iv is None:
+            missing += 1
+            continue
+        pp = vega(float(s0), c["strike"], t, iv) / 100 * r["qty"] * (-1 if r["side"] == "short" else 1)
+        dep = str(r["dep_id"])
+        names[dep] = r["name"]
+        per[dep]["legs"] += 1
+        per[dep]["per_point"] += pp
+    deps = sorted(({"id": k, "name": names[k], "legs": v["legs"], "per_point": round(v["per_point"], 2)} for k, v in per.items()),
+                  key=lambda x: x["per_point"])
+    return {"total": round(sum(d["per_point"] for d in deps), 2), "deployments": deps, "legs": n, "missing": missing,
+            "at": now.isoformat()}
+
+
 def spike_text(s: dict) -> tuple[str, str]:
     """The push for a spike: title and body."""
     title = f"VIX up {s['change_pct']:.0f}% today: {s['prev_close']:.2f} → {s['vix']:.2f}"
@@ -88,7 +158,11 @@ def spike_text(s: dict) -> tuple[str, str]:
     if not ex:
         return title, "Nothing open is selling premium."
     names = ", ".join(e["name"] for e in ex[:3]) + (f" and {len(ex) - 3} more" if len(ex) > 3 else "")
-    return title, f"{len(ex)} deployment{'s' if len(ex) != 1 else ''} hold sold premium that loses as VIX rises: {names}."
+    body = f"{len(ex)} deployment{'s' if len(ex) != 1 else ''} hold sold premium that loses as VIX rises: {names}."
+    pp = s.get("per_point")
+    if pp:
+        body += f" Each further point costs about ₹{abs(pp):,.0f}." if pp < 0 else f" Each further point adds about ₹{pp:,.0f}."
+    return title, body
 
 
 def expected_move_pct(vix: float, days: float = 1.0) -> float:
@@ -231,6 +305,10 @@ class VixService:
                 s = await self.spike(now)
                 if s and s["spiking"]:
                     s["exposed"] = await exposed(self.pool)
+                    try:
+                        s["per_point"] = (await exposure(self.pool, self.dispatcher, self, now))["total"]
+                    except Exception:
+                        logger.exception("VIX exposure for the spike failed")
                 state["spike"] = s
                 if s and s["spiking"] and push is not None:
                     await push(s, now)

@@ -107,9 +107,22 @@ function hero(T, list, quiet) {
         ${[['Realized', inr(T.realized), tone(T.realized), 'subR'], quiet ? ['Today', inr(T.today), tone(T.today), 'subT'] : ['Unrealized', inr(T.unreal), tone(T.unreal), 'subU'], ['Overall', inrS(T.overall), tone(T.overall), 'subO'],
           ['Capital in use', `${inrS(capUse, { sign: false })} / ${inrS(capAll, { sign: false })}`, '', ''], ['Session left', live ? left || 'closed' : 'not live', '', '']]
           .map(([l, v, c, id]) => html`<div class="col" style="gap:2px"><span class="label">${l}</span><span class="mono hero-sub ${c}" ${id ? html`id="${id}"` : ''}>${v}</span></div>`)}
+        ${vixSub(book.vixExposure())}
       </div>
     </div>`;
 }
+// If VIX rises a point now: what open legs gain or lose, from each leg's
+// vega at its current price (app/vix.exposure).
+export function vixSub(ex) {
+  if (!ex || !ex.deployments || !ex.deployments.length) return '';
+  const lines = ex.deployments.slice(0, 8).map(d => `${d.name}  ${inr(d.per_point)}`);
+  const tip = [`If VIX rises 1 point now`, `All open legs  ${inr(ex.total)}`, ...lines,
+    ...(ex.deployments.length > 8 ? [`and ${ex.deployments.length - 8} more`] : []),
+    ...(ex.missing ? [`${ex.missing} leg${ex.missing === 1 ? '' : 's'} left out: no strike, expiry or price known`] : []),
+    'Each leg’s vega at its current price; VIX stands in for every option’s implied volatility.'].join('\n');
+  return html`<div class="col" style="gap:2px" data-tip="${tip}" data-vix-sub><span class="label">If VIX +1</span><span class="mono hero-sub ${tone(ex.total)}">${inr(ex.total)}</span></div>`;
+}
+
 function attentionPanel(A) {
   return html`
     <div class="attn">

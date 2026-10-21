@@ -105,6 +105,7 @@ export const api = {
   review: week => req(`/v2/review${week ? `?week=${encodeURIComponent(week)}` : ''}`),
   vix: (q = {}) => req(`/v2/vix?${new URLSearchParams(Object.entries(q).filter(([, x]) => x != null && x !== '')).toString()}`),
   vixSpike: () => req('/v2/vix/spike'),
+  vixExposure: () => req('/v2/vix/exposure'),
   strategyHealth: (fresh = false) => req(`/v2/strategy-health${fresh ? '?fresh=true' : ''}`),
   strategies: () => req('/v2/strategies'),
   prefs: () => req('/v2/preferences'),

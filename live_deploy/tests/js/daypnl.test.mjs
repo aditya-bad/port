@@ -63,3 +63,14 @@ test('a quiet day: nothing priced since the open, nothing filled, nothing booked
   assert.equal(q([dep('a'), dep('b')]), false, 'something booked today');
   assert.equal(tradedToday({ today: 0.2, fresh: false }, []), false, 'paise of rounding aren’t a trade');
 });
+
+test('the Desk’s "If VIX +1": the total, each deployment, and what was left out', async () => {
+  const { vixSub } = await import('../../static/linck/js/pages/desk.js');
+  const out = String(vixSub({ total: -8200, missing: 1, deployments: [{ name: 'Nifty Strangle', per_point: -9000 }, { name: 'ST Inverse', per_point: 800 }] }));
+  assert.match(out, /If VIX \+1/);
+  assert.match(out, /−₹8,200/);
+  assert.match(out, /Nifty Strangle  −₹9,000/);
+  assert.match(out, /1 leg left out/);
+  assert.equal(vixSub(null), '');
+  assert.equal(vixSub({ total: 0, deployments: [] }), '', 'nothing open: nothing shown');
+});

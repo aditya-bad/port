@@ -129,3 +129,4 @@ def test_the_spike_push():
     assert V.spike_text(s) == ("VIX up 12% today: 14.50 → 16.20",
                                "4 deployments hold sold premium that loses as VIX rises: Nifty Strangle, BankNifty DTT, Sensex Spread and 1 more.")
     assert V.spike_text({**s, "exposed": []})[1] == "Nothing open is selling premium."
+    assert V.spike_text({**s, "per_point": -8200})[1].endswith("Each further point costs about ₹8,200.")

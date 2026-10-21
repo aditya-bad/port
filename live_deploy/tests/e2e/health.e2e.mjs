@@ -102,3 +102,19 @@ test('prices stopped while "connected": the Desk says so, not "live"', async () 
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+test('the Desk shows what open legs gain or lose if VIX rises a point', async () => {
+  const ctx = await context(b, { width: 1440, height: 900, blockSW: true });
+  const real = await (await ctx.request.get(`${BASE}/v2/vix/exposure`)).json();
+  assert.ok(Array.isArray(real.deployments) && typeof real.total === 'number', 'the server answers');
+  await ctx.route('**/v2/vix/exposure', r => r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(
+    { total: -8200, legs: 6, missing: 1, deployments: [{ id: 'x', name: 'Nifty Strangle A', legs: 4, per_point: -9000 }, { id: 'y', name: 'ST Inverse', legs: 1, per_point: 800 }] }) }));
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/desk`);
+  const sub = p.locator('[data-vix-sub]');
+  await sub.waitFor();
+  assert.match(await sub.innerText(), /If VIX \+1\s+−₹8,200/);
+  assert.match(await sub.getAttribute('data-tip'), /Nifty Strangle A {2}−₹9,000[\s\S]*1 leg left out/);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

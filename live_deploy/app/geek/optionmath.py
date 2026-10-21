@@ -50,6 +50,15 @@ def price(kind: str, s: float, k: float, t: float, vol: float, r: float = RATE) 
     return k * math.exp(-r * t) * _ncdf(-d2) - s * _ncdf(-d1)
 
 
+def vega(s: float, k: float, t: float, vol: float, r: float = RATE) -> float:
+    """How much the price moves for one whole unit of volatility (1.0 =
+    100 points); the same for a CE and a PE. Divide by 100 for a point."""
+    if t <= MIN_T or vol <= 0 or s <= 0 or k <= 0:
+        return 0.0
+    d1 = (math.log(s / k) + (r + vol * vol / 2) * t) / (vol * math.sqrt(t))
+    return s * math.exp(-d1 * d1 / 2) / math.sqrt(2 * math.pi) * math.sqrt(t)
+
+
 def implied_vol(kind: str, premium: float, s: float, k: float, t: float, r: float = RATE) -> Optional[float]:
     """The volatility (a fraction: 0.15 = 15%) that prices the option at
     `premium`, or None when no volatility can (below what it's worth in

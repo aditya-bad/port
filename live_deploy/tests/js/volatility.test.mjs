@@ -79,3 +79,12 @@ test('the three parts: a row each with its colour key and numbers', async () => 
   assert.match(out, /Time decay/); assert.match(out, /−₹1,300/);
   assert.doesNotMatch(out, / · \d+%/, 'no count or win rate: they mean nothing here');
 });
+
+test('open now: its open legs per VIX point', async () => {
+  const { openText } = await import('../../static/linck/js/pages/geek/volatility.js');
+  const ex = { deployments: [{ id: 'a', legs: 2, per_point: -4100 }, { id: 'b', legs: 1, per_point: 650 }] };
+  assert.equal(openText(ex, 'a'), 'Open now: if VIX rises a point, its 2 open legs lose about ₹4,100.');
+  assert.equal(openText(ex, 'b'), 'Open now: if VIX rises a point, its 1 open leg gains about ₹650.');
+  assert.equal(openText(ex, 'c'), null);
+  assert.equal(openText(null, 'a'), null);
+});

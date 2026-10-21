@@ -110,6 +110,14 @@ async def get_vix_spike(request: Request, fresh: bool = False):
     return s or {"spiking": False}
 
 
+@router.get("/vix/exposure")
+async def get_vix_exposure(request: Request):
+    """What open option legs gain or lose if VIX rises one point now
+    (app/vix.exposure), per deployment and in total."""
+    from .. import vix
+    return await vix.exposure(request.app.state.db_pool, request.app.state.dispatcher, getattr(request.app.state, "vix", None))
+
+
 @router.get("/review")
 async def get_review(request: Request, week: Optional[str] = None):
     """The weekly review (app/v2/review.py): ?week=any day of the week
