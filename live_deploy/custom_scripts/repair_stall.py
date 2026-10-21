@@ -45,6 +45,8 @@ index from its last known price; the plan says so.
 """
 import argparse
 import asyncio
+import faulthandler
+import signal
 import os
 import sys
 import time
@@ -90,7 +92,7 @@ async def main(args) -> None:
         from kiteconnect import KiteConnect
         kite = KiteConnect(api_key=cfg["api_key"])
         kite.set_access_token(session["access_token"])
-        gate = KiteGate(kite)
+        gate = KiteGate(kite, log=(lambda line: print(line, flush=True)) if getattr(args, "verbose", False) else None)
 
         api = AppApi(None if args.no_api else args.api, cfg["app_auth_secret"])
         day = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else datetime.now(IST).date()
@@ -113,7 +115,7 @@ async def main(args) -> None:
             return
 
         book = MinuteBook(day, kite_minute_source(gate), await stored_candles(pool, day), lookup=kite_lookup(gate),
-                          ltp=kite_ltp(gate))
+                          ltp=kite_ltp(gate), history=gate.historical_data)
         cli = RepairCLI(pool, book, gate, window, api, color=color_ok(sys.stdout), author=args.author)
         await cli.run()
     finally:
@@ -121,6 +123,8 @@ async def main(args) -> None:
 
 
 if __name__ == "__main__":
+    # stuck? `docker exec live-deploy pkill -USR1 -f repair_stall.py` prints where it is, and it carries on
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--date", help="the day to repair, YYYY-MM-DD (default: today, IST)")
     ap.add_argument("--from", dest="start", help="first minute the app missed, HH:MM (asked for if not given)")
@@ -128,6 +132,7 @@ if __name__ == "__main__":
     ap.add_argument("--api", default="http://localhost:8000", help="the running app, to pause/resume a deployment")
     ap.add_argument("--no-api", action="store_true", help="the app isn't running: don't try to pause/resume")
     ap.add_argument("--author", default="repair_stall", help="name on the journal note")
+    ap.add_argument("--verbose", action="store_true", help="print every Kite request as it's made")
     ap.add_argument("--probe", action="store_true",
                     help="don't repair: ask Kite for every deployment's index and open legs on the day and print what it answers")
     asyncio.run(main(ap.parse_args()))

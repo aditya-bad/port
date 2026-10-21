@@ -119,12 +119,15 @@ class MinuteBook:
     expired contract)."""
 
     def __init__(self, day: date, source: Callable, stored: Optional[dict] = None,
-                 lookup: Optional[Callable] = None, ltp: Optional[Callable] = None):
+                 lookup: Optional[Callable] = None, ltp: Optional[Callable] = None,
+                 history: Optional[Callable] = None):
         self.day = day
         self.source = source
         self.stored = stored or {}
         self.lookup = lookup                 # tradingsymbol -> its row in Kite's master (or None)
         self.ltp = ltp                       # "EXCH:SYMBOL" -> Kite's last price now (or None)
+        self.history = history               # (token, from, to, interval) -> Kite candles, for daily lookbacks
+        self._levels: dict = {}
         self.ltp_used: dict[int, str] = {}   # token -> the key ltp() was asked for
         self.anchors: dict[int, list] = {}   # token -> [(price, at, what)]: known prices before the day
         self.models: dict[int, dict] = {}    # token -> how a never-traded contract was priced
@@ -240,7 +243,14 @@ class MinuteBook:
         ex = (row or {}).get("exchange")
         if not (sym and ex):
             return None
-        since = self._fetch_quiet(tok, datetime.combine(self.day + timedelta(days=1), SESSION_OPEN), datetime.now(IST).replace(tzinfo=None))
+        after = self.day + timedelta(days=1)
+        today = datetime.now(IST).date()
+        if after > today:
+            since = []
+        elif self.history:
+            since = self._history_quiet(tok, after, today, "day")
+        else:
+            since = self._fetch_quiet(tok, datetime.combine(after, SESSION_OPEN), datetime.now(IST).replace(tzinfo=None))
         if since:
             return None   # it traded after the day: today's ltp isn't that day's
         try:
@@ -312,17 +322,29 @@ class MinuteBook:
     def _ask_last_trade(self, token: int, row: Optional[dict]) -> Optional[tuple]:
         tok = int(row["instrument_token"]) if row else token
         end = datetime.combine(self.day, time(0)) - timedelta(seconds=1)
-        got = []
-        for days in (7, 59):   # a week first; the 60 days Kite serves in one request if it's thinner than that
-            start = datetime.combine(self.day - timedelta(days=days), SESSION_OPEN)
-            got = [c for c in self._fetch_quiet(tok, start, end) if minute_of(c["date"]).date() < self.day and c["close"]]
-            if got:
-                break
-        if not got:
+        start = datetime.combine(self.day - timedelta(days=7), SESSION_OPEN)
+        got = [c for c in self._fetch_quiet(tok, start, end) if minute_of(c["date"]).date() < self.day and c["close"]]
+        if got:
+            last = max(got, key=lambda c: naive_ist(c["date"]))
+            at = minute_of(last["date"]) + timedelta(seconds=59)
+            return float(last["close"]), at, f"its last trade, {at:%d %b %H:%M}"
+        if not self.history:
             return None
-        last = max(got, key=lambda c: naive_ist(c["date"]))
-        at = minute_of(last["date"]) + timedelta(seconds=59)
-        return float(last["close"]), at, f"its last trade, {at:%d %b %H:%M}"
+        # thinner than that: Kite's daily candles for 60 days, one light request
+        days = [c for c in self._history_quiet(tok, self.day - timedelta(days=60), self.day - timedelta(days=1), "day")
+                if naive_ist(c["date"]).date() < self.day and c["close"]]
+        if not days:
+            return None
+        last = max(days, key=lambda c: naive_ist(c["date"]))
+        at = datetime.combine(naive_ist(last["date"]).date(), time(15, 29, 59))
+        return float(last["close"]), at, f"its last trade, on {at:%d %b} (its close)"
+
+    def _history_quiet(self, token: int, start, end, interval: str) -> list:
+        try:
+            return self.history(token, start, end, interval) or []
+        except Exception as e:
+            self.history_errors.setdefault(int(token), f"{type(e).__name__}: {e}")
+            return []
 
     def _fetch_quiet(self, token: int, start: datetime, end: datetime) -> list:
         """History before the day: a failure isn't the day's, but is kept for the notes."""
@@ -342,9 +364,12 @@ class MinuteBook:
                 return c["close"]
             prev = self.last_before(idx, m)
             return prev[1]["close"] if prev else (rows[self.keys[idx][0]]["open"] if rows else None)
-        got = self._fetch_quiet(idx, at - timedelta(minutes=30), at)
-        got = [c for c in got if naive_ist(c["date"]) <= at]
-        return float(max(got, key=lambda c: naive_ist(c["date"]))["close"]) if got else None
+        key = (idx, at.replace(second=0, microsecond=0))
+        if key not in self._levels:
+            got = self._fetch_quiet(idx, at - timedelta(minutes=30), at)
+            got = [c for c in got if naive_ist(c["date"]) <= at]
+            self._levels[key] = float(max(got, key=lambda c: naive_ist(c["date"]))["close"]) if got else None
+        return self._levels[key]
 
     def candle(self, token: int, minute: datetime) -> Optional[dict]:
         return self.load(token).get(minute)
@@ -629,14 +654,22 @@ def replaying(kite: ReplayKite, clock: ReplayClock):
         vix.state["token"] = vix_token
 
 
+def _brief(args, kwargs) -> str:
+    parts = [a if isinstance(a, (int, str)) else (f"{a:%d %b %H:%M}" if isinstance(a, datetime) else str(a)) for a in args[:4]]
+    parts += [f"{k}={v}" for k, v in kwargs.items()]
+    return "(" + ", ".join(str(p) for p in parts)[:120] + ")"
+
+
 class KiteGate:
     """A real KiteConnect for the repair: its instrument masters fetched
     once each, and every request spaced to Kite's ~3 a second and retried
     on its rate limit."""
 
-    def __init__(self, kite, min_gap: float = 0.35, attempts: int = 5):
+    def __init__(self, kite, min_gap: float = 0.35, attempts: int = 5, log: Optional[Callable] = None):
         self.kite = kite
         self.min_gap, self.attempts = min_gap, attempts
+        self.log = log            # verbose: one line per request, as it's made
+        self.requests = 0
         self._next = 0.0
         self._lock = threading.Lock()
         self._masters: dict = {}
@@ -649,9 +682,19 @@ class KiteGate:
                 if wait > 0:
                     _time.sleep(wait)
                 self._next = _time.monotonic() + self.min_gap
+            t0 = _time.monotonic()
+            self.requests += 1
             try:
-                return fn(*args, **kwargs)
+                got = fn(*args, **kwargs)
+                if self.log:
+                    n = len(got) if isinstance(got, (list, dict)) else "-"
+                    self.log(f"    kite #{self.requests} {getattr(fn, '__name__', fn)}{_brief(args, kwargs)} → {n} "
+                             f"({_time.monotonic() - t0:.1f}s)")
+                return got
             except Exception as e:
+                if self.log:
+                    self.log(f"    kite #{self.requests} {getattr(fn, '__name__', fn)}{_brief(args, kwargs)} → "
+                             f"{type(e).__name__}: {e}")
                 last = e
                 if "too many" in str(e).lower() or getattr(e, "code", None) == 429:
                     _time.sleep(0.6 * 2 ** i)
@@ -674,14 +717,13 @@ def _tick(p: float) -> float:
 
 def kite_minute_source(gate: KiteGate) -> Callable:
     """A MinuteBook source over Kite: one 1-minute request per instrument
-    for the day, with open interest where Kite has it. Asked again without
-    it when that fails or comes back empty (Kite has no OI for some)."""
+    for the day, with open interest where Kite has it; asked again without
+    it only if that fails (an empty answer is the same either way)."""
     def fetch(token: int, start: datetime, end: datetime) -> list[dict]:
         try:
-            got = gate.historical_data(token, start, end, "minute", oi=True)
+            return gate.historical_data(token, start, end, "minute", oi=True) or []
         except Exception:
-            got = None
-        return got or gate.historical_data(token, start, end, "minute") or []
+            return gate.historical_data(token, start, end, "minute") or []
     return fetch
 
 
