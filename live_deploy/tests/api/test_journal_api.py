@@ -111,3 +111,31 @@ def test_tags_add_up_the_days_they_mark(client):
     r = client.post(f"/deployments/{d['id']}/delete")
     assert r.status_code in (200, 204), r.text
     assert client.get(f"/v2/journal?deployment_id={d['id']}").json()["entries"] == []
+
+
+def test_a_standalone_note_is_attached_to_nothing(client):
+    d = make_deployment(client, name="journal standalone")
+    _trade(client, d["id"], "NIFTY26AUG25000CE", 7341, 100, 80, "2026-08-10T10:00:00+05:30", "2026-08-10T11:00:00+05:30")   # +1500
+    n = note(client, day="2026-08-10", body="Idea: skip entries in the first 15 minutes", tags=["idea", "lesson"], standalone=True)
+    assert n["standalone"] is True and n["deployment_id"] is None and n["position_id"] is None
+    assert n["day_pnl"] is None and n["day_closed"] is None, "no P&L: it isn't about that day's trading"
+    whole = note(client, day="2026-08-10", body="whole day", tags=["lesson"])
+    assert whole["standalone"] is False and whole["day_pnl"] >= 1500
+    # it can't be attached to a deployment or a trade at the same time
+    r = client.post("/v2/journal", json={"body": "x", "standalone": True, "deployment_id": d["id"]})
+    assert r.status_code == 400 and "isn't attached" in r.json()["detail"]
+    # filters: only standalone, none of them, and never on a deployment's page
+    only = [e["id"] for e in client.get("/v2/journal?standalone=true").json()["entries"]]
+    assert n["id"] in only and whole["id"] not in only
+    rest = [e["id"] for e in client.get("/v2/journal?standalone=false").json()["entries"]]
+    assert n["id"] not in rest and whole["id"] in rest
+    dep_page = [e["id"] for e in client.get(f"/v2/journal?deployment_id={d['id']}&general=true").json()["entries"]]
+    assert whole["id"] in dep_page and n["id"] not in dep_page
+    assert n["id"] in [e["id"] for e in client.get("/v2/journal").json()["entries"]], "the Journal page shows everything"
+    # tags: a standalone note counts as a note, not as a day
+    t = {x["tag"]: x for x in client.get("/v2/journal/tags").json()["tags"]}
+    assert (t["idea"]["notes"], t["idea"]["days"], t["idea"]["pnl"], t["idea"]["avg"]) == (1, 0, 0.0, None)
+    assert t["lesson"]["notes"] >= 2 and t["lesson"]["days"] >= 1
+    # editing keeps it standalone
+    e = client.patch(f"/v2/journal/{n['id']}", json={"body": "Idea: skip the first 20 minutes"}).json()
+    assert e["standalone"] is True and e["day_pnl"] is None

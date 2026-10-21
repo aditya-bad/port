@@ -22,10 +22,10 @@ function tagTable(tags) {
   return html`<div class="col" style="gap:8px">${tags.map(t => html`
     <button type="button" class="jr-tagrow ${st.get().tag === t.tag ? 'on' : ''}" data-act="pickTag" data-t="${t.tag}"
       data-tip="${`${t.tag}\nNotes  ${t.notes}\nDays  ${t.days}\nP&L of those days  ${inr(t.pnl)}\nAverage day  ${t.avg == null ? '—' : inr(t.avg)}`}">
-      <b>${t.tag}</b><span class="mono tiny mute">${t.days} day${t.days === 1 ? '' : 's'}</span>
+      <b>${t.tag}</b><span class="mono tiny mute">${t.days ? `${t.days} day${t.days === 1 ? '' : 's'}` : `${t.notes} note${t.notes === 1 ? '' : 's'}`}</span>
       <span class="bar"><i style="${(t.avg || 0) >= 0 ? 'left:50%' : 'right:50%'};width:${(Math.abs(t.avg || 0) / mx * 50).toFixed(1)}%;background:${(t.avg || 0) >= 0 ? 'var(--g)' : 'var(--r)'}"></i><u></u></span>
       <span class="mono tiny right ${tone(t.avg)}">${t.avg == null ? '—' : inr(t.avg)}</span></button>`)}
-    <p class="small mute">Average P&amp;L of the days each tag marks: the note’s deployment that day, or every deployment for a whole-day note. Pick a tag to see its notes.</p></div>`;
+    <p class="small mute">Average P&amp;L of the days each tag marks: the note’s deployment that day, or every deployment for a whole-day note. Notes attached to nothing count as notes, not days. Pick a tag to see its notes.</p></div>`;
 }
 
 export default {
@@ -35,10 +35,10 @@ export default {
     const deps = () => book.isLoaded('deployments') ? book.deployments().map(v => ({ id: v.id, name: v.name })) : [];
     function filters() {
       const s = st.get();
-      return { deployment_id: s.dep && s.dep !== 'day' ? s.dep : '', tag: s.tag, q, day_from: since(s.period) };
+      return { deployment_id: s.dep && s.dep !== 'none' ? s.dep : '', standalone: s.dep === 'none' ? 'true' : '', tag: s.tag, q, day_from: since(s.period) };
     }
     async function loadTags() {
-      try { tags = (await api.journalTags(st.get().dep && st.get().dep !== 'day' ? st.get().dep : '')).tags; } catch (e) { tags = []; }
+      try { tags = (await api.journalTags(st.get().dep && st.get().dep !== 'none' ? st.get().dep : '')).tags; } catch (e) { tags = []; }
       paint();
     }
     function paint() {
@@ -49,7 +49,8 @@ export default {
         <div class="page" style="padding-top:4px">
         <div class="row wrap" style="gap:10px;margin-bottom:16px">
           <select class="input" data-f="dep" aria-label="Deployment" style="max-width:260px">
-            <option value="" ${s.dep ? '' : 'selected'}>Every deployment</option>
+            <option value="" ${s.dep ? '' : 'selected'}>Every note</option>
+            <option value="none" ${s.dep === 'none' ? 'selected' : ''}>Not attached to anything</option>
             ${D.map(d => html`<option value="${d.id}" ${s.dep === d.id ? 'selected' : ''}>${d.name}</option>`)}</select>
           <div class="seg" role="group">${PERIODS.map(([k, l]) => html`<button type="button" class="${s.period === k ? 'on' : ''}" data-act="period" data-k="${k}">${l}</button>`)}</div>
           <input class="input search grow" style="min-width:200px" type="search" data-f="q" value="${q}" placeholder="Search the notes" aria-label="Search the notes">

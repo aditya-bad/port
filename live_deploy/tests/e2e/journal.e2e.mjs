@@ -31,9 +31,28 @@ for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     await p.click('.jr-new button[type=submit]');
     const note = p.locator('.jr-note', { hasText: text });
     await note.waitFor();
-    assert.match(await note.innerText(), /Whole day/);
+    // by default a note is attached to nothing: no deployment, no day's P&L
+    assert.match(await note.innerText(), /Not attached/);
+    assert.doesNotMatch(await note.innerText(), /₹|no trades closed/);
     assert.deepEqual(await note.locator('.jr-tag').allInnerTexts(), ['data gap', 'kite down']);
     assert.equal(await p.inputValue('[data-jr-body]'), '', 'the box is cleared');
+    // a note on the whole day carries that day's P&L
+    const day = `Whole market gapped ${uniq()}`;
+    await p.fill('[data-jr-body]', day);
+    await p.selectOption('[data-jr-dep]', 'day');
+    await p.click('.jr-new button[type=submit]');
+    const dayNote = p.locator('.jr-note', { hasText: day });
+    await dayNote.waitFor();
+    assert.match(await dayNote.innerText(), /Whole day/);
+    assert.match(await dayNote.innerText(), /₹|no trades closed/);
+    // the filter for notes attached to nothing
+    await p.selectOption('[data-f="dep"]', 'none');
+    await p.waitForFunction(([a, b]) => { const t = [...document.querySelectorAll('.jr-note')].map(n => n.innerText).join('|'); return t.includes(a) && !t.includes(b); }, [text, day]);
+    await p.selectOption('[data-f="dep"]', '');
+    await p.waitForFunction(d => [...document.querySelectorAll('.jr-note')].some(n => n.innerText.includes(d)), day);
+    await dayNote.locator('[data-act="jrAsk"]').click();
+    await dayNote.locator('[data-act="jrDelete"]').click();
+    await p.waitForFunction(d => ![...document.querySelectorAll('.jr-note')].some(n => n.innerText.includes(d)), day);
     // the tag list counts it; picking the tag filters to its notes
     await p.waitForSelector('.jr-tagrow[data-t="kite down"]');
     await p.click('.jr-tagrow[data-t="kite down"]');

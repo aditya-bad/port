@@ -239,6 +239,7 @@ select.input { padding-right: 6px; }
 .jr-note.editing { border-color: var(--ink); }
 .jr-body { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; }
 .jr-dep { font-weight: 700; font-size: 13px; }
+.jr-dep.jr-free { font-weight: 500; color: var(--mute); }
 .jr-tag { font-size: 12px; padding: 1px 8px; border: 1px solid var(--line2); background: var(--soft); }
 .jr-note .linkish { background: none; border: 0; padding: 0; color: inherit; font-size: 12px; }
 .jr-note .linkish.neg { color: var(--r); }

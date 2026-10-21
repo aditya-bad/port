@@ -1,8 +1,9 @@
 """The trade journal API (/v2/journal): notes on a day, optionally on one
 deployment and one of its trades, with tags. Each note comes back with
 the P&L booked that day (by its deployment, or by every deployment for a
-note about the whole day) so a note sits next to how the day went.
-Never read by a strategy."""
+note about the whole day) so a note sits next to how the day went. A
+standalone note is attached to nothing (an idea, a lesson, a plan) and
+carries no P&L. Never read by a strategy."""
 
 from datetime import date
 from typing import Optional
@@ -44,6 +45,7 @@ class EntryIn(BaseModel):
     tags: list[str] = Field(default_factory=list)
     deployment_id: Optional[UUID] = None
     position_id: Optional[UUID] = None
+    standalone: bool = False
 
     @field_validator("body")
     @classmethod
@@ -83,7 +85,9 @@ def _out(r) -> dict:
             "deployment_name": r["deployment_name"], "strategy_name": r["strategy_name"],
             "position_id": str(r["position_id"]) if r["position_id"] else None, "position_symbol": r["position_symbol"],
             "author": r["author"], "created_at": r["created_at"].isoformat(), "updated_at": r["updated_at"].isoformat(),
-            "day_pnl": round(float(r["day_pnl"]), 2), "day_closed": int(r["day_closed"])}
+            "standalone": bool(r["standalone"]),
+            "day_pnl": None if r["standalone"] else round(float(r["day_pnl"]), 2),
+            "day_closed": None if r["standalone"] else int(r["day_closed"])}
 
 
 async def _check_links(pool, deployment_id: Optional[UUID], position_id: Optional[UUID]):
@@ -100,13 +104,16 @@ async def _check_links(pool, deployment_id: Optional[UUID], position_id: Optiona
 @router.get("")
 async def list_entries(request: Request, deployment_id: Optional[UUID] = None, day_from: Optional[date] = None,
                        day_to: Optional[date] = None, tag: Optional[str] = None, q: Optional[str] = None,
-                       position_id: Optional[UUID] = None, general: bool = False, limit: int = 500):
+                       position_id: Optional[UUID] = None, general: bool = False, standalone: Optional[bool] = None,
+                       limit: int = 500):
     """Notes, newest day first. `general` adds the whole-day notes to a
-    deployment's own."""
+    deployment's own; `standalone` true keeps only the notes attached to
+    nothing, false leaves them out."""
     pool = request.app.state.db_pool
     rows = await queries.list_journal(pool, deployment_id, day_from, day_to,
                                       " ".join(tag.strip().lower().split()) if tag else None,
-                                      q.strip() if q and q.strip() else None, position_id, general, max(1, min(limit, 2000)))
+                                      q.strip() if q and q.strip() else None, position_id, general, max(1, min(limit, 2000)),
+                                      standalone)
     return {"entries": [_out(r) for r in rows]}
 
 
@@ -123,11 +130,13 @@ async def tags(request: Request, deployment_id: Optional[UUID] = None):
 @router.post("", status_code=201)
 async def create_entry(payload: EntryIn, request: Request):
     pool = request.app.state.db_pool
+    if payload.standalone and (payload.deployment_id or payload.position_id):
+        raise HTTPException(400, "A standalone note isn't attached to a deployment or a trade")
     await _check_links(pool, payload.deployment_id, payload.position_id)
     author = request.session.get("username") if "session" in request.scope else None   # none for X-API-Key calls
     day = payload.day or clock.now_ist().date()
     eid = await queries.create_journal_entry(pool, day, payload.body, payload.tags, payload.deployment_id,
-                                             payload.position_id, author)
+                                             payload.position_id, author, payload.standalone)
     return _out(await queries.get_journal_entry(pool, eid))
 
 

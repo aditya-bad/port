@@ -19,7 +19,9 @@ export function journalBox(opts = {}) {
   const root = document.createElement('div');
   root.className = 'jr-box';
   let entries = null, suggested = [], editing = null, confirming = null, error = '', saving = false, alive = true;
-  const draft = { body: '', tags: '', day: opts.day || todayIST(), dep: opts.deploymentId || '' };
+  // dep: a deployment id, 'day' (the whole day, every deployment) or
+  // 'none' (a standalone note, attached to nothing)
+  const draft = { body: '', tags: '', day: opts.day || todayIST(), dep: opts.deploymentId || 'none' };
 
   const fixedDay = !!opts.day, fixedDep = !!opts.deploymentId;
   const scopeQ = () => ({
@@ -48,11 +50,12 @@ export function journalBox(opts = {}) {
     }
     return html`<div class="jr-note" data-note="${e.id}">
       <div class="row wrap" style="gap:8px;align-items:baseline">
-        ${!fixedDep ? html`<span class="jr-dep">${e.deployment_name || 'Whole day'}</span>` : e.deployment_id ? '' : html`<span class="jr-dep">Whole day</span>`}
+        ${e.standalone ? html`<span class="jr-dep jr-free">Not attached</span>`
+          : !fixedDep ? html`<span class="jr-dep">${e.deployment_name || 'Whole day'}</span>` : e.deployment_id ? '' : html`<span class="jr-dep">Whole day</span>`}
         ${e.position_symbol ? html`<span class="mono tiny">${e.position_symbol}</span>` : ''}
         ${e.tags.map(t => html`<span class="jr-tag">${t}</span>`)}
         <span class="grow"></span>
-        <span class="mono tiny ${tone(e.day_pnl)}" data-tip="${`${e.deployment_name || 'Every deployment'} on ${dayName(e.day)}\nBooked that day  ${inr(e.day_pnl)}\nTrades closed  ${e.day_closed}`}">${e.day_closed ? inr(e.day_pnl) : 'no trades closed'}</span>
+        ${e.standalone ? '' : html`<span class="mono tiny ${tone(e.day_pnl)}" data-tip="${`${e.deployment_name || 'Every deployment'} on ${dayName(e.day)}\nBooked that day  ${inr(e.day_pnl)}\nTrades closed  ${e.day_closed}`}">${e.day_closed ? inr(e.day_pnl) : 'no trades closed'}</span>`}
       </div>
       <p class="jr-body">${e.body}</p>
       <div class="row tiny mute" style="gap:10px"><span>${e.author || ''}</span><span class="grow"></span>
@@ -72,8 +75,9 @@ export function journalBox(opts = {}) {
         <textarea class="input jr-text" data-jr-body rows="${opts.compact ? 2 : 3}" maxlength="4000" placeholder="${opts.placeholder || 'What happened, what you saw, what you did by hand…'}" aria-label="New note">${draft.body}</textarea>
         <div class="row wrap" style="gap:8px">
           ${fixedDay ? '' : html`<input class="input" type="date" data-jr-day value="${draft.day}" aria-label="Day" style="width:160px">`}
-          ${fixedDep || !opts.deployments ? '' : html`<select class="input" data-jr-dep aria-label="Deployment" style="max-width:240px">
-            <option value="" ${draft.dep ? '' : 'selected'}>Whole day (every deployment)</option>
+          ${fixedDep || !opts.deployments ? '' : html`<select class="input" data-jr-dep aria-label="Attach the note to" style="max-width:240px">
+            <option value="none" ${draft.dep === 'none' ? 'selected' : ''}>Just a note (not attached)</option>
+            <option value="day" ${draft.dep === 'day' ? 'selected' : ''}>Whole day (every deployment)</option>
             ${opts.deployments.map(d => html`<option value="${d.id}" ${draft.dep === d.id ? 'selected' : ''}>${d.name}</option>`)}</select>`}
           <input class="input grow" data-jr-tags value="${draft.tags}" placeholder="Tags, separated by commas" aria-label="Tags" style="min-width:180px">
           <button type="submit" class="btn btn-primary" ${saving ? 'disabled' : ''}>${saving ? 'Saving…' : 'Add note'}</button>
@@ -112,7 +116,9 @@ export function journalBox(opts = {}) {
     if (bad) { error = bad; paint(); return; }
     saving = true; error = ''; paint();
     try {
-      await api.addNote({ body: draft.body, tags, day: draft.day, deployment_id: draft.dep || opts.deploymentId || null, position_id: opts.positionId || null });
+      const dep = opts.deploymentId || (draft.dep === 'none' || draft.dep === 'day' ? null : draft.dep);
+      await api.addNote({ body: draft.body, tags, day: draft.day, deployment_id: dep, position_id: opts.positionId || null,
+        standalone: !opts.deploymentId && !opts.positionId && draft.dep === 'none' && !!opts.deployments });
       draft.body = ''; draft.tags = '';
       saving = false;
       await load();
