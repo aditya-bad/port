@@ -400,6 +400,12 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
             px, at = book.before[tok]
             out.notes.append(f"{label}: no trade until {book.keys[tok][0]:%H:%M}; before that, its last trade on Kite, "
                              f"₹{px:,.2f} on {at:%d %b %H:%M}.")
+        elif origin == "stale" and tok in book.ltp_used:
+            px, _ = book.before[tok]
+            if tok in held or tok in disp.subscribed:
+                out.estimated.append(label)
+            out.notes.append(f"{label}: no trade in it on Kite in the 60 days before or since, so it's at Kite's "
+                             f"ltp() for {book.ltp_used[tok]}, ₹{px:,.2f}, the price the app saw that day.")
         elif origin == "stale":
             px, at = book.before[tok]
             if tok in held or tok in disp.subscribed:

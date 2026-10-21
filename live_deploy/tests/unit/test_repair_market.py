@@ -333,7 +333,7 @@ def test_with_nothing_to_model_it_on_a_contract_stands_at_its_last_trade():
     assert b.price(SX_CE, at("12:00"), "close", at("12:00")) == (3010, t + timedelta(seconds=59))
 
 
-def bankex_future_book(fut_today, fut_before):
+def bankex_future_book(fut_today, fut_before, ltp=None, fut_after=None):
     """BANKEX at 12:00 today; its November future traded `fut_today`
     (HH:MM -> close) today and `fut_before` ((date, HH:MM) -> close) before."""
     BANKEX, FUT = 274441, 8801
@@ -345,6 +345,9 @@ def bankex_future_book(fut_today, fut_before):
             return []
         if start.date() == DAY:
             return [{"date": at(k), "open": c, "high": c, "low": c, "close": c} for k, c in fut_today.items()]
+        if start.date() > DAY:
+            return [{"date": datetime.combine(d, datetime.strptime(k, "%H:%M").time()), "open": c, "high": c, "low": c, "close": c}
+                    for (d, k), c in (fut_after or {}).items()]
         return [{"date": datetime.combine(d, datetime.strptime(k, "%H:%M").time()), "open": c, "high": c, "low": c, "close": c}
                 for (d, k), c in fut_before.items() if start.date() <= d < DAY]
 
@@ -353,7 +356,7 @@ def bankex_future_book(fut_today, fut_before):
             return [{"instrument_token": FUT, "tradingsymbol": "BANKEX26NOVFUT", "exchange": "BFO", "name": "BANKEX",
                      "instrument_type": "FUT", "strike": 0.0, "expiry": date(2026, 11, 26)}] if exchange == "BFO" else []
 
-    b = M.MinuteBook(DAY, source, lookup=M.kite_lookup(Real()))
+    b = M.MinuteBook(DAY, source, lookup=M.kite_lookup(Real()), ltp=ltp)
     clock = M.ReplayClock(DAY)
     clock.set(at("12:00"), M.UP_FIRST, 3)
     return b, M.ReplayKite(Real(), b, clock), FUT
@@ -398,3 +401,51 @@ def test_a_window_that_hasnt_happened_yet_is_refused_with_how_to_fix_it():
     assert engine.window_problem(w, datetime(2026, 10, 22, 9, 0, tzinfo=M.IST)) is None
     sat = engine.Window(date(2026, 10, 24), time(12, 16), time(15, 30))
     assert "weekend" in engine.window_problem(sat, datetime(2026, 10, 26, 9, 0, tzinfo=M.IST))
+
+
+
+def test_a_future_with_no_trade_in_60_days_answers_with_kites_own_ltp():
+    """Your BANKEX26NOVFUT: nothing in Kite's history for the day or the 60
+    days before, so the replay asks Kite's ltp() — which is still what the
+    app saw that day, since it hasn't traded after it either."""
+    asked = []
+    b, k, fut = bankex_future_book({}, {}, ltp=lambda key: asked.append(key) or 62150.0)
+    got = k.ltp("BFO:BANKEX26NOVFUT")
+    assert got["BFO:BANKEX26NOVFUT"]["last_price"] == 62150.0
+    assert asked == ["BFO:BANKEX26NOVFUT"] and b.ltp_used[fut] == "BFO:BANKEX26NOVFUT"
+
+
+def test_kites_ltp_isnt_used_when_the_contract_traded_after_the_day_or_later_in_it():
+    calls = []
+    # traded the day after: today's ltp() isn't the day's price -> no price, as before
+    b, k, fut = bankex_future_book({}, {}, ltp=lambda key: calls.append(key) or 63000.0,
+                                   fut_after={(date(2026, 10, 22), "10:00"): 63000})
+    assert k.ltp("BFO:BANKEX26NOVFUT") == {} and calls == []
+    # its first trade is later in the day: today's ltp() would be that trade
+    b, k, fut = bankex_future_book({"13:00": 62000}, {}, ltp=lambda key: calls.append(key) or 62000.0)
+    assert k.ltp("BFO:BANKEX26NOVFUT") == {} and calls == []
+    # Kite's ltp() says 0 (never traded at all): no price rather than a zero
+    b, k, fut = bankex_future_book({}, {}, ltp=lambda key: 0)
+    assert k.ltp("BFO:BANKEX26NOVFUT") == {}
+
+
+def test_kite_ltp_helper_reads_the_last_price():
+    class K:
+        def ltp(self, keys):
+            return {"BFO:BANKEX26NOVFUT": {"instrument_token": 1, "last_price": 62150.5}}
+    gate = M.KiteGate(K(), min_gap=0)
+    assert M.kite_ltp(gate)("BFO:BANKEX26NOVFUT") == 62150.5
+    assert M.kite_ltp(gate)("BFO:SENSEX26NOVFUT") is None
+
+
+def test_the_resolvers_own_get_ltp_no_longer_raises_for_it_inside_the_replay():
+    """The exact call in your traceback: resolver.get_ltp('BFO:BANKEX26NOVFUT')."""
+    import asyncio
+    from app.options.resolver import OptionsResolver
+    b, k, fut = bankex_future_book({}, {}, ltp=lambda key: 62150.0)
+
+    class Disp:
+        access_token, api_key = "replay", "replay"
+    with M.replaying(k, k.clock):
+        px = asyncio.run(OptionsResolver(Disp()).get_ltp("BFO:BANKEX26NOVFUT"))
+    assert px == 62150.0

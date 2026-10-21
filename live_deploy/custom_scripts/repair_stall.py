@@ -61,7 +61,7 @@ from app.db.migrate import run_migrations  # noqa: E402
 from app.db.pool import close_pool, create_pool  # noqa: E402
 from app.repair import engine  # noqa: E402
 from app.repair.cli import AppApi, RepairCLI, color_ok, parse_hhmm  # noqa: E402
-from app.repair.market import IST, KiteGate, MinuteBook, kite_lookup, kite_minute_source  # noqa: E402
+from app.repair.market import IST, KiteGate, MinuteBook, kite_lookup, kite_ltp, kite_minute_source  # noqa: E402
 
 
 async def stored_candles(pool, day) -> dict:
@@ -112,7 +112,8 @@ async def main(args) -> None:
             print(why)
             return
 
-        book = MinuteBook(day, kite_minute_source(gate), await stored_candles(pool, day), lookup=kite_lookup(gate))
+        book = MinuteBook(day, kite_minute_source(gate), await stored_candles(pool, day), lookup=kite_lookup(gate),
+                          ltp=kite_ltp(gate))
         cli = RepairCLI(pool, book, gate, window, api, color=color_ok(sys.stdout), author=args.author)
         await cli.run()
     finally:

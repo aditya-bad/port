@@ -98,7 +98,9 @@ def test_apply_writes_tagged_fills_once_and_undo_restores_everything(pool_run, m
         assert {k: v for k, v in after.items() if k != "deployment_events"} == \
                {k: v for k, v in before.items() if k != "deployment_events"}
         # only the "undone" note is left in Activity
-        assert after["deployment_events"] == before["deployment_events"] + 1
+        kinds = [r["event_type"] for r in await pool.fetch(
+            "SELECT event_type FROM deployment_events WHERE deployment_id = $1 ORDER BY created_at", sim.dep_id)]
+        assert after["deployment_events"] == before["deployment_events"] + 1, kinds
         assert sorted((p["symbol"], float(p["qty"])) for p in await sim.open_positions()) == open_before
         await assert_book_consistent(pool, sim.dep_id)
         row = next(c for c in await engine.candidates(pool, w) if c["id"] == sim.dep_id)

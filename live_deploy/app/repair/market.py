@@ -119,11 +119,13 @@ class MinuteBook:
     expired contract)."""
 
     def __init__(self, day: date, source: Callable, stored: Optional[dict] = None,
-                 lookup: Optional[Callable] = None):
+                 lookup: Optional[Callable] = None, ltp: Optional[Callable] = None):
         self.day = day
         self.source = source
         self.stored = stored or {}
         self.lookup = lookup                 # tradingsymbol -> its row in Kite's master (or None)
+        self.ltp = ltp                       # "EXCH:SYMBOL" -> Kite's last price now (or None)
+        self.ltp_used: dict[int, str] = {}   # token -> the key ltp() was asked for
         self.anchors: dict[int, list] = {}   # token -> [(price, at, what)]: known prices before the day
         self.models: dict[int, dict] = {}    # token -> how a never-traded contract was priced
         self.tried: dict[int, str] = {}      # token -> what was asked of Kite, when it had nothing
@@ -203,7 +205,8 @@ class MinuteBook:
                 elif origin == "none" and self.symbols.get(token) not in INDEX_LABELS.values():
                     # nothing to model it on: it stands at its last trade,
                     # as Kite's own ltp() would answer for it
-                    prior = self._last_trade(token, row)
+                    self._row[token] = row
+                    prior = self._kite_last(token, row)
                     if prior:
                         self.before[token], origin = (prior[0], prior[1]), "stale"
             self._row[token] = row
@@ -220,9 +223,35 @@ class MinuteBook:
             if token not in self.before:
                 self.load(token)
                 row = self._row.get(token) or self._master(token)
-                got = self._last_trade(token, row)
+                got = self._kite_last(token, row)
                 self.before[token] = (got[0], got[1]) if got else None
             return self.before[token]
+
+    def _kite_last(self, token: int, row: Optional[dict]) -> Optional[tuple]:
+        """Its last trade before the day from Kite's history; failing that
+        (nothing in 60 days: BSE's thin futures), Kite's ltp() now — still
+        the price it showed that day, as long as it hasn't traded since,
+        which Kite's history is asked first."""
+        got = self._last_trade(token, row)
+        if got or not self.ltp or self.rows.get(token):
+            return got   # (one that trades later in the day: today's ltp() is that trade, not the price before it)
+        tok = int(row["instrument_token"]) if row else token
+        sym = (row or {}).get("tradingsymbol") or self.symbols.get(token)
+        ex = (row or {}).get("exchange")
+        if not (sym and ex):
+            return None
+        since = self._fetch_quiet(tok, datetime.combine(self.day + timedelta(days=1), SESSION_OPEN), datetime.now(IST).replace(tzinfo=None))
+        if since:
+            return None   # it traded after the day: today's ltp isn't that day's
+        try:
+            px = self.ltp(f"{ex}:{sym}")
+        except Exception as e:
+            self.history_errors.setdefault(token, f"{type(e).__name__}: {e}")
+            return None
+        if not px or px <= 0:
+            return None
+        self.ltp_used[token] = f"{ex}:{sym}"
+        return float(px), datetime.combine(self.day, SESSION_OPEN), "Kite's ltp() (no trade in 60 days)"
 
     def _model(self, token: int, row: Optional[dict]) -> Optional[dict]:
         """A never-traded option's day, minute by minute, from its index's
@@ -654,6 +683,14 @@ def kite_minute_source(gate: KiteGate) -> Callable:
             got = None
         return got or gate.historical_data(token, start, end, "minute") or []
     return fetch
+
+
+def kite_ltp(gate: KiteGate) -> Callable:
+    """"EXCH:SYMBOL" -> Kite's last price for it now."""
+    def ltp(key: str) -> Optional[float]:
+        got = gate.call(gate.kite.ltp, [key]) or {}
+        return (got.get(key) or {}).get("last_price")
+    return ltp
 
 
 def kite_lookup(gate: KiteGate) -> Callable:
