@@ -110,6 +110,36 @@ zero writes.
   `--deployment` narrow it. Safe to re-run. Supersedes
   `backfill_missed_force_exit.py` (open legs only, 5-minute candle).
 
+- **`repair_stall.py`** — INTERACTIVE repair of a stretch of the session
+  the app missed (a Kite tick stall: ticks stopped, nothing traded, P&L
+  frozen). Paper book only, never an order. Each deployment's OWN
+  strategy is replayed over the window through the real runner and fill
+  engine on Kite's 1-minute candles, from exactly what the database holds
+  (open legs, cash, saved state). A minute is four ticks — open, one
+  extreme, the other, close — with every CE at its high and PE at its low
+  when Nifty is at its high (and the reverse); a spike counts. Where the
+  order inside a minute changes what the strategy does (adjust or not,
+  which strike, a stop at the high or the low), it shows both paths with
+  the candles, trades and P&L, you pick one, and it carries on from that
+  path to the next. The list shows every deployment (open legs, trades,
+  minutes to decide, window P&L repaired vs as the stall left it); a plan
+  shows the trades, P&L repaired vs as left, booked, charges, best/worst
+  moment, the P&L and Nifty through the window and the legs after. Apply
+  is per deployment (paused through the app first, resumed after; the
+  replay is re-run and must match the plan exactly), recorded in
+  `stall_repairs` with an undo (from the same list), a journal note and an
+  Activity event; contracts it traded get their candles stored. Run after
+  the close and BEFORE the next 09:15 (an intraday leg left open is
+  otherwise closed at the next day's first tick, at its price):
+  `docker exec -it live-deploy python3 custom_scripts/repair_stall.py --from 12:16`
+  (`--from` = the minute after the last tick, asked for if not given;
+  `--to` default 15:30; `--date` default today). Needs a Kite session for
+  the candles; contracts Kite no longer lists fall back to the app's own
+  stored candles. There's no order book in history: liquidity checks see a
+  one-tick spread and fills are at candle prices. The equity snapshots and
+  position marks the app recorded during the stall (stale prices) are not
+  rewritten.
+
 - **`slippage_report.py`** — read-only audit of the estimated slippage
   recorded alongside every fill (migration 0017, `app/slippage.py`;
   fills themselves stay at LTP). Per deployment: how many fills had an
