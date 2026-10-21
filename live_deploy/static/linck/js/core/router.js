@@ -13,6 +13,7 @@ export const ROUTES = [
   { path: 's/:name', nav: 'strategies', load: () => import('../pages/strategy.js') },
   { path: 'tools/:tab?', nav: 'tools', load: () => import('../pages/tools.js') },
   { path: 'journal', nav: 'journal', load: () => import('../pages/journal.js') },
+  { path: 'review', nav: 'review', load: () => import('../pages/review.js') },
   { path: 'account', nav: 'account', load: () => import('../pages/account.js') },
 ];
 export const DEFAULT = 'desk';

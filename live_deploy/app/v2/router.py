@@ -63,6 +63,21 @@ async def get_strategy_health(request: Request, fresh: bool = False):
     return cached
 
 
+@router.get("/review")
+async def get_review(request: Request, week: Optional[str] = None):
+    """The weekly review (app/v2/review.py): ?week=any day of the week
+    (default: this week once something closed in it, else last week)."""
+    from datetime import date as _date
+
+    from . import review
+    try:
+        wk = _date.fromisoformat(week) if week else None
+    except ValueError:
+        raise HTTPException(422, "week must be a date, YYYY-MM-DD")
+    health = (getattr(request.app.state, "strategy_health", None) or {}).get("deployments")
+    return await review.build(request.app.state.db_pool, wk, health=health)
+
+
 @router.get("/strategies")
 async def get_strategies(request: Request):
     enabled = await queries.get_strategy_enabled_map(request.app.state.db_pool)

@@ -252,3 +252,26 @@ select.input { padding-right: 6px; }
 .jr-tagrow .bar i { position: absolute; top: 0; bottom: 0; } .jr-tagrow .bar u { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--ink); }
 .jr-tagrow > .right { grid-area: v; text-align: right; }
 .jr-tagrow.on, .jr-tagrow:hover { border-color: var(--ink); }
+
+/* Week in review (pages/review.js) */
+.rv-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 8px 0 28px; }
+.rv-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; margin-bottom: 28px; }
+.page section { margin-bottom: 28px; } .page section > h3 { margin: 0 0 12px; }
+.rv-bars { width: 100%; height: auto; display: block; }
+.rv-bars text { font: 500 11px var(--f-mono); fill: var(--mute); pointer-events: none; }
+.rv-bars .hit:hover { fill: var(--soft); fill-opacity: .5; }
+.rv-tbl { overflow-x: auto; } .rv-tbl .tr { display: grid; grid-template-columns: minmax(180px, 1.6fr) repeat(6, minmax(78px, 1fr)); gap: 10px; align-items: center;
+  padding: 9px 4px; border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; min-width: 720px; }
+.rv-tbl .tr.th { font-size: 12px; font-weight: 700; color: var(--mute); border-bottom-color: var(--ink); }
+.rv-tbl a.tr:hover { background: var(--soft); } .rv-tbl .num { text-align: right; white-space: nowrap; }
+.rv-trade { display: flex; gap: 10px; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--line); color: inherit; text-decoration: none; }
+.rv-trade:hover b { text-decoration: underline; }
+.rv-flag { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--wr); color: inherit; text-decoration: none; }
+.rv-flag:hover { border-color: var(--ink); }
+.rv-note { border-bottom: 1px solid var(--line); padding-bottom: 8px; } .rv-note p { margin: 4px 0; }
+@media (max-width: 900px) {
+  .rv-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rv-two { grid-template-columns: minmax(0, 1fr); }
+  .rv-tbl .tr { grid-template-columns: minmax(120px, 1.6fr) repeat(3, minmax(56px, 1fr)); gap: 8px; min-width: 0; }
+  .rv-tbl .hp { display: none; }
+}

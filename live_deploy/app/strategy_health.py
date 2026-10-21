@@ -175,6 +175,20 @@ async def push_new(pool, config: dict, findings: dict) -> int:
     return sent
 
 
+async def push_weekly(pool, config: dict, now: datetime, health: dict) -> bool:
+    """Saturday from 09:00: the week just ended in one push, once."""
+    if now.weekday() != 5 or now.time() < time(9, 0):
+        return False
+    from . import notifications
+    from .v2 import review
+    week = review.monday(now.date())
+    if not await queries.mark_health_alert_sent(pool, None, f"weekly:{week.isoformat()}"):
+        return False
+    title, body = review.push_text(await review.build(pool, week, now=now, health=health))
+    await notifications.send_push_for_all(pool, config, title, body)
+    return True
+
+
 async def health_alerts_loop(app, every_s: float = 600.0) -> None:
     """Every 10 minutes: refresh the findings the API serves, and push the
     new ones (after the open, so the morning's first look is the Desk)."""
@@ -185,6 +199,8 @@ async def health_alerts_loop(app, every_s: float = 600.0) -> None:
             config = getattr(app.state, "kite_config", None)
             if now.time() >= time(9, 30) and config and notifications_ready(config):
                 await push_new(app.state.db_pool, config, app.state.strategy_health["deployments"])
+            if config and notifications_ready(config):
+                await push_weekly(app.state.db_pool, config, now, app.state.strategy_health["deployments"])
         except Exception:
             logger.exception("Strategy health check failed — continuing")
         await asyncio.sleep(every_s)
