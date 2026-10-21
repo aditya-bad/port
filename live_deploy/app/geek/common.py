@@ -552,4 +552,6 @@ async def conditions(ctx: Ctx, limit: int = 300) -> dict:
     return {"rows": rows, "groups": groups, "summary": summary}
 
 
-VIEWS = {"engine": engine, "decisions": decisions, "settings": settings, "conditions": conditions}
+from .volatility import volatility  # noqa: E402  (it builds on this module)
+
+VIEWS = {"engine": engine, "decisions": decisions, "settings": settings, "conditions": conditions, "volatility": volatility}

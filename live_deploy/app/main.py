@@ -401,12 +401,12 @@ async def startup() -> None:
     app.state.candle_backfill_task = asyncio.create_task(
         manager.candle_backfill_loop(app.state.candles), name="candle-backfill-loop",
     )
-    # ── India VIX for Geek mode: looked up, backfilled once, recorded live
-    # and stamped on every fill — see app/vix.py.
-    from .vix import VixService
-    app.state.vix = VixService(db_pool, dispatcher, broadcaster)
+    # ── India VIX for Geek mode: looked up and subscribed once Kite logs in
+    # (its live value goes on every fill); history comes from Kite when a
+    # view asks, kept in memory, never stored — see app/vix.py.
+    from . import vix as vix_mod
+    app.state.vix = vix_mod.state["service"] = vix_mod.VixService(db_pool, dispatcher)
     app.state.vix_task = asyncio.create_task(app.state.vix.run_loop(), name="vix-loop")
-    app.state.vix_record_task = asyncio.create_task(app.state.vix.record_loop(), name="vix-record-loop")
 
     logger.info(
         "live_deploy started — %d static token(s), mode=%s, %d deployment(s) resumed, "
@@ -458,7 +458,7 @@ async def shutdown() -> None:
     except asyncio.CancelledError:
         pass
 
-    for name in ("index_candles_task", "candle_backfill_task", "watchdog_task", "strategy_health_task", "vix_task", "vix_record_task"):
+    for name in ("index_candles_task", "candle_backfill_task", "watchdog_task", "strategy_health_task", "vix_task"):
         task = getattr(app.state, name, None)
         if task is None:
             continue

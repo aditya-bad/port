@@ -1144,5 +1144,5 @@ async def cycle(ctx: Ctx) -> dict:
 
 VIEWS = {
     "engine": engine, "decisions": decisions, "cycles": cycles, "cycle": cycle, "adjustments": adjustments,
-    "entries": entries, "premium": premium, "settings": settings, "conditions": common.conditions,
+    "entries": entries, "premium": premium, "settings": settings, "conditions": common.conditions, "volatility": common.volatility,
 }

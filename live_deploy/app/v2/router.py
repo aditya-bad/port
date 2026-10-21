@@ -66,25 +66,30 @@ async def get_strategy_health(request: Request, fresh: bool = False):
 @router.get("/vix")
 async def get_vix(request: Request, start: Optional[datetime] = None, end: Optional[datetime] = None,
                   interval: str = "5minute"):
-    """India VIX (app/vix.py): candles for [start, end) (default: today),
-    the latest tick, and the history's state."""
+    """India VIX from Kite (app/vix.py), kept in memory, never stored:
+    candles for [start, end] (default: today), and the live value."""
     from .. import vix
-    from ..candles import INTERVAL_MINUTES
-    if interval not in INTERVAL_MINUTES and interval != "day":
-        raise HTTPException(422, f"interval must be one of {', '.join([*INTERVAL_MINUTES, 'day'])}")
-    svc = getattr(request.app.state, "vix", None) or vix.VixService(request.app.state.db_pool, None)
+    from ..options import NoKiteSession
+    if interval not in vix.SPAN:
+        raise HTTPException(422, f"interval must be one of {', '.join(vix.SPAN)}")
+    svc = getattr(request.app.state, "vix", None)
+    if svc is None:
+        raise HTTPException(503, "VIX isn't available")
     now = datetime.now(vix.IST)
-    start = start or datetime.combine(now.date(), datetime.min.time(), vix.IST)
-    end = end or now + timedelta(minutes=1)
-    if end - start > timedelta(days=800):
+    a = (start or now).astimezone(vix.IST).date()
+    b = (end or now).astimezone(vix.IST).date()
+    if (b - a).days > 800:
         raise HTTPException(422, "At most 800 days at a time")
-    candles = await svc.series(start, end, interval)
-    stored = await request.app.state.db_pool.fetchrow(
-        "SELECT minute, close::float8 AS c FROM vix_1m WHERE minute <= $1 ORDER BY minute DESC LIMIT 1", now)
+    candles, error = [], None
+    try:
+        rows = await svc.vix(a, b, interval)
+        if not rows and not start:   # nothing today yet (before the open, a holiday): the last session
+            rows = (await svc.vix(a - timedelta(days=7), a, interval))[-1:]
+        candles = [{"t": int(r["t"].timestamp() * 1000), "o": r["o"], "h": r["h"], "l": r["l"], "c": r["c"]} for r in rows]
+    except NoKiteSession:
+        error = "Kite isn't logged in, so VIX history can't be fetched."
     return {"symbol": vix.SYMBOL, "token": svc.token, "last": svc.last(), "candles": candles,
-            "latest_stored": {"price": stored["c"], "at": stored["minute"].isoformat()} if stored else None,
-            "backfill": {"through": svc.backfilled_through.isoformat() if svc.backfilled_through else None,
-                         "running": svc.progress, "error": svc.last_error}}
+            "error": error or svc.last_error}
 
 
 @router.get("/review")

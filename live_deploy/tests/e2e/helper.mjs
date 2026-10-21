@@ -23,7 +23,10 @@ export async function context(b, { width = 1440, height = 900, signedIn = true, 
   ctx.errors = [];
   ctx.on('page', p => p.on('pageerror', e => ctx.errors.push(`${p.url()}: ${e.message}`)));
   if (signedIn) {
-    const r = await ctx.request.post(`${BASE}/auth/login`, { data: { username: 'admin', password: PASSWORD } });
+    // one retry: under the parallel shards a kept-alive connection is now
+    // and then reset (ECONNRESET) before the server sees the request
+    const login = () => ctx.request.post(`${BASE}/auth/login`, { data: { username: 'admin', password: PASSWORD } });
+    const r = await login().catch(e => { if (/ECONNRESET|socket hang up/.test(String(e))) return login(); throw e; });
     if (!r.ok()) throw new Error(`sign-in failed: ${r.status()}`);
   }
   return ctx;

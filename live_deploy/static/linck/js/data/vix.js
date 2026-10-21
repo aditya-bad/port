@@ -15,7 +15,7 @@ export function loadVix() {
   loading = api.vix().then(d => {
     v.token = d.token;
     const c = d.candles && d.candles.length ? d.candles[d.candles.length - 1] : null;
-    v.last = d.last || d.latest_stored || (c ? { price: c.c, at: new Date(c.t).toISOString() } : null);
+    v.last = d.last || (c ? { price: c.c, at: new Date(c.t).toISOString() } : null);
     v.loaded = true;
     emit('data', ['vix']);
   }).catch(() => { v.loaded = true; }).finally(() => { loading = null; });

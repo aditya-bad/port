@@ -15,6 +15,8 @@ export const BASICS = [
 const SETTINGS = ['settings', 'Settings at work', 'Exposure', 'S', () => import('./settings.js')];
 // Every strategy: which market conditions its trades paid in.
 const CONDITIONS = ['conditions', 'Conditions', 'Anatomy', 'K', () => import('./conditions.js')];
+// Every strategy: how India VIX bears on it.
+const VOLATILITY = ['volatility', 'Volatility', 'Anatomy', 'V', () => import('./volatility.js')];
 // The DTT straddles that adjust (and the one that rolls) share their views.
 const ADJUSTED = [
   ['sessions', 'Sessions', 'Anatomy', 'I', () => import('./adjsessions.js')],
@@ -45,6 +47,6 @@ const OWN = {
   intraday_dtt_adjusted: ADJUSTED,
   intraday_dtt_advanced: ADJUSTED,
 };
-export const viewsFor = strategy => [...BASICS, ...(OWN[strategy] || []), CONDITIONS, SETTINGS];
+export const viewsFor = strategy => [...BASICS, ...(OWN[strategy] || []), CONDITIONS, VOLATILITY, SETTINGS];
 export const hasView = (strategy, key) => viewsFor(strategy).some(x => x[0] === key);
 export const GROUPS = ['Basics', 'Live', 'Anatomy', 'Exposure'];

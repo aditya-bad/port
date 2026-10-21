@@ -28,7 +28,7 @@ test('every deployment offers Geek mode; some strategies have views of their own
 test('the view menu: shared views for all, the strangle adds its own between Live and Settings', async () => {
   const { viewsFor } = await import('../../static/linck/js/pages/geek/views.js');
   const keys = s => viewsFor(s).map(v => v[0]);
-  const shared = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'conditions', 'settings'];
+  const shared = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'conditions', 'volatility', 'settings'];
   assert.deepEqual(keys('trend_credit_spread'), shared);
   assert.deepEqual(keys('no_such_strategy'), shared);
   const st = keys('strangle_monthly_v2');
@@ -87,7 +87,7 @@ test('spotlight filters pick which past cycles are drawn', async () => {
 test('SuperTrend options: its own views, with the one-trade page under Signals', async () => {
   const { viewsFor, hasView } = await import('../../static/linck/js/pages/geek/views.js');
   const vs = viewsFor('pivot_supertrend_options');
-  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'signals', 'trade', 'exits', 'days', 'conditions', 'settings']);
+  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'signals', 'trade', 'exits', 'days', 'conditions', 'volatility', 'settings']);
   assert.equal(vs.find(v => v[0] === 'trade')[6], 'signals', 'hidden from the menu, Signals stays lit');
   assert.ok(hasView('pivot_supertrend_options', 'signals') && !hasView('pivot_supertrend_options', 'cycles'));
   assert.ok(!hasView('pivot_supertrend_options_inverse', 'signals'), 'the inverse one has the shared views only');
@@ -126,11 +126,11 @@ test('SuperTrend ladder and formats', async () => {
 test('DTT straddle: its own views, the one-straddle page under Straddles', async () => {
   const { viewsFor } = await import('../../static/linck/js/pages/geek/views.js');
   const vs = viewsFor('intraday_dtt_simple');
-  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'straddles', 'straddle', 'timing', 'conditions', 'settings']);
+  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'straddles', 'straddle', 'timing', 'conditions', 'volatility', 'settings']);
   assert.equal(vs.find(v => v[0] === 'straddle')[6], 'straddles');
   for (const st of ['intraday_dtt_adjusted', 'intraday_dtt_advanced']) {
     const vs = viewsFor(st);
-    assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'sessions', 'session', 'moves', 'conditions', 'settings'], st);
+    assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'sessions', 'session', 'moves', 'conditions', 'volatility', 'settings'], st);
     assert.equal(vs.find(v => v[0] === 'session')[6], 'sessions', 'one day sits under Sessions');
   }
 });

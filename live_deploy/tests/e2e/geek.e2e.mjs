@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { BASE, IDS, browser, context } from './helper.mjs';
 
 const ID = IDS['Nifty Monthly Strangle'];
-const VIEWS = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'map', 'cycles', 'adjustments', 'premium', 'entries', 'conditions', 'settings'];
+const VIEWS = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'map', 'cycles', 'adjustments', 'premium', 'entries', 'conditions', 'volatility', 'settings'];
 let b;
 test.before(async () => { b = await browser(); });
 test.after(async () => { await b.close(); });
@@ -42,7 +42,7 @@ test('the Now tab shows the engine card and Geek mode opens full screen', async 
 
 test('every strategy has Geek mode: the shared views, without the strangle\'s own', async () => {
   const DTT = IDS['Sensex Credit Spread'];
-  const SHARED = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'conditions', 'settings'];
+  const SHARED = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'conditions', 'volatility', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
@@ -339,7 +339,7 @@ test('a cycle’s own page has everything, set against the other cycles', async 
 
 test('SuperTrend options: engine ladder, signals, exits, days and one trade end to end', async () => {
   const ST = IDS['Pivot Supertrend Options'];
-  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'signals', 'exits', 'days', 'conditions', 'settings'];
+  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'signals', 'exits', 'days', 'conditions', 'volatility', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
@@ -413,7 +413,7 @@ test('SuperTrend options: engine ladder, signals, exits, days and one trade end 
 
 test('DTT straddle: engine, straddles, exits & timing, and one straddle end to end', async () => {
   const DD = IDS['BankNifty DTT Plain'];
-  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'straddles', 'timing', 'conditions', 'settings'];
+  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'straddles', 'timing', 'conditions', 'volatility', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
@@ -480,7 +480,7 @@ test('DTT straddle: engine, straddles, exits & timing, and one straddle end to e
 for (const [name, rolls] of [['BankNifty DTT Adjusted', false], ['BankNifty DTT Advanced', true]]) {
   test(`${name}: engine, sessions, adjustments and one day end to end`, async () => {
     const ID = IDS[name];
-    const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'sessions', 'moves', 'conditions', 'settings'];
+    const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'sessions', 'moves', 'conditions', 'volatility', 'settings'];
     for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
       const ctx = await context(b, { width, height: 860 });
       const p = await ctx.newPage();
@@ -581,6 +581,41 @@ test('Geek’s top bar shows India VIX and what it implies', async () => {
   const tip = await kv.getAttribute('data-tip');
   assert.match(tip, /India VIX/);
   assert.match(tip, /Expected move today {2}±\d+\.\d{2}%/);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('Volatility: VIX now, ₹ per VIX point, trades and days against VIX, week by week', async () => {
+  const ID = IDS['Nifty Strangle A'];
+  const ctx = await context(b, { width: 1440, height: 900 });
+  const body = await (await ctx.request.get(`${BASE}/v2/deployments/${ID}/geek/volatility`)).json();
+  assert.ok(body.has_vix && body.has_index, 'the seeded VIX and index days');
+  assert.equal(body.side, 'sold', 'a hedged strangle sells premium, net');
+  assert.equal(body.proxy, false, 'a Nifty deployment: the real VIX');
+  assert.ok(body.per_point && body.per_point.n >= 10);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek`);
+  await p.waitForSelector('.gk-rail a.on');
+  await p.keyboard.press('v');
+  await p.waitForURL(/\/geek\/volatility$/);
+  await p.waitForFunction(() => document.querySelectorAll('#gkView .gk-chart').length >= 4);
+  const text = await p.locator('#gkView').innerText();
+  for (const s of ['VIX now', 'Priced move today', '₹ per VIX point', 'Week by week', 'VIX at entry', 'What VIX did during the trade', 'sells premium (net)']) assert.ok(text.includes(s), s);
+  assert.match(text, /What it says now/);
+  assert.match(text, /With VIX between [\d.]+ and [\d.]+, as now|new ground for it/);
+  if (body.filters.length) {
+    assert.match(text, /If it had only traded at some VIX levels/);
+    assert.equal(await p.locator('#gkView .vf-row[data-tip]').count(), body.filters.length);
+  }
+  // a trade's dot shows VIX at entry and exit
+  const dot = p.locator('#gkView .gk-chart').nth(1).locator('circle').last();
+  await dot.scrollIntoViewIfNeeded();
+  const box = await dot.boundingBox();
+  await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await p.waitForFunction(() => /VIX at entry/.test(document.querySelector('.tip')?.innerText || ''));
+  // a BankNifty deployment says VIX is a stand-in
+  await p.goto(`${BASE}/linck/#/d/${IDS['BankNifty DTT Plain']}/geek/volatility`);
+  await p.waitForFunction(() => /stand-in/.test(document.querySelector('#gkView')?.innerText || ''));
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });

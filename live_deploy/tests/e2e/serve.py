@@ -207,7 +207,6 @@ async def seed():
             t += timedelta(minutes=5)
             i += 1
     ids[GEEK_NAME] = await seed_geek(pool, prices, GEEK_LIVE)
-    await seed_vix(pool)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -227,21 +226,22 @@ def vix_level(d, minute=0):
     return round(base + 0.4 * math.sin(minute / 40 + k), 2)
 
 
-async def seed_vix(pool):
-    """India VIX, a minute at a time, for every weekday of the seeded past
-    up to now (app/vix.py)."""
-    rows, d = [], (TODAY - timedelta(days=210)).date()
+def index_days(tok):
+    """Each index's daily candles, moving about what VIX priced, some days
+    far more (what Kite's day history would say). Deterministic."""
+    ix = next(k for k, v in TOKEN.items() if v == tok)
+    out, px, d = {}, SPOT[ix] * 0.94, (TODAY - timedelta(days=400)).date()
     while d <= TODAY.date():
         if d.weekday() < 5:
-            open_ = datetime.combine(d, time(9, 15), IST)
-            for i in range(375):
-                t = open_ + timedelta(minutes=i)
-                if t > NOW:
-                    break
-                v = vix_level(d, i)
-                rows.append((t, v, v + 0.05, v - 0.05, v))
+            k = d.toordinal()
+            z = math.sin(k * 1.7) * (2.6 if k % 11 == 0 else 1.0)
+            prev, px = px, round(px * (1 + z * vix_level(d) / math.sqrt(365) / 100), 2)
+            out[d] = (prev, max(prev, px) * 1.002, min(prev, px) * 0.998, px)
         d += timedelta(days=1)
-    await queries.upsert_vix(pool, rows, "kite")
+    return out
+
+
+VIX_TOKEN = 264969
 
 
 async def seed_dtt(pool, dep, created):
@@ -714,7 +714,31 @@ def main():
 
     # Kite isn't logged in here: indices' history (what a chart asks Kite
     # for) is synthesised instead, at whatever interval is asked for.
+    days_by = {}
+
     async def index_history(self, token, start, end, interval):
+        if token == VIX_TOKEN:   # India VIX, at any interval (app/vix.py)
+            out, d = [], start.date()
+            while d <= end.date():
+                if d.weekday() < 5:
+                    if interval == "day":
+                        v = vix_level(d)
+                        out.append({"date": datetime.combine(d, time(0)), "open": v, "high": v + 0.5, "low": v - 0.5, "close": vix_level(d, 374)})
+                    else:
+                        step = {"minute": 1, "5minute": 5, "15minute": 15, "60minute": 60}.get(interval, 15)
+                        for m in range(0, 375, step):
+                            t = datetime.combine(d, time(9, 15)) + timedelta(minutes=m)
+                            if t.replace(tzinfo=IST) > NOW:
+                                break
+                            v = vix_level(d, m)
+                            out.append({"date": t, "open": v, "high": v + 0.05, "low": v - 0.05, "close": v})
+                d += timedelta(days=1)
+            return out
+        if interval == "day" and token in TOKEN.values():   # an index's days
+            if token not in days_by:
+                days_by[token] = index_days(token)
+            return [{"date": datetime.combine(d, time(0)), "open": o, "high": h, "low": lo, "close": c}
+                    for d, (o, h, lo, c) in days_by[token].items() if start.date() <= d <= end.date()]
         if token not in TOKEN.values():
             # an option contract: a little slow, like Kite, so a backfill's
             # progress is visible (E2E_HISTORY_DELAY seconds per request)
@@ -731,6 +755,9 @@ def main():
             t += timedelta(minutes=step)
         return out
     OptionsResolver.get_historical_candles = index_history
+    # Kite isn't logged in to look INDIA VIX up by name: it's known here
+    from app import vix as _vix
+    _vix.state["token"] = VIX_TOKEN
 
     @app.on_event("startup")
     async def _prices():

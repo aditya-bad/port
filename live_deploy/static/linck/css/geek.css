@@ -216,3 +216,12 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 .gk-chart rect.hit:hover { fill: var(--ink); fill-opacity: .06; }
 /* axis lines and labels never block the marks under them */
 .gk-chart line, .gk-chart text { pointer-events: none; }
+
+/* Volatility: what-if VIX filters, one row a level */
+.vf-row { display: grid; grid-template-columns: 44px minmax(60px, 1fr) 120px minmax(60px, 1fr) 120px; gap: 10px; align-items: center; font-size: 13px; padding: 2px 0; }
+.vf-row.th { font-size: 12px; font-weight: 700; color: var(--mute); }
+.vf-row .bar { position: relative; height: 12px; background: var(--soft); }
+.vf-row .bar i { position: absolute; top: 0; bottom: 0; } .vf-row .bar u { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--ink); }
+.vf-row:not(.th):hover { background: var(--soft); }
+.vf-now li { line-height: 1.5; }
+@media (max-width: 700px) { .vf-row { grid-template-columns: 34px minmax(40px, 1fr) 92px minmax(40px, 1fr) 92px; gap: 6px; } }
