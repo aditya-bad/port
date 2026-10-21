@@ -87,3 +87,18 @@ test('a VIX spike needs you on the Desk: what holds sold premium, dismissed for 
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+test('prices stopped while "connected": the Desk says so, not "live"', async () => {
+  const ctx = await context(b, { width: 1440, height: 900, blockSW: true });
+  await ctx.route('**/health', async r => {
+    const h = await (await r.fetch()).json();
+    return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ...h, kite_connected: true, needs_login: false, ticks_stalled_s: 600 }) });
+  });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/desk`);
+  await p.waitForSelector('.kite-banner[data-stalled]');
+  assert.match(await p.innerText('.kite-banner'), /Kite has stopped sending prices\.[\s\S]*no prices for 10 min/);
+  assert.match(await p.textContent('.kite-chip'), /Prices stopped · reconnecting/, 'the long label (a narrow header shows "Reconnecting")');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

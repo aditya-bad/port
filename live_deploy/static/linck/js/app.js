@@ -31,6 +31,7 @@ function kiteChip() {
   const s = kite.state;
   if (s === 'connected') return html`<button type="button" class="kite-chip" data-act="kite" aria-label="Kite connected"><i></i>Kite connected</button>`;
   if (s === 'connecting') return html`<button type="button" class="kite-chip wait" data-act="kite" aria-label="Connecting to Kite"><i></i>Connecting…</button>`;
+  if (s === 'stalled') return html`<button type="button" class="kite-chip wait" data-act="kite" aria-label="Prices stopped, reconnecting" data-tip="${`No prices from Kite for ${Math.round((kite.stalledFor || 0) / 60)} min\nThe connection looks open but nothing arrives. Reconnecting automatically.`}"><i></i><span class="long">Prices stopped · reconnecting</span><span class="short">Reconnecting</span></button>`;
   return html`<button type="button" class="kite-chip off" data-act="kite" aria-label="Kite expired, reconnect"><i></i><span class="long">Kite expired · Reconnect</span><span class="short">Reconnect</span></button>`;
 }
 // While the daily option-history backfill runs: a slim strip under the

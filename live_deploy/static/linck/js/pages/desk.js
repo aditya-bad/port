@@ -260,7 +260,12 @@ export default {
       const A = alerts(all);
       const frac = sessionFrac();
       mount(main, html`
-        ${kite.state !== 'connected' ? html`
+        ${kite.state === 'stalled' ? html`
+          <div class="banner kite-banner" data-stalled>
+            <b class="t-h4" style="font-size:18px">Kite has stopped sending prices.</b>
+            <span class="mute grow">The connection looks open, but no prices for ${Math.max(1, Math.round((kite.stalledFor || 0) / 60))} min. Linck is reconnecting by itself; until prices return, P&amp;L is frozen and no deployment can enter, adjust or exit. If it lasts, log in to Kite again.</span>
+            <button type="button" class="btn btn-primary" data-act="kite">Log in again</button>
+          </div>` : kite.state !== 'connected' ? html`
           <div class="banner kite-banner">
             <b class="t-h4" style="font-size:18px">Linck is not connected to Kite.</b>
             <span class="mute grow">Prices and P&L below are frozen. No deployment can enter, adjust or exit until you reconnect. Your daily Kite login expires at about 08:00.</span>

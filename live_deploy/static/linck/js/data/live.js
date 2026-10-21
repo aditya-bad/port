@@ -58,7 +58,8 @@ export function startEvents() {
 }
 
 // ── Kite ───────────────────────────────────────────────────────────
-// state: 'connected' | 'connecting' | 'expired'
+// state: 'connected' | 'stalled' (connected, but no ticks for a while in
+// market hours: reconnecting by itself) | 'connecting' | 'expired'
 export const kite = { state: 'expired', lastTickAt: null, error: null };
 // Deployments active in the database with nothing running them (/health).
 export const health = { notRunning: [], sig: '' };
@@ -69,7 +70,8 @@ let connecting = false;
 export async function pollStatus() {
   try {
     const h = await api.health();
-    kite.state = h.kite_connected && !h.needs_login ? 'connected' : connecting ? 'connecting' : 'expired';
+    kite.state = h.kite_connected && !h.needs_login ? (h.ticks_stalled_s ? 'stalled' : 'connected') : connecting ? 'connecting' : 'expired';
+    kite.stalledFor = h.ticks_stalled_s || null;
     kite.lastTickAt = h.last_tick_at || null;
     kite.error = h.last_error || null;
     const nr = h.not_running || [];

@@ -1,5 +1,7 @@
 """live_deploy — GET /health."""
 
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Request
 
 router = APIRouter()
@@ -38,4 +40,7 @@ async def health(request: Request):
         # header shows its progress (app/candles.py).
         "candle_backfill": getattr(getattr(request.app.state, "candles", None), "progress", None),
         **dispatcher.status,
+        # Connected but no ticks for a while in market hours (a silent
+        # stall): the UI must not call that live. Seconds, or null.
+        "ticks_stalled_s": manager.tick_stall(datetime.now(timezone.utc)) if hasattr(manager, "tick_stall") else None,
     }

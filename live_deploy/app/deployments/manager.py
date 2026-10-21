@@ -163,6 +163,8 @@ class DeploymentManager:
         self._alerted: set[str] = set()
         self._restart_tried: dict[str, float] = {}   # deployment id -> monotonic time of the last auto-restart
         self._kite_alerted_on = None
+        self._stall_alerted = False          # pushed for the current tick stall (check_tick_stall)
+        self._stall_retry_at: Optional[float] = None
 
     # ── Startup / shutdown ───────────────────────────────────────────
 
@@ -840,6 +842,8 @@ class DeploymentManager:
             if did not in current:
                 self._restart_tried.pop(did, None)
 
+        await self.check_tick_stall(now)
+
         connected = bool(getattr(self.dispatcher, "connected", False)) and not self.dispatcher.status.get("needs_login")
         market_day = now.weekday() < 5
         if connected or not market_day or not (time(9, 5) <= now.time() < time(15, 30)):
@@ -860,6 +864,61 @@ class DeploymentManager:
             "Kite isn't connected",
             f"It's {now:%H:%M} and Kite isn't logged in — {n} running deployment(s) can't trade until you connect.",
         )
+
+    # ── A silent tick stall ──────────────────────────────────────────
+    #
+    # Kite's websocket can stay open while no ticks arrive (seen in prod:
+    # last tick 12:15 IST, "connected" until the close, nothing traded
+    # or updated for three hours, no error, no reconnect). In market
+    # hours, once ticks have flowed today and then none for TICK_STALL_S,
+    # reconnect with the same session — at most every STALL_RETRY_S — and
+    # push once per stall (and once when prices are back).
+
+    TICK_STALL_S = 90.0
+    STALL_RETRY_S = 180.0
+
+    def tick_stall(self, now: datetime) -> Optional[float]:
+        """Seconds since the last tick when it's a stall, else None. Pure
+        over the dispatcher's state, for /health and the watchdog."""
+        d = self.dispatcher
+        last = getattr(d, "last_tick_at", None)
+        if last is None or not getattr(d, "connected", False) or d.status.get("needs_login"):
+            return None
+        now_ist = now.astimezone(_IST)
+        if now_ist.weekday() >= 5 or not (time(9, 15) <= now_ist.time() < time(15, 30)):
+            return None
+        last_ist = last.astimezone(_IST)
+        if last_ist.date() != now_ist.date() or last_ist.time() < time(9, 15):
+            return None   # nothing yet today (a holiday, a late open): not a stall
+        age = (now_ist - last_ist).total_seconds()
+        return age if age >= self.TICK_STALL_S else None
+
+    async def check_tick_stall(self, now: datetime) -> None:
+        stalled = self.tick_stall(now)
+        if not hasattr(self, "_stall_alerted"):   # a manager built without __init__ (tests)
+            self._stall_alerted, self._stall_retry_at = False, None
+        if stalled is None:
+            if self._stall_alerted:
+                self._stall_alerted = False
+                await self._push("Prices are flowing again", f"Kite ticks resumed at {now.astimezone(_IST):%H:%M}.")
+            return
+        mono = _time.monotonic()
+        if self._stall_retry_at is not None and mono - self._stall_retry_at < self.STALL_RETRY_S:
+            return
+        self._stall_retry_at = mono
+        last = self.dispatcher.last_tick_at.astimezone(_IST)
+        logger.warning("No Kite ticks since %s (%.0fs) while connected — reconnecting", f"{last:%H:%M:%S}", stalled)
+        token = getattr(self.dispatcher, "access_token", None)
+        if token:
+            try:
+                self.dispatcher.reconnect(token)
+            except Exception:
+                logger.exception("Reconnecting after a tick stall failed")
+        if not self._stall_alerted:
+            self._stall_alerted = True
+            await self._push("Kite prices stopped",
+                             f"No ticks since {last:%H:%M} though the connection looked open. Reconnecting automatically; "
+                             f"{len(self.runners)} running deployment(s) can't act until prices return.")
 
     # ── Post-market state checkpoint (once a day, not on shutdown) ──────
 
