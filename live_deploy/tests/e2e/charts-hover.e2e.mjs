@@ -8,11 +8,11 @@ import assert from 'node:assert/strict';
 import { BASE, IDS, browser, context } from './helper.mjs';
 
 const KINDS = {
-  'Nifty Monthly Strangle': ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'map', 'cycles', 'cycle', 'adjustments', 'premium', 'entries', 'conditions', 'volatility', 'settings'],
-  'Pivot Supertrend Options': ['overview', 'engine', 'decisions', 'signals', 'trade', 'exits', 'days', 'conditions', 'volatility', 'settings'],
-  'BankNifty DTT Plain': ['overview', 'engine', 'decisions', 'straddles', 'straddle', 'timing', 'conditions', 'volatility', 'settings'],
-  'Sensex Credit Spread': ['overview', 'engine', 'decisions', 'conditions', 'volatility', 'settings'],
-  'BankNifty DTT Adjusted': ['engine', 'sessions', 'session', 'moves', 'conditions', 'volatility'],
+  'Nifty Monthly Strangle': ['overview', 'positions', 'trades', 'performance', 'replay', 'engine', 'decisions', 'map', 'cycles', 'cycle', 'adjustments', 'premium', 'entries', 'conditions', 'volatility', 'settings'],
+  'Pivot Supertrend Options': ['overview', 'replay', 'engine', 'decisions', 'signals', 'trade', 'exits', 'days', 'conditions', 'volatility', 'settings'],
+  'BankNifty DTT Plain': ['overview', 'replay', 'engine', 'decisions', 'straddles', 'straddle', 'timing', 'conditions', 'volatility', 'settings'],
+  'Sensex Credit Spread': ['overview', 'replay', 'engine', 'decisions', 'conditions', 'volatility', 'settings'],
+  'BankNifty DTT Adjusted': ['replay', 'engine', 'sessions', 'session', 'moves', 'conditions', 'volatility'],
   'BankNifty DTT Advanced': ['engine', 'sessions', 'session', 'moves', 'conditions', 'volatility'],
 };
 let b;

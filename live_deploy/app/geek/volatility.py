@@ -204,9 +204,10 @@ def spot_of(meta: dict) -> Optional[float]:
 
 
 def expiry_of(meta: dict, contract_expiry, symbol: str) -> Optional[date]:
-    """A leg's expiry: what the fill recorded, else the contract list, else
-    a weekly symbol's own date (a monthly symbol only says the month)."""
-    e = (meta or {}).get("expiry")
+    """A leg's expiry: what the fill recorded ("expiry", or the strangle's
+    "contract_expiry"), else the contract list, else a weekly symbol's own
+    date (a monthly symbol only says the month)."""
+    e = (meta or {}).get("expiry") or (meta or {}).get("contract_expiry")
     if e:
         try:
             return date.fromisoformat(str(e)[:10])

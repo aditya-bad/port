@@ -8,6 +8,7 @@ export const BASICS = [
   ['positions', 'Positions', 'Basics', '2', () => import('../deployment/now.js'), true],
   ['trades', 'Trades & replay', 'Basics', '3', () => import('../deployment/trades.js'), true],
   ['performance', 'Performance', 'Basics', '4', () => import('../deployment/performance.js'), true],
+  ['replay', 'Replay', 'Basics', 'R', () => import('./replay.js')],
   ['engine', 'Engine', 'Live', 'E', () => import('./engine.js')],
   ['decisions', 'Decisions', 'Live', 'D', () => import('./decisions.js')],
   ['journal', 'Journal', 'Live', 'J', () => import('./journal.js')],

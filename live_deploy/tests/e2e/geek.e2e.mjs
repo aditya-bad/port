@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { BASE, IDS, browser, context } from './helper.mjs';
 
 const ID = IDS['Nifty Monthly Strangle'];
-const VIEWS = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'map', 'cycles', 'adjustments', 'premium', 'entries', 'conditions', 'volatility', 'settings'];
+const VIEWS = ['overview', 'positions', 'trades', 'performance', 'replay', 'engine', 'decisions', 'journal', 'map', 'cycles', 'adjustments', 'premium', 'entries', 'conditions', 'volatility', 'settings'];
 let b;
 test.before(async () => { b = await browser(); });
 test.after(async () => { await b.close(); });
@@ -42,7 +42,7 @@ test('the Now tab shows the engine card and Geek mode opens full screen', async 
 
 test('every strategy has Geek mode: the shared views, without the strangle\'s own', async () => {
   const DTT = IDS['Sensex Credit Spread'];
-  const SHARED = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'conditions', 'volatility', 'settings'];
+  const SHARED = ['overview', 'positions', 'trades', 'performance', 'replay', 'engine', 'decisions', 'journal', 'conditions', 'volatility', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
@@ -339,7 +339,7 @@ test('a cycle’s own page has everything, set against the other cycles', async 
 
 test('SuperTrend options: engine ladder, signals, exits, days and one trade end to end', async () => {
   const ST = IDS['Pivot Supertrend Options'];
-  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'signals', 'exits', 'days', 'conditions', 'volatility', 'settings'];
+  const OWN = ['overview', 'positions', 'trades', 'performance', 'replay', 'engine', 'decisions', 'journal', 'signals', 'exits', 'days', 'conditions', 'volatility', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
@@ -396,8 +396,8 @@ test('SuperTrend options: engine ladder, signals, exits, days and one trade end 
   assert.equal(await p.locator('a:has-text("Newer →")').count(), 0, 'the newest has no newer');
   assert.equal(await p.locator('#gkView svg.gk-chart:not([data-vix-slot] svg)').count(), 2, 'the index and the premium (VIX: its own test)');
   await p.goto(`${BASE}/linck/#/d/${ST}/geek/trade?p=nope`);
-  await p.waitForSelector('#gkView .empty');
-  assert.match(await p.locator('#gkView').innerText(), /There’s no such trade/);
+  // the view redraws as it loads: wait for the message itself, not just an empty box
+  await p.waitForFunction(() => /There’s no such trade/.test((document.querySelector('#gkView .empty') || {}).innerText || ''));
   // exits and days add up to the same trades
   await p.goto(`${BASE}/linck/#/d/${ST}/geek/exits`);
   await p.waitForSelector('#gkView .gk-tiles');
@@ -413,7 +413,7 @@ test('SuperTrend options: engine ladder, signals, exits, days and one trade end 
 
 test('DTT straddle: engine, straddles, exits & timing, and one straddle end to end', async () => {
   const DD = IDS['BankNifty DTT Plain'];
-  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'straddles', 'timing', 'conditions', 'volatility', 'settings'];
+  const OWN = ['overview', 'positions', 'trades', 'performance', 'replay', 'engine', 'decisions', 'journal', 'straddles', 'timing', 'conditions', 'volatility', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
@@ -480,7 +480,7 @@ test('DTT straddle: engine, straddles, exits & timing, and one straddle end to e
 for (const [name, rolls] of [['BankNifty DTT Adjusted', false], ['BankNifty DTT Advanced', true]]) {
   test(`${name}: engine, sessions, adjustments and one day end to end`, async () => {
     const ID = IDS[name];
-    const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'sessions', 'moves', 'conditions', 'volatility', 'settings'];
+    const OWN = ['overview', 'positions', 'trades', 'performance', 'replay', 'engine', 'decisions', 'journal', 'sessions', 'moves', 'conditions', 'volatility', 'settings'];
     for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
       const ctx = await context(b, { width, height: 860 });
       const p = await ctx.newPage();

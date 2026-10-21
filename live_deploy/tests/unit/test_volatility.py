@@ -94,3 +94,12 @@ def test_attribution_adds_up_over_trades_that_have_one():
     a = V.attribution_total(rows)
     assert a == {"time": 1900.0, "move": -1300.0, "vol": 0.0, "total": 600.0, "n": 2, "closed": 3, "pnl_all": 650.0}
     assert V.attribution_total([{"pnl": 1, "attr": None}]) is None
+
+
+def test_expiry_comes_from_the_fill_including_the_strangles_contract_expiry():
+    from datetime import date
+    # the strangle records "contract_expiry" (a monthly symbol only says the month)
+    assert V.expiry_of({"contract_expiry": "2026-11-24"}, date(2026, 11, 30), "NIFTY26NOV24000CE") == date(2026, 11, 24)
+    assert V.expiry_of({"expiry": "2026-10-27"}, None, "NIFTY26OCT24000CE") == date(2026, 10, 27)
+    assert V.expiry_of({}, date(2026, 11, 30), "NIFTY26NOV24000CE") == date(2026, 11, 30)
+    assert V.expiry_of({}, None, "NIFTY26NOV24000CE") is None
