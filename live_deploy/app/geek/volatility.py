@@ -10,7 +10,10 @@ VIX (app/vix.py) bears on this deployment.
   (VIX / √365 per cent) against how far the index actually closed from
   the day before, and the deployment's P&L on days the market moved more
   or less than priced;
-* week by week: VIX's open, close and high, the index's move, the P&L.
+* week by week: VIX's open, close and high, the index's move, the P&L;
+* each option's implied volatility from its own fill, against VIX, and
+  where each trade's P&L came from: time decay, the index's move, and
+  volatility (app/geek/optionmath.attribute).
 
 Whether a deployment sells or buys premium decides which way VIX cuts,
 so each trade says which it did. VIX is built from Nifty options: for a
@@ -245,6 +248,19 @@ def leg_of(p: dict, lots: list[dict], expiry: Optional[date], spot_at) -> Option
     return leg
 
 
+def attribution_total(rows: list[dict]) -> Optional[dict]:
+    """The split added up over every trade that has one, against all the
+    closed trades' P&L (what it couldn't split: legs without a known
+    strike, expiry or index level, or with no implied volatility)."""
+    split = [r for r in rows if r.get("attr")]
+    closed = [r for r in rows if r.get("pnl") is not None]
+    if not split:
+        return None
+    out = {k: round(sum(r["attr"][k] for r in split), 2) for k in ("time", "move", "vol", "total")}
+    out.update({"n": len(split), "closed": len(closed), "pnl_all": round(sum(r["pnl"] for r in closed), 2)})
+    return out
+
+
 def side_of(fills: list[dict]) -> str:
     """Sold or bought premium, net: what the opening fills took in against
     what they paid. A hedged strangle or a credit spread takes in more
@@ -354,7 +370,11 @@ async def volatility(ctx: Ctx) -> dict:
         lgs = [legs[p["id"]] for p in ps if p["id"] in legs and legs[p["id"]].get("iv0")]
         w = sum(lg["p0"] * lg["qty"] for lg in lgs)
         iv = round(sum(lg["iv0"] * lg["p0"] * lg["qty"] for lg in lgs) / w * 100, 2) if w else None
-        rows.append({"iv": iv, "iv_legs": len(lgs),
+        # where its P&L came from: only when every leg is closed and could be split
+        attr = None
+        if not is_open and ps and all(p["id"] in legs and legs[p["id"]].get("attr") for p in ps):
+            attr = {k: round(sum(legs[p["id"]]["attr"][k] for p in ps), 2) for k in ("time", "move", "vol", "total")}
+        rows.append({"iv": iv, "iv_legs": len(lgs), "attr": attr,
                      "t": _iso(tr["t"]), "end": _iso(end), "label": label(tr["trigger"]), "symbols": [p["symbol"] for p in ps],
                      "side": side_of(fills), "open": is_open,
                      "pnl": None if is_open else round(sum(float(p["realized_pnl"] or 0) for p in ps), 2),
@@ -415,6 +435,7 @@ async def volatility(ctx: Ctx) -> dict:
         "rows": rows, "groups": groups([r for r in known if not r["open"]], specs),
         "per_point": per_point, "here": here, "filters": filters(closed_known), "spikes": spikes(days),
         "days": days[-260:], "moved": move_groups, "weeks": weekly(days, rows)[-26:],
+        "attribution": attribution_total(rows),
         "summary": {"trades": len(rows), "with_vix": len(known), "with_iv": sum(1 for r in rows if r["iv"] is not None),
                     "days_moved_more": sum(1 for r in moved if r["ratio"] > 1), "days_compared": len(moved)},
     }

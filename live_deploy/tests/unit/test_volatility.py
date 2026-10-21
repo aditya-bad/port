@@ -85,3 +85,12 @@ def test_spike_days():
     assert (s["spike_n"], s["spike_avg"], s["spike_worst"]) == (2, -2150.0, -2500.0)
     assert (s["rest_n"], s["rest_avg"]) == (3, 300.0)
     assert V.spikes([d(14, 1), d(14.1, 2)]) is None
+
+
+def test_attribution_adds_up_over_trades_that_have_one():
+    rows = [{"pnl": 900.0, "attr": {"time": 1500.0, "move": -400.0, "vol": -200.0, "total": 900.0}},
+            {"pnl": -300.0, "attr": {"time": 400.0, "move": -900.0, "vol": 200.0, "total": -300.0}},
+            {"pnl": 50.0, "attr": None}, {"pnl": None, "attr": None}]
+    a = V.attribution_total(rows)
+    assert a == {"time": 1900.0, "move": -1300.0, "vol": 0.0, "total": 600.0, "n": 2, "closed": 3, "pnl_all": 650.0}
+    assert V.attribution_total([{"pnl": 1, "attr": None}]) is None

@@ -58,3 +58,24 @@ test('rich against cheap, in words', async () => {
   assert.equal(richText([g]), 'Trades whose premium was richest against VIX (above +0.8 points) averaged +₹900, 75% won; the cheapest (up to −1.2) averaged −₹300, 40% won.');
   assert.equal(richText([]), null);
 });
+
+test('where the P&L came from: in words, and a column per trade with its numbers', async () => {
+  const { attrText, splitBars } = await import('../../static/linck/js/pages/geek/volatility.js');
+  assert.equal(attrText({ n: 2, time: 1900, move: -1300, vol: 0 }),
+    'Across 2 trades it could split, time decay earned ₹1,900, the index’s moves cost ₹1,300 and changes in volatility earned ₹0.');
+  assert.equal(attrText(null), null);
+  const rows = [{ label: 'Entry', t: '2026-10-14T10:00:00+05:30', attr: { time: 1500, move: -400, vol: -200, total: 900 } },
+    { label: 'Entry', t: '2026-10-15T10:00:00+05:30', attr: null }, { label: 'Entry', t: '2026-10-16T10:00:00+05:30', attr: { time: 400, move: -900, vol: 200, total: -300 } }];
+  const svg = String(splitBars(rows));
+  assert.equal((svg.match(/class="hit"/g) || []).length, 2, 'a column for each trade with a split');
+  assert.match(svg, /Time decay  \+₹1,500/);
+  assert.equal(splitBars([rows[1]]), '');
+});
+
+test('the three parts: a row each with its colour key and numbers', async () => {
+  const { partRows } = await import('../../static/linck/js/pages/geek/volatility.js');
+  const out = String(partRows({ n: 2, time: 1900, move: -1300, vol: 0, total: 600 }));
+  assert.equal((out.match(/class="vp-row" data-tip=/g) || []).length, 3);
+  assert.match(out, /Time decay/); assert.match(out, /−₹1,300/);
+  assert.doesNotMatch(out, / · \d+%/, 'no count or win rate: they mean nothing here');
+});

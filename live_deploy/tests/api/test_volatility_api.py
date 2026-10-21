@@ -162,3 +162,11 @@ def test_implied_volatility_of_what_was_sold_against_vix(client, monkeypatch):
     rich = next(g for g in v["groups"] if g["key"] == "rich")
     assert [b["n"] for b in rich["buckets"]] == [2, 2, 2] and rich["buckets"][0]["label"].startswith("Cheapest third")
     assert "thirds" not in {g["key"] for g in v["groups"]}, "VIX the same for every trade: no thirds to tell apart"
+    # where the P&L came from: the index never moved, so no market move; the parts add up
+    for r in rows:
+        a = r["attr"]
+        assert a is not None and a["total"] == r["pnl"]
+        assert abs(a["time"] + a["move"] + a["vol"] - a["total"]) < 0.05
+        assert abs(a["move"]) < 1 and a["time"] > 0, "a seller earns the clock"
+    tot = v["attribution"]
+    assert tot["n"] == tot["closed"] == 6 and tot["total"] == tot["pnl_all"]

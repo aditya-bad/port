@@ -80,6 +80,50 @@ export function richText(groups) {
   return `Trades whose premium was richest against VIX (${hi.label.split(' · ')[1]} points) averaged ${inr(hi.avg)}, ${Math.round(hi.win_rate)}% won; the cheapest (${lo.label.split(' · ')[1]}) averaged ${inr(lo.avg)}, ${Math.round(lo.win_rate)}% won.`;
 }
 
+const PART = [['time', 'Time decay', 'var(--b)'], ['move', 'The index’s move', 'var(--c4)'], ['vol', 'Volatility', 'var(--c5)']];
+const splitLines = a => PART.map(([k, l]) => `${l}  ${inr(a[k])}`);
+
+// Where the P&L came from, in words.
+export function attrText(a) {
+  if (!a) return null;
+  const [t, m, v] = [a.time, a.move, a.vol];
+  return `Across ${a.n} trade${a.n === 1 ? '' : 's'} it could split, time decay ${t >= 0 ? 'earned' : 'cost'} ${inr(Math.abs(t), { sign: false })}, the index’s moves ${m >= 0 ? 'earned' : 'cost'} ${inr(Math.abs(m), { sign: false })} and changes in volatility ${v >= 0 ? 'earned' : 'cost'} ${inr(Math.abs(v), { sign: false })}.`;
+}
+
+// The three parts' totals, as bars either side of zero, each with its share.
+export function partRows(a) {
+  const mx = Math.max(1, ...PART.map(([k]) => Math.abs(a[k])));
+  return html`<div class="col" style="gap:6px">${PART.map(([k, l, c]) => html`
+    <div class="vp-row" data-tip="${`${l}\nAcross ${a.n} trades  ${inr(a[k])}\nAll three  ${inr(a.total)}`}">
+      <b><i class="vp-sw" style="background:${c}"></i>${l}</b>
+      <span class="bar"><i style="${a[k] >= 0 ? 'left:50%' : 'right:50%'};width:${(Math.abs(a[k]) / mx * 50).toFixed(1)}%;background:${c}"></i><u></u></span>
+      <span class="mono right ${tone(a[k])}">${inr(a[k])}</span></div>`)}</div>`;
+}
+
+// The last trades, each a column of its three parts (up: made, down: cost).
+export function splitBars(rows) {
+  const rs = rows.filter(r => r.attr).slice(0, 40).reverse();
+  if (!rs.length) return '';
+  const W = 1200, H = 240, L = 70, R = 12, T = 12, B = 22;
+  const up = r => PART.reduce((a, [k]) => a + Math.max(0, r.attr[k]), 0), dn = r => PART.reduce((a, [k]) => a + Math.min(0, r.attr[k]), 0);
+  const hi = Math.max(1, ...rs.map(up)), lo = Math.min(-1, ...rs.map(dn));
+  const y = v => T + (hi - v) / (hi - lo) * (H - T - B), bw = (W - L - R) / rs.length;
+  let s = `<line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line2)"/>`;
+  s += `<text x="${L - 6}" y="${y(hi) + 4}" text-anchor="end">${inr(Math.round(hi))}</text><text x="${L - 6}" y="${y(lo)}" text-anchor="end">${inr(Math.round(lo))}</text>`;
+  rs.forEach((r, i) => {
+    const x = L + i * bw + bw * 0.15, w = bw * 0.7;
+    let pos = 0, neg = 0;
+    for (const [k, , c] of PART) {
+      const v = r.attr[k];
+      if (v >= 0) { s += `<rect x="${x.toFixed(1)}" y="${y(pos + v).toFixed(1)}" width="${w.toFixed(1)}" height="${(y(pos) - y(pos + v)).toFixed(1)}" fill="${c}"/>`; pos += v; }
+      else { s += `<rect x="${x.toFixed(1)}" y="${y(neg).toFixed(1)}" width="${w.toFixed(1)}" height="${(y(neg + v) - y(neg)).toFixed(1)}" fill="${c}"/>`; neg += v; }
+    }
+    s += `<line x1="${x.toFixed(1)}" x2="${(x + w).toFixed(1)}" y1="${y(r.attr.total).toFixed(1)}" y2="${y(r.attr.total).toFixed(1)}" stroke="var(--ink)" stroke-width="2"/>`;
+    s += `<rect class="hit" x="${(L + i * bw).toFixed(1)}" y="${T}" width="${bw.toFixed(1)}" height="${H - T - B}" fill="transparent"${tipAt([`${r.label} · ${dStamp(r.t)}`, `P&L  ${inr(r.attr.total)}`, ...splitLines(r.attr)].join('\n'))}/>`;
+  });
+  return svg(W, H, s, 'Each trade’s P&L split into time decay, the index’s move and volatility');
+}
+
 // What-if entry filter: one row per VIX level, P&L had it traded only at
 // or above it (left) or only below it (right), each bar with its numbers.
 export function filterRows(fs, total) {
@@ -95,6 +139,7 @@ export function filterRows(fs, total) {
 
 const tradeTip = r => [`${r.label} · ${dStamp(r.t)}`, `Result  ${r.pnl == null ? 'open' : inr(r.pnl)}`, `VIX at entry  ${pt(r.vix_in)}`,
   ...(r.iv != null ? [`Implied volatility traded  ${pt(r.iv)}`, `Against VIX  ${sgn(r.iv_spread)} points`] : []),
+  ...(r.attr ? splitLines(r.attr) : []),
   `VIX at exit  ${pt(r.vix_out)}`, `Change  ${sgn(r.dvix)}`, `${r.side === 'sold' ? 'Sold' : r.side === 'bought' ? 'Bought' : 'Sold and bought'} premium`, r.symbols.join(', ')].join('\n');
 const dayTip = r => [dDay(r.day), `P&L  ${inr(r.pnl)}`, `VIX  ${pt(r.vix_close)} (${sgn(r.dvix)})`,
   ...(r.implied_pct != null ? [`VIX priced  ±${r.implied_pct.toFixed(2)}%`] : []), ...(r.move_pct != null ? [`Index moved  ${r.move_pct.toFixed(2)}%`] : []),
@@ -127,6 +172,7 @@ export default {
             ${hereText(d.here, n.vix) ? html`<li>${hereText(d.here, n.vix)}</li>` : ''}
             ${d.spikes ? html`<li>On the ${d.spikes.spike_n} day${d.spikes.spike_n === 1 ? '' : 's'} VIX jumped 10% or more, it averaged <b class="${tone(d.spikes.spike_avg)}">${inr(d.spikes.spike_avg)}</b> (worst ${inr(d.spikes.spike_worst)}), against <b class="${tone(d.spikes.rest_avg)}">${inr(d.spikes.rest_avg)}</b> on other days.</li>` : ''}
             ${pp ? html`<li>${perPointText(pp)}.</li>` : ''}
+            ${attrText(d.attribution) ? html`<li>${attrText(d.attribution)}</li>` : ''}
             ${richText(d.groups) ? html`<li>${richText(d.groups)}</li>` : ''}
             ${bestFilter(d.filters) ? html`<li>${bestFilter(d.filters)} <span class="mute small">In hindsight.</span></li>` : ''}
           </ul></div>` : ''}
@@ -143,6 +189,10 @@ export default {
             ${scatter(d.days, { x: 'dvix', y: 'pnl', tip: dayTip, label: 'Daily P&L against VIX change', fit: pp }) || empty('', 'Needs daily equity snapshots and VIX.')}
             ${pp ? html`<p class="gk-note">${perPointText(pp)}. ${d.pnl_source === 'equity' ? 'P&L here is the change in end-of-day equity, so open positions count.' : 'P&L here is what was booked each day (no end-of-day equity recorded yet), so open positions don’t count.'}</p>` : ''}</div>
         </div>
+        ${d.attribution ? html`<div class="gk-panel"><h3>Where the P&amp;L came from <span class="s">each option repriced one change at a time · the parts add up to the P&amp;L</span></h3>
+          ${partRows(d.attribution)}
+          ${wide(splitBars(d.rows))}
+          <p class="gk-note">The last ${Math.min(40, d.attribution.n)} trades: blue time decay, teal the index’s move, magenta volatility; the black bar is the result. ${d.attribution.n < d.attribution.closed ? `Split for ${d.attribution.n} of ${d.attribution.closed} closed trades (${inr(d.attribution.total)} of ${inr(d.attribution.pnl_all)}): the rest lack a known strike, expiry or index level.` : `Every closed trade is split (${inr(d.attribution.total)}).`} Time decay: the clock alone, at the entry’s implied volatility. The index’s move: then the index moved. Volatility: the rest, the option repricing as implied volatility changed. The index’s move and volatility often pull opposite ways in the same trade (a fall lifts implied volatility), so read them together.</p></div>` : ''}
         ${closed.some(r => r.iv_spread != null) ? html`<div class="gk-panel"><h3>Premium against VIX, and the result <span class="s">implied volatility traded less VIX at entry, in points → P&amp;L · hover a dot</span></h3>
           ${scatter(closed, { x: 'iv_spread', y: 'pnl', tip: tradeTip, label: 'Implied volatility less VIX against the result' })}
           <p class="gk-note">Implied volatility is worked out from each leg’s price, strike, the index and days to expiry (Black-Scholes). Right of zero: the premium was richer than VIX; a seller wants to sell rich. ${d.proxy ? 'For a non-Nifty index its own volatility runs above VIX: compare trades with each other, not with zero.' : ''}</p></div>` : ''}

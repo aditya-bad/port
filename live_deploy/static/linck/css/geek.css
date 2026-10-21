@@ -225,3 +225,8 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 .vf-row:not(.th):hover { background: var(--soft); }
 .vf-now li { line-height: 1.5; }
 @media (max-width: 700px) { .vf-row { grid-template-columns: 34px minmax(40px, 1fr) 92px minmax(40px, 1fr) 92px; gap: 6px; } }
+.vp-row { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(80px, 2fr) 110px; gap: 12px; align-items: center; font-size: 13px; padding: 3px 0; }
+.vp-row .bar { position: relative; height: 12px; background: var(--soft); }
+.vp-row .bar i { position: absolute; top: 0; bottom: 0; } .vp-row .bar u { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--ink); }
+.vp-sw { display: inline-block; width: 10px; height: 10px; margin-right: 8px; vertical-align: -1px; }
+.vp-row:hover { background: var(--soft); }

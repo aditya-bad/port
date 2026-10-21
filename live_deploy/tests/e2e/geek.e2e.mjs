@@ -655,6 +655,16 @@ test('Volatility: the implied volatility of what was sold, against VIX', async (
   await p.goto(`${BASE}/linck/#/d/${ST}/geek/volatility`);
   await p.waitForFunction(() => /Premium against VIX, and the result/.test(document.querySelector('#gkView')?.innerText || ''));
   if (body.groups.some(g => g.key === 'rich')) assert.match(await p.locator('#gkView').innerText(), /richest against VIX/);
+  // where the P&L came from: the parts add up, and every column shows its numbers
+  assert.ok(body.attribution && body.attribution.n >= 10, 'split for most trades');
+  for (const r of body.rows.filter(x => x.attr)) assert.ok(Math.abs(r.attr.time + r.attr.move + r.attr.vol - r.attr.total) < 0.05);
+  assert.match(await p.locator('#gkView').innerText(), /Where the P&L came from/);
+  const cols = p.locator('#gkView svg[aria-label^="Each trade’s P&L split"] .hit');
+  assert.equal(await cols.count(), Math.min(40, body.attribution.n));
+  await cols.last().scrollIntoViewIfNeeded();
+  const box = await cols.last().boundingBox();
+  await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await p.waitForFunction(() => /Time decay/.test(document.querySelector('.tip')?.innerText || ''));
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
