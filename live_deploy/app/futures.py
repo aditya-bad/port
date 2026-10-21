@@ -9,14 +9,17 @@ trade's P&L are all truer against the future. The basis (future − spot)
 is the market's carry: it shrinks to nothing at expiry.
 
 Why stored: Kite drops a futures contract's history the day it expires,
-like an option's (app/candles.py stores both). Two contracts per traded
-index are kept — the current month and the next — filled every evening by
-the candle backfill, and back to KEEP_DAYS on the first run, so both
-listed contracts' history survives their expiry.
+like an option's (app/candles.py stores both). Kept, for every traded
+index: the current and next month, and the future of every option leg
+held that day (by the rule below) — filled every evening by the candle
+backfill, back to KEEP_DAYS on the first run.
 
-Which future prices a leg: the first one of the leg's own expiry month or
-later — the same month for a monthly option, the current month for a
-weekly — else the nearest one listed.
+Which future prices a leg (pick):
+  1. the future with the leg's own expiry date, if one is listed;
+  2. else the monthly future of the leg's expiry month (a weekly option
+     takes its month's future);
+  3. else none — a leg further out than any listed future (next year's
+     December) is valued off the spot and its future is ignored.
 """
 
 from __future__ import annotations
@@ -61,13 +64,14 @@ async def traded_underlyings(pool) -> list[str]:
     return sorted({u for u in (underlying_of(r["config"] or {}) for r in rows) if u})
 
 
-async def listed(dispatcher, underlying: str, on: date, n: int = 2) -> list[dict]:
-    """The next `n` futures of an index still listed on `on`, nearest
-    first, from Kite's instrument master. Raises NoKiteSession."""
+async def listed(dispatcher, underlying: str, on: date, n: Optional[int] = None) -> list[dict]:
+    """The futures of an index still listed on `on` (the next `n`, or all),
+    nearest first, from Kite's instrument master. Raises NoKiteSession."""
     ex = options_exchange_for(underlying)
     cache = await OptionsResolver(dispatcher, exchange=ex)._ensure_instruments(ex)
     rows = [r for r in cache["by_name"].get(underlying, []) if r.get("instrument_type") == "FUT" and r["expiry"] >= on]
-    return sorted(rows, key=lambda r: r["expiry"])[:n]
+    rows = sorted(rows, key=lambda r: r["expiry"])
+    return rows[:n] if n else rows
 
 
 async def remember(pool, rows: list[dict]) -> None:
@@ -78,14 +82,39 @@ async def remember(pool, rows: list[dict]) -> None:
         "strike": None, "instrument_type": "FUT"} for r in rows])
 
 
+async def held_expiries(pool, on: date) -> dict[str, set]:
+    """{underlying: {expiry, ...}} of every option leg held on `on`: its
+    expiry from the contracts table, else its symbol (a monthly symbol
+    gives its month, which is all the month rule needs)."""
+    from .candles import parse_contract
+    start = datetime.combine(on, datetime.min.time(), IST)
+    out: dict[str, set] = {}
+    for r in await queries.instruments_held_between(pool, start, start + timedelta(days=1)):
+        c = parse_contract(r["symbol"] or "")
+        if not c or c["instrument_type"] not in ("CE", "PE"):
+            continue
+        row = await queries.get_contract(pool, int(r["instrument_token"]))
+        exp = (row["expiry"] if row is not None and row["expiry"] else None) or c["expiry"]
+        out.setdefault(c["underlying"], set()).add(exp)
+    return out
+
+
 async def to_keep(pool, dispatcher, on: date) -> list[dict]:
-    """The futures the evening backfill keeps: current and next month of
-    every traded index, remembered in the contracts table."""
+    """The futures the evening backfill keeps, remembered in the contracts
+    table: for every traded index, the current and next month, and the
+    future of every option leg held on `on` (pick's rule; a leg with none
+    listed is skipped)."""
+    legs = await held_expiries(pool, on)
     out = []
-    for u in await traded_underlyings(pool):
+    for u in sorted(set(await traded_underlyings(pool)) | set(legs)):
         rows = await listed(dispatcher, u, on)
-        await remember(pool, rows)
-        out += rows
+        keep = {int(r["instrument_token"]): r for r in rows[:2]}
+        for e in legs.get(u, ()):
+            f = pick(rows, e, on)
+            if f is not None:
+                keep[int(f["instrument_token"])] = f
+        await remember(pool, list(keep.values()))
+        out += list(keep.values())
     return out
 
 
@@ -99,16 +128,18 @@ async def known(pool, underlying: str) -> list[dict]:
 
 
 def pick(futures: list[dict], leg_expiry: Optional[date], on: date) -> Optional[dict]:
-    """The future that prices legs expiring on `leg_expiry`: the first of
-    its month or later (by month: a monthly option known only from its
-    symbol carries the month's last day, not its real expiry); else (no
-    legs) the nearest still live on `on`."""
-    live = [f for f in futures if f["expiry"] and f["expiry"] >= on]
-    if leg_expiry is not None:
-        same = [f for f in live if (f["expiry"].year, f["expiry"].month) >= (leg_expiry.year, leg_expiry.month)]
-        if same:
-            return same[0]
-    return live[0] if live else None
+    """The future that prices a leg expiring on `leg_expiry`: the one with
+    that very expiry; else the monthly future of that month; else None (no
+    future that far out: ignored). With no leg (`leg_expiry` None): the
+    nearest future still live on `on`."""
+    if leg_expiry is None:
+        live = [f for f in futures if f["expiry"] and f["expiry"] >= on]
+        return live[0] if live else None
+    exact = [f for f in futures if f["expiry"] == leg_expiry]
+    if exact:
+        return exact[0]
+    month = [f for f in futures if f["expiry"] and (f["expiry"].year, f["expiry"].month) == (leg_expiry.year, leg_expiry.month)]
+    return max(month, key=lambda f: f["expiry"]) if month else None   # the monthly: the month's last expiry
 
 
 # ── a price now ──────────────────────────────────────────────────────────

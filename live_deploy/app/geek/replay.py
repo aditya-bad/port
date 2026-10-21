@@ -210,7 +210,8 @@ def split_leg(leg: dict, t1: datetime, s1: float, p1: float) -> Optional[tuple[f
 
 
 def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: timedelta,
-          contract_exp: dict, now: datetime, cycles: bool = False, fut: Optional[list] = None) -> dict:
+          contract_exp: dict, now: datetime, cycles: bool = False, fut: Optional[list] = None,
+          fut_expiries: Optional[set] = None) -> dict:
     """The replay of the episodes `sel` (from common.trades_of): frames,
     legs and events. `index`/`vix`/`fut`: [{t, c}] candles at `step` (fut:
     the future that prices the legs, app/futures.py);
@@ -268,7 +269,8 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
         leg["iv"] = None
         # the future at entry: the last finished bar, else the bar it opened in
         f0 = (fx.at(t0, stale=timedelta(days=4)) or fx.at(t0 + step)) if fx else None
-        leg["fwd"] = f0 is not None
+        # valued off the future only if it's this leg's own (app/futures.pick)
+        leg["fwd"] = f0 is not None and (fut_expiries is None or leg["expiry"] in fut_expiries)
         leg["spot0"] = s0
         if leg["fwd"]:
             leg["s0"] = f0   # valued off its future from here on
@@ -478,7 +480,7 @@ async def replay(ctx: Ctx) -> dict:
 
     # the future that prices these legs (app/futures.py): its stored candles
     from .. import futures as F
-    fut, fut_info = [], None
+    fut, fut_info, fwd_exps = [], None, set()
     und = F.underlying_of(ctx.config)
     if und and ctx.candles is not None:
         first = {}
@@ -487,8 +489,12 @@ async def replay(ctx: Ctx) -> dict:
                 first.setdefault(x["position_id"], x)
         exps = [e for e in (expiry_of((first.get(p["id"]) or {}).get("metadata") or {}, contract_exp.get(int(p["instrument_token"])), p["symbol"])
                             for p in legs) if e]
-        f = F.pick(await F.known(ctx.pool, und), min(exps) if exps else None, start.date())
+        known_f = await F.known(ctx.pool, und)
+        # the nearest-expiring leg's future; legs of another month (a
+        # calendar) or with none listed that far out are valued off the spot
+        f = next((x for x in (F.pick(known_f, e, start.date()) for e in sorted(set(exps))) if x), None)
         if f:
+            fwd_exps = {e for e in exps if (F.pick(known_f, e, start.date()) or {}).get("instrument_token") == f["instrument_token"]}
             try:
                 rows, _src, _err = await ctx.candles.series(int(f["instrument_token"]), lo, hi, interval, symbol=f["tradingsymbol"])
             except Exception:
@@ -496,7 +502,8 @@ async def replay(ctx: Ctx) -> dict:
             fut = [{"t": datetime.fromtimestamp(r["t"] / 1000, IST), "c": float(r["c"])} for r in rows]
             fut_info = {"symbol": f["tradingsymbol"], "expiry": f["expiry"].isoformat(), "bars": len(fut)}
 
-    out.update(build(b, sel, index, vix, prices, step, contract_exp, now, cycles=gb == "cycle_id", fut=fut))
+    out.update(build(b, sel, index, vix, prices, step, contract_exp, now, cycles=gb == "cycle_id", fut=fut,
+                     fut_expiries=fwd_exps if fut else None))
     out["future"] = fut_info
     out.update({"interval": interval, "index_name": _index_name(ctx), "market_error": market_error,
                 "no_index": not index})

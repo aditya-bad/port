@@ -435,7 +435,7 @@ def test_backfill_keeps_the_traded_indexs_current_and_next_month_futures_with_th
         assert F.pick(known, date(2026, 11, 24), DAY)["tradingsymbol"] == "NIFTY26NOVFUT"    # a November option: November's future
         assert F.pick(known, date(2026, 10, 20), DAY)["tradingsymbol"] == "NIFTY26OCTFUT"    # a weekly: the current month
         assert F.pick(known, None, DAY)["tradingsymbol"] == "NIFTY26OCTFUT"
-        assert F.pick(known, date(2026, 12, 29), DAY)["tradingsymbol"] == "NIFTY26OCTFUT"    # none that far: the nearest
+        assert F.pick(known, date(2026, 12, 29), DAY) is None, "no future that far out: ignored"
         assert F.pick(known, None, date(2026, 11, 30)) is None
         # a monthly symbol only gives its month (expiry read as the month's last day): still that month's future
         assert F.pick(known, date(2026, 11, 30), DAY)["tradingsymbol"] == "NIFTY26NOVFUT"
@@ -448,3 +448,41 @@ def test_underlying_of_a_deployment():
     assert F.underlying_of({"options_underlying": "SENSEX", "instrument_tokens": [256265]}) == "SENSEX"
     assert F.underlying_of({"instrument_tokens": [260105]}) == "BANKNIFTY"
     assert F.underlying_of({"instrument_tokens": [123]}) is None and F.underlying_of({}) is None
+
+
+
+def test_pick_the_same_expiry_else_the_months_future_else_none():
+    from app import futures as F
+    fs = [{"tradingsymbol": "OCT", "expiry": date(2026, 10, 27)}, {"tradingsymbol": "NOV", "expiry": date(2026, 11, 24)},
+          {"tradingsymbol": "NOVW", "expiry": date(2026, 11, 10)}, {"tradingsymbol": "DEC", "expiry": date(2026, 12, 29)}]
+    on = date(2026, 10, 21)
+    assert F.pick(fs, date(2026, 11, 10), on)["tradingsymbol"] == "NOVW", "a future with the leg's own expiry"
+    assert F.pick(fs, date(2026, 11, 24), on)["tradingsymbol"] == "NOV"
+    assert F.pick(fs, date(2026, 11, 17), on)["tradingsymbol"] == "NOV", "else the monthly future of its month (its last expiry)"
+    assert F.pick(fs, date(2026, 10, 20), on)["tradingsymbol"] == "OCT", "a weekly takes its month's future"
+    assert F.pick(fs, date(2027, 12, 28), on) is None, "next year's December: no future, ignored"
+    assert F.pick(fs, None, on)["tradingsymbol"] == "OCT", "no leg: the nearest live"
+
+
+def test_backfill_also_keeps_the_future_of_every_held_legs_month(pool_run, monkeypatch, frozen_today):
+    """A held December leg gets December's future stored (beyond the
+    current and next month); a leg with no future listed that far out
+    gets none."""
+    from app import futures as F
+    k = _mk(monkeypatch)
+    rows = [{"instrument_token": 7001 + i, "tradingsymbol": f"NIFTY26{m}FUT", "exchange": "NFO", "name": "NIFTY", "expiry": e}
+            for i, (m, e) in enumerate([("OCT", date(2026, 10, 27)), ("NOV", date(2026, 11, 24)), ("DEC", date(2026, 12, 29)), ("JAN", date(2027, 1, 26))])]
+
+    async def listed(dispatcher, underlying, on, n=None):
+        return rows if underlying == "NIFTY" else []
+    monkeypatch.setattr(F, "listed", listed)
+
+    async def go(pool):
+        d = (await queries.create_deployment(pool, "N", "strangle_monthly_v2", "positional", 1e6, {"instrument": "NIFTY"}))["id"]
+        await fill(pool, d, "NIFTY26DEC25000CE", 801, "sell", 75, 100, at(DAY, 10, 0))
+        await fill(pool, d, "NIFTY27DEC25000PE", 802, "sell", 75, 100, at(DAY, 10, 0))     # next year's December: no future
+        await service(pool).backfill_day(DAY)
+        futs = sorted({c[0] for c in k.calls} - {801, 802})
+        assert futs == [7001, 7002, 7003], "October and November, plus December for the December leg; not January"
+        assert (await queries.get_contract(pool, 7003))["instrument_type"] == "FUT"
+    pool_run(go)

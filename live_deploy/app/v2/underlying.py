@@ -100,18 +100,19 @@ async def build(pool, dep: dict, dispatcher, now: Optional[datetime] = None) -> 
 
     # the futures that price them: known ones, else Kite's list (remembered)
     known = await F.known(pool, und)
-    if not [f for f in known if f["expiry"] and f["expiry"] >= today]:
-        try:
+    if any(r["expiry"] and F.pick(known, r["expiry"], today) is None for r in rows):
+        try:   # a leg whose future isn't known yet: look in Kite's list (remembered)
             await F.remember(pool, await F.listed(dispatcher, und, today))
             known = await F.known(pool, und)
         except Exception:
             pass
     leg_fut = {}
     for r in rows:
-        f = F.pick(known, r["expiry"], today)
+        f = F.pick(known, r["expiry"], today) if r["expiry"] else None
         if f:
-            leg_fut[r["id"]] = f
-    main = F.pick(known, min([r["expiry"] for r in rows if r["expiry"]], default=None), today)
+            leg_fut[r["id"]] = f   # a leg with no future that far out is valued without one
+    # the panel's future: the nearest-expiring leg's that has one
+    main = next((leg_fut[r["id"]] for r in sorted(rows, key=lambda r: r["expiry"] or date.max) if r["id"] in leg_fut), None)
     used = {f["instrument_token"]: dict(f) for f in list(leg_fut.values()) + ([main] if main else [])}
 
     # prices: live ticks, a Kite quote (also the day's open and previous close), the stored candles
