@@ -146,6 +146,7 @@ def test_a_plan_blind_to_its_legs_is_flagged_in_the_list_and_cant_be_applied(poo
         legs = {int(p["instrument_token"]) for p in await sim.open_positions()}
         good = candles_source(sim, lambda m: (25000, 25004, 24996, 25000))
         book = MinuteBook(sim.market.today, lambda t, a, b: [] if t in legs else good(t, a, b))
+        monkeypatch.setattr(MinuteBook, "anchor", lambda *a: None)   # nothing to model them from either
         w = engine.Window(sim.market.today, time(12, 16))
         cli, lines = cli_for(pool, sim, book, w, FakeApi(), "1", "a", "b", "q")
         await cli.run()
@@ -154,4 +155,25 @@ def test_a_plan_blind_to_its_legs_is_flagged_in_the_list_and_cant_be_applied(poo
         assert "CAN'T BE TRUSTED: no prices at all for" in text
         assert "Not applicable: the replay had no prices for" in text
         assert "Applied" not in text and await engine.live_repair(pool, sim.dep_id, w.day) is None
+    pool_run(go)
+
+
+def test_legs_priced_by_model_are_flagged_in_the_list_and_the_plan_and_still_apply(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_simple", cfg("intraday_dtt_simple"))
+        await sim.walk("09:15", "12:15", every_min=5)
+        legs = {int(p["instrument_token"]) for p in await sim.open_positions()}
+        good = candles_source(sim, lambda m: (25000, 25004, 24996, 25000))
+        book = MinuteBook(sim.market.today, lambda t, a, b: [] if t in legs else good(t, a, b))
+        w = engine.Window(sim.market.today, time(12, 16))
+        api = FakeApi()
+        cli, lines = cli_for(pool, sim, book, w, api, "1", "a", "y", "q")
+        await cli.run()
+        text = "\n".join(lines)
+        assert "↳ 2 leg(s) priced by model (no trades in them on Kite)" in text
+        assert "⚠ ESTIMATED PRICES: Kite has no trade all day in" in text
+        assert "priced by model — Black-76 off NIFTY 50" in text
+        assert "CAN'T BE TRUSTED" not in text and "Applied:" in text
+        assert await engine.live_repair(pool, sim.dep_id, w.day) is not None
+        await assert_book_consistent(pool, sim.dep_id)
     pool_run(go)

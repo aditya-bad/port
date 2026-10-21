@@ -238,6 +238,8 @@ class RepairCLI:
                 self.say(head + "  " + p.dim("nothing to repair"))
                 continue
             self.say(head + f" {len(o.fills):>6} {len(o.auto):>7} {p.money(s['pnl']):>10} {p.money(s['left']):>10} {p.money(s['change']):>9}")
+            if o.estimated:
+                self.say(" " * 4 + p.warn(f"↳ {len(o.estimated)} leg(s) priced by model (no trades in them on Kite): {', '.join(o.estimated)}"))
             if r["fills_after_start"]:
                 self.say("    " + p.warn(f"⚠ {r['fills_after_start']} fill(s) already recorded after {self.window.as_dict()['from']} — "
                                        "the replay starts from the deployment as it is now"))
@@ -327,6 +329,9 @@ class RepairCLI:
             self.say(p.warn(f"⚠ CAN'T BE TRUSTED: no prices at all for {', '.join(o.blind)}. The strategy couldn't see "
                             "these legs, so what it did (or didn't do) below means nothing. It can't be applied; the notes "
                             "at the end say why the prices are missing."))
+        if o.estimated and not o.blind:
+            self.say(p.warn(f"⚠ ESTIMATED PRICES: Kite has no trade all day in {', '.join(o.estimated)}, so they're priced "
+                            "by model off the index (the notes at the end say how). The plan is as good as that model."))
         if o.choices:
             self.say("Paths you chose: " + ", ".join(f"{k} {ORDER_WORDS[v].lower()}" for k, v in sorted(o.choices.items())))
         else:

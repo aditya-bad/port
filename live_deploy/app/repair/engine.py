@@ -40,7 +40,7 @@ from ..deployments.runner import DeploymentRunner
 from ..strategies.registry import get_strategy_class
 from .market import (
     IST, ORDERS, VIX_TOKEN, MinuteBook, ReplayClock, ReplayDispatcher, ReplayKite,
-    natural_order, replaying, session_minutes,
+    kite_lookup, naive_ist, natural_order, replaying, session_minutes,
 )
 
 
@@ -203,6 +203,7 @@ class Outcome:
     end_positions: list = field(default_factory=list)
     problems: list = field(default_factory=list)
     notes: list = field(default_factory=list)
+    estimated: list = field(default_factory=list)  # legs priced by model: Kite had no trade in them all day
     blind: list = field(default_factory=list)     # legs it held with no price at all: the plan can't be trusted
     index_name: str = "Index"
     start_equity: float = 0.0
@@ -270,6 +271,8 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     minutes already decided. `auto`: settle ambiguous minutes by the usual
     reading of the candle instead of stopping (a quick scan)."""
     out = Outcome(deployment_id=dep["id"], window=window, choices=dict(choices))
+    if book.lookup is None and real_kite is not None:
+        book.lookup = kite_lookup(real_kite)   # a leg Kite has nothing for by token is asked for by name
     clock = ReplayClock(window.day)
     kite = ReplayKite(real_kite, book, clock)
     disp = ReplayDispatcher(book, clock)
@@ -290,6 +293,13 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         for tok, p in runner.open_positions.items():
             book.note(tok, p["symbol"])
             disp.subscribed.add(tok)
+        # what its legs last filled at: where a never-traded leg's model starts
+        for r in await conn.fetch(
+                "SELECT p.instrument_token, l.price, l.executed_at FROM position_lots l "
+                "JOIN positions p ON p.id = l.position_id WHERE p.deployment_id = $1 AND p.status = 'open'",
+                dep["id"]):
+            book.anchor(int(r["instrument_token"]), float(r["price"]), r["executed_at"],
+                        f"the fill at {naive_ist(r['executed_at']):%d %b %H:%M}")
         for tok in runner.tokens:
             disp.subscribed.add(tok)
         disp.subscribed.add(VIX_TOKEN)
@@ -371,10 +381,18 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         label = book.symbols.get(tok, str(tok))
         if origin == "none" and tok in held:
             why = book.errors.get(tok)
+            asked = book.tried.get(tok)
             out.blind.append(label)
             out.notes.append(f"No prices at all for {label}: " + (f"Kite said “{why}”" if why else
                              "Kite returned no 1-minute candles for it, and the app stored none")
-                             + ". The strategy couldn't see this leg.")
+                             + (f" (asked for {asked})" if asked else "")
+                             + "; no earlier price to model it from either. The strategy couldn't see this leg.")
+        elif origin == "model" and (tok in held or tok in disp.subscribed):
+            md = book.models[tok]
+            out.estimated.append(label)
+            out.notes.append(f"{label}: Kite has no trade in it all day, so it's priced by model — Black-76 off "
+                             f"{md['index']} at {md['iv'] * 100:.1f}% implied volatility, from {md['anchor']} "
+                             f"(₹{md['anchor_price']:,.2f} with {md['index']} at {md['level']:,.2f}).")
         elif origin == "none" and tok in disp.subscribed:
             out.notes.append(f"No 1-minute candles for {label}" + (f" (Kite said “{book.errors[tok]}”)" if tok in book.errors else "") + ".")
         elif origin == "stored" and tok in disp.subscribed:
@@ -511,6 +529,7 @@ def summarize(o: Outcome, capital: float = 0.0) -> dict:
         "fills": len(o.fills), "reasons": reasons, "open_after": len(o.end_positions),
         "spikes": sum(1 for f in o.fills if f["phase"] in ("up", "down")),
         "blind": list(o.blind),
+        "estimated": list(o.estimated),
     }
 
 

@@ -37,7 +37,10 @@ day's first tick at the next day's price):
 --from is the first minute the app missed: the minute after the last tick
 (the app's /health shows last_tick_at; asked for if not given). Needs a
 Kite session (today's login) for the candles; contracts Kite no longer
-lists fall back to the app's own stored candles.
+lists fall back to the app's own stored candles. A contract with no
+trade all day (thin SENSEX/BANKEX monthlies) is looked up by name on its
+own exchange, and if Kite still has nothing, priced by model off its
+index from its last known price; the plan says so.
 """
 import argparse
 import asyncio
@@ -57,7 +60,7 @@ from app.db.migrate import run_migrations  # noqa: E402
 from app.db.pool import close_pool, create_pool  # noqa: E402
 from app.repair import engine  # noqa: E402
 from app.repair.cli import AppApi, RepairCLI, color_ok, parse_hhmm  # noqa: E402
-from app.repair.market import IST, KiteGate, MinuteBook, kite_minute_source  # noqa: E402
+from app.repair.market import IST, KiteGate, MinuteBook, kite_lookup, kite_minute_source  # noqa: E402
 
 
 async def stored_candles(pool, day) -> dict:
@@ -100,7 +103,7 @@ async def main(args) -> None:
             start = input(f"First minute the app missed, HH:MM{hint} › ").strip()
         window = engine.Window(day, parse_hhmm(start), parse_hhmm(args.end))
 
-        book = MinuteBook(day, kite_minute_source(gate), await stored_candles(pool, day))
+        book = MinuteBook(day, kite_minute_source(gate), await stored_candles(pool, day), lookup=kite_lookup(gate))
         cli = RepairCLI(pool, book, gate, window, api, color=color_ok(sys.stdout), author=args.author)
         await cli.run()
     finally:

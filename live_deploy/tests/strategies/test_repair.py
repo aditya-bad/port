@@ -8,7 +8,7 @@ import pytest
 
 from app.repair import engine
 from app.repair.market import MinuteBook
-from tests.repair_market import candles_source, flat
+from tests.repair_market import candles_source, flat, ist_minute
 from tests.sim import Sim
 from tests.strategies.helpers import assert_book_consistent, cfg
 
@@ -351,14 +351,49 @@ def test_legs_with_no_prices_make_the_plan_untrustworthy_and_it_cant_be_applied(
                 raise Exception("Invalid `token`")
             return good(token, start, end)
         book = MinuteBook(sim.market.today, source)
+        monkeypatch.setattr(MinuteBook, "anchor", lambda *a: None)   # and no earlier price to model them from
         w = window(sim)
         out = await engine.plan(pool, sim.dep_id, w, book, sim.kite, {})
         assert out.complete and sorted(s[-2:] for s in out.blind) == ["CE", "PE"]
         notes = " ".join(out.notes)
         assert "Kite returned no 1-minute candles" in notes and "Kite said “Exception: Invalid `token`”" in notes
+        assert f"(asked for token {ce})" in notes and "no earlier price to model it from" in notes
         assert out.index_name == "NIFTY 50"
         assert engine.summarize(out)["blind"] == out.blind
         with pytest.raises(engine.PlanChanged, match="no prices"):
             await engine.apply(pool, sim.dep_id, w, book, sim.kite, out)
         assert await engine.live_repair(pool, sim.dep_id, w.day) is None
+    pool_run(go)
+
+
+def test_legs_kite_never_traded_are_priced_by_model_from_their_fills_and_the_plan_applies(pool_run, monkeypatch):
+    """The Bankex case with its fills: Kite has no trade in the held legs
+    all day, so each is priced off the index from what it filled at. The
+    strategy sees them move, the plan says they're estimated, and it
+    applies like any other."""
+    async def go(pool):
+        sim = await stalled_dtt(pool, monkeypatch)
+        legs = await sim.open_positions()
+        toks = {int(p["instrument_token"]) for p in legs}
+        # the index runs 300 points up through the afternoon: the short CE's stop has to fire
+        good = candles_source(sim, lambda m: (25000 + max(0, (m.hour * 60 + m.minute) - 13 * 60) * 3,) * 4)
+        book = MinuteBook(sim.market.today, lambda t, a, b: [] if t in toks else good(t, a, b))
+        w = window(sim)
+        out = await engine.plan(pool, sim.dep_id, w, book, sim.kite, {}, auto=True)
+        assert out.complete and not out.blind
+        assert sorted(s[-2:] for s in out.estimated) == ["CE", "PE"]
+        assert all(book.origin[t] == "model" for t in toks)
+        notes = " ".join(out.notes)
+        assert "priced by model — Black-76 off NIFTY 50" in notes and "from the fill at" in notes
+        assert engine.summarize(out)["estimated"] == out.estimated
+        # the model moved with the index: the CE rose, the PE fell
+        ce = next(int(p["instrument_token"]) for p in legs if p["symbol"].endswith("CE"))
+        pe = next(int(p["instrument_token"]) for p in legs if p["symbol"].endswith("PE"))
+        early, late = ist_minute(sim, "12:30"), ist_minute(sim, "14:30")
+        assert book.at(ce, late, "close") > book.at(ce, early, "close")
+        assert book.at(pe, late, "close") < book.at(pe, early, "close")
+        assert out.fills, "a 300-point run should move the strategy"
+        rep = await engine.apply(pool, sim.dep_id, w, book, sim.kite, out)
+        assert rep and await engine.live_repair(pool, sim.dep_id, w.day) is not None
+        await assert_book_consistent(pool, sim.dep_id)
     pool_run(go)

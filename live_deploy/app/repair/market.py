@@ -22,6 +22,12 @@ candle can't tell; the engine plays both where it matters and asks.
 A contract with no candle in a minute (no trade) keeps its last close,
 with that older trade time, exactly as a live price would sit still.
 
+A contract Kite has no trade in all day (a far strike on BSE's thin
+SENSEX/BANKEX monthlies) is priced by model instead: Black-76 off its
+index's own candles, at the implied volatility its last known price
+gives (the deployment's own fill, or its last trade in the sessions
+before). The plan says which legs were priced that way.
+
 Nothing here reaches the future: Kite's history is cut at the replay's
 own "now", and today's candles are built from the 1-minute candles up to
 the current tick (the forming candle carries only the ticks played so
@@ -56,6 +62,9 @@ INDEX_KEYS = {
 }
 INDEX_LABELS = {tok: key.split(":", 1)[1] for key, tok in INDEX_KEYS.items()}
 VIX_TOKEN = 264969
+# The index an option's price is modelled on when it never traded.
+INDEX_OF = {"NIFTY": 256265, "BANKNIFTY": 260105, "FINNIFTY": 257801, "MIDCPNIFTY": 288009,
+            "SENSEX": 265, "BANKEX": 274441}
 INTERVAL_MINUTES = {"minute": 1, "3minute": 3, "5minute": 5, "10minute": 10, "15minute": 15,
                     "30minute": 30, "60minute": 60}
 
@@ -107,10 +116,15 @@ class MinuteBook:
     own saved candles (candles_1m) by token, used when Kite has none (an
     expired contract)."""
 
-    def __init__(self, day: date, source: Callable, stored: Optional[dict] = None):
+    def __init__(self, day: date, source: Callable, stored: Optional[dict] = None,
+                 lookup: Optional[Callable] = None):
         self.day = day
         self.source = source
         self.stored = stored or {}
+        self.lookup = lookup                 # tradingsymbol -> its row in Kite's master (or None)
+        self.anchors: dict[int, list] = {}   # token -> [(price, at, what)]: known prices before the day
+        self.models: dict[int, dict] = {}    # token -> how a never-traded contract was priced
+        self.tried: dict[int, str] = {}      # token -> what was asked of Kite, when it had nothing
         self.rows: dict[int, dict[datetime, dict]] = {}
         self.keys: dict[int, list[datetime]] = {}
         self.origin: dict[int, str] = {}
@@ -124,18 +138,48 @@ class MinuteBook:
             self.symbols[token] = symbol
             self.inverse[token] = moves_against(symbol)
 
+    def anchor(self, token: int, price: float, at: datetime, what: str) -> None:
+        """A price the contract is known to have had (a fill), for the model."""
+        if price and price > 0:
+            self.anchors.setdefault(int(token), []).append((float(price), naive_ist(at), what))
+
+    def _fetch(self, token: int, start: datetime, end: datetime) -> list:
+        try:
+            return self.source(token, start, end) or []
+        except Exception as e:   # expired contract, no session, rate limit after retries
+            self.errors.setdefault(token, f"{type(e).__name__}: {e}")
+            return []
+
+    def _master(self, token: int) -> Optional[dict]:
+        sym = self.symbols.get(token)
+        if not (sym and self.lookup):
+            return None
+        try:
+            return self.lookup(sym)
+        except Exception as e:
+            self.errors.setdefault(token, f"{type(e).__name__}: {e}")
+            return None
+
     def load(self, token: int) -> dict[datetime, dict]:
         token = int(token)
         with self._lock:
             if token in self.rows:
                 return self.rows[token]
-            got, origin = [], "none"
-            try:
-                got = self.source(token, datetime.combine(self.day, SESSION_OPEN),
-                                  datetime.combine(self.day, SESSION_CLOSE)) or []
-                origin = "kite" if got else "none"
-            except Exception as e:   # expired contract, no session, rate limit after retries
-                self.errors[token] = f"{type(e).__name__}: {e}"
+            open_, close = datetime.combine(self.day, SESSION_OPEN), datetime.combine(self.day, SESSION_CLOSE)
+            got = self._fetch(token, open_, close)
+            origin = "kite" if got else "none"
+            row = None
+            if not got:
+                # the token the app holds may not be Kite's: ask by the
+                # contract's name, on its own exchange (BFO for SENSEX/BANKEX)
+                row = self._master(token)
+                alt = int(row["instrument_token"]) if row else None
+                if alt and alt != token:
+                    got = self._fetch(alt, open_, close)
+                    origin = "kite" if got else "none"
+                tried = f"token {token}" + (f" and {row.get('exchange', '')}:{row['tradingsymbol']} (token {alt})"
+                                            if alt and alt != token else "")
+                self.tried[token] = tried + (" — not in Kite's instrument list" if self.lookup and self.symbols.get(token) and row is None else "")
             if not got and self.stored.get(token):
                 got, origin = self.stored[token], "stored"
             rows = {}
@@ -146,10 +190,95 @@ class MinuteBook:
                 rows[m] = {"open": float(c["open"]), "high": float(c["high"]), "low": float(c["low"]),
                            "close": float(c["close"]), "volume": int(c.get("volume") or 0),
                            "oi": int(c.get("oi") or 0)}
+            if not rows:
+                modelled = self._model(token, row)
+                if modelled:
+                    rows, origin = modelled, "model"
             self.rows[token] = rows
             self.keys[token] = sorted(rows)
             self.origin[token] = origin
             return rows
+
+    def _model(self, token: int, row: Optional[dict]) -> Optional[dict]:
+        """A never-traded option's day, minute by minute, from its index's
+        candles: Black-76 at the volatility its latest known price gives.
+        A CE's high is at the index's high, a PE's at its low."""
+        from app.candles import parse_contract
+        from app.geek.optionmath import fwd_implied_vol, fwd_price, years_to
+        c = parse_contract(self.symbols.get(token) or "") or {}
+        if row:   # Kite's own word on the contract beats what its name says
+            e = row.get("expiry")
+            c = {"underlying": row.get("name") or c.get("underlying"),
+                 "instrument_type": row.get("instrument_type") or c.get("instrument_type"),
+                 "strike": row.get("strike") or c.get("strike"),
+                 "expiry": (e.date() if isinstance(e, datetime) else e if isinstance(e, date)
+                            else date.fromisoformat(str(e)[:10])) if e else c.get("expiry")}
+        if c.get("instrument_type") not in ("CE", "PE") or not c.get("strike") or not c.get("expiry"):
+            return None
+        idx = INDEX_OF.get(c["underlying"])
+        if idx is None:
+            return None
+        expiry = c["expiry"]
+        if expiry < self.day:
+            return None
+        index = self.load(idx)
+        if not index:
+            return None
+        anchors = list(self.anchors.get(token, []))
+        prior = self._last_trade(token, row)
+        if prior:
+            anchors.append(prior)
+        kind, k = c["instrument_type"], float(c["strike"])
+        for premium, at, what in sorted(anchors, key=lambda a: a[1], reverse=True):
+            level = self._level(idx, at)
+            if level is None:
+                continue
+            vol = fwd_implied_vol(kind, premium, level, k, years_to(expiry, at.replace(tzinfo=IST)))
+            if vol is None or not 0.01 <= vol <= 5:
+                continue
+            out = {}
+            for m, ic in index.items():
+                t = years_to(expiry, (m + timedelta(seconds=30)).replace(tzinfo=IST))
+                px = {f: _tick(fwd_price(kind, ic[f], k, t, vol)) for f in ("open", "high", "low", "close")}
+                hi, lo = (px["high"], px["low"]) if kind == "CE" else (px["low"], px["high"])
+                out[m] = {"open": px["open"], "high": max(hi, lo), "low": min(hi, lo), "close": px["close"],
+                          "volume": 0, "oi": 0}
+            self.models[token] = {"index": INDEX_LABELS.get(idx, str(idx)), "iv": round(vol, 4),
+                                  "anchor": what, "anchor_price": premium, "anchor_at": at, "level": level}
+            return out
+        return None
+
+    def _last_trade(self, token: int, row: Optional[dict]) -> Optional[tuple]:
+        """Its last 1-minute candle in the week before the day."""
+        tok = int(row["instrument_token"]) if row else token
+        start = datetime.combine(self.day - timedelta(days=7), SESSION_OPEN)
+        end = datetime.combine(self.day, time(0)) - timedelta(seconds=1)
+        got = [c for c in self._fetch_quiet(tok, start, end) if minute_of(c["date"]).date() < self.day and c["close"]]
+        if not got:
+            return None
+        last = max(got, key=lambda c: naive_ist(c["date"]))
+        at = minute_of(last["date"]) + timedelta(seconds=59)
+        return float(last["close"]), at, f"its last trade, {at:%d %b %H:%M}"
+
+    def _fetch_quiet(self, token: int, start: datetime, end: datetime) -> list:
+        try:
+            return self.source(token, start, end) or []
+        except Exception:
+            return []
+
+    def _level(self, idx: int, at: datetime) -> Optional[float]:
+        """The index at `at`: from the day's candles, else Kite's."""
+        if at.date() == self.day:
+            rows = self.load(idx)
+            m = minute_of(at)
+            c = rows.get(m)
+            if c is not None:
+                return c["close"]
+            prev = self.last_before(idx, m)
+            return prev[1]["close"] if prev else (rows[self.keys[idx][0]]["open"] if rows else None)
+        got = self._fetch_quiet(idx, at - timedelta(minutes=30), at)
+        got = [c for c in got if naive_ist(c["date"]) <= at]
+        return float(max(got, key=lambda c: naive_ist(c["date"]))["close"]) if got else None
 
     def candle(self, token: int, minute: datetime) -> Optional[dict]:
         return self.load(token).get(minute)
@@ -471,12 +600,36 @@ class KiteGate:
         return self.call(self.kite.historical_data, *args, **kwargs)
 
 
+def _tick(p: float) -> float:
+    return round(max(0.05, round(p / 0.05) * 0.05), 2)
+
+
 def kite_minute_source(gate: KiteGate) -> Callable:
     """A MinuteBook source over Kite: one 1-minute request per instrument
-    for the day, with open interest where Kite has it."""
+    for the day, with open interest where Kite has it. Asked again without
+    it when that fails or comes back empty (Kite has no OI for some)."""
     def fetch(token: int, start: datetime, end: datetime) -> list[dict]:
         try:
-            return gate.historical_data(token, start, end, "minute", oi=True)
+            got = gate.historical_data(token, start, end, "minute", oi=True)
         except Exception:
-            return gate.historical_data(token, start, end, "minute")
+            got = None
+        return got or gate.historical_data(token, start, end, "minute") or []
     return fetch
+
+
+def kite_lookup(gate: KiteGate) -> Callable:
+    """tradingsymbol -> its row in Kite's instrument master, looked up on
+    the contract's own exchange (BFO for SENSEX/BANKEX, else NFO)."""
+    from app.candles import parse_contract
+    from app.options.resolver import options_exchange_for
+    by: dict = {}
+
+    def lookup(symbol: str) -> Optional[dict]:
+        c = parse_contract(symbol)
+        if not c:
+            return None
+        ex = options_exchange_for(c["underlying"])
+        if ex not in by:
+            by[ex] = {r["tradingsymbol"]: {**r, "exchange": r.get("exchange") or ex} for r in gate.instruments(ex)}
+        return by[ex].get(symbol)
+    return lookup

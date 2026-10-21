@@ -175,3 +175,160 @@ def test_kite_gate_retries_a_rate_limit_then_gives_up():
             g2.historical_data(1)
     finally:
         mm._time.sleep = real_sleep
+
+
+# ── legs Kite has nothing for: by name on their own exchange, else by model ──
+
+SENSEX, SX_CE, SX_PE, MASTER_CE = 265, 701, 702, 9901
+SX_EXPIRY = date(2026, 10, 29)
+
+
+class FakeGate:
+    def __init__(self, answers, masters=None):
+        self.answers, self.masters, self.calls = answers, masters or {}, []
+
+    def historical_data(self, token, start, end, interval, **kw):
+        self.calls.append((token, kw.get("oi", False)))
+        got = self.answers.get((token, kw.get("oi", False)))
+        if isinstance(got, Exception):
+            raise got
+        return got
+
+    def instruments(self, exchange=None):
+        self.calls.append(("instruments", exchange))
+        return self.masters.get(exchange, [])
+
+
+def test_an_empty_answer_with_oi_is_asked_again_without_it():
+    rows = [{"date": at("12:00"), "open": 1, "high": 1, "low": 1, "close": 1}]
+    gate = FakeGate({(5, True): [], (5, False): rows, (6, True): Exception("no oi"), (6, False): rows,
+                     (7, True): rows})
+    fetch = M.kite_minute_source(gate)
+    assert fetch(5, at("09:15"), at("15:30")) == rows
+    assert fetch(6, at("09:15"), at("15:30")) == rows
+    assert fetch(7, at("09:15"), at("15:30")) == rows
+    assert gate.calls == [(5, True), (5, False), (6, True), (6, False), (7, True)]
+    assert M.kite_minute_source(FakeGate({}))(8, at("09:15"), at("15:30")) == []
+
+
+def test_kite_lookup_finds_a_contract_on_its_own_exchange():
+    gate = FakeGate({}, {"BFO": [{"instrument_token": MASTER_CE, "tradingsymbol": "SENSEX26N0577700CE"}],
+                         "NFO": [{"instrument_token": 42, "tradingsymbol": "NIFTY26OCT25000CE", "exchange": "NFO"}]})
+    look = M.kite_lookup(gate)
+    assert look("SENSEX26N0577700CE") == {"instrument_token": MASTER_CE, "tradingsymbol": "SENSEX26N0577700CE", "exchange": "BFO"}
+    assert look("NIFTY26OCT25000CE")["instrument_token"] == 42
+    assert look("BANKEX26NOV66300CE") is None and look("SENSEX") is None
+    assert [c for c in gate.calls] == [("instruments", "BFO"), ("instruments", "NFO")]   # each master once
+
+
+def test_a_leg_kite_has_nothing_for_by_its_token_is_fetched_by_its_name():
+    """The app's token for a BFO leg answers nothing; the master's token
+    for the same tradingsymbol has the day."""
+    def source(token, start, end):
+        return [{"date": at("12:00"), "open": 80, "high": 90, "low": 70, "close": 85}] if token == MASTER_CE else []
+    b = M.MinuteBook(DAY, source, lookup=lambda s: {"instrument_token": MASTER_CE, "tradingsymbol": s, "exchange": "BFO"})
+    b.note(SX_CE, "SENSEX26N0577700CE")
+    assert b.at(SX_CE, at("12:00"), "close") == 85 and b.origin[SX_CE] == "kite"
+
+
+def sensex_index(level=80000.0):
+    return {"12:00": (level, level + 200, level - 200, level), "12:01": (level, level + 50, level - 50, level + 20)}
+
+
+def model_book(anchor_source=None, lookup=None, symbol_ce="SENSEX26O2981000CE", symbol_pe="SENSEX26O2979000PE"):
+    idx = sensex_index()
+
+    def source(token, start, end):
+        if token == SENSEX:
+            if start.date() < DAY:   # an earlier day's index, for an anchor then
+                return (anchor_source or {}).get(("idx", start.date()), [])
+            return [{"date": at(k), "open": o, "high": h, "low": l, "close": c} for k, (o, h, l, c) in idx.items()]
+        if start.date() < DAY:
+            return (anchor_source or {}).get((token, "before"), [])
+        return []
+    b = M.MinuteBook(DAY, source, lookup=lookup)
+    b.note(SENSEX, "SENSEX")
+    b.note(SX_CE, symbol_ce)
+    b.note(SX_PE, symbol_pe)
+    return b
+
+
+def test_a_leg_with_no_trade_all_day_is_priced_by_model_from_its_fill():
+    from app.geek.optionmath import fwd_price, years_to
+    b = model_book()
+    t0 = at("11:00")
+    true_vol = 0.14
+    # the fill, made when SENSEX stood where it opens at noon (no candle at 11:00 -> its first open)
+    p_ce = fwd_price("CE", 80000, 81000, years_to(SX_EXPIRY, t0.replace(tzinfo=M.IST)), true_vol)
+    p_pe = fwd_price("PE", 80000, 79000, years_to(SX_EXPIRY, t0.replace(tzinfo=M.IST)), true_vol)
+    b.anchor(SX_CE, p_ce, t0.replace(tzinfo=M.IST), "the fill at 21 Oct 11:00")
+    b.anchor(SX_PE, p_pe, t0, "the fill at 21 Oct 11:00")
+    ce, pe = b.load(SX_CE), b.load(SX_PE)
+    assert b.origin[SX_CE] == b.origin[SX_PE] == "model"
+    assert abs(b.models[SX_CE]["iv"] - true_vol) < 0.002 and b.models[SX_CE]["index"] == "SENSEX"
+    assert b.models[SX_CE]["anchor"] == "the fill at 21 Oct 11:00" and b.models[SX_CE]["level"] == 80000
+    c, p = ce[at("12:00")], pe[at("12:00")]
+    assert c["low"] < c["open"] < c["high"] and p["low"] < p["open"] < p["high"]
+    # opposite extremes: at SENSEX's high the CE is at its high and the PE at its low
+    assert b.at(SX_CE, at("12:00"), "up") == c["high"] and b.at(SX_PE, at("12:00"), "up") == p["low"]
+    noon = fwd_price("CE", 80000, 81000, years_to(SX_EXPIRY, at("12:00").replace(second=30, tzinfo=M.IST)), true_vol)
+    assert 0 < p_ce - noon < 3 and abs(c["open"] - noon) < 0.1    # an hour's decay, nothing else
+    assert all(round(v / 0.05, 6) % 1 == 0 for v in c.values() if isinstance(v, float))
+    assert c["volume"] == 0 and set(ce) == {at("12:00"), at("12:01")}
+
+
+def test_with_no_fill_the_model_starts_from_its_last_trade_in_the_days_before():
+    """A new leg (an adjustment strike) has no fill: its last trade in the
+    week before is where the model starts, with SENSEX at that moment."""
+    from app.geek.optionmath import fwd_price, years_to
+    prev = date(2026, 10, 20)
+    t = datetime.combine(prev, time(15, 10))
+    p = fwd_price("CE", 79500, 81000, years_to(SX_EXPIRY, (t + timedelta(seconds=59)).replace(tzinfo=M.IST)), 0.16)
+    anchors = {(SX_CE, "before"): [{"date": t - timedelta(days=1), "open": 9, "high": 9, "low": 9, "close": 9},
+                                   {"date": t, "open": p, "high": p, "low": p, "close": p}],
+               ("idx", prev): [{"date": t, "open": 79500, "high": 79500, "low": 79500, "close": 79500}]}
+    b = model_book(anchors)
+    assert b.load(SX_CE) and b.origin[SX_CE] == "model"
+    assert abs(b.models[SX_CE]["iv"] - 0.16) < 0.003 and b.models[SX_CE]["anchor"] == "its last trade, 20 Oct 15:10"
+
+
+def test_the_latest_known_price_wins_and_an_unusable_one_is_skipped():
+    b = model_book()
+    b.anchor(SX_CE, 300.0, at("10:00"), "older")
+    b.anchor(SX_CE, 250.0, at("11:30"), "newer")
+    b.anchor(SX_CE, 0, at("11:45"), "zero")                      # ignored on the way in
+    b.load(SX_CE)
+    assert [a[2] for a in b.anchors[SX_CE]] == ["older", "newer"]
+    assert b.models[SX_CE]["anchor"] == "newer"
+    # a PE priced under its intrinsic value has no implied vol: the older usable one is used
+    b2 = model_book(symbol_pe="SENSEX26O2981000PE")
+    b2.anchor(SX_PE, 2000.0, at("10:00"), "usable")
+    b2.anchor(SX_PE, 100.0, at("11:30"), "under intrinsic")    # 1,000 in the money
+    b2.load(SX_PE)
+    assert b2.models[SX_PE]["anchor"] == "usable"
+
+
+def test_no_known_price_or_an_unmodelable_contract_stays_without_prices():
+    b = model_book(lookup=lambda s: None)
+    assert b.load(SX_CE) == {} and b.origin[SX_CE] == "none"
+    assert b.tried[SX_CE] == f"token {SX_CE} — not in Kite's instrument list"
+    # expired by its own symbol, a stock option, a future: never modelled
+    for sym in ("SENSEX26O1481000CE", "RELIANCE26OCT3000CE", "SENSEX26NOVFUT"):
+        bb = model_book(symbol_ce=sym)
+        bb.anchor(SX_CE, 100.0, at("11:00"), "fill")
+        assert bb.load(SX_CE) == {} and bb.origin[SX_CE] == "none", sym
+
+
+def test_the_master_expiry_is_used_over_the_symbols_month_end():
+    """A monthly symbol only names the month; the master has the day."""
+    seen = {}
+    b = model_book(lookup=lambda s: {"instrument_token": SX_CE, "tradingsymbol": s, "exchange": "BFO",
+                                     "expiry": date(2026, 11, 26)}, symbol_ce="SENSEX26NOV81000CE")
+    b.anchor(SX_CE, 900.0, at("11:00"), "fill")
+    b.load(SX_CE)
+    seen["master"] = b.models[SX_CE]["iv"]
+    b2 = model_book(symbol_ce="SENSEX26NOV81000CE")
+    b2.anchor(SX_CE, 900.0, at("11:00"), "fill")
+    b2.load(SX_CE)
+    seen["month_end"] = b2.models[SX_CE]["iv"]
+    assert seen["master"] > seen["month_end"]   # less time to expiry -> more vol for the same price
