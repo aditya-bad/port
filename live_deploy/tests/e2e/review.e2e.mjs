@@ -22,6 +22,10 @@ for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const text = await p.innerText('#main');
     assert.match(text, /Week in review/);
     assert.match(text, /P&L booked/);
+    // India VIX through the week (the e2e server fakes Kite's history)
+    assert.ok(api.vix, 'VIX for the week');
+    assert.match(text, /India VIX/);
+    assert.match(await p.innerText('.rv-vix'), /VIX (rose to|fell to|held at) \d+\.\d{2} from \d+\.\d{2}/);
     // the total is what the day bars add up to
     assert.equal(Math.round(api.days.reduce((a, d) => a + d.pnl, 0)), Math.round(api.totals.pnl));
     // each deployment that booked or traded is listed

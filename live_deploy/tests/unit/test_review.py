@@ -85,3 +85,31 @@ def test_the_saturday_push():
     assert R.push_text(r) == ("Your week, 12–16 Oct", "+₹2,300 after charges · 3 trades · 67% won. Best: BankNifty DTT +₹1,900. 1 health alert to look at.")
     r2 = {**r, "week": "2026-09-28", "week_end": "2026-10-02", "totals": {**r["totals"], "trades": 0}, "health": []}
     assert R.push_text(r2) == ("Your week, 28 Sep–2 Oct", "No trades closed this week.")
+
+
+def _vd(day, o, h, low, c):
+    from datetime import datetime, time
+    from zoneinfo import ZoneInfo
+    return {"t": datetime.combine(day, time(0), ZoneInfo("Asia/Kolkata")), "o": o, "h": h, "l": low, "c": c}
+
+
+def test_vix_through_the_week():
+    from datetime import timedelta
+    prev = [_vd(WEEK - timedelta(days=3), 13.8, 14.2, 13.5, 14.0)]                    # last Friday closed 14.0
+    this = [_vd(WEEK + timedelta(days=i), o, h, low, c) for i, (o, h, low, c) in
+            enumerate([(14.1, 15.0, 14.0, 14.8), (14.8, 17.2, 14.6, 16.9), (16.9, 17.0, 15.8, 16.0)])]
+    v = R.vix_week(prev + this, WEEK)
+    assert (v["open"], v["close"], v["high"], v["low"], v["change"]) == (14.0, 16.0, 17.2, 14.0, 2.0), "from last week's close"
+    assert [d["change"] for d in v["days"]] == [0.8, 2.1, -0.9]
+    assert [h["week"] for h in v["history"]][-2:] == ["2026-10-05", "2026-10-12"] and v["history"][-1]["change"] == 2.0
+    assert R.vix_week(prev, WEEK) is None, "no VIX this week"
+
+
+def test_the_week_by_premium_side():
+    deps = [{"deployment_id": "a", "pnl": 3000, "pnl_net": 2800, "pnl_net_slip": 2700},
+            {"deployment_id": "b", "pnl": -1200, "pnl_net": -1300, "pnl_net_slip": -1350},
+            {"deployment_id": "c", "pnl": 900, "pnl_net": 850, "pnl_net_slip": 800},
+            {"deployment_id": "d", "pnl": 50, "pnl_net": 40, "pnl_net_slip": 40}]          # no options: no side
+    s = R.by_side(deps, {"a": "sold", "b": "sold", "c": "bought"})
+    assert s == {"sold": {"n": 2, "pnl": 1800.0, "pnl_net": 1500.0, "pnl_net_slip": 1350.0},
+                 "bought": {"n": 1, "pnl": 900.0, "pnl_net": 850.0, "pnl_net_slip": 800.0}}

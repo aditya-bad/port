@@ -49,6 +49,28 @@ export function bars(items, { h = 160, w = 600 } = {}) {
   return html`<svg class="rv-bars" viewBox="0 0 ${w} ${h}" role="img" aria-label="P&L bars">${raw(s)}</svg>`;
 }
 
+// VIX through the week, and how premium sellers and buyers did against it.
+export function vixLine(v, sides) {
+  if (!v) return null;
+  const word = Math.abs(v.change) < 0.05 ? 'held at' : v.change > 0 ? 'rose to' : 'fell to';
+  let out = `VIX ${word} ${v.close.toFixed(2)} from ${v.open.toFixed(2)} (${v.change >= 0 ? '+' : '−'}${Math.abs(v.change).toFixed(2)}), touching ${v.high.toFixed(2)}.`;
+  const part = (k, l) => (sides[k] ? `${l} ${inr(p(sides[k]))} (${plural(sides[k].n, 'deployment')})` : null);
+  const bits = [part('sold', 'Premium sellers booked'), part('bought', 'buyers')].filter(Boolean);
+  if (bits.length) out += ` ${bits.join('; ')}.`;
+  return out;
+}
+
+function vixSection(w) {
+  if (!w.vix) return w.vix_error ? html`<p class="small mute">India VIX: ${w.vix_error}</p>` : '';
+  const v = w.vix, rise = v.change > 0;
+  return html`<section class="rv-vix"><h3 class="t-h3">India VIX <span class="mute small">the market’s priced volatility · rising hurts premium sellers</span></h3>
+    <div class="row wrap" style="gap:28px;align-items:baseline">
+      <span class="mono">${v.open.toFixed(2)} → <b class="${rise ? 'neg' : v.change < 0 ? 'pos' : ''}">${v.close.toFixed(2)}</b></span>
+      <span class="small mute">high ${v.high.toFixed(2)} · low ${v.low.toFixed(2)}</span>
+      <span class="small">${vixLine(v, w.by_side)}</span>
+    </div></section>`;
+}
+
 function tradeLine(t) {
   return html`<a class="rv-trade" href="${href(`d/${t.deployment_id}/trades`)}" data-tip="${`${t.name}\nOpened  ${dStamp(t.opened_at)}\nClosed  ${dStamp(t.closed_at)}\nP&L  ${inr(p(t))}${t.exit_reason ? `\nClosed by  ${ruleLabel(t.exit_reason)}` : ''}`}">
     <b>${t.name}</b><span class="mono tiny mute">${dDay(t.closed_at)}</span><span class="grow"></span><span class="mono ${tone(p(t))}">${inr(p(t))}</span></a>`;
@@ -63,10 +85,13 @@ export default {
       if (data === null) { mount(main, html`<div class="page">${loading(6)}</div>`); return; }
       if (data instanceof Error) { mount(main, html`<div class="page">${empty('Couldn’t load the week', data.message)}</div>`); return; }
       const w = data, T = w.totals, wr = T.trades ? Math.round(T.wins / T.trades * 100) : null;
-      const days = w.days.map(d => [dDay(d.day).slice(0, 3), p(d), `${dDay(d.day)}\nP&L  ${inr(p(d))}\nPositions closed  ${d.closes}`]);
+      const vd = Object.fromEntries(((w.vix && w.vix.days) || []).map(x => [x.day, x]));
+      const vh = Object.fromEntries(((w.vix && w.vix.history) || []).map(x => [x.week, x]));
+      const vtxt = x => (x ? `\nVIX  ${x.close.toFixed(2)} (${x.change >= 0 ? '+' : '−'}${Math.abs(x.change).toFixed(2)})` : '');
+      const days = w.days.map(d => [dDay(d.day).slice(0, 3), p(d), `${dDay(d.day)}\nP&L  ${inr(p(d))}\nPositions closed  ${d.closes}${vtxt(vd[d.day])}`]);
       const best = w.days.filter(d => d.closes).sort((a, b) => p(b) - p(a));
       const hist = [...w.history, { week: w.week, ...T }].map(h => [`${fromDay(h.week).getUTCDate()} ${MONTHS[fromDay(h.week).getUTCMonth()]}`, p(h),
-        `Week of ${dDay(h.week)}${h.week === w.week ? ' (this week)' : ''}\nP&L  ${inr(p(h))}\nTrades  ${h.trades}${h.trades ? `\nWon  ${Math.round(h.wins / h.trades * 100)}%` : ''}`]);
+        `Week of ${dDay(h.week)}${h.week === w.week ? ' (this week)' : ''}\nP&L  ${inr(p(h))}\nTrades  ${h.trades}${h.trades ? `\nWon  ${Math.round(h.wins / h.trades * 100)}%` : ''}${vtxt(vh[h.week])}`]);
       mount(main, html`<div class="page-head">
           <div class="col"><h1 class="t-h1">Week in review</h1>
             <span class="mute">${weekName(w.week, w.week_end)}${w.complete ? '' : ' · so far'} · every deployment against its usual week <span class="stamp">${basisNow().stamp}</span></span></div>
@@ -84,6 +109,7 @@ export default {
           ${stat('Best day', best.length ? html`<span class="${tone(p(best[0]))}">${inr(p(best[0]))}</span>` : '—', best.length ? dDay(best[0].day) : '')}
           ${stat('Worst day', best.length ? html`<span class="${tone(p(best[best.length - 1]))}">${inr(p(best[best.length - 1]))}</span>` : '—', best.length ? dDay(best[best.length - 1].day) : '')}
         </div>
+        ${vixSection(w)}
         <div class="rv-two">
           <section><h3 class="t-h3">Day by day</h3>${bars(days)}</section>
           <section><h3 class="t-h3">This week and the 8 before</h3>${bars(hist)}</section>
@@ -99,7 +125,7 @@ export default {
             <div class="tr th" role="row"><span>Deployment</span><span class="num">P&amp;L</span><span class="num">Usual<span class="hide-phone"> week</span></span><span class="num">Trades</span><span class="num hp">Won</span><span class="num hp">Best</span><span class="num hp">Worst</span></div>
             ${w.deployments.map(d => html`<a class="tr" role="row" href="${href(`d/${d.deployment_id}/performance`)}"
                 data-tip="${`${d.name}\nThis week  ${inr(p(d))}\nUsual week  ${d.usual ? inr(p(d.usual)) : '—'}${d.usual ? ` (${d.weeks_known} week${d.weeks_known === 1 ? '' : 's'})` : ''}\nTrades  ${d.trades}${d.usual ? ` (usually ${d.usual.trades})` : ''}${d.open_positions ? `\nOpen now  ${plural(d.open_positions, 'position')}` : ''}`}">
-              <span class="col" style="gap:1px"><b>${d.name}</b><span class="tiny mute">${d.strategy || ''}${d.status === 'stopped' ? ' · stopped' : ''}</span></span>
+              <span class="col" style="gap:1px"><b>${d.name}</b><span class="tiny mute">${d.strategy || ''}${d.side ? ` · ${d.side === 'sold' ? 'sells' : 'buys'} premium` : ''}${d.status === 'stopped' ? ' · stopped' : ''}</span></span>
               <span class="num mono ${tone(p(d))}">${inr(p(d))}</span>
               <span class="num mono mute">${d.usual ? inr(p(d.usual)) : '—'}</span>
               <span class="num mono">${d.trades}</span>

@@ -128,6 +128,63 @@ def unusual_rules(counts: list[dict], week: date) -> list[dict]:
     return sorted(out, key=lambda x: -(x["n"] / x["usual"] if x["usual"] else 99))
 
 
+def vix_week(vday: list[dict], week: date) -> Optional[dict]:
+    """Pure: VIX through the week and the 8 before, from day candles
+    [{t, o, h, l, c}]: {open, close, high, low, change, days, history}."""
+    by: dict = defaultdict(list)
+    for r in sorted(vday, key=lambda x: x["t"]):
+        by[monday(r["t"].astimezone(IST).date())].append(r)
+    this = by.get(week)
+    if not this:
+        return None
+    prev_close = None
+    weeks = [week - timedelta(days=7 * i) for i in range(HISTORY_WEEKS, -1, -1)]
+    hist = []
+    for w in weeks:
+        rs = by.get(w)
+        if rs:
+            hist.append({"week": w.isoformat(), "open": rs[0]["o"], "close": rs[-1]["c"], "high": max(r["h"] for r in rs),
+                         "change": round(rs[-1]["c"] - (prev_close if prev_close is not None else rs[0]["o"]), 2)})
+            prev_close = rs[-1]["c"]
+    before = [r for w2, rs in by.items() if w2 < week for r in rs]
+    start = before[-1]["c"] if before else this[0]["o"]   # last week's close, else this week's open
+    days, last = [], start
+    for r in this:
+        days.append({"day": r["t"].astimezone(IST).date().isoformat(), "close": r["c"], "change": round(r["c"] - last, 2)})
+        last = r["c"]
+    return {"open": round(start, 2), "close": this[-1]["c"], "high": max(r["h"] for r in this), "low": min(r["l"] for r in this),
+            "change": round(this[-1]["c"] - start, 2), "days": days, "history": hist}
+
+
+def by_side(deps: list[dict], sides: dict) -> dict:
+    """Pure: the week's P&L added up by whether each deployment sells or
+    buys premium (net, over its recent opening fills)."""
+    out = {}
+    for d in deps:
+        k = sides.get(d["deployment_id"])
+        if k is None:
+            continue
+        g = out.setdefault(k, {"n": 0, **{b: 0.0 for b in BASES}})
+        g["n"] += 1
+        for b in BASES:
+            g[b] = round(g[b] + d[b], 2)
+    return out
+
+
+async def premium_sides(pool: asyncpg.Pool, start: datetime) -> dict:
+    """{deployment id: 'sold' | 'bought'}: net premium of the option legs
+    each opened since `start` — what it took in against what it paid."""
+    rows = await pool.fetch(
+        """
+        SELECT l.deployment_id, SUM(CASE WHEN p.side = 'short' THEN 1 ELSE -1 END * l.price * l.qty)::float8 AS net
+        FROM position_lots l JOIN positions p ON p.id = l.position_id
+        WHERE l.executed_at >= $1 AND (p.symbol LIKE '%CE' OR p.symbol LIKE '%PE')
+          AND ((p.side = 'short' AND l.action = 'sell') OR (p.side = 'long' AND l.action = 'buy'))
+        GROUP BY 1
+        """, start)
+    return {str(r["deployment_id"]): "sold" if r["net"] > 0 else "bought" for r in rows if r["net"]}
+
+
 async def _rule_counts(pool: asyncpg.Pool, start: datetime, end: datetime) -> list[dict]:
     rows = await pool.fetch(
         """
@@ -168,6 +225,19 @@ async def build(pool: asyncpg.Pool, week: Optional[date] = None, now: Optional[d
     for r in await pool.fetch("SELECT deployment_id, COUNT(*) AS n FROM positions WHERE status = 'open' GROUP BY 1"):
         open_by[str(r["deployment_id"])] = r["n"]
     first_trade = min((_week_of(t["closed_at"]) for t in trades), default=week)
+    # India VIX through the week (app/vix.py: from Kite, in memory)
+    vix, vix_error = None, None
+    from .. import vix as vixmod
+    from ..options import NoKiteSession
+    svc = vixmod.state.get("service")
+    if svc is not None:
+        try:
+            vix = vix_week(await svc.vix(lo - timedelta(days=7), min(hi, today + timedelta(days=1)), "day", now), week)
+        except NoKiteSession:
+            vix_error = "Kite isn't logged in, so VIX can't be fetched."
+        except Exception as e:   # the review never fails for want of VIX
+            vix_error = f"VIX unavailable ({e})"
+    sides = await premium_sides(pool, _at(lo))
 
     def name(dep_id):
         d = deps.get(dep_id)
@@ -177,6 +247,7 @@ async def build(pool: asyncpg.Pool, week: Optional[date] = None, now: Optional[d
     for dep_id, x in s["deployments"].items():
         d = deps.get(dep_id) or {}
         rows.append({"deployment_id": dep_id, "name": name(dep_id), "strategy": d.get("strategy_name"), "status": d.get("status"),
+                     "side": sides.get(dep_id),
                      "tags": list(d.get("tags") or []), "open_positions": open_by.get(dep_id, 0), **x})
     for t in s["best"] + s["worst"]:
         t["name"] = name(t["deployment_id"])
@@ -190,6 +261,7 @@ async def build(pool: asyncpg.Pool, week: Optional[date] = None, now: Optional[d
         "totals": s["totals"], "usual": s["usual"], "history": s["history"], "days": days,
         "deployments": sorted(rows, key=lambda r: -abs(r["pnl"])), "best": s["best"], "worst": s["worst"],
         "rules": rules,
+        "vix": vix, "vix_error": vix_error, "by_side": by_side(rows, sides),
         "health": [f for fs in (health or {}).values() for f in fs],
         "notes": [{"id": str(n["id"]), "day": n["day"].isoformat(), "body": n["body"], "tags": list(n["tags"] or []),
                    "deployment_name": n["deployment_name"], "standalone": bool(n["standalone"])} for n in notes],

@@ -29,3 +29,12 @@ test('a rule’s key in words', () => {
   assert.equal(ruleLabel('leg_stop'), 'Leg stop');
   assert.equal(ruleLabel(''), 'Trade');
 });
+
+test('VIX through the week, and premium sellers and buyers against it', async () => {
+  const { vixLine } = await import('../../static/linck/js/pages/review.js');
+  const v = { open: 14, close: 16, high: 17.2, low: 14, change: 2 };
+  const sides = { sold: { n: 2, pnl: -1800, pnl_net: -2000, pnl_net_slip: -2100 }, bought: { n: 1, pnl: 900, pnl_net: 850, pnl_net_slip: 800 } };
+  assert.equal(vixLine(v, sides), 'VIX rose to 16.00 from 14.00 (+2.00), touching 17.20. Premium sellers booked −₹1,800 (2 deployments); buyers +₹900 (1 deployment).');
+  assert.match(vixLine({ ...v, close: 13, change: -1 }, {}), /^VIX fell to 13\.00 from 14\.00 \(−1\.00\), touching 17\.20\.$/);
+  assert.equal(vixLine(null, {}), null);
+});

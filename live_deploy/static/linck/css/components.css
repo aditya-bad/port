@@ -254,6 +254,7 @@ select.input { padding-right: 6px; }
 .jr-tagrow.on, .jr-tagrow:hover { border-color: var(--ink); }
 
 /* Week in review (pages/review.js) */
+.rv-vix { padding: 14px 16px; border: 1px solid var(--line); margin-bottom: 28px; }
 .rv-stats { grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 8px 0 28px; }
 .rv-two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 32px; margin-bottom: 28px; }
 .page section { margin-bottom: 28px; } .page section > h3 { margin: 0 0 12px; }
