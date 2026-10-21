@@ -105,8 +105,8 @@ def defaults(strategy_name: str) -> dict:
 # ── the book: fills grouped into actions ────────────────────────────────
 
 async def book(ctx: Ctx) -> dict:
-    if "book" in ctx._cache:
-        return ctx._cache["book"]
+    if "common_book" in ctx._cache:
+        return ctx._cache["common_book"]
     dep_id = ctx.dep["id"]
     positions = [dict(r) for r in await queries.list_positions(ctx.pool, dep_id)]
     lots = [dict(r) for r in await queries.list_deployment_lots(ctx.pool, dep_id)]
@@ -122,7 +122,7 @@ async def book(ctx: Ctx) -> dict:
             sign = -1 if lot["position_side"] == "short" else 1
             lot["pnl"] = round((float(lot["price"]) - float(pos["avg_entry_price"])) * float(lot["qty"]) * sign, 2)
     out = {"positions": positions, "lots": lots, "actions": actions(lots)}
-    ctx._cache["book"] = out
+    ctx._cache["common_book"] = out
     return out
 
 
@@ -308,4 +308,210 @@ async def settings(ctx: Ctx) -> dict:
             "rules": [{"rule": r, "label": label(r), "n": n} for r, n in sorted(by_rule.items(), key=lambda x: -x[1])]}
 
 
-VIEWS = {"engine": engine, "decisions": decisions, "settings": settings}
+# ── conditions: which market conditions paid ────────────────────────────
+#
+# Every trade with the market it was opened into (the "context" each fill
+# carries since the runner started stamping it: gap, range and move so far
+# today, strike from spot, days to expiry; and for signal strategies the
+# signal candle and ATR), how far it went against and for it on the way
+# (MAE / MFE, from the 5-minute position marks), and its result; then the
+# results added up by each condition.
+
+_WD = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+_HOURS = ["9:15–10"] + [f"{h}–{h + 1}" for h in range(10, 15)] + ["15–15:30"]
+_CANDLE_SPAN, _CANDLE_LEGS = timedelta(days=3), 300
+
+
+def trades_of(b: dict) -> list[dict]:
+    """Actions -> trades, oldest first. A trade starts at an entry made
+    while flat, or at a switch's new legs; entries made while it still has
+    an open leg (adjustments, rolls, hedges) join it."""
+    pos = {p["id"]: p for p in b["positions"]}
+    out: list[dict] = []
+    for a in b["actions"]:
+        opens = [f for f in a["fills"] if f["opening"]]
+        if not opens:
+            continue
+        cur = out[-1] if out else None
+        live = cur is not None and a["kind"] == "entry" and any(
+            pos.get(i) is not None and (pos[i]["closed_at"] is None or pos[i]["closed_at"] > a["t"]) for i in cur["ids"])
+        if live:
+            cur["actions"].append(a)
+            for f in opens:
+                if f["position_id"] not in cur["ids"]:
+                    cur["ids"].append(f["position_id"])
+                cur["qty"][f["position_id"]] = cur["qty"].get(f["position_id"], 0.0) + float(f["qty"])
+            continue
+        out.append({"t": a["t"], "trigger": a["trigger"], "actions": [a], "first": opens[0],
+                    "trigger_values": a["trigger_values"], "ids": list(dict.fromkeys(f["position_id"] for f in opens)),
+                    "qty": {}})
+        for f in opens:
+            out[-1]["qty"][f["position_id"]] = out[-1]["qty"].get(f["position_id"], 0.0) + float(f["qty"])
+    return out
+
+
+def excursion(legs: list[dict], marks: dict, now: datetime) -> tuple[Optional[float], Optional[float], list]:
+    """(MAE, MFE, path) of one trade: its P&L at every mark of any of its
+    legs, each leg at its last mark (or its booked P&L once closed). MAE
+    is the worst point (≤ 0), MFE the best (≥ 0); None without marks."""
+    events: list[tuple] = []
+    for lg in legs:
+        for t, px in marks.get(lg["id"], []):
+            if t >= lg["opened_at"] and (lg["closed_at"] is None or t <= lg["closed_at"]):
+                events.append((t, lg["id"], px))
+        if lg["closed_at"] is not None:
+            events.append((lg["closed_at"], lg["id"], None))
+    if not any(px is not None for _, _, px in events):
+        return None, None, []
+    events.sort(key=lambda e: e[0])
+    now_pnl: dict = {}
+    path = []
+    by = {lg["id"]: lg for lg in legs}
+    for n, (t, i, px) in enumerate(events):
+        lg = by[i]
+        if px is None:
+            now_pnl[i] = lg["realized"]
+        else:
+            now_pnl[i] = (px - lg["entry"]) * lg["qty"] * lg["sign"]
+        if n + 1 == len(events) or events[n + 1][0] != t:   # one point per moment, every leg at it updated
+            path.append((t, round(sum(now_pnl.values()), 2)))
+    vals = [v for _, v in path]
+    return round(min(0.0, min(vals)), 2), round(max(0.0, max(vals)), 2), path
+
+
+def _bucket(v, edges: list, labels: list) -> Optional[str]:
+    if v is None:
+        return None
+    for e, lab in zip(edges, labels):
+        if v < e:
+            return lab
+    return labels[-1]
+
+
+def _hour(t: datetime) -> str:
+    h = t.hour
+    if h < 10:
+        return "9:15–10"
+    if h >= 15:
+        return "15–15:30"
+    return f"{h}–{h + 1}"
+
+
+DIMENSIONS = [
+    ("hour", "Time of entry", None),
+    ("weekday", "Day of the week", None),
+    ("dte", "Days to expiry", (["Expiry day", "1 day", "2–3 days", "4–7 days", "8+ days"], [0.5, 1.5, 3.5, 7.5])),
+    ("gap", "Today’s gap", (["Gap down > 0.5%", "Down 0–0.5%", "Up 0–0.5%", "Gap up > 0.5%"], [-0.5, 0, 0.5])),
+    ("range", "Range so far, % of the index", (["< 0.3%", "0.3–0.6%", "0.6–1%", "> 1%"], [0.3, 0.6, 1.0])),
+    ("move", "Index since the open", (["Down > 0.5%", "Down 0–0.5%", "Up 0–0.5%", "Up > 0.5%"], [-0.5, 0, 0.5])),
+    ("held", "Held for", (["< 30 min", "30 min–2 h", "2 h–1 day", "1–5 days", "> 5 days"], [30, 120, 1440, 7200])),
+    ("legs", "Options sold or bought", None),
+]
+
+
+def _dims(row: dict) -> dict:
+    c = row["context"]
+    t = _ist(datetime.fromisoformat(row["t"]))
+    out = {"hour": _hour(t), "weekday": _WD[t.weekday()], "legs": row["opt"]}
+    for key, _, spec in DIMENSIONS:
+        if spec is None:
+            continue
+        labels, edges = spec
+        v = {"dte": c.get("dte"), "gap": c.get("gap_pct"), "move": c.get("from_open_pct"), "held": row["held_min"],
+             "range": round(c["range_pts"] / c["spot"] * 100, 3) if c.get("range_pts") is not None and c.get("spot") else None}[key]
+        out[key] = _bucket(v, edges + [float("inf")], labels)
+    return out
+
+
+async def conditions(ctx: Ctx, limit: int = 300) -> dict:
+    now = ctx.now or datetime.now(IST)
+    b = await book(ctx)
+    pos = {p["id"]: p for p in b["positions"]}
+    trades = trades_of(b)[-limit:]
+    ids = [i for tr in trades for i in tr["ids"]]
+    marks: dict = {}
+    if ids:
+        first = min(pos[i]["opened_at"] for i in ids if i in pos)
+        for r in await queries.list_marks_for_positions(ctx.pool, ids, first, now):
+            marks.setdefault(r["position_id"], []).append((r["marked_at"], float(r["price"])))
+        # a leg without marks (opened and closed between two snapshots, or
+        # from before marks were recorded): its contract's stored 1-minute
+        # closes, for the newest few hundred short-lived legs
+        bare = [pos[i] for i in reversed(ids) if i in pos and i not in marks]
+        for p in [p for p in bare if (p["closed_at"] or now) - p["opened_at"] <= _CANDLE_SPAN][:_CANDLE_LEGS]:
+            rows = await queries.list_candles(ctx.pool, p["instrument_token"], p["opened_at"], p["closed_at"] or now)
+            if rows:
+                marks[p["id"]] = [(r["minute"] + timedelta(minutes=1), float(r["c"])) for r in rows]
+    rows = []
+    for tr in trades:
+        legs = []
+        for i in tr["ids"]:
+            p = pos.get(i)
+            if p is None:
+                continue
+            legs.append({"id": i, "symbol": p["symbol"], "opened_at": p["opened_at"], "closed_at": p["closed_at"],
+                         "entry": float(p["avg_entry_price"]), "qty": tr["qty"].get(i) or float(p["qty"]),
+                         "sign": -1 if p["side"] == "short" else 1, "realized": float(p["realized_pnl"] or 0)})
+        if not legs:
+            continue
+        is_open = any(lg["closed_at"] is None for lg in legs)
+        pnl = None if is_open else round(sum(lg["realized"] for lg in legs), 2)
+        mae, mfe, _ = excursion(legs, marks, now)
+        has_path = mae is not None
+        if pnl is not None:   # the result itself is a point on the path
+            mae, mfe = (min(mae, pnl, 0.0), max(mfe, pnl, 0.0)) if mae is not None else (min(pnl, 0.0), max(pnl, 0.0))
+        end = None if is_open else max(lg["closed_at"] for lg in legs)
+        m = tr["first"]["metadata"]
+        c = dict(m.get("context") or {})
+        tv = tr["trigger_values"] or {}
+        if c.get("dte") is None and m.get("expiry"):
+            try:
+                c["dte"] = (datetime.fromisoformat(str(m["expiry"])[:10]).date() - _ist(tr["t"]).date()).days
+            except ValueError:
+                pass
+        candle = tv.get("candle") if isinstance(tv.get("candle"), dict) else None
+        opts = {_opt(lg["symbol"]) for lg in legs} - {None}
+        row = {"t": _iso(tr["t"]), "end": _iso(end), "trigger": tr["trigger"], "label": label(tr["trigger"]),
+               "symbols": [lg["symbol"] for lg in legs], "n_legs": len(legs), "adds": len(tr["actions"]) - 1,
+               "open": is_open, "pnl": pnl, "mae": mae, "mfe": mfe, "path": has_path,
+               "held_min": round((end - tr["t"]).total_seconds() / 60, 1) if end else None,
+               "opt": "Calls and puts" if opts == {"CE", "PE"} else "Calls" if opts == {"CE"} else "Puts" if opts == {"PE"} else "Other",
+               "context": c, "has_context": bool(m.get("context")),
+               "candle_pts": round(candle["high"] - candle["low"], 2) if candle and candle.get("high") is not None and candle.get("low") is not None else None,
+               "atr": _f(tv.get("atr")), "band_width": _f(tv.get("band_width"))}
+        row["dims"] = _dims(row)
+        rows.append(row)
+    closed = [r for r in rows if r["pnl"] is not None]
+    groups = []
+    for key, name, spec in DIMENSIONS:
+        order = spec[0] if spec else {"weekday": _WD, "hour": _HOURS}.get(key)
+        agg: dict = {}
+        for r in closed:
+            k = r["dims"].get(key)
+            if k is None:
+                continue
+            g = agg.setdefault(k, {"label": k, "n": 0, "wins": 0, "pnl": 0.0})
+            g["n"] += 1
+            g["wins"] += 1 if r["pnl"] > 0 else 0
+            g["pnl"] = round(g["pnl"] + r["pnl"], 2)
+        if not agg:
+            continue
+        for g in agg.values():
+            g["avg"] = round(g["pnl"] / g["n"], 2)
+            g["win_rate"] = round(g["wins"] / g["n"] * 100, 1)
+        keys = sorted(agg, key=lambda k: order.index(k) if order and k in order else k)
+        groups.append({"key": key, "label": name, "buckets": [agg[k] for k in keys],
+                       "covered": sum(g["n"] for g in agg.values())})
+    with_path = [r for r in closed if r["path"]]
+    winners = [r for r in with_path if r["pnl"] > 0]
+    avg = lambda xs: round(sum(xs) / len(xs), 2) if xs else None  # noqa: E731
+    summary = {"trades": len(rows), "closed": len(closed), "open": len(rows) - len(closed),
+               "wins": sum(1 for r in closed if r["pnl"] > 0), "with_context": sum(1 for r in rows if r["has_context"]),
+               "avg_mae": avg([r["mae"] for r in with_path]), "avg_mfe": avg([r["mfe"] for r in with_path]),
+               "gave_back": avg([r["mfe"] - r["pnl"] for r in winners]),
+               "losers_were_up": sum(1 for r in with_path if r["pnl"] < 0 and r["mfe"] > 0), "with_path": len(with_path)}
+    rows.reverse()
+    return {"rows": rows, "groups": groups, "summary": summary}
+
+
+VIEWS = {"engine": engine, "decisions": decisions, "settings": settings, "conditions": conditions}

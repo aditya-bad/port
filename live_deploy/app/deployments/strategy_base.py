@@ -203,6 +203,24 @@ class StrategyBase(ABC):
     # every candle: the same (rule, outcome, once) is noted at most once
     # per IST day.
 
+    @staticmethod
+    def signal_context(candle: dict, st=None) -> dict:
+        """The signal candle and, if there is one, the SuperTrend's ATR and
+        band width at the moment of an entry: added to the entry's
+        trigger_values for Geek mode (did a bigger candle or a calmer
+        market pay?). Logging only; never raises."""
+        out: dict = {}
+        try:
+            out["candle"] = {k: round(float(candle[k]), 2) for k in ("open", "high", "low", "close") if candle.get(k) is not None}
+            if st is not None:
+                if getattr(st, "atr", None) is not None:
+                    out["atr"] = round(float(st.atr), 2)
+                if getattr(st, "final_upper", None) is not None and getattr(st, "final_lower", None) is not None:
+                    out["band_width"] = round(abs(float(st.final_upper) - float(st.final_lower)), 2)
+        except Exception:
+            pass
+        return out
+
     async def decide(self, runner: "Any", ts: "Any", rule: str, outcome: str, summary: str,
                      data: Optional[dict] = None, once: "Any" = None) -> None:
         record = getattr(runner, "record_decision", None)

@@ -122,6 +122,11 @@ class DeploymentRunner:
         self._square_off_at: Optional[time] = _parse_hhmm(self.config.get("force_exit_time"))
         self._last_sweep_try: Optional[datetime] = None
 
+        # The underlying's session so far (open, high, low, last) and the
+        # previous session's last price, per signal token: the market
+        # context stamped on every fill (see market_context). Logging only.
+        self._session: dict[int, dict] = {}
+
     @property
     def tokens(self) -> set[int]:
         return set(self.config.get("instrument_tokens", []))
@@ -539,6 +544,10 @@ class DeploymentRunner:
         """One live tick: the intraday safety net, the strategy, then a
         state checkpoint. Nothing here may raise into the tick loop."""
         try:
+            self._note_session(t)
+        except Exception:
+            logger.exception("%s: noting the session failed — continuing", self.deployment_name)
+        try:
             await self._intraday_guard(t)
         except Exception:
             logger.exception("%s: intraday guard raised — continuing", self.deployment_name)
@@ -698,6 +707,54 @@ class DeploymentRunner:
 
     # ── Trade execution — the only DB writes a strategy triggers ──────
 
+    # ── Market context on every fill (Geek mode's Conditions view) ──────
+    #
+    # What the market looked like when a fill happened: the underlying's
+    # gap, its range and move so far today, the time of day, and for an
+    # option the strike's distance from spot and the days to expiry.
+    # Added to the fill's metadata under "context" (never replacing one a
+    # strategy set); logging only: computing it can never fail or change
+    # a fill.
+
+    def _note_session(self, t: dict) -> None:
+        tok, px, ts = t.get("instrument_token"), t.get("last_price"), t.get("exchange_timestamp")
+        if tok not in self.tokens or px is None or ts is None:
+            return
+        day = (ts.astimezone(self._IST) if ts.tzinfo else ts).date()
+        s = self._session.get(tok)
+        if s is None or s["day"] != day:
+            prev = s["last"] if s is not None else None
+            s = self._session[tok] = {"day": day, "open": px, "high": px, "low": px, "last": px, "prev_close": prev}
+        s["high"], s["low"], s["last"] = max(s["high"], px), min(s["low"], px), px
+
+    def market_context(self, at: datetime, metadata: Optional[dict] = None) -> dict:
+        at = at.astimezone(self._IST) if at.tzinfo else at
+        toks = self.config.get("instrument_tokens") or []
+        tok = toks[0] if toks else None
+        s = self._session.get(tok) if tok is not None else None
+        if s is not None and s["day"] != at.date():
+            s = None
+        spot = s["last"] if s else self.dispatcher.last_prices.get(tok) if tok is not None else None
+        r2 = lambda v: None if v is None else round(float(v), 2)  # noqa: E731
+        ctx = {"spot": r2(spot), "minute": at.hour * 60 + at.minute - (9 * 60 + 15), "weekday": at.weekday()}
+        if s:
+            ctx.update({"day_open": r2(s["open"]), "day_high": r2(s["high"]), "day_low": r2(s["low"]),
+                        "range_pts": r2(s["high"] - s["low"]),
+                        "from_open_pct": r2((s["last"] - s["open"]) / s["open"] * 100) if s["open"] else None})
+            if s["prev_close"]:
+                ctx["prev_close"] = r2(s["prev_close"])
+                ctx["gap_pct"] = r2((s["open"] - s["prev_close"]) / s["prev_close"] * 100)
+        m = metadata or {}
+        strike = m.get("strike") or (m.get("target_basis") or {}).get("selected_strike")
+        if strike is not None and spot:
+            ctx["strike_from_spot"] = r2(float(strike) - float(spot))
+        if m.get("expiry"):
+            try:
+                ctx["dte"] = (datetime.fromisoformat(str(m["expiry"])[:10]).date() - at.date()).days
+            except ValueError:
+                pass
+        return ctx
+
     async def buy(
         self, symbol: str, instrument_token: int, qty: float, price: float,
         executed_at: Optional[datetime] = None, reason: Optional[str] = None,
@@ -740,6 +797,11 @@ class DeploymentRunner:
             # tz (verified: on an IST-tz machine, naive 10:00:09 ->
             # 04:30:09 UTC -> redisplays as the true 10:00:09 IST).
             executed_at = executed_at.astimezone(timezone.utc)
+        if isinstance(metadata, dict) and "context" not in metadata:
+            try:
+                metadata = {**metadata, "context": self.market_context(executed_at, metadata)}
+            except Exception:
+                logger.exception("%s: market context failed — the fill goes ahead without it", self.deployment_name)
         book_price = await resolve_book_price(self.dispatcher, instrument_token, action, qty)
         result = await queries.record_fill(
             self.pool, self.deployment_id, symbol, instrument_token, action,

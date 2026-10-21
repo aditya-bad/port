@@ -28,7 +28,7 @@ test('every deployment offers Geek mode; some strategies have views of their own
 test('the view menu: shared views for all, the strangle adds its own between Live and Settings', async () => {
   const { viewsFor } = await import('../../static/linck/js/pages/geek/views.js');
   const keys = s => viewsFor(s).map(v => v[0]);
-  const shared = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'settings'];
+  const shared = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'conditions', 'settings'];
   assert.deepEqual(keys('trend_credit_spread'), shared);
   assert.deepEqual(keys('no_such_strategy'), shared);
   const st = keys('strangle_monthly_v2');
@@ -87,7 +87,7 @@ test('spotlight filters pick which past cycles are drawn', async () => {
 test('SuperTrend options: its own views, with the one-trade page under Signals', async () => {
   const { viewsFor, hasView } = await import('../../static/linck/js/pages/geek/views.js');
   const vs = viewsFor('pivot_supertrend_options');
-  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'signals', 'trade', 'exits', 'days', 'settings']);
+  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'signals', 'trade', 'exits', 'days', 'conditions', 'settings']);
   assert.equal(vs.find(v => v[0] === 'trade')[6], 'signals', 'hidden from the menu, Signals stays lit');
   assert.ok(hasView('pivot_supertrend_options', 'signals') && !hasView('pivot_supertrend_options', 'cycles'));
   assert.ok(!hasView('pivot_supertrend_options_inverse', 'signals'), 'the inverse one has the shared views only');
@@ -126,11 +126,11 @@ test('SuperTrend ladder and formats', async () => {
 test('DTT straddle: its own views, the one-straddle page under Straddles', async () => {
   const { viewsFor } = await import('../../static/linck/js/pages/geek/views.js');
   const vs = viewsFor('intraday_dtt_simple');
-  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'straddles', 'straddle', 'timing', 'settings']);
+  assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'straddles', 'straddle', 'timing', 'conditions', 'settings']);
   assert.equal(vs.find(v => v[0] === 'straddle')[6], 'straddles');
   for (const st of ['intraday_dtt_adjusted', 'intraday_dtt_advanced']) {
     const vs = viewsFor(st);
-    assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'sessions', 'session', 'moves', 'settings'], st);
+    assert.deepEqual(vs.map(v => v[0]), ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'sessions', 'session', 'moves', 'conditions', 'settings'], st);
     assert.equal(vs.find(v => v[0] === 'session')[6], 'sessions', 'one day sits under Sessions');
   }
 });
@@ -177,4 +177,28 @@ test('chart hover: the nearest point to the pointer, every series in the tip', a
   assert.equal(scrubber(100, 100, { series: [{ name: 'x', color: 'c', pts: [] }] })(0.5), null);
   assert.equal(tipAt('A "b" <c>\nX  1'), ' data-tip="A &quot;b&quot; &lt;c&gt;\nX  1"', 'escaped for an SVG string');
   assert.match(hit(1, 2, 0, 4, 'tip'), /class="hit" x="1" y="2" width="1" height="4" fill="transparent" data-tip="tip"/, 'never zero-wide');
+});
+
+test('conditions: every dot of the excursion charts carries its trade, and nothing is drawn without a result', async () => {
+  const { excursionChart, conditionTip, bucketBars } = await import('../../static/linck/js/pages/geek/conditions.js');
+  const row = (pnl, mae, mfe, extra = {}) => ({ t: '2026-10-19T10:20:00+05:30', label: 'Trend flip up', pnl, mae, mfe, held_min: 60, symbols: ['NIFTY26OCT24900PE'],
+    context: { gap_pct: -0.8, from_open_pct: 0.44, dte: 1 }, atr: 41.5, ...extra });
+  const rows = [row(750, -2250, 2250), row(-400, -900, 300), row(null, -100, 50)];
+  const mae = String(excursionChart(rows, 'mae'));
+  assert.equal((mae.match(/<circle/g) || []).length, 2, 'open trades have no result to plot');
+  assert.equal((mae.match(/data-tip=/g) || []).length, 2, 'every dot has a tip');
+  assert.match(String(excursionChart(rows, 'mfe', { diagonal: true })), /stroke-dasharray/, 'the ended-at-its-best line');
+  assert.equal(excursionChart([row(null, null, null)], 'mae'), '');
+  const tip = conditionTip(rows[0]);
+  for (const s of ['Trend flip up', 'Result  +₹750', 'Worst on the way (MAE)  −₹2,250', 'Best on the way (MFE)  +₹2,250', 'Held  1h 00m', 'Gap  -0.80%', 'Index since the open  +0.44%', 'Days to expiry  1', 'ATR  41.5', 'NIFTY26OCT24900PE']) {
+    assert.ok(tip.includes(s), `${s} in:\n${tip}`);
+  }
+  assert.ok(conditionTip(row(null, null, null)).includes('Result  open'));
+  const bare = row(-750, -750, 0, { path: false });
+  assert.ok(conditionTip(bare).includes('No prices recorded on the way') && !conditionTip(bare).includes('MAE'));
+  assert.equal(excursionChart([bare], 'mae'), '', 'a trade without prices on the way sits out the MAE chart');
+  const bars = String(bucketBars({ label: 'Today’s gap', buckets: [{ label: 'Gap down > 0.5%', n: 2, wins: 1, win_rate: 50, pnl: 300, avg: 150 }, { label: 'Up 0–0.5%', n: 1, wins: 0, win_rate: 0, pnl: -600, avg: -600 }] }));
+  assert.equal((bars.match(/data-tip=/g) || []).length, 2);
+  assert.match(bars, /width:50\.0%/, 'the biggest average fills its half');
+  assert.match(bars, /width:12\.5%/);
 });

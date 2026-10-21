@@ -730,6 +730,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
     # ── Execution — sell an option leg to open, buy it back to close ───
 
     async def _enter(self, runner, candle: dict, side: str, trigger_values: dict) -> None:
+        trigger_values = {**trigger_values, **self.signal_context(candle, getattr(self, 'st', None))}   # logging only
         option_type = "PE" if side == "long" else "CE"   # bullish -> sell puts, bearish -> sell calls
         try:
             # Resolve the expiry FIRST, on its own, rather than handing

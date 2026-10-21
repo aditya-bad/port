@@ -8,12 +8,12 @@ import assert from 'node:assert/strict';
 import { BASE, IDS, browser, context } from './helper.mjs';
 
 const KINDS = {
-  'Nifty Monthly Strangle': ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'map', 'cycles', 'cycle', 'adjustments', 'premium', 'entries', 'settings'],
-  'Pivot Supertrend Options': ['overview', 'engine', 'decisions', 'signals', 'trade', 'exits', 'days', 'settings'],
-  'BankNifty DTT Plain': ['overview', 'engine', 'decisions', 'straddles', 'straddle', 'timing', 'settings'],
-  'Sensex Credit Spread': ['overview', 'engine', 'decisions', 'settings'],
-  'BankNifty DTT Adjusted': ['engine', 'sessions', 'session', 'moves'],
-  'BankNifty DTT Advanced': ['engine', 'sessions', 'session', 'moves'],
+  'Nifty Monthly Strangle': ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'map', 'cycles', 'cycle', 'adjustments', 'premium', 'entries', 'conditions', 'settings'],
+  'Pivot Supertrend Options': ['overview', 'engine', 'decisions', 'signals', 'trade', 'exits', 'days', 'conditions', 'settings'],
+  'BankNifty DTT Plain': ['overview', 'engine', 'decisions', 'straddles', 'straddle', 'timing', 'conditions', 'settings'],
+  'Sensex Credit Spread': ['overview', 'engine', 'decisions', 'conditions', 'settings'],
+  'BankNifty DTT Adjusted': ['engine', 'sessions', 'session', 'moves', 'conditions'],
+  'BankNifty DTT Advanced': ['engine', 'sessions', 'session', 'moves', 'conditions'],
 };
 let b;
 test.before(async () => { b = await browser(); });

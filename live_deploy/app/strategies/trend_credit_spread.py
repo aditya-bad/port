@@ -735,6 +735,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
     # ── Execution ────────────────────────────────────────────────────────
 
     async def _enter_spread(self, runner, candle: dict, new_trend: str, trigger_values: dict) -> None:
+        trigger_values = {**trigger_values, **self.signal_context(candle, getattr(self, 'st', None))}   # logging only
         option_type = "PE" if new_trend == "up" else "CE"   # bullish -> sell puts, bearish -> sell calls
         spread_side = "bull_put" if new_trend == "up" else "bear_call"
         try:

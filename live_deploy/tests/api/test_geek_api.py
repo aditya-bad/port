@@ -3,7 +3,7 @@ views (engine, decisions, settings); strangle_monthly_v2's own views all
 answer on a deployment with no history and on one with
 fills (the views themselves: tests/strategies/test_strangle_geek.py)."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -11,12 +11,12 @@ import pytest
 from tests.conftest import add_fill, make_deployment
 
 T = datetime.fromisoformat
-VIEWS = ["engine", "decisions", "cycles", "cycle", "adjustments", "entries", "premium", "settings"]
+VIEWS = ["engine", "decisions", "cycles", "cycle", "adjustments", "entries", "premium", "settings", "conditions"]
 
 
 def test_other_strategies_have_the_shared_views_only(client):
     d = make_deployment(client, name="spread", strategy="trend_credit_spread", mode="positional")
-    for view in ("engine", "decisions", "settings"):
+    for view in ("engine", "decisions", "settings", "conditions"):
         r = client.get(f"/v2/deployments/{d['id']}/geek/{view}")
         assert r.status_code == 200, (view, r.text)
     e = client.get(f"/v2/deployments/{d['id']}/geek/engine").json()
@@ -132,7 +132,7 @@ def test_every_view_answers_with_a_cycle_and_a_roll(client, view):
         assert client.get(f"/v2/deployments/{d['id']}/geek/cycle?c=7").json()["found"] is False
 
 
-ST_VIEWS = ["engine", "decisions", "settings", "signals", "trade"]
+ST_VIEWS = ["engine", "decisions", "settings", "signals", "trade", "conditions"]
 
 
 @pytest.mark.parametrize("view", ST_VIEWS)
@@ -171,7 +171,7 @@ def test_supertrend_options_one_trade_through_the_api(client):
     assert [(r["kind"], r["label"]) for r in dec] == [("exit", "SuperTrend flip"), ("entry", "Pivot break · sold a PE")]
 
 
-DTT_VIEWS = ["engine", "decisions", "settings", "straddles", "straddle"]
+DTT_VIEWS = ["engine", "decisions", "settings", "straddles", "straddle", "conditions"]
 
 
 @pytest.mark.parametrize("view", DTT_VIEWS)
@@ -213,7 +213,7 @@ def test_dtt_one_straddle_through_the_api(client):
     assert [(x["kind"], x["label"]) for x in rows] == [("exit", "Leg stop"), ("entry", "Entry")]
 
 
-ADJ_VIEWS = ["engine", "decisions", "settings", "sessions", "moves", "session"]
+ADJ_VIEWS = ["engine", "decisions", "settings", "sessions", "moves", "session", "conditions"]
 
 
 @pytest.mark.parametrize("strategy", ["intraday_dtt_adjusted", "intraday_dtt_advanced"])
@@ -229,3 +229,63 @@ def test_adjusting_straddle_views_answer_with_no_history(client, strategy, view)
         assert body == {"session": None, "n": 0}
     if view == "engine":
         assert body["rules"] == [] and body["adjusted"]["legs"] == {"CE": [], "PE": []}
+
+
+def _mark(client, dep_id, symbol, at, price):
+    from uuid import UUID
+
+    from app.db import queries
+    pool = client.app.state.db_pool
+
+    async def go():
+        pid = await pool.fetchval("SELECT id FROM positions WHERE deployment_id = $1 AND symbol = $2", UUID(str(dep_id)), symbol)
+        await queries.record_position_marks(pool, [(pid, UUID(str(dep_id)), at, price)])
+    client.portal.call(go)
+
+
+def test_conditions_one_trade_with_its_market_and_its_excursion(client):
+    d = make_deployment(client, name="spread conditions", strategy="trend_credit_spread", mode="positional")
+    ctx = {"spot": 25010.0, "minute": 65, "weekday": 0, "day_open": 24900.0, "day_high": 25050.0, "day_low": 24880.0,
+           "range_pts": 170.0, "from_open_pct": 0.44, "prev_close": 25100.0, "gap_pct": -0.8, "dte": 1}
+    t0 = T("2026-10-19T10:20:00+05:30")
+    add_fill(client, d["id"], "NIFTY26OCT24900PE", 7401, "sell", 75, 100.0, t0, "entry",
+             {"trigger": "trend_flip_up", "action": "sell_open_PE", "context": ctx,
+              "trigger_values": {"candle": {"open": 24990, "high": 25030, "low": 24980, "close": 25020}, "atr": 41.5}})
+    _mark(client, d["id"], "NIFTY26OCT24900PE", T("2026-10-19T10:30:00+05:30"), 130.0)   # −2,250
+    _mark(client, d["id"], "NIFTY26OCT24900PE", T("2026-10-19T11:00:00+05:30"), 70.0)    # +2,250
+    add_fill(client, d["id"], "NIFTY26OCT24900PE", 7401, "buy", 75, 90.0, T("2026-10-19T11:20:00+05:30"), "target",
+             {"trigger": "target", "action": "buy_close_PE"})                                       # +750
+    body = client.get(f"/v2/deployments/{d['id']}/geek/conditions").json()
+    (r,) = body["rows"]
+    assert (r["pnl"], r["mae"], r["mfe"], r["held_min"], r["path"]) == (750.0, -2250.0, 2250.0, 60.0, True)
+    assert r["label"] == "Trend flip up" and r["opt"] == "Puts" and r["candle_pts"] == 50 and r["atr"] == 41.5
+    assert r["dims"] == {"hour": "10–11", "weekday": "Mon", "legs": "Puts", "dte": "1 day", "gap": "Gap down > 0.5%",
+                         "range": "0.6–1%", "move": "Up 0–0.5%", "held": "30 min–2 h"}
+    assert body["summary"] == {"trades": 1, "closed": 1, "open": 0, "wins": 1, "with_context": 1, "avg_mae": -2250.0,
+                               "avg_mfe": 2250.0, "gave_back": 1500.0, "losers_were_up": 0, "with_path": 1}
+    g = {x["key"]: x for x in body["groups"]}
+    assert g["gap"]["buckets"] == [{"label": "Gap down > 0.5%", "n": 1, "wins": 1, "pnl": 750.0, "avg": 750.0, "win_rate": 100.0}]
+
+
+def test_conditions_fall_back_to_the_contracts_candles_and_order_the_hours(client):
+    from uuid import UUID  # noqa: F401
+
+    from app.db import queries
+    d = make_deployment(client, name="dtt conditions candles")
+    pool = client.app.state.db_pool
+    # 09:20 → 09:40 sold at 100, bought back at 95: up to 130 (−2,250) and down to 80 (+1,500) on the way
+    t0 = T("2026-10-19T09:20:00+05:30")
+    add_fill(client, d["id"], "NIFTY26OCT25000CE", 7501, "sell", 75, 100.0, t0, "entry", {"trigger": "entry", "action": "open"})
+    client.portal.call(lambda: queries.upsert_candles(pool, [(7501, t0 + timedelta(minutes=i), c, c, c, c, None)
+                                                            for i, c in enumerate([105, 130, 110, 80, 95])], "kite"))
+    add_fill(client, d["id"], "NIFTY26OCT25000CE", 7501, "buy", 75, 95.0, T("2026-10-19T09:40:00+05:30"), "exit", {"trigger": "exit", "action": "close"})
+    # 11:00, no prices at all on the way
+    add_fill(client, d["id"], "NIFTY26OCT25100CE", 7502, "sell", 75, 100.0, T("2026-10-19T11:00:00+05:30"), "entry", {"trigger": "entry", "action": "open"})
+    add_fill(client, d["id"], "NIFTY26OCT25100CE", 7502, "buy", 75, 110.0, T("2026-10-19T11:30:00+05:30"), "exit", {"trigger": "exit", "action": "close"})
+    body = client.get(f"/v2/deployments/{d['id']}/geek/conditions").json()
+    late, early = body["rows"]
+    assert (early["mae"], early["mfe"], early["pnl"], early["path"]) == (-2250.0, 1500.0, 375.0, True)
+    assert late["path"] is False and late["pnl"] == -750.0
+    assert body["summary"]["with_path"] == 1 and body["summary"]["avg_mae"] == -2250.0
+    hours = next(g for g in body["groups"] if g["key"] == "hour")
+    assert [b["label"] for b in hours["buckets"]] == ["9:15–10", "11–12"], "in the day's order"

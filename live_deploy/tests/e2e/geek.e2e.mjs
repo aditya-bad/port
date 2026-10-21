@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { BASE, IDS, browser, context } from './helper.mjs';
 
 const ID = IDS['Nifty Monthly Strangle'];
-const VIEWS = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'map', 'cycles', 'adjustments', 'premium', 'entries', 'settings'];
+const VIEWS = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'map', 'cycles', 'adjustments', 'premium', 'entries', 'conditions', 'settings'];
 let b;
 test.before(async () => { b = await browser(); });
 test.after(async () => { await b.close(); });
@@ -42,7 +42,7 @@ test('the Now tab shows the engine card and Geek mode opens full screen', async 
 
 test('every strategy has Geek mode: the shared views, without the strangle\'s own', async () => {
   const DTT = IDS['Sensex Credit Spread'];
-  const SHARED = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'settings'];
+  const SHARED = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'conditions', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
@@ -339,7 +339,7 @@ test('a cycle’s own page has everything, set against the other cycles', async 
 
 test('SuperTrend options: engine ladder, signals, exits, days and one trade end to end', async () => {
   const ST = IDS['Pivot Supertrend Options'];
-  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'signals', 'exits', 'days', 'settings'];
+  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'signals', 'exits', 'days', 'conditions', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
@@ -413,7 +413,7 @@ test('SuperTrend options: engine ladder, signals, exits, days and one trade end 
 
 test('DTT straddle: engine, straddles, exits & timing, and one straddle end to end', async () => {
   const DD = IDS['BankNifty DTT Plain'];
-  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'straddles', 'timing', 'settings'];
+  const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'straddles', 'timing', 'conditions', 'settings'];
   for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     const ctx = await context(b, { width, height: 860 });
     const p = await ctx.newPage();
@@ -480,7 +480,7 @@ test('DTT straddle: engine, straddles, exits & timing, and one straddle end to e
 for (const [name, rolls] of [['BankNifty DTT Adjusted', false], ['BankNifty DTT Advanced', true]]) {
   test(`${name}: engine, sessions, adjustments and one day end to end`, async () => {
     const ID = IDS[name];
-    const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'sessions', 'moves', 'settings'];
+    const OWN = ['overview', 'positions', 'trades', 'performance', 'engine', 'decisions', 'journal', 'sessions', 'moves', 'conditions', 'settings'];
     for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
       const ctx = await context(b, { width, height: 860 });
       const p = await ctx.newPage();
@@ -533,3 +533,39 @@ for (const [name, rolls] of [['BankNifty DTT Adjusted', false], ['BankNifty DTT 
     await ctx.close();
   });
 }
+
+test('Conditions: every trade with its market, dots that show their trade, and the buckets add up', async () => {
+  const ST = IDS['Pivot Supertrend Options'];
+  const ctx = await context(b, { width: 1440, height: 900 });
+  const p = await ctx.newPage();
+  const body = await (await ctx.request.get(`${BASE}/v2/deployments/${ST}/geek/conditions`)).json();
+  const closed = body.rows.filter(r => r.pnl != null);
+  assert.ok(closed.length >= 10 && body.summary.with_path === closed.length, 'every seeded trade has a path (from its candles)');
+  assert.ok(body.rows.every(r => r.has_context && r.context.gap_pct != null), 'the seeded entries carry their market');
+  for (const g of body.groups) assert.equal(g.covered, closed.length, `${g.label} counts every closed trade`);
+  await p.goto(`${BASE}/linck/#/d/${ST}/geek`);
+  await p.waitForSelector('.gk-rail a.on');
+  await p.keyboard.press('k');
+  await p.waitForURL(/\/geek\/conditions$/);
+  await p.waitForFunction(() => document.querySelectorAll('#gkView .gk-chart circle').length > 0);
+  assert.equal(await p.locator('#gkView .gk-chart').first().locator('circle').count(), closed.length, 'one dot per closed trade');
+  assert.equal(await p.locator('#gkView .cd-grid .gk-panel').count(), body.groups.length);
+  const text = await p.locator('#gkView').innerText();
+  for (const s of ['Time of entry', 'Day of the week', 'Days to expiry', 'Today’s gap', 'Index since the open']) assert.ok(text.includes(s), s);
+  // a dot shows its trade
+  // (dots overlap: aim at the last one drawn, which is on top)
+  const dot = p.locator('#gkView .gk-chart').first().locator('circle').last();
+  await dot.scrollIntoViewIfNeeded();
+  const box = await dot.boundingBox();
+  await p.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await p.waitForFunction(() => { const t = document.querySelector('.tip'); return t && /Worst on the way \(MAE\)/.test(t.innerText); });
+  const tip = await p.locator('.tip').innerText();
+  assert.match(tip, /Result\s+[+−]₹/);
+  assert.match(tip, /Gap\s+[+-]\d/);
+  // a bucket row shows its trades
+  const row = p.locator('#gkView .cd-row').first();
+  await row.hover();
+  await p.waitForFunction(() => /Average trade/.test(document.querySelector('.tip')?.innerText || ''));
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

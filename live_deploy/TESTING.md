@@ -107,3 +107,15 @@ chart of separate marks puts `tipAt()` / `hit()` on each mark.
 `tests/e2e/charts-hover.e2e.mjs` opens every Geek view of every kind of
 deployment, hovers every chart and fails on one that shows nothing, so a
 new chart without either fails the gate.
+
+## Recording more never changes a trade
+
+Strategies note what they checked (`StrategyBase.decide`), and every fill
+carries the market it happened in (`DeploymentRunner.market_context`, under
+the fill's `metadata.context`) and every signal entry its candle and ATR
+(`StrategyBase.signal_context`). All of it is logging only:
+`tests/strategies/test_decisions_logging_only.py` and
+`tests/strategies/test_conditions_geek.py` run every strategy on the same
+simulated sessions with and without it and fail if a single order differs.
+Anything new a strategy records for Geek mode gets the same treatment: add
+it to one of those tests.

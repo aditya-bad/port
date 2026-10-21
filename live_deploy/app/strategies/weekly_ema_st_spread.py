@@ -935,6 +935,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
         return hedge_leg, price
 
     async def _enter(self, runner, candle: dict, side: str, trigger_values: dict) -> None:
+        trigger_values = {**trigger_values, **self.signal_context(candle, getattr(self, 'st', None))}   # logging only
         option_type = "CE" if side == "bearish" else "PE"
         try:
             expiry = await self.resolver.resolve_expiry(self.underlying, EXPIRY_SELECTOR)

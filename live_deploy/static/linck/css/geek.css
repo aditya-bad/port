@@ -89,6 +89,12 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 
 .gk-two { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 32px; }
 .gk-two.even { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+/* Conditions: one panel per condition, its buckets as bars either side of zero */
+.cd-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 0 32px; }
+.cd-row { display: grid; grid-template-columns: minmax(90px, 1.1fr) 64px minmax(60px, 1fr) 84px; gap: 10px; align-items: center; font-size: 13px; padding: 3px 0; }
+.cd-row .bar { position: relative; height: 12px; background: var(--soft); }
+.cd-row .bar i { position: absolute; top: 0; bottom: 0; } .cd-row .bar u { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--ink); }
+.cd-row:hover { background: var(--soft); }
 .gk-panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .gk-panel > h3 { margin: 0; font-size: 13px; font-weight: 800; letter-spacing: .03em; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
 .gk-panel > h3 .s { font-weight: 500; color: var(--mute); letter-spacing: 0; font-size: 12px; }

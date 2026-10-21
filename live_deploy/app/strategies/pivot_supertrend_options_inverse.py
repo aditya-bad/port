@@ -618,6 +618,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
     # ── Execution — buy an option leg to open, sell it to close ────────
 
     async def _enter(self, runner, candle: dict, option_type: str, trigger_values: dict) -> None:
+        trigger_values = {**trigger_values, **self.signal_context(candle, getattr(self, 'st', None))}   # logging only
         try:
             # Resolve the expiry FIRST, on its own, rather than handing
             # expiry_selector straight to get_atm_leg -- switch_to_next_

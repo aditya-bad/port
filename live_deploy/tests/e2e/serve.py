@@ -472,6 +472,13 @@ async def seed_supertrend(pool, dep, created):
                     "target_basis": {"selection_basis": "ATM", "selected_strike": k, "fill_premium": prem},
                     "signal_side": "long" if up else "short", "option_type": ot, "strike": k,
                     "expiry": (day + timedelta(days=(3 - day.weekday()) % 7)).date().isoformat(), "exchange": "NFO", "pivots": piv}
+            # the market at the entry, as the runner stamps it on every fill (Geek → Conditions)
+            seen = [path(open_ + timedelta(minutes=i)) for i in range(int((t - open_).total_seconds() / 60) + 1)]
+            meta["context"] = {"spot": round(close, 2), "minute": int((t - open_).total_seconds() / 60), "weekday": day.weekday(),
+                               "day_open": round(seen[0], 2), "day_high": round(max(seen), 2), "day_low": round(min(seen), 2),
+                               "range_pts": round(max(seen) - min(seen), 2), "from_open_pct": round((close - seen[0]) / seen[0] * 100, 2),
+                               "gap_pct": round((ph - 3.14) / 4, 2), "strike_from_spot": round(k - close, 2),
+                               "dte": (day + timedelta(days=(3 - day.weekday()) % 7)).date().toordinal() - day.date().toordinal()}
             await queries.record_fill(pool, dep, s_, ot_tok, "sell", q, prem, t, reason="entry", metadata=meta)
             reason = "force_exit" if force else "st_flip"
             xtv = ({"candle_time": out.time().isoformat(), "force_exit_time": "15:00:00"} if force else
