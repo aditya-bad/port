@@ -386,7 +386,9 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
             out.notes.append(f"No prices at all for {label}: " + (f"Kite said “{why}”" if why else
                              "Kite returned no 1-minute candles for it, and the app stored none")
                              + (f" (asked for {asked})" if asked else "")
-                             + "; no earlier price to model it from either. The strategy couldn't see this leg.")
+                             + "; no earlier price to model it from either"
+                             + (f" (the days before: Kite said “{book.history_errors[tok]}”)" if tok in book.history_errors else "")
+                             + ". The strategy couldn't see this leg. Run the script with --probe to see what Kite answers.")
         elif origin == "model":
             md = book.models[tok]
             if tok in held or tok in disp.subscribed:
@@ -426,6 +428,20 @@ def _candles(book: MinuteBook, m: datetime, tokens: list) -> list[dict]:
 
 
 # ── State of a deployment ───────────────────────────────────────────────
+
+
+def window_problem(window: Window, now: datetime) -> Optional[str]:
+    """Why a window can't be repaired yet: Kite has no candles for minutes
+    that haven't happened (the script defaults to today)."""
+    if window.day.weekday() >= 5:
+        return f"{window.day:%a %d %b %Y} is a weekend: no market. Pass --date YYYY-MM-DD for the day of the stall."
+    if window.start_at > now:
+        return (f"{window.day:%a %d %b} {window.as_dict()['from']} hasn't happened yet (it's {now.astimezone(IST):%a %d %b %H:%M}), "
+                "so Kite has no candles for it. Pass --date YYYY-MM-DD for the day of the stall.")
+    if window.end_at > now:
+        return (f"The window runs to {window.as_dict()['to']} but it's only {now.astimezone(IST):%H:%M}: "
+                f"pass --to {now.astimezone(IST) - timedelta(minutes=1):%H:%M} or wait for the close.")
+    return None
 
 
 async def fingerprint(db, dep_id) -> str:

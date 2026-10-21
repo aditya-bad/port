@@ -130,6 +130,7 @@ class MinuteBook:
         self.before: dict[int, tuple] = {}   # token -> (price, at): its last trade before the day, when that's all there is
         self._prior: dict[int, Optional[tuple]] = {}
         self._row: dict[int, Optional[dict]] = {}
+        self.history_errors: dict[int, str] = {}   # token -> what Kite said when asked for the days before
         self.rows: dict[int, dict[datetime, dict]] = {}
         self.keys: dict[int, list[datetime]] = {}
         self.origin: dict[int, str] = {}
@@ -295,9 +296,11 @@ class MinuteBook:
         return float(last["close"]), at, f"its last trade, {at:%d %b %H:%M}"
 
     def _fetch_quiet(self, token: int, start: datetime, end: datetime) -> list:
+        """History before the day: a failure isn't the day's, but is kept for the notes."""
         try:
             return self.source(token, start, end) or []
-        except Exception:
+        except Exception as e:
+            self.history_errors.setdefault(int(token), f"{type(e).__name__}: {e}")
             return []
 
     def _level(self, idx: int, at: datetime) -> Optional[float]:

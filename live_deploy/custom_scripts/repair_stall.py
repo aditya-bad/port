@@ -33,6 +33,7 @@ day's first tick at the next day's price):
 
     docker exec -it live-deploy python3 custom_scripts/repair_stall.py --from 12:16
     docker exec -it live-deploy python3 custom_scripts/repair_stall.py --date 2026-10-21 --from 12:16 --to 15:30
+    docker exec -it live-deploy python3 custom_scripts/repair_stall.py --date 2026-10-21 --probe   # what Kite answers, raw
 
 --from is the first minute the app missed: the minute after the last tick
 (the app's /health shows last_tick_at; asked for if not given). Needs a
@@ -93,6 +94,10 @@ async def main(args) -> None:
 
         api = AppApi(None if args.no_api else args.api, cfg["app_auth_secret"])
         day = datetime.strptime(args.date, "%Y-%m-%d").date() if args.date else datetime.now(IST).date()
+        if args.probe:
+            from app.repair.probe import probe
+            await probe(pool, gate, day, kite_lookup(gate))
+            return
         start = args.start
         if not start:
             last = api.last_tick_at()
@@ -102,6 +107,10 @@ async def main(args) -> None:
                 hint = f" (the app's last tick was {t:%H:%M:%S}; the next minute is {t + timedelta(minutes=1):%H:%M})"
             start = input(f"First minute the app missed, HH:MM{hint} › ").strip()
         window = engine.Window(day, parse_hhmm(start), parse_hhmm(args.end))
+        why = engine.window_problem(window, datetime.now(IST))
+        if why:
+            print(why)
+            return
 
         book = MinuteBook(day, kite_minute_source(gate), await stored_candles(pool, day), lookup=kite_lookup(gate))
         cli = RepairCLI(pool, book, gate, window, api, color=color_ok(sys.stdout), author=args.author)
@@ -118,4 +127,6 @@ if __name__ == "__main__":
     ap.add_argument("--api", default="http://localhost:8000", help="the running app, to pause/resume a deployment")
     ap.add_argument("--no-api", action="store_true", help="the app isn't running: don't try to pause/resume")
     ap.add_argument("--author", default="repair_stall", help="name on the journal note")
+    ap.add_argument("--probe", action="store_true",
+                    help="don't repair: ask Kite for every deployment's index and open legs on the day and print what it answers")
     asyncio.run(main(ap.parse_args()))

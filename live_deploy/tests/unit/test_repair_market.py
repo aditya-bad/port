@@ -386,3 +386,15 @@ def test_once_it_trades_today_the_real_trade_is_the_price():
 def test_an_index_with_no_candle_yet_is_not_given_a_previous_days_price():
     b = book_with({NIFTY: {"12:05": (100, 100, 100, 100)}})
     assert b.price(NIFTY, at("12:00"), "close", at("12:00")) is None
+
+
+def test_a_window_that_hasnt_happened_yet_is_refused_with_how_to_fix_it():
+    from app.repair import engine
+    w = engine.Window(DAY, time(12, 16), time(15, 30))
+    morning = datetime(2026, 10, 21, 8, 40, tzinfo=M.IST)
+    assert "hasn't happened yet" in engine.window_problem(w, morning) and "--date" in engine.window_problem(w, morning)
+    assert "--to 13:59" in engine.window_problem(w, datetime(2026, 10, 21, 14, 0, tzinfo=M.IST))
+    assert engine.window_problem(w, datetime(2026, 10, 21, 16, 0, tzinfo=M.IST)) is None
+    assert engine.window_problem(w, datetime(2026, 10, 22, 9, 0, tzinfo=M.IST)) is None
+    sat = engine.Window(date(2026, 10, 24), time(12, 16), time(15, 30))
+    assert "weekend" in engine.window_problem(sat, datetime(2026, 10, 26, 9, 0, tzinfo=M.IST))

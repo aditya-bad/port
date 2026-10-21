@@ -61,7 +61,7 @@ def test_the_script_repairs_a_stalled_deployment(pool_run, monkeypatch, capsys):
         answers = iter(["12:16", "1", "a", "y", "y", "q"])
         monkeypatch.setattr(builtins, "input", lambda prompt="": next(answers))
         mod = load_script()
-        args = argparse.Namespace(date=str(sim.market.today), start=None, end="15:30", api="http://127.0.0.1:9",
+        args = argparse.Namespace(probe=False, date=str(sim.market.today), start=None, end="15:30", api="http://127.0.0.1:9",
                                   no_api=True, author="tester")
         await mod.main(args)
         out = capsys.readouterr().out

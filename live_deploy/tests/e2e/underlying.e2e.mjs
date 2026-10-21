@@ -24,8 +24,15 @@ test('the Now tab shows the legs against the spot and their future', async () =>
   assert.match(t, /for every point the future rises|flat/);
   assert.equal(await p.locator('[data-underlying] .ul-r:not(.th)').count(), u.legs.length);
   assert.equal(await p.locator('[data-underlying] .ul-b').count(), 8, 'eight moves of the future');
-  // a deployment on an index with no known future says why, without breaking the page
-  await p.goto(`${BASE}/linck/#/d/${IDS['BankNifty DTT Plain']}/now`);
+  // a deployment on an index with no known future says why, without breaking the page.
+  // Whichever still holds legs when this runs: other specs close some (flow closes BankNifty DTT Plain's)
+  let other = null;
+  for (const id of Object.values(IDS)) {
+    const x = await api(ctx, `/v2/deployments/${id}/underlying`).catch(() => null);
+    if (x && x.available && !x.future && x.legs.length) { other = id; break; }
+  }
+  assert.ok(other, 'some fixture with legs on an index with no known future');
+  await p.goto(`${BASE}/linck/#/d/${other}/now`);
   await p.waitForSelector('[data-underlying] .ul-tiles');
   assert.match(await p.locator('[data-underlying]').innerText(), /No futures contract is known/);
   assert.deepEqual(ctx.errors, []);
