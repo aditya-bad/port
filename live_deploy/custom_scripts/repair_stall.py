@@ -117,6 +117,7 @@ async def main(args) -> None:
         book = MinuteBook(day, kite_minute_source(gate), await stored_candles(pool, day), lookup=kite_lookup(gate),
                           ltp=kite_ltp(gate), history=gate.historical_data,
                           quote=kite_quote(gate))
+        book.say = lambda line: print(line, flush=True)
         cli = RepairCLI(pool, book, gate, window, api, color=color_ok(sys.stdout), author=args.author)
         await cli.run()
     finally:

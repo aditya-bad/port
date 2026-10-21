@@ -130,6 +130,7 @@ class MinuteBook:
         self.quote = quote                   # ["EXCH:SYMBOL", ...] -> Kite's quote for each (one request for many)
         self.quoted: dict[int, tuple] = {}   # token -> (last_price, last_trade_time) from that quote
         self._key_of: dict[int, str] = {}    # token -> "EXCH:SYMBOL"
+        self.say: Optional[Callable] = None  # progress lines for a long fetch
         self._levels: dict = {}
         self.ltp_used: dict[int, str] = {}   # token -> the key ltp() was asked for
         self.anchors: dict[int, list] = {}   # token -> [(price, at, what)]: known prices before the day
@@ -564,6 +565,10 @@ class ReplayKite:
                 self.book.note(tok, self._symbol(tok, str(k)))
                 pairs.append((tok, str(k)))
         self.book.prefetch(pairs)
+        need = {t for t, _ in pairs if t not in self.book.rows and self.book._quoted_before_day(t) is None}
+        if len(need) > 3 and self.book.say:
+            self.book.say(f"      fetching {len(need)} contracts' 1-minute history from Kite "
+                          f"(~{len(need) * 0.35:.0f}s at Kite's 3 a second; once each)…")
         for k in keys:
             tok = self._token(k)
             if tok is None:
