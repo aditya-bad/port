@@ -21,6 +21,7 @@ import { vsCompare } from './paths.js';
 import { arrows, cumulative, scatter, bySide, byHour, legend } from './adjustments.js';
 import { rulesBlock, strikesBlock, legsBlock } from './engine.js';
 import { head, tiles, table, poll, svg, path, gapped, steps, money, tone, ratio, bars, LABEL, yLabels, wide, hit, tipAt } from './ui.js';
+import { vixPanel } from './vix.js';
 
 // Viewbox widths: half-width panels and full-width ones (text keeps its size).
 const W = 640, WF = 1200;
@@ -231,7 +232,7 @@ function rollsSection(cy, eodBand) {
 
 export default {
   render(el, v, g) {
-    let data = null, sess = null, sessFor = null;   // the price chart, legs and orders, loaded once per cycle
+    let data = null, sess = null, sessFor = null, vx = null, vxFor = null;   // the price chart, legs and orders, loaded once per cycle
     let spotFilter = 'all', eng = g.engine ? g.engine() : null;
     const c = g.params && g.params.c;
     function sessPanel() {
@@ -260,6 +261,9 @@ export default {
       // the engine speaks for the cycle the strategy is in: this one, if it runs
       const live = r.status === 'open' && eng && eng.state && eng.state.cycle_id === id ? eng : null;
       const eodBand = { rules: [{ key: 'eod_gap_check', band: cy.rules.band }] };
+      // VIX through the cycle, hourly (one panel per cycle shown)
+      if (vxFor !== id) { if (vx) vx.destroy(); vx = vixPanel({ start: r.start, end: r.end || null, interval: '60minute', sub: 'hourly through the cycle · opened and closed marked' }); vxFor = id; }
+      const vxMarks = [{ t: r.start, label: 'Opened', color: 'var(--acc)' }, ...(r.end ? [{ t: r.end, label: 'Closed', color: 'var(--ink)' }] : [])];
       const SECTIONS = [...(live ? [['cy-live', 'Live now']] : []), ['cy-pnl', 'P&L'], ['cy-vs', 'Against other cycles'], ['cySess', 'Price chart, legs, orders'],
         ['cy-bal', 'Balance & strikes'], ['cy-rolls', 'Rolls'], ['cy-tl', 'Timeline & money'], ['cy-legs', 'Every leg']];
       mount(el, html`
@@ -283,6 +287,7 @@ export default {
         <section class="cy-sec" id="cy-pnl"><h2 class="cy-h">P&L <span>through the cycle, and its journey</span></h2>
         <div class="gk-panel"><h3>P&L through the cycle <span class="s">${cy.path_kind === 'booked' ? 'no prices were stored for this cycle: steps at what each leg booked' : `closed legs at what they booked, open legs at each ${cy.path_kind === 'candles' ? '15-minute candle close' : '5-minute mark'}`} · dotted: market open, no prices · dashed blue: rolls</span></h3>${pnlChart(cy)}</div>
         <div class="gk-panel"><h3>Journey <span class="s">this cycle only · P&L against days since it opened, as on Cycles · dashed green: checkpoint</span></h3>${journey(cy)}</div>
+        ${vx.html()}
         </section>
         <section class="cy-sec" id="cy-vs"><h2 class="cy-h">Against other cycles <span>the Cycles page’s charts, with cycle ${id} in blue</span></h2>
         <div class="gk-panel"><h3>Spotlight <span class="s">other cycles faint · bold black: the typical cycle · blue: this one · hover a line to light it up, click to open it</span></h3>${spotlight(all, tgt, spotFilter, id)}</div>
@@ -324,6 +329,7 @@ export default {
               l.charges != null ? inr(l.charges + l.slippage, { sign: false }) : '—', l.closed_by ? (LABEL[l.closed_by] || l.closed_by.replace(/_/g, ' ')) : '—']), { minw: 980 })}</div>
         </section>`);
       loadSess(cy);
+      vx.attach(el, vxMarks);
     }
     const off = actions(el, {
       // the router owns the hash: scroll instead of linking to #id
@@ -340,6 +346,6 @@ export default {
       if (body) mount(body, liveBody(d)); else paint();
     }) : () => {};
     const stop = poll(() => api.geek(g.id, `cycle${c ? `?c=${encodeURIComponent(c)}` : ''}`), 60000, d => { data = d; paint(); });
-    return () => { stop(); off(); offs.forEach(f => f()); offEng(); };
+    return () => { stop(); off(); offs.forEach(f => f()); offEng(); if (vx) vx.destroy(); };
   },
 };

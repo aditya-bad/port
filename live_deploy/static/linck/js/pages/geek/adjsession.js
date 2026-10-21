@@ -5,6 +5,7 @@
 
 import { api } from '../../core/api.js';
 import { notesPanel } from '../../ui/notes.js';
+import { vixPanel, sessionOf } from './vix.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price, dStamp } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
@@ -19,7 +20,7 @@ export default {
   render(el, v, g) {
     let data = null;
     const want = g.params && g.params.d;
-    let notes = null;
+    let notes = null, vx = null;
     function paint() {
       if (data === null) { mount(el, html`${head('Session')}${loading(6)}`); return; }
       if (data instanceof Error) { mount(el, html`${head('Session')}${empty('Couldn’t load this day', data.message)}`); return; }
@@ -30,6 +31,7 @@ export default {
         return;
       }
       if (!notes) notes = notesPanel({ deploymentId: v.id, day: s.day });
+      if (!vx) vx = vixPanel({ start: sessionOf(s.entry_t).start, end: s.open ? null : sessionOf(s.entry_t).end, sub: 'that session · the same marks as above' });
       const S = data.series, cfg = data.settings;
       const marks = [{ t: s.entry_t, label: 'Sold', color: 'var(--acc)' },
         ...s.legs.filter(l => l.opened_by && l.opened_by !== 'entry_time_reached').map(l => ({ t: l.opened, label: l.opened_by === 'roll_open' ? 'roll' : 'adj', color: 'var(--ink)' })),
@@ -61,6 +63,7 @@ export default {
           ${S.pnl.length > 1 ? linesChart([{ name: 'Day P&L', data: S.pnl, color: 'var(--ink)', width: 2 }], { levels: [...(s.target ? [{ key: 'target', value: s.target, color: 'var(--g)', dash: true }] : []), { key: '0', value: 0, color: 'var(--line2)' }], marks, label: 'The day’s P&L', fmt: x => inr(Math.round(x)), h: 200 }) : empty('', 'Needs every open leg’s price.')}</div>
         <div class="gk-panel"><h3>The index <span class="s">against the break-even band</span></h3>
           ${S.index.length > 1 ? linesChart([{ name: 'Index', data: S.index, color: 'var(--ink)' }], { levels: s.breakeven ? [{ key: 'BE low', value: s.breakeven[0], color: 'var(--r)', dash: true }, { key: 'BE high', value: s.breakeven[1], color: 'var(--r)', dash: true }, ...(s.strike ? [{ key: 'strike', value: s.strike, color: 'var(--acc)' }] : [])] : [], marks, label: 'The index', fmt: x => Math.round(x).toLocaleString('en-IN'), h: 200 }) : empty('', 'No index prices stored for this day.')}</div>
+        ${vx.html()}
         <div class="gk-panel"><h3>Every leg <span class="s">in the order it was sold</span></h3>
           ${table([['Leg', 'minmax(170px,1.4fr)'], ['Role', '84px'], ['Sold', '120px', 'num'], ['Bought back', '150px', 'num'], ['Held', '70px', 'num'], ['P&L', '90px', 'num']],
             s.legs.map(l => [html`<b class="${l.side === 'CE' ? 'leg-ce' : 'leg-pe'}">${l.symbol}</b>`, ROLE(l.role), html`<span class="mono small">${price(l.entry)} ${l.opened.slice(11, 16)}</span>`,
@@ -73,8 +76,9 @@ export default {
               html`<span class="col" style="gap:2px"><span>${d.summary}</span>${d.why ? html`<span class="mono tiny mute">${d.why}</span>` : ''}</span>`]), { minw: 640 })
             : empty('', 'Nothing noted that day.')}</div>`);
       notes.attach(el);
+      vx.attach(el, marks);
     }
     const stop = poll(() => api.geek(g.id, `session${want ? `?d=${encodeURIComponent(want)}` : ''}`), 60000, d => { data = d; paint(); });
-    return () => { stop(); if (notes) notes.destroy(); };
+    return () => { stop(); if (notes) notes.destroy(); if (vx) vx.destroy(); };
   },
 };

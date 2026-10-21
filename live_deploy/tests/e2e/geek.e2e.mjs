@@ -394,7 +394,7 @@ test('SuperTrend options: engine ladder, signals, exits, days and one trade end 
   await p.click('a:has-text("Newer →")');
   await p.waitForFunction(n => document.querySelector('#gkView').innerText.includes(`${n} of ${n}`), sig.trades.length);
   assert.equal(await p.locator('a:has-text("Newer →")').count(), 0, 'the newest has no newer');
-  assert.equal(await p.locator('#gkView svg.gk-chart').count(), 2, 'the index and the premium');
+  assert.equal(await p.locator('#gkView svg.gk-chart:not([data-vix-slot] svg)').count(), 2, 'the index and the premium (VIX: its own test)');
   await p.goto(`${BASE}/linck/#/d/${ST}/geek/trade?p=nope`);
   await p.waitForSelector('#gkView .empty');
   assert.match(await p.locator('#gkView').innerText(), /There’s no such trade/);
@@ -461,7 +461,7 @@ test('DTT straddle: engine, straddles, exits & timing, and one straddle end to e
   const text = await p.locator('#gkView').innerText();
   assert.match(text, new RegExp(`${all.straddles.length - i} of ${all.straddles.length}`));
   assert.match(text, new RegExp(one.strike.toLocaleString('en-IN')));
-  assert.equal(await p.locator('#gkView svg.gk-chart').count(), 3, 'the legs, the combined premium and the index');
+  assert.equal(await p.locator('#gkView svg.gk-chart:not([data-vix-slot] svg)').count(), 3, 'the legs, the combined premium and the index (VIX: its own test)');
   assert.equal(await p.locator('.gk-rail a.on').getAttribute('href').then(h => h.split('/geek/')[1]), 'straddles');
   await p.click('a:has-text("← Older")');
   await p.waitForFunction(n => document.querySelector('#gkView').innerText.includes(`${n} of `), all.straddles.length - i - 1);
@@ -616,6 +616,30 @@ test('Volatility: VIX now, ₹ per VIX point, trades and days against VIX, week 
   // a BankNifty deployment says VIX is a stand-in
   await p.goto(`${BASE}/linck/#/d/${IDS['BankNifty DTT Plain']}/geek/volatility`);
   await p.waitForFunction(() => /stand-in/.test(document.querySelector('#gkView')?.innerText || ''));
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('a VIX panel on one straddle, one session, one trade and one cycle, at their marks', async () => {
+  const ctx = await context(b, { width: 1440, height: 900 });
+  const p = await ctx.newPage();
+  const get = async (id, v) => (await ctx.request.get(`${BASE}/v2/deployments/${id}/geek/${v}`)).json();
+  const DD = IDS['BankNifty DTT Plain'], AD = IDS['BankNifty DTT Adjusted'], ST = IDS['Pivot Supertrend Options'], SG = IDS['Nifty Monthly Strangle'];
+  const s = (await get(DD, 'straddles')).straddles.find(r => !r.open);
+  const sess = (await get(AD, 'sessions')).sessions.find(r => !r.open);
+  const tr = (await get(ST, 'signals')).trades.find(r => !r.open);
+  const cys = (await get(SG, 'cycles')).rows;
+  const cy = cys.find(r => r.status !== 'open') || cys[0];
+  for (const [url, what] of [[`${DD}/geek/straddle?s=${s.id}`, 'straddle'], [`${AD}/geek/session?d=${sess.day}`, 'session'],
+    [`${ST}/geek/trade?p=${tr.id}`, 'trade'], [`${SG}/geek/cycle?c=${cy.cycle_id}`, 'cycle']]) {
+    await p.goto(`${BASE}/linck/#/d/${url}`);
+    const panel = p.locator('#gkView .gk-panel', { has: p.locator('[data-vix-slot]') });
+    await panel.waitFor({ timeout: 20000 });
+    await p.waitForFunction(() => document.querySelector('[data-vix-move]'), null, { timeout: 15000 });
+    assert.match(await panel.locator('[data-vix-move]').innerText(), /VIX was \d+\.\d{2} at entry and (rose to|fell to|held at) \d+\.\d{2}/, what);
+    assert.equal(await panel.locator('svg[data-scrub]').count(), 1, `${what}: the VIX line shows each moment on hover`);
+    assert.ok(await panel.locator('svg .hit[data-tip]').count() >= 1, `${what}: the entry and exit marks`);
+  }
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });

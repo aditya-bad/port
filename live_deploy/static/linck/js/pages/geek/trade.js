@@ -5,6 +5,7 @@
 
 import { api } from '../../core/api.js';
 import { notesPanel } from '../../ui/notes.js';
+import { vixPanel, sessionOf } from './vix.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price, dStamp, hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
@@ -55,7 +56,7 @@ export default {
   render(el, v, g) {
     let data = null;
     const p = g.params && g.params.p;
-    let notes = null;
+    let notes = null, vx = null;
     function paint() {
       if (data === null) { mount(el, html`${head('Trade')}${loading(6)}`); return; }
       if (data instanceof Error) { mount(el, html`${head('Trade')}${empty('Couldn’t load this trade', data.message)}`); return; }
@@ -66,6 +67,7 @@ export default {
         return;
       }
       if (!notes) notes = notesPanel({ deploymentId: v.id, day: t.entry_t.slice(0, 10), positionId: t.id, title: 'Notes on this trade' });
+      if (!vx) vx = vixPanel({ start: sessionOf(t.entry_t).start, end: t.open ? null : sessionOf(t.exit_t || t.entry_t).end, sub: 'that session · the same marks as above' });
       const piv = t.pivots || {};
       const levels = Object.entries(piv).map(([k, val]) => ({ key: k, value: val, bold: k === t.level,
         color: k === t.level ? 'var(--acc)' : k === 'P' ? 'var(--mute)' : k[0] === 'R' ? 'var(--c5)' : 'var(--c4)' }));
@@ -93,6 +95,7 @@ export default {
           ${data.path.index.length > 1 ? priceChart(data.path.index, { levels, marks, label: 'The index through the trade', name: 'Index' }) : empty('', 'No index prices stored for this stretch.')}</div>
         <div class="gk-panel"><h3>The option’s premium <span class="s">what it was sold at, and what buying it back would have cost</span></h3>
           ${data.path.option.length > 1 ? priceChart(data.path.option, { levels: [{ key: 'sold', value: t.entry_px, color: 'var(--acc)', dash: true }], marks, label: 'The option premium through the trade', name: t.opt, fmt: v => price(v) }) : empty('', 'No premium prices stored for this option.')}</div>
+        ${vx.html()}
         <div class="gk-two even">
           <div class="gk-panel"><h3>What the entry saw</h3>
             <p class="small" style="display:flex;flex-wrap:wrap;gap:6px 16px">${saw({ close: t.close, level: t.level, level_price: t.level_px, supertrend: t.st_value, pivot: t.pivot_point })}</p>
@@ -107,8 +110,9 @@ export default {
               html`<span class="col" style="gap:2px"><span>${d.summary}</span>${d.why ? html`<span class="mono tiny mute">${d.why}</span>` : ''}</span>`]), { minw: 640 })
             : empty('', 'Nothing noted around this trade.')}</div>`);
       notes.attach(el);
+      vx.attach(el, marks);
     }
     const stop = poll(() => api.geek(g.id, `trade${p ? `?p=${encodeURIComponent(p)}` : ''}`), 60000, d => { data = d; paint(); });
-    return () => { stop(); if (notes) notes.destroy(); };
+    return () => { stop(); if (notes) notes.destroy(); if (vx) vx.destroy(); };
   },
 };

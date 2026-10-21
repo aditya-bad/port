@@ -5,6 +5,7 @@
 
 import { api } from '../../core/api.js';
 import { notesPanel } from '../../ui/notes.js';
+import { vixPanel, sessionOf } from './vix.js';
 import { html, mount } from '../../core/dom.js';
 import { inr, price, dStamp, dFull } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
@@ -20,7 +21,7 @@ export default {
   render(el, v, g) {
     let data = null;
     const want = g.params && g.params.s;
-    let notes = null;
+    let notes = null, vx = null;
     function paint() {
       if (data === null) { mount(el, html`${head('Straddle')}${loading(6)}`); return; }
       if (data instanceof Error) { mount(el, html`${head('Straddle')}${empty('Couldn’t load this straddle', data.message)}`); return; }
@@ -31,6 +32,7 @@ export default {
         return;
       }
       if (!notes) notes = notesPanel({ deploymentId: v.id, day: r.day });
+      if (!vx) vx = vixPanel({ start: sessionOf(r.entry_t).start, end: r.open ? null : sessionOf(r.entry_t).end, sub: 'that session · the same marks as above' });
       const S = data.series, L = data.lines;
       const marks = [{ t: r.entry_t, label: 'Sold', color: 'var(--acc)' }];
       if (r.exit_t) marks.push({ t: r.exit_t, label: exitName(r.reason), color: EXIT_COLOR[r.reason] || 'var(--mute)' });
@@ -61,6 +63,7 @@ export default {
         <div class="gk-panel"><h3>The index <span class="s">through the straddle</span></h3>
           ${S.index.length > 1 ? linesChart([{ name: 'Index', data: S.index, color: 'var(--ink)' }], { levels: r.strike ? [{ key: 'strike', value: r.strike, color: 'var(--acc)', dash: true }] : [], marks, label: 'The index', fmt: x => Math.round(x).toLocaleString('en-IN'), h: 200 })
             : empty('', 'No index prices stored for this day.')}</div>
+        ${vx.html()}
         ${r.exit_values ? html`<div class="gk-panel"><h3>What ended it: ${exitName(r.reason)}</h3><p class="small" style="display:flex;flex-wrap:wrap;gap:6px 16px">${kv(r.exit_values)}</p></div>` : ''}
         ${notes.html()}
         <div class="gk-panel"><h3>Checks meanwhile <span class="s">what the strategy noted from 30 minutes before the entry</span></h3>
@@ -69,8 +72,9 @@ export default {
               html`<span class="col" style="gap:2px"><span>${d.summary}</span>${d.why ? html`<span class="mono tiny mute">${d.why}</span>` : ''}</span>`]), { minw: 640 })
             : empty('', 'Nothing noted around this straddle.')}</div>`);
       notes.attach(el);
+      vx.attach(el, marks);
     }
     const stop = poll(() => api.geek(g.id, `straddle${want ? `?s=${encodeURIComponent(want)}` : ''}`), 60000, d => { data = d; paint(); });
-    return () => { stop(); if (notes) notes.destroy(); };
+    return () => { stop(); if (notes) notes.destroy(); if (vx) vx.destroy(); };
   },
 };
