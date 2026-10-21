@@ -20,7 +20,7 @@ import os
 import random
 import sys
 import time as _time
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -207,6 +207,7 @@ async def seed():
             t += timedelta(minutes=5)
             i += 1
     ids[GEEK_NAME] = await seed_geek(pool, prices, GEEK_LIVE)
+    await seed_futures(pool)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -549,6 +550,51 @@ async def seed_supertrend(pool, dep, created):
 # fills carrying the strategy's own metadata (cycles, rolls, triggers),
 # 5-minute-style price marks, decisions that didn't trade, and candles
 # for legs rolls closed. Its open cycle is priced live by the loop below.
+# NIFTY's futures (app/futures.py): this month's and the next two, stored
+# 1-minute candles for the last weeks (the index's synthetic path plus a
+# basis that shrinks to expiry), and a live price kept at spot + basis.
+FUT_LIVE: dict = {}
+
+
+def last_tuesday(y, m):
+    d = date(y + m // 12, m % 12 + 1, 1) - timedelta(days=1)
+    while d.weekday() != 1:
+        d -= timedelta(days=1)
+    return d
+
+
+def fut_path(t, basis):
+    e = t.timestamp()
+    return 25000 + 300 * math.sin(e / 200000.0) + 60 * math.sin(e / 9000.0) + basis
+
+
+async def seed_futures(pool):
+    y, m = TODAY.year, TODAY.month
+    exps, k = [], 0
+    while len(exps) < 3:
+        e = last_tuesday(y + (m - 1 + k) // 12, (m - 1 + k) % 12 + 1)
+        if e >= TODAY.date():
+            exps.append(e)
+        k += 1
+    rows = []
+    for i, e in enumerate(exps):
+        tok = 990001 + i
+        sym = f"NIFTY{e.strftime('%y%b').upper()}FUT"
+        await queries.upsert_contracts(pool, [{"instrument_token": tok, "tradingsymbol": sym, "exchange": "NFO", "underlying": "NIFTY",
+                                               "expiry": e, "instrument_type": "FUT"}])
+        FUT_LIVE[tok] = (e - TODAY.date()).days * 3.2 + 8
+        for back in range(1, 16):
+            d = (TODAY - timedelta(days=back)).date()
+            if d.weekday() >= 5:
+                continue
+            for mm in range(0, 375):
+                t = datetime.combine(d, time(9, 15), IST) + timedelta(minutes=mm)
+                b = (e - d).days * 3.2 + 8
+                v = round(fut_path(t, b), 2)
+                rows.append((tok, t, v, v + 2, v - 2, v, 100))
+    await queries.upsert_candles(pool, rows, "kite")
+
+
 GEEK_NAME = "Nifty Monthly Strangle"
 GEEK_CAP = 600_000
 
@@ -772,6 +818,8 @@ def main():
                     d.last_prices[tok] = round(px * (1 + 0.01 * ((k + tok) % 9 - 4) / 4), 2)
                 for tok in GEEK_LIVE:
                     d.last_price_times[tok] = datetime.now(IST)
+                for tok, basis in FUT_LIVE.items():
+                    d.last_prices[tok] = round(d.last_prices[TOKEN["NIFTY"]] + basis, 2)
                 await asyncio.sleep(1.0)
         asyncio.create_task(loop())
         print(f"E2E READY {PORT}", flush=True)

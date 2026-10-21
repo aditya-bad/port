@@ -128,15 +128,15 @@ export function stage(D, i, zoom, hover) {
   for (const [top, h] of Object.values(PANES)) s += `<rect x="${LX}" y="${top}" width="${RX - LX}" height="${h}" fill="none" stroke="var(--line)"/>`;
 
   // ── price: candles, open legs' strikes, event flags
-  const spx = yScale(vis.flatMap(f => [f.h ?? f.idx, f.l ?? f.idx]), PANES.px);
+  const spx = yScale(vis.flatMap(f => [f.h ?? f.idx, f.l ?? f.idx, f.fut]), PANES.px);
   s += ticks(spx, 5, v => Math.round(v).toLocaleString('en-IN'));
-  let lastDay = '';
+  let lastDay = '', lastLabel = -99;
   vis.forEach((f, k) => {
     const d = dShort(f.t).replace(/ '\d\d$/, '');
     if (d === lastDay) return;
     const X = x(a + k) - bw / 2;
     if (lastDay) s += `<line x1="${X}" x2="${X}" y1="${PANES.px[0]}" y2="${PANES.vix[0] + PANES.vix[1]}" stroke="var(--line2)" stroke-dasharray="2 3"/>`;
-    s += `<text x="${X + 3}" y="${H - 4}">${d}</text>`;
+    if (X - lastLabel > 54) { s += `<text x="${X + 3}" y="${H - 4}">${d}</text>`; lastLabel = X; }   // never on top of the last one
     lastDay = d;
   });
   if (vis.some(f => f.o != null)) {
@@ -152,11 +152,15 @@ export function stage(D, i, zoom, hover) {
     const pts = vis.map((f, k) => (f.idx == null ? null : `${x(a + k).toFixed(1)} ${spx.y(f.idx).toFixed(1)}`)).filter(Boolean);
     if (pts.length > 1) s += `<path d="M${pts.join('L')}" fill="none" stroke="var(--ink)" stroke-width="1.6"/>`;
   }
+  // the future that prices the legs: a dashed line over the candles
+  const fpts = vis.map((f, k) => (f.fut == null ? null : `${x(a + k).toFixed(1)} ${spx.y(f.fut).toFixed(1)}`)).filter(Boolean);
+  if (fpts.length > 1) s += `<path d="M${fpts.join('L')}" fill="none" stroke="var(--b)" stroke-width="1.4" stroke-dasharray="5 3"/>`;
   D.legs.forEach((l, j) => {
     if (l.strike == null || !cur.legs.some(q => q[0] === j)) return;
     const c = legColor(l), from = Math.max(a, frameOf(F, l.t0));
-    const dist = cur.idx != null ? l.strike - cur.idx : null;
-    const label = `${legName(l)} ${l.side === 'short' ? 'sold' : 'bought'}${dist != null ? ` · ${sgn(dist)} pts` : ''}`;
+    // the distance that matters is from the future (options are priced off it), else from the spot
+    const ref = cur.fut ?? cur.idx, dist = ref != null ? l.strike - ref : null;
+    const label = `${legName(l)} ${l.side === 'short' ? 'sold' : 'bought'}${dist != null ? ` · ${sgn(dist)} pts${cur.fut != null ? ' from fut' : ''}` : ''}`;
     if (l.strike >= spx.lo && l.strike <= spx.hi) {
       const Y = spx.y(l.strike);
       s += `<line x1="${x(from) - bw / 2}" x2="${RX}" y1="${Y}" y2="${Y}" stroke="${c}" stroke-width="1.6"${l.side === 'long' ? ' stroke-dasharray="5 3"' : ''}/>`;
@@ -174,7 +178,11 @@ export function stage(D, i, zoom, hover) {
     s += `<rect class="hit" x="${X - Math.max(5, tw / 2)}" y="${PANES.px[0]}" width="${Math.max(10, tw)}" height="18" fill="transparent" data-tip="${attr(`${lab} · ${dStamp(e.t)}\n${e.rule}${e.booked != null ? `\nBooked  ${inr(e.booked)}` : ''}`)}"/>`;
   }
   if (cur.idx != null) s += tag(spx.y(Math.max(spx.lo, Math.min(spx.hi, cur.idx))), price(cur.idx), 'var(--ink)');
-  s += `<text x="${LX + 6}" y="${PANES.px[0] + 30}" style="font-weight:700;fill:var(--ink);font-size:12px">${D.index_name}</text>`;
+  if (cur.fut != null) {
+    const Yf = spx.y(Math.max(spx.lo, Math.min(spx.hi, cur.fut))), Yi = cur.idx != null ? spx.y(cur.idx) : -99;
+    s += tag(Math.abs(Yf - Yi) < 19 ? Yi + (Yf < Yi ? -19 : 19) : Yf, price(cur.fut), 'var(--b)');
+  }
+  s += `<text x="${LX + 6}" y="${PANES.px[0] + 30}" style="font-weight:700;fill:var(--ink);font-size:12px">${D.index_name}${D.future ? `<tspan style="font-weight:500;fill:var(--b)">  · dashed: ${D.future.symbol}</tspan>` : ''}</text>`;
 
   // ── P&L: the total, each leg, what's booked
   const legVals = D.legs.map((l, j) => vis.map((f, k) => legPnl(D, j, a + k)));
@@ -208,6 +216,7 @@ export function stage(D, i, zoom, hover) {
   const hv = hover ? {
     series: [
       { name: D.index_name, color: 'var(--ink)', pts: vis.map((f, k) => [x(a + k), f.idx == null ? spx.y(spx.lo) : spx.y(f.idx), f.o != null ? `${price(f.idx)}  O ${price(f.o)} H ${price(f.h)} L ${price(f.l)}` : price(f.idx), dStamp(f.t)]) },
+      ...(D.future ? [{ name: 'Future', color: 'var(--b)', pts: vis.map((f, k) => (f.fut == null ? null : [x(a + k), spx.y(f.fut), `${price(f.fut)}${f.idx != null ? `  basis ${sgn(f.fut - f.idx)}` : ''}`])).filter(Boolean) }] : []),
       { name: 'P&L', color: 'var(--ink)', pts: vis.map((f, k) => [x(a + k), sp.y(f.pnl), inr(f.pnl)]) },
       ...D.legs.map((l, j) => ({ name: legName(l), color: legColor(l), pts: legVals[j].map((v, k) => (v == null ? null : [x(a + k), sp.y(v), inr(v)])).filter(Boolean) })).filter(s2 => s2.pts.length),
       { name: 'VIX', color: 'var(--wr)', pts: vis.map((f, k) => [x(a + k), f.vix == null ? sv.y(sv.lo) : sv.y(f.vix), f.vix == null ? '—' : f.vix.toFixed(2)]) },
@@ -224,9 +233,10 @@ function strip(D, i) {
   return html`<div class="rp-strip">
     ${cell(dStamp(f.t), `bar ${i + 1} / ${F.length}`, '')}
     ${cell(D.index_name, f.idx == null ? '—' : price(f.idx), `${sgn(change(F, 0, i, 'idx'))} since start · ${sgn(change(F, from, i, 'idx'))} since event`)}
+    ${D.future ? cell(`Future · ${D.future.symbol}`, f.fut == null ? '—' : price(f.fut), f.fut != null && f.idx != null ? `basis ${sgn(f.fut - f.idx)} pts · ${sgn(change(F, 0, i, 'fut'))} since start` : '') : ''}
     ${cell('India VIX', f.vix == null ? '—' : f.vix.toFixed(2), `${sgn(change(F, 0, i, 'vix'), 2)} since start · ${sgn(change(F, from, i, 'vix'), 2)} since event`)}
     ${cell('P&L', inr(f.pnl), `booked ${inr(f.booked)} · open ${inr(f.pnl - f.booked)}`, tone(f.pnl))}
-    ${f.split ? html`<div class="rp-cell rp-from"><span>Came from</span>${[['Time decay', 0], [`${D.index_name} move`, 1], ['Volatility', 2]].map(([l, k]) => html`<div><i>${l}</i><b class="${tone(f.split[k])}">${inr(f.split[k])}</b></div>`)}</div>` : ''}
+    ${f.split ? html`<div class="rp-cell rp-from"><span>Came from</span>${[['Time decay', 0], [D.future ? 'Future move' : `${D.index_name} move`, 1], ['Volatility', 2]].map(([l, k]) => html`<div><i>${l}</i><b class="${tone(f.split[k])}">${inr(f.split[k])}</b></div>`)}</div>` : ''}
   </div>`;
 }
 
@@ -255,14 +265,14 @@ function positions(D, i) {
     html`<b class="mono small" style="color:${legColor(p.l)}">${legName(p.l)}</b>`,
     html`<span class="small">${p.l.side === 'short' ? 'Sold' : 'Bought'} ${p.l.qty}</span>`,
     html`<span class="mono tiny">${dStamp(p.l.t0)}</span>`, by(p.l.opened_by),
-    price(p.l.entry), p.l.s0 ? price(p.l.s0) : '—',
+    price(p.l.entry), p.l.s0 ? price(p.l.s0) : '—', ...(D.future ? [p.l.f0 ? price(p.l.f0) : '—'] : []),
     html`<span class="${p.stale ? 'mute' : ''}">${p.now == null ? '—' : price(p.now)}</span>`,
     p.closed ? html`<span class="small">Closed ${hhmm(p.l.t1)} · ${p.l.closed_by ? p.l.closed_by.label || p.l.closed_by.rule : ''}</span>` : html`<b class="small">Open</b>`,
     html`<b class="${tone(p.pnl)}">${p.pnl == null ? '—' : inr(p.pnl)}</b>`,
   ]);
-  rows.push([html`<b class="small">Total</b>`, html`<span class="tiny mute">${open.length} open · ${closed.length} closed</span>`, '', '', '', '', '',
+  rows.push([html`<b class="small">Total</b>`, html`<span class="tiny mute">${open.length} open · ${closed.length} closed</span>`, '', '', '', '', ...(D.future ? [''] : []), '',
     html`<span class="tiny">open ${inr(sum(open))} · booked ${inr(sum(closed))}</span>`, html`<b class="${tone(sum(P))}">${inr(sum(P))}</b>`]);
-  return table([['Leg', 'minmax(96px,.9fr)'], ['Side', '82px'], ['Opened', '110px'], ['By', 'minmax(150px,1.3fr)'], ['Entry', '72px', 'num'], [`${D.index_name} then`, '86px', 'num'], ['Now / exit', '80px', 'num'], ['Status', 'minmax(140px,1fr)'], ['P&L', '92px', 'num']],
+  return table([['Leg', 'minmax(96px,.9fr)'], ['Side', '82px'], ['Opened', '110px'], ['By', 'minmax(150px,1.3fr)'], ['Entry', '72px', 'num'], [`${D.index_name} then`, '86px', 'num'], ...(D.future ? [['Future then', '86px', 'num']] : []), ['Now / exit', '80px', 'num'], ['Status', 'minmax(140px,1fr)'], ['P&L', '92px', 'num']],
     rows, { minw: 980, rowCls: k => (k === P.length ? 'rp-total' : P[k].fresh ? 'rp-fresh' : P[k].justClosed ? 'rp-gone' : P[k].closed ? 'rp-closed' : '') });
 }
 

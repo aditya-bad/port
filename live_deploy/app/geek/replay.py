@@ -33,7 +33,7 @@ from typing import Optional
 
 from . import common
 from .common import IST, Ctx, _ist, _iso, label, saw
-from .optionmath import implied_vol, price as bs_price, years_to
+from .optionmath import fwd_implied_vol, fwd_price, implied_vol, price as bs_price, years_to
 from .volatility import expiry_of, spot_of
 
 INTERVAL_MIN = {"minute": 1, "5minute": 5, "15minute": 15, "60minute": 60}
@@ -191,25 +191,29 @@ class Series:
 
 
 def split_leg(leg: dict, t1: datetime, s1: float, p1: float) -> Optional[tuple[float, float, float]]:
-    """(time decay, the index's move, volatility) of one leg from entry to
+    """(time decay, the market's move, volatility) of one leg from entry to
     (t1, s1, p1), in rupees for its side and size; None without an
-    implied volatility at entry."""
+    implied volatility at entry. A leg with its future (leg["fwd"]) is
+    valued off it with Black-76 — s0/s1 are then the future's prices —
+    else off the spot."""
     iv = leg.get("iv")
     if iv is None or s1 is None or p1 is None:
         return None
     k, kind, exp = leg["k"], leg["kind"], leg["expiry"]
     T0, T1 = years_to(exp, leg["t0"]), years_to(exp, t1)
-    b0 = bs_price(kind, leg["s0"], k, T0, iv)
-    bt = bs_price(kind, leg["s0"], k, T1, iv)
-    bm = bs_price(kind, s1, k, T1, iv)
+    value = fwd_price if leg.get("fwd") else bs_price
+    b0 = value(kind, leg["s0"], k, T0, iv)
+    bt = value(kind, leg["s0"], k, T1, iv)
+    bm = value(kind, s1, k, T1, iv)
     sign = (-1.0 if leg["sold"] else 1.0) * leg["qty"]
     return ((bt - b0) * sign, (bm - bt) * sign, (p1 - bm + b0 - leg["p0"]) * sign)
 
 
 def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: timedelta,
-          contract_exp: dict, now: datetime, cycles: bool = False) -> dict:
+          contract_exp: dict, now: datetime, cycles: bool = False, fut: Optional[list] = None) -> dict:
     """The replay of the episodes `sel` (from common.trades_of): frames,
-    legs and events. `index`/`vix`: [{t, c}] candles at `step`;
+    legs and events. `index`/`vix`/`fut`: [{t, c}] candles at `step` (fut:
+    the future that prices the legs, app/futures.py);
     `prices`: {position id: [(t, price)]}."""
     pos = {p["id"]: p for p in b["positions"]}
     ids = [i for t in sel for i in t["ids"]]
@@ -225,6 +229,7 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
     # a candle's close is known at its end: each series is read as of then
     idx = Series([(_ist(c["t"]) + step, float(c["c"])) for c in index])
     vx = Series([(_ist(c["t"]) + step, float(c["c"])) for c in vix])
+    fx = Series([(_ist(c["t"]) + step, float(c["c"])) for c in (fut or [])])
     ohlc = {_ist(c["t"]): c for c in index}
     # the steps: the index's candles across the window, else every price we have
     times = [t for t in ohlc if start - step < t <= end]
@@ -261,8 +266,15 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
         leg["expiry"] = expiry_of(opens[0]["metadata"] if opens else {}, contract_exp.get(int(p["instrument_token"])), p["symbol"]) \
             if leg["kind"] in ("CE", "PE") else None
         leg["iv"] = None
-        if leg["kind"] in ("CE", "PE") and leg["k"] and leg["expiry"] and s0:
-            leg["iv"] = implied_vol(leg["kind"], leg["p0"], s0, leg["k"], years_to(leg["expiry"], t0))
+        # the future at entry: the last finished bar, else the bar it opened in
+        f0 = (fx.at(t0, stale=timedelta(days=4)) or fx.at(t0 + step)) if fx else None
+        leg["fwd"] = f0 is not None
+        leg["spot0"] = s0
+        if leg["fwd"]:
+            leg["s0"] = f0   # valued off its future from here on
+        if leg["kind"] in ("CE", "PE") and leg["k"] and leg["expiry"] and leg["s0"]:
+            T0 = years_to(leg["expiry"], t0)
+            leg["iv"] = (fwd_implied_vol if leg["fwd"] else implied_vol)(leg["kind"], leg["p0"], leg["s0"], leg["k"], T0)
         L.append(leg)
 
     frames = []
@@ -273,25 +285,27 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
         split_ok = True
         held = []
         s1 = idx.at(asof)
+        f1 = fx.at(asof) if fx else None
+        under = lambda g, t=None: (fx.at(t) if t else f1) if g["fwd"] else (idx.at(t) if t else s1)  # noqa: E731
         for j, g in enumerate(L):
             if g["t0"] > asof:
                 continue
             if g["t1"] is not None and g["t1"] <= asof:
                 booked += g["realized"]
-                parts = split_leg(g, g["t1"], idx.at(g["t1"]) or s1, g["p1"])
+                parts = split_leg(g, g["t1"], under(g, g["t1"]) or under(g), g["p1"])
             else:
                 px = g["px"].at(asof)
                 mark = px if px is not None else g["p0"]
                 pnl = (mark - g["p0"]) * g["qty"] * (-1 if g["sold"] else 1)
                 openp += pnl
                 held.append([j, round(mark, 2), round(pnl, 2), px is None])
-                parts = split_leg(g, asof, s1, px) if px is not None else None
+                parts = split_leg(g, asof, under(g), px) if px is not None else None
             if parts is None:
                 split_ok = False
             else:
                 sp = [a + b for a, b in zip(sp, parts)]
         c = ohlc.get(T)
-        frames.append({"t": _iso(T), "idx": s1, "vix": vx.at(asof), "booked": round(booked, 2),
+        frames.append({"t": _iso(T), "idx": s1, "vix": vx.at(asof), "fut": f1, "booked": round(booked, 2),
                        "o": float(c["o"]) if c else None, "h": float(c["h"]) if c else None, "l": float(c["l"]) if c else None,
                        "pnl": round(booked + openp, 2), "legs": held,
                        "split": [round(x, 2) for x in sp] if split_ok and any(g["iv"] for g in L) else None})
@@ -377,7 +391,8 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
         "legs": [{"symbol": g["symbol"], "side": g["side"], "qty": g["qty"], "entry": round(g["p0"], 2),
                   "kind": g["kind"], "strike": g["k"], "t0": _iso(g["t0"]), "t1": _iso(g["t1"]),
                   "exit": round(g["p1"], 2) if g["p1"] is not None else None, "realized": g["realized"],
-                  "s0": round(g["s0"], 2) if g["s0"] else None,
+                  "s0": round(g["spot0"], 2) if g["spot0"] else None,
+                  "f0": round(g["s0"], 2) if g["fwd"] else None,
                   "opened_by": by_leg.get(g["id"], {}).get("open"), "closed_by": by_leg.get(g["id"], {}).get("close"),
                   "iv": round(g["iv"] * 100, 2) if g["iv"] else None, "cycle": g["cycle"],
                   "priced": bool(g["px"])} for g in L],
@@ -461,7 +476,28 @@ async def replay(ctx: Ctx) -> dict:
         "SELECT instrument_token, expiry FROM contracts WHERE instrument_token = ANY($1::bigint[])",
         list({int(p["instrument_token"]) for p in legs}))} if legs else {}
 
-    out.update(build(b, sel, index, vix, prices, step, contract_exp, now, cycles=gb == "cycle_id"))
+    # the future that prices these legs (app/futures.py): its stored candles
+    from .. import futures as F
+    fut, fut_info = [], None
+    und = F.underlying_of(ctx.config)
+    if und and ctx.candles is not None:
+        first = {}
+        for x in b["lots"]:
+            if x["opening"]:
+                first.setdefault(x["position_id"], x)
+        exps = [e for e in (expiry_of((first.get(p["id"]) or {}).get("metadata") or {}, contract_exp.get(int(p["instrument_token"])), p["symbol"])
+                            for p in legs) if e]
+        f = F.pick(await F.known(ctx.pool, und), min(exps) if exps else None, start.date())
+        if f:
+            try:
+                rows, _src, _err = await ctx.candles.series(int(f["instrument_token"]), lo, hi, interval, symbol=f["tradingsymbol"])
+            except Exception:
+                rows = []
+            fut = [{"t": datetime.fromtimestamp(r["t"] / 1000, IST), "c": float(r["c"])} for r in rows]
+            fut_info = {"symbol": f["tradingsymbol"], "expiry": f["expiry"].isoformat(), "bars": len(fut)}
+
+    out.update(build(b, sel, index, vix, prices, step, contract_exp, now, cycles=gb == "cycle_id", fut=fut))
+    out["future"] = fut_info
     out.update({"interval": interval, "index_name": _index_name(ctx), "market_error": market_error,
                 "no_index": not index})
     return out

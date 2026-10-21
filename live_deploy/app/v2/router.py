@@ -118,6 +118,19 @@ async def get_vix_exposure(request: Request):
     return await vix.exposure(request.app.state.db_pool, request.app.state.dispatcher, getattr(request.app.state, "vix", None))
 
 
+@router.get("/deployments/{deployment_id}/underlying")
+async def get_underlying(deployment_id: UUID, request: Request):
+    """The open legs against the index's spot and its future: the basis,
+    each leg's distance from both, delta per point of the future, and what
+    a move of the future would do (app/v2/underlying.py)."""
+    from . import underlying
+    pool = request.app.state.db_pool
+    dep = await queries.get_deployment(pool, deployment_id)
+    if dep is None:
+        raise HTTPException(404, "No such deployment")
+    return await underlying.build(pool, dict(dep), request.app.state.dispatcher)
+
+
 @router.get("/review")
 async def get_review(request: Request, week: Optional[str] = None):
     """The weekly review (app/v2/review.py): ?week=any day of the week

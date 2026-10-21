@@ -3,6 +3,8 @@
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.geek import optionmath as M
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -61,3 +63,23 @@ def test_vega_matches_a_one_point_bump():
         bump = M.price(kind, s, k, t, v + 0.01) - M.price(kind, s, k, t, v)
         assert abs(M.vega(s, k, t, v) / 100 - bump) < 0.05, "vega ÷ 100 ≈ the price change for +1 point"
     assert M.vega(25000, 25000, 0, 0.14) == 0, "expired: no vega"
+
+
+def test_black76_prices_off_the_future_and_inverts():
+    from app.geek.optionmath import fwd_price, fwd_implied_vol, fwd_greeks, price
+    t, f, k = 30 / 365, 25100.0, 25000.0
+    c, p = fwd_price("CE", f, k, t, 0.15), fwd_price("PE", f, k, t, 0.15)
+    import math
+    assert c - p == pytest.approx(math.exp(-0.065 * t) * (f - k), abs=1e-6)     # put-call parity on the forward
+    assert fwd_implied_vol("CE", c, f, k, t) == pytest.approx(0.15, abs=1e-4)
+    # the same option from the spot whose forward is f
+    s = f * math.exp(-0.065 * t)
+    assert price("CE", s, k, t, 0.15) == pytest.approx(c, abs=1e-6)
+    dc, gc = fwd_greeks("CE", f, k, t, 0.15)
+    dp, gp = fwd_greeks("PE", f, k, t, 0.15)
+    assert 0 < dc < 1 and -1 < dp < 0 and dc - dp == pytest.approx(math.exp(-0.065 * t), abs=1e-9)
+    assert gc == pytest.approx(gp) and gc > 0
+    # a numeric check of delta
+    h = 0.5
+    assert dc == pytest.approx((fwd_price("CE", f + h, k, t, 0.15) - fwd_price("CE", f - h, k, t, 0.15)) / (2 * h), abs=1e-4)
+    assert fwd_greeks("CE", 25100, 25000, 0, 0.15) == (1.0, 0.0)

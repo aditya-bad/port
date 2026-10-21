@@ -97,3 +97,33 @@ def attribute(kind: str, k: float, expiry: date, t0: datetime, s0: float, p0: fl
     out["total"] = round((p1 - p0) * qty * sign, 2)
     out["iv0"] = round(iv * 100, 2)
     return out
+
+
+# ── Black-76: an option priced off its future, not the spot ─────────────
+#
+# An index option is priced off the forward, which its future tracks; the
+# spot only gets there through an assumed rate. With the future's own
+# price F the rate drops out of the forward and only discounts:
+#   price = e^(−rT) · BS(F, K, T, σ, r = 0)
+
+def fwd_price(kind: str, f: float, k: float, t: float, vol: float, r: float = RATE) -> float:
+    return math.exp(-r * t) * price(kind, f, k, t, vol, 0.0)
+
+
+def fwd_implied_vol(kind: str, premium: float, f: float, k: float, t: float, r: float = RATE) -> Optional[float]:
+    if premium is None or premium <= 0:
+        return None
+    return implied_vol(kind, premium * math.exp(r * t), f, k, t, 0.0)
+
+
+def fwd_greeks(kind: str, f: float, k: float, t: float, vol: float, r: float = RATE) -> tuple[float, float]:
+    """(delta, gamma) against the future: per point, and per point²."""
+    if t <= MIN_T or vol <= 0 or f <= 0 or k <= 0:
+        itm = (f > k) if kind == "CE" else (f < k)
+        return ((1.0 if kind == "CE" else -1.0) if itm else 0.0), 0.0
+    sq = vol * math.sqrt(t)
+    d1 = (math.log(f / k) + vol * vol / 2 * t) / sq
+    disc = math.exp(-r * t)
+    delta = disc * (_ncdf(d1) if kind == "CE" else _ncdf(d1) - 1)
+    gamma = disc * math.exp(-d1 * d1 / 2) / math.sqrt(2 * math.pi) / (f * sq)
+    return delta, gamma

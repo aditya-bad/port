@@ -95,3 +95,14 @@ test('the stage draws only up to the playhead: candles, strikes with their dista
 test('every kind the backend sends has a label and a colour', () => {
   for (const k of ['new', 'entry', 'adjustment', 'roll', 'hedge', 'added', 'leg_closed', 'exit']) assert.ok(KIND[k] && KIND[k][0] && KIND[k][1], k);
 });
+
+test('with a future: a dashed line, its tag, and strikes measured from it', () => {
+  const DF = { ...D, future: { symbol: 'NIFTYFUTX', expiry: '2026-11-24' }, frames: D.frames.map(f => ({ ...f, fut: f.idx + 2 })) };
+  const s = String(stage(DF, 1, 120, true));
+  assert.match(s, /stroke="var\(--b\)" stroke-width="1.4" stroke-dasharray="5 3"/, 'the future, dashed');
+  assert.match(s, /CE 105 sold · \+1 pts from fut/, 'distance from the future (104), not the spot (102)');
+  assert.match(s, /dashed: NIFTYFUTX/);
+  assert.match(s, />104\.00</, 'its price tag');
+  const plain = String(stage(D, 1, 120, true));
+  assert.doesNotMatch(plain, /from fut/);
+});

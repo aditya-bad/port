@@ -209,3 +209,28 @@ def test_a_checkpoint_exit_and_re_entry_starts_the_new_cycle_and_names_the_one_i
         reentry = [e for e in chain["events"] if e["cycle"] == 2 and e["kind"] == "new"]
         assert reentry and "closed_before" not in reentry[0] and any(not f["opening"] for f in reentry[0]["fills"])
     pool_run(go)
+
+
+def test_with_its_future_stored_each_leg_is_valued_off_it_and_the_split_still_adds_up(pool_run, monkeypatch):
+    """Options are priced off the future: with the legs' own-month future
+    stored, every bar carries it, each leg's entry future and volatility
+    come from it (Black-76), and time + move + volatility still equal the
+    P&L."""
+    async def go(pool):
+        sim, rec = await strangle_with_an_adjustment(pool, monkeypatch)
+        exp = next(p["metadata"]["contract_expiry"] for p in await sim.all_positions())
+        await queries.upsert_contracts(pool, [{"instrument_token": 4242, "tradingsymbol": "NIFTYFUTX", "underlying": "NIFTY",
+                                               "expiry": datetime.fromisoformat(exp).date(), "instrument_type": "FUT"}])
+        hist = sim.market.history[INDEX["NIFTY"][0]]
+        rec.pts[4242] = [(t.replace(tzinfo=IST), p + 120.0) for t, p in hist if t.date() == sim.market.today]
+        out = await view(sim, rec, monkeypatch)
+        assert out["future"]["symbol"] == "NIFTYFUTX" and out["future"]["bars"] > 0
+        moving = [f for f in out["frames"] if f["idx"] is not None and f["fut"] is not None]
+        assert moving and all(abs(f["fut"] - f["idx"] - 120) < 0.01 for f in moving)
+        # the future at entry is its last finished bar: within one bar's move (20 pts here) of spot + basis
+        assert all(l["f0"] and abs(l["f0"] - l["s0"] - 120) <= 20 for l in out["legs"])
+        for f in out["frames"]:
+            if f["split"] is not None:
+                assert sum(f["split"]) == pytest.approx(f["pnl"], abs=0.5)
+        assert out["split_legs"] == len(out["legs"])
+    pool_run(go)

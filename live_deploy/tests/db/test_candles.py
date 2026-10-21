@@ -393,3 +393,58 @@ def test_start_backfill_shows_as_running_immediately(pool_run, monkeypatch, froz
         await task
         assert (await svc.backfill_status())["running"] is None
     pool_run(go)
+
+
+def test_backfill_keeps_the_traded_indexs_current_and_next_month_futures_with_their_history(pool_run, monkeypatch, frozen_today):
+    """Futures expire like options (Kite drops their history): the current
+    and next-month future of every traded index is kept, back KEEP_DAYS on
+    the first run, only the new day after that; a stopped deployment's
+    index isn't."""
+    from app import futures as F
+    k = _mk(monkeypatch)
+    rows = {"NIFTY": [{"instrument_token": 7001, "tradingsymbol": "NIFTY26OCTFUT", "exchange": "NFO", "name": "NIFTY", "expiry": date(2026, 10, 27)},
+                      {"instrument_token": 7002, "tradingsymbol": "NIFTY26NOVFUT", "exchange": "NFO", "name": "NIFTY", "expiry": date(2026, 11, 24)}],
+            "SENSEX": [{"instrument_token": 7101, "tradingsymbol": "SENSEX26OCTFUT", "exchange": "BFO", "name": "SENSEX", "expiry": date(2026, 10, 29)}]}
+    asked = []
+
+    async def listed(dispatcher, underlying, on, n=2):
+        asked.append(underlying)
+        return rows.get(underlying, [])
+    monkeypatch.setattr(F, "listed", listed)
+
+    async def go(pool):
+        await queries.create_deployment(pool, "N", "strangle_monthly_v2", "positional", 1e6, {"instrument": "NIFTY", "instrument_tokens": [256265]})
+        s = await queries.create_deployment(pool, "S", "intraday_dtt_simple", "intraday", 1e6, {"instrument_tokens": [265]})
+        await queries.set_status(pool, s["id"], "stopped")
+        r = await service(pool).backfill_day(DAY)
+        assert asked == ["NIFTY"], "only indices a running deployment trades"
+        assert sorted({c[0] for c in k.calls}) == [7001, 7002]
+        first = min(c[1] for c in k.calls if c[0] == 7002)
+        assert (DAY - first.date()).days >= F.KEEP_DAYS - 3, "history back KEEP_DAYS (to the first trading day)"
+        assert r["instruments"] == 2 and r["rows"] > 2 * 375 * 30
+        c = await queries.get_contract(pool, 7002)
+        assert c["instrument_type"] == "FUT" and c["expiry"] == date(2026, 11, 24) and c["underlying"] == "NIFTY"
+        k.calls.clear()
+        again = await service(pool).backfill_day(DAY)
+        assert again["fetched"] == [] and k.calls == [], "a re-run fetches nothing"
+        # stored futures read back as stored, like options
+        rows_, src, _ = await service(pool).series(7002, at(DAY, 9, 15), at(DAY, 15, 30), "5minute", fetch=False)
+        assert src == "stored" and len(rows_) == 75
+        known = await F.known(pool, "NIFTY")
+        assert [f["tradingsymbol"] for f in known] == ["NIFTY26OCTFUT", "NIFTY26NOVFUT"]
+        assert F.pick(known, date(2026, 11, 24), DAY)["tradingsymbol"] == "NIFTY26NOVFUT"    # a November option: November's future
+        assert F.pick(known, date(2026, 10, 20), DAY)["tradingsymbol"] == "NIFTY26OCTFUT"    # a weekly: the current month
+        assert F.pick(known, None, DAY)["tradingsymbol"] == "NIFTY26OCTFUT"
+        assert F.pick(known, date(2026, 12, 29), DAY)["tradingsymbol"] == "NIFTY26OCTFUT"    # none that far: the nearest
+        assert F.pick(known, None, date(2026, 11, 30)) is None
+        # a monthly symbol only gives its month (expiry read as the month's last day): still that month's future
+        assert F.pick(known, date(2026, 11, 30), DAY)["tradingsymbol"] == "NIFTY26NOVFUT"
+    pool_run(go)
+
+
+def test_underlying_of_a_deployment():
+    from app import futures as F
+    assert F.underlying_of({"instrument": "nifty"}) == "NIFTY"
+    assert F.underlying_of({"options_underlying": "SENSEX", "instrument_tokens": [256265]}) == "SENSEX"
+    assert F.underlying_of({"instrument_tokens": [260105]}) == "BANKNIFTY"
+    assert F.underlying_of({"instrument_tokens": [123]}) is None and F.underlying_of({}) is None

@@ -10,6 +10,7 @@ import * as book from '../../data/book.js';
 import { sect, empty, loading } from '../../ui/components.js';
 import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
 import { hasOwn } from '../../data/geek.js';
+import { underlyingPanel } from '../../ui/underlying.js';
 
 // The strangle's engine at a glance (geek mode has the full view).
 function engineCard(eng) {
@@ -54,7 +55,7 @@ function timeline(lots, start, v) {
 export default {
   // `g` is set when geek mode reuses this tab (it has its own engine view).
   render(el, v0, g) {
-    let lots = null, openPos = null, status = null, eng = null;
+    let lots = null, openPos = null, status = null, eng = null, und = null;
     const withEngine = !g && hasOwn(v0);
     function paint() {
       const v = book.find(v0.id) || v0;
@@ -69,6 +70,7 @@ export default {
               ${v.legs.length ? html`${legHead()}${v.legs.map(legRow)}`
                 : empty('', v.rawStatus === 'stopped' ? 'Stopped and flat.' : `Flat. Waiting for the next entry${v.raw.config && v.raw.config.entry_time ? ` at ${v.raw.config.entry_time}` : ''}.`)}
             </div>
+            ${v.legs.length ? underlyingPanel(und) : ''}
             <div>
               ${sect(v.legs.length ? 'This cycle' : 'Last cycle')}
               ${tl === null ? loading(3) : tl.length ? tl.map(r => html`
@@ -110,6 +112,14 @@ export default {
       if (u) { setText(u, inr(x.unreal)); setTone(u, tone(x.unreal)); }
     })];
     const iv = setInterval(() => api.strategyStatus(v0.id).then(r => { status = r; paint(); }).catch(() => {}), 30000);
+    // the legs against the index: refreshed on its own, without repainting the page
+    const loadUnd = () => api.underlying(v0.id).then(r => {
+      und = r;
+      const box = $('[data-underlying]', el);
+      if (box) box.outerHTML = String(underlyingPanel(und)); else paint();
+    }).catch(e => { und = e instanceof Error ? e : new Error(String(e)); });
+    loadUnd();
+    const ivU = setInterval(loadUnd, 15000);
     // the Live tag turns stale when ticks stop, even with nothing to repaint
     const iv2 = setInterval(() => { const v = book.find(v0.id); if (v) tickLegs(el, v.legs); }, 5000);
     let iv3 = null;   // its "Open geek mode" button is handled by the page (data-act="geek")
@@ -122,6 +132,6 @@ export default {
       load();
       iv3 = setInterval(load, 5000);
     }
-    return () => { offs.forEach(f => f()); clearInterval(iv); clearInterval(iv2); if (iv3) clearInterval(iv3); };
+    return () => { offs.forEach(f => f()); clearInterval(iv); clearInterval(iv2); clearInterval(ivU); if (iv3) clearInterval(iv3); };
   },
 };

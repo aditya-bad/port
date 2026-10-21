@@ -1,10 +1,11 @@
 """
-live_deploy — price history for charts. Option contracts are stored;
-indices and stocks are not.
+live_deploy — price history for charts. Option and index futures
+contracts are stored; indices and stocks are not.
 
 Why: Kite's historical API keeps serving an index's or a stock's
-history indefinitely, but drops an option contract's history the day it
-expires. So only OPTIONS (CE/PE) are kept, in candles_1m (migration
+history indefinitely, but drops an option's or a future's history the
+day it expires. So only OPTIONS (CE/PE) and FUTURES are kept (futures:
+the current and next month of every traded index, see app/futures.py), in candles_1m (migration
 0021): one 1-minute OHLC row per contract per minute, nothing else. A
 contract held by an intraday and a positional deployment at once is
 stored once; 5/15/60-minute candles are rolled up from the 1-minute rows
@@ -44,6 +45,7 @@ logger = logging.getLogger("live_deploy.candles")
 
 IST = ZoneInfo("Asia/Kolkata")
 SESSION_OPEN, SESSION_CLOSE = time(9, 15), time(15, 30)
+STORED = ("CE", "PE", "FUT")
 INTERVAL_MINUTES = {"minute": 1, "3minute": 3, "5minute": 5, "10minute": 10, "15minute": 15,
                     "30minute": 30, "60minute": 60}
 # The daily backfill: once the close (15:30) has settled.
@@ -147,7 +149,7 @@ class CandleService:
         filled from Kite first when `fetch` and the contract is still
         listed. source: "stored" (covered), "stored_partial" (some days
         incomplete) or None (nothing); error says why data is missing."""
-        if not await self.is_option(token, symbol):
+        if not await self.is_stored(token, symbol):
             return await self._from_kite(token, start, end, interval, fetch)
         err = None
         if fetch:
@@ -164,16 +166,17 @@ class CandleService:
         missing = await self._missing_days(token, start, end)
         return rollup(rows, interval), ("stored_partial" if missing else "stored"), None
 
-    async def is_option(self, token: int, symbol: Optional[str] = None) -> bool:
-        """Only option contracts (CE/PE) are stored. Known from the symbol
-        given, else the contracts table, else any position that held it."""
+    async def is_stored(self, token: int, symbol: Optional[str] = None) -> bool:
+        """Only option (CE/PE) and futures contracts are stored. Known from
+        the symbol given, else the contracts table, else any position that
+        held it."""
         if symbol is None:
             c = await queries.get_contract(self.pool, token)
             if c is not None and c["instrument_type"]:
-                return c["instrument_type"] in ("CE", "PE")
+                return c["instrument_type"] in STORED
             symbol = await queries.position_symbol(self.pool, token)
         p = parse_contract(symbol or "")
-        return bool(p and p["instrument_type"] in ("CE", "PE"))
+        return bool(p and p["instrument_type"] in STORED)
 
     async def _from_kite(self, token, start, end, interval, fetch) -> tuple[list[dict], Optional[str], Optional[str]]:
         """An index or a stock: Kite's own history at the chart's interval,
@@ -238,8 +241,8 @@ class CandleService:
         """Make [start, end) covered, fetching only the days that aren't
         from Kite. Returns the number of minutes stored. Concurrent calls
         for one instrument share the work (the second finds it done)."""
-        if not await self.is_option(token, symbol):
-            return 0               # only option contracts are ever stored
+        if not await self.is_stored(token, symbol):
+            return 0               # only option and futures contracts are ever stored
         today = datetime.now(IST).date()
         expiry = await self._expiry(token, symbol)
         lock = self._token_locks.setdefault(token, asyncio.Lock())
@@ -310,14 +313,27 @@ class CandleService:
         try:
             held = [r for r in await queries.instruments_held_between(self.pool, start, end)
                     if (parse_contract(r["symbol"] or "") or {}).get("instrument_type") in ("CE", "PE")]
-            self.progress["total"] = len(held)
             await self.remember_contracts([(int(r["instrument_token"]), r["symbol"]) for r in held])
-            for r in sorted(held, key=lambda r: int(r["instrument_token"])):
+            # the traded indices' current and next-month futures, and their
+            # history back to KEEP_DAYS while Kite still has it
+            futs = []
+            try:
+                from . import futures as F
+                since = datetime.combine(day - timedelta(days=F.KEEP_DAYS), SESSION_OPEN, IST)
+                futs = [{"instrument_token": int(f["instrument_token"]), "symbol": f["tradingsymbol"], "since": since}
+                        for f in await F.to_keep(self.pool, self.dispatcher, day)]
+            except NoKiteSession:
+                pass
+            except Exception:
+                logger.exception("Candle backfill: listing the futures failed — options only this time")
+            todo = [{**dict(r), "since": start} for r in sorted(held, key=lambda r: int(r["instrument_token"]))] + futs
+            self.progress["total"] = len(todo)
+            for r in todo:
                 token, symbol = int(r["instrument_token"]), r["symbol"]
                 self.progress["current"] = symbol
                 before = self.kite_requests
                 try:
-                    n = await self.ensure(token, start, end, symbol=symbol)
+                    n = await self.ensure(token, r["since"], end, symbol=symbol)
                 except NoKiteSession:
                     error = "Kite isn't logged in"
                     logger.warning("Candle backfill for %s stopped: Kite isn't logged in", day)
@@ -330,7 +346,7 @@ class CandleService:
                     fetched.append(token)
                 rows += n
                 self.progress.update(done=self.progress["done"] + 1, fetched=len(fetched), rows=rows)
-            total = len(held)
+            total = len(todo)
         except Exception as e:
             logger.exception("Candle backfill %s failed", day)
             error, total = str(e), self.progress["total"]
@@ -346,7 +362,7 @@ class CandleService:
         # scheduled one) keeps showing as running: clearing it here made the
         # status say "nothing running" until that run began.
         self.progress = self._waiting(self._backfill_queue[0]["day"]) if self._backfill_queue else None
-        logger.info("Candle backfill %s: %d option contract(s), %d fetched from Kite, %d minute(s) stored%s",
+        logger.info("Candle backfill %s: %d contract(s), %d fetched from Kite, %d minute(s) stored%s",
                     day, total, len(fetched), rows, f" — {error}" if error else "")
         return result
 
