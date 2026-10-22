@@ -410,3 +410,182 @@ async def run_day_check(payload: DayCheckIn, request: Request):
     rid = await launcher.start(d, "manual", str(payload.deployment_id) if payload.deployment_id else None)
     row = await request.app.state.db_pool.fetchrow("SELECT * FROM day_check_runs WHERE id = $1", rid)
     return _run_json(row)
+
+
+# ── Repairing a flagged day (app/repair/dayrepair.py) ────────────────
+
+_ORDERS = ("up_first", "down_first")
+
+
+def _job_json(r, result: bool = True) -> Optional[dict]:
+    if r is None:
+        return None
+    return {"id": r["id"], "kind": r["kind"], "status": r["status"], "choices": r["choices"] or {}, "error": r["error"],
+            "created_at": r["created_at"].isoformat(),
+            "finished_at": r["finished_at"].isoformat() if r["finished_at"] else None,
+            **({"result": r["result"]} if result else {})}
+
+
+def _day(s: str):
+    from datetime import date as _date
+    try:
+        return _date.fromisoformat(s)
+    except ValueError:
+        raise HTTPException(422, "day must be a date, YYYY-MM-DD")
+
+
+@router.get("/repair-cases/{day}/{deployment_id}")
+async def get_repair_case(day: str, deployment_id: UUID, request: Request):
+    """A flagged day of one deployment: what the check found, the paths
+    chosen so far (the draft), the latest plan of it with everything to
+    judge it by, and the repair if applied."""
+    pool = request.app.state.db_pool
+    d = _day(day)
+    dep = await queries.get_deployment(pool, deployment_id)
+    if dep is None:
+        raise HTTPException(404, "No such deployment")
+    check = await pool.fetchrow("SELECT * FROM day_checks WHERE deployment_id = $1 AND day = $2", deployment_id, d)
+    if check is None:
+        raise HTTPException(404, "That day hasn't been checked for this deployment")
+    draft = await pool.fetchrow("SELECT * FROM repair_drafts WHERE deployment_id = $1 AND day = $2", deployment_id, d)
+    plan = await pool.fetchrow(
+        "SELECT * FROM repair_jobs WHERE deployment_id = $1 AND day = $2 AND kind = 'plan' ORDER BY id DESC LIMIT 1", deployment_id, d)
+    apply_ = await pool.fetchrow(
+        "SELECT * FROM repair_jobs WHERE deployment_id = $1 AND day = $2 AND kind = 'apply' ORDER BY id DESC LIMIT 1", deployment_id, d)
+    live = await pool.fetchrow(
+        "SELECT * FROM stall_repairs WHERE deployment_id = $1 AND day = $2 AND undone_at IS NULL", deployment_id, d)
+    choices = (draft["choices"] if draft else None) or {}
+    return {
+        "day": d.isoformat(),
+        "deployment": {"id": str(dep["id"]), "name": dep["deployment_name"], "strategy": dep["strategy_name"],
+                       "mode": dep["mode"], "status": dep["status"], "capital": float(dep["initial_capital"])},
+        "check": {"status": check["status"], "headline": check["headline"], "rules": check["rules"] or [],
+                  "diff": check["diff"] or {}, "replay": check["replay"] or {}, "checked_at": check["checked_at"].isoformat()},
+        "draft": {"choices": choices, "updated_at": draft["updated_at"].isoformat() if draft else None},
+        "plan": _job_json(plan),
+        "plan_is_draft": bool(plan and plan["status"] == "done" and (plan["choices"] or {}) == choices),
+        "apply": _job_json(apply_, result=True),
+        "applied": {"id": str(live["id"]), "applied_at": live["applied_at"].isoformat(),
+                    "from": live["window_from"].isoformat(), "to": live["window_to"].isoformat(),
+                    "choices": live["choices"] or {},
+                    "summary": {k: v for k, v in (live["summary"] or {}).items() if k not in ("fills_detail", "replaced")},
+                    "fills": (live["summary"] or {}).get("fills_detail") or [],
+                    "replaced": (live["summary"] or {}).get("replaced") or []} if live else None,
+    }
+
+
+class PlanIn(BaseModel):
+    choices: dict[str, str] = Field(default_factory=dict, description='{"HH:MM": "up_first" | "down_first"}')
+
+
+@router.post("/repair-cases/{day}/{deployment_id}/plan", status_code=202)
+async def plan_repair_case(day: str, deployment_id: UUID, payload: PlanIn, request: Request):
+    """Keep these paths as the draft and plan the repair with them (a dry
+    run in the repair worker; nothing in the book changes)."""
+    import re as _re
+    pool = request.app.state.db_pool
+    d = _day(day)
+    for k, v in payload.choices.items():
+        if not _re.fullmatch(r"\d\d:\d\d", k) or v not in _ORDERS:
+            raise HTTPException(422, f"choices are HH:MM → up_first | down_first, got {k!r}: {v!r}")
+    if not await pool.fetchval("SELECT 1 FROM day_checks WHERE deployment_id = $1 AND day = $2", deployment_id, d):
+        raise HTTPException(404, "That day hasn't been checked for this deployment")
+    await pool.execute(
+        "INSERT INTO repair_drafts (deployment_id, day, choices, updated_at) VALUES ($1, $2, $3, now()) "
+        "ON CONFLICT (deployment_id, day) DO UPDATE SET choices = $3, updated_at = now()", deployment_id, d, payload.choices)
+    job = await pool.fetchrow(
+        "INSERT INTO repair_jobs (deployment_id, day, kind, choices) VALUES ($1, $2, 'plan', $3) RETURNING *",
+        deployment_id, d, payload.choices)
+    await request.app.state.repair_worker.ensure()
+    return _job_json(job, result=False)
+
+
+@router.get("/repair-jobs/{job_id}")
+async def get_repair_job(job_id: int, request: Request):
+    row = await request.app.state.db_pool.fetchrow("SELECT * FROM repair_jobs WHERE id = $1", job_id)
+    if row is None:
+        raise HTTPException(404, "No such job")
+    return _job_json(row)
+
+
+async def _paused_while(request: Request, dep_id: UUID, work, wait_job: Optional[int] = None):
+    """Pause a running deployment around `work` (and, given a job, until
+    it's finished), then resume it."""
+    mgr = request.app.state.deployment_manager
+    pool = request.app.state.db_pool
+    was_active = (await queries.get_deployment(pool, dep_id))["status"] == "active"
+    if was_active:
+        await mgr.pause(dep_id)
+    try:
+        res = await work()
+    except BaseException:
+        if was_active:
+            await mgr.resume(dep_id)
+        raise
+    if wait_job is None and was_active:
+        await mgr.resume(dep_id)
+    return res, was_active
+
+
+@router.post("/repair-cases/{day}/{deployment_id}/push", status_code=202)
+async def push_repair_case(day: str, deployment_id: UUID, request: Request):
+    """Commit the draft to the deployment: the repair worker replays it
+    again and commits only if it comes out exactly as the plan shown. The
+    deployment is paused until it's done, then resumed."""
+    pool = request.app.state.db_pool
+    d = _day(day)
+    case = await get_repair_case(day, deployment_id, request)
+    plan = case["plan"]
+    if not case["plan_is_draft"]:
+        raise HTTPException(409, "Plan the repair with the paths you chose first")
+    res = plan["result"] or {}
+    if not res.get("can_apply"):
+        raise HTTPException(409, "; ".join(res.get("why_not") or []) or "This plan can't be applied")
+    if case["apply"] and case["apply"]["status"] in ("queued", "running"):
+        raise HTTPException(409, "It's already being applied")
+    author = request.session.get("username") if "session" in request.scope else None
+
+    async def enqueue():
+        return await pool.fetchrow(
+            "INSERT INTO repair_jobs (deployment_id, day, kind, choices, expected, author) VALUES ($1, $2, 'apply', $3, $4, $5) RETURNING *",
+            deployment_id, d, plan["choices"], res["fills_key"], author)
+    job, was_active = await _paused_while(request, deployment_id, enqueue, wait_job=True)
+    await request.app.state.repair_worker.ensure()
+
+    async def resume_after():
+        for _ in range(1800):
+            st = await pool.fetchval("SELECT status FROM repair_jobs WHERE id = $1", job["id"])
+            if st in ("done", "failed"):
+                break
+            await asyncio.sleep(0.5)
+        if was_active:
+            try:
+                await request.app.state.deployment_manager.resume(deployment_id)
+            except Exception:
+                pass
+        await _refresh_caches(request)
+    request.app.state.repair_resume_tasks = getattr(request.app.state, "repair_resume_tasks", set())
+    t = asyncio.create_task(resume_after())
+    request.app.state.repair_resume_tasks.add(t)
+    t.add_done_callback(request.app.state.repair_resume_tasks.discard)
+    return {**_job_json(job, result=False), "paused": was_active}
+
+
+@router.post("/repairs/{repair_id}/undo")
+async def undo_repair(repair_id: UUID, request: Request):
+    """Take an applied repair back out (the deployment paused meanwhile)."""
+    from ..repair import engine as repair_engine
+    pool = request.app.state.db_pool
+    r = await pool.fetchrow("SELECT * FROM stall_repairs WHERE id = $1", repair_id)
+    if r is None:
+        raise HTTPException(404, "No such repair")
+
+    async def work():
+        return await repair_engine.undo(pool, repair_id)
+    try:
+        res, _ = await _paused_while(request, r["deployment_id"], work)
+    except repair_engine.PlanChanged as e:
+        raise HTTPException(409, str(e))
+    await _refresh_caches(request)
+    return {"deployment_id": str(res["deployment_id"]), "lots_removed": res["lots_removed"],
+            "positions_removed": res["positions_removed"]}

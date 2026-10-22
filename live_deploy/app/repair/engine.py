@@ -137,6 +137,7 @@ class ReplayRunner(DeploymentRunner):
             "action": action, "symbol": symbol, "token": int(instrument_token), "qty": float(qty),
             "price": round(float(price), 2), "reason": reason or "",
             "trigger": (metadata or {}).get("trigger"), "realized": res.get("realized_pnl"),
+            "meta": {k: v for k, v in (metadata or {}).items() if k != "repair"},
             "position_id": str(res["position_id"]),
         })
         return res
@@ -209,6 +210,7 @@ class Outcome:
     start_equity: float = 0.0
     charges: float = 0.0
     fingerprint: str = ""
+    end_state: Optional[dict] = None   # the strategy's saved state at the window's end
 
     @property
     def complete(self) -> bool:
@@ -360,6 +362,7 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
                               "vix": book.at(VIX_TOKEN, m, "close")})
 
         await runner.checkpoint_state()
+        out.end_state = await conn.fetchval("SELECT state FROM deployment_state WHERE deployment_id = $1", dep["id"])
         out.fills, out.problems = list(runner.log), list(runner.problems)
         out.end_positions = _legs(runner, disp)
         last = minutes[-1]
@@ -672,6 +675,20 @@ async def undo(pool, repair_id) -> dict:
                 await conn.execute(
                     f"UPDATE positions SET ({names}) = (SELECT {names} FROM json_populate_record(NULL::positions, $1::json)) "
                     "WHERE id = $2::uuid", json.dumps(row), row["id"])
+            # a day repair (app/repair/dayrepair.py) also took out the app's own
+            # fills from where it diverged: put them, and their positions, back
+            removed = u.get("removed") or {}
+            for row in removed.get("positions", []):
+                if await conn.fetchval("SELECT 1 FROM positions WHERE id = $1::uuid", row["id"]):
+                    await conn.execute(
+                        f"UPDATE positions SET ({names}) = (SELECT {names} FROM json_populate_record(NULL::positions, $1::json)) "
+                        "WHERE id = $2::uuid", json.dumps(row), row["id"])
+                else:
+                    await conn.execute("INSERT INTO positions SELECT * FROM json_populate_record(NULL::positions, $1::json)",
+                                       json.dumps(row))
+            for row in removed.get("lots", []):
+                await conn.execute("INSERT INTO position_lots SELECT * FROM json_populate_record(NULL::position_lots, $1::json) "
+                                   "ON CONFLICT (id) DO NOTHING", json.dumps(row))
             await conn.execute("UPDATE deployments SET current_cash = $2::numeric, updated_at = now() WHERE id = $1",
                                dep_id, u["cash"])
             if u["had_state"]:

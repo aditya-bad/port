@@ -129,7 +129,7 @@ function endState(end) {
   </div>`;
 }
 
-function checkRow(x, open) {
+function checkRow(x, open, day) {
   const diff = x.diff || {}, rep = x.replay || {};
   return html`<details class="dc-row t-${CHECK[x.status][1]}" ${open ? 'open' : ''} data-dc="${x.deployment_id}">
     <summary>${pill(x.status)}<b>${x.name}</b><span class="small mute">${x.strategy} · ${x.mode}</span><span class="dc-head">${x.headline}</span></summary>
@@ -142,7 +142,9 @@ function checkRow(x, open) {
         ${(rep.estimated || []).length ? html`<span>Priced without trades on Kite: ${rep.estimated.join(', ')}.</span>` : ''}
         ${(rep.notes || []).map(n => html`<span>${n}</span>`)}
       </div>
-      <div class="row" style="gap:10px"><a class="small" href="${href(`d/${x.deployment_id}`)}">Open deployment ›</a></div>
+      <div class="row" style="gap:14px">
+        ${['rule', 'mismatch', 'ambiguous'].includes(x.status) ? html`<a class="btn btn-sm btn-primary" href="${href(`repair/${day}/${x.deployment_id}`)}">Review and repair ›</a>` : ''}
+        <a class="small" href="${href(`d/${x.deployment_id}`)}">Open deployment ›</a></div>
     </div>
   </details>`;
 }
@@ -163,8 +165,8 @@ function dayCheckSection(c, day) {
     </div>
     ${counts.length ? html`<div class="dc-counts">${counts.map(([k, n]) => html`<span>${pill(k)} ${n}</span>`)}</div>` : ''}
     ${!results.length ? empty('', c.day ? 'No results for this day yet.' : 'The day check runs by itself once the 15:45 export succeeds. Each deployment’s day is replayed from its open on Kite’s 1-minute candles and checked against what the app did.')
-      : html`<div class="dc-list">${flagged.map(x => checkRow(x, flagged.length <= 3))}
-        ${fine.length ? html`<details class="dc-fine"><summary>${plural(fine.length, 'deployment')} as expected</summary>${fine.map(x => checkRow(x, false))}</details>` : ''}</div>`}
+      : html`<div class="dc-list">${flagged.map(x => checkRow(x, flagged.length <= 3, c.day))}
+        ${fine.length ? html`<details class="dc-fine"><summary>${plural(fine.length, 'deployment')} as expected</summary>${fine.map(x => checkRow(x, false, c.day))}</details>` : ''}</div>`}
   </div>`;
 }
 

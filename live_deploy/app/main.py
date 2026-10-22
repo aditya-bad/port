@@ -407,6 +407,8 @@ async def startup() -> None:
     from .ops_health import OpsMonitor
     from .repair.launcher import DayCheckLauncher
     app.state.daychecks = DayCheckLauncher(db_pool)
+    from .repair.launcher import RepairWorkerLauncher
+    app.state.repair_worker = RepairWorkerLauncher(db_pool)   # plans and applies the Repair page's repairs
     app.state.ops = OpsMonitor(db_pool, manager, dispatcher, cache=cache, event_broadcaster=event_broadcaster,
                                candles=app.state.candles, launcher=app.state.daychecks)
     app.state.ops_task = asyncio.create_task(app.state.ops.loop(), name="ops-health-loop")

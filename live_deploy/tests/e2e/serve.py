@@ -211,6 +211,7 @@ async def seed():
     await seed_repair(pool, ids["BankNifty DTT Plain"])
     await seed_ops(pool, ids)
     await seed_day_checks(pool, ids)
+    await seed_repair_cases(pool, ids)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -687,6 +688,81 @@ async def seed_day_checks(pool, ids):
     for d in ids.values():
         await pool.execute("INSERT INTO day_checks (run_id, day, deployment_id, status, headline) VALUES ($1, $2, $3, 'ok', 'As expected')",
                            run2, older, d)
+
+
+def _case_series(day, legs):
+    """A day's minutes as the repair worker returns them: the index's
+    candles, VIX, and each leg's price."""
+    t, ohlc, vix, out = [], [], [], {k: [] for k in legs}
+    for i in range(375):
+        m = datetime.combine(day, time(9, 15)) + timedelta(minutes=i)
+        t.append(f"{m:%H:%M}")
+        v = 25000 + 120 * math.sin(i / 40) + (380 if 230 <= i < 300 else 0) * (1 - abs(i - 265) / 35)
+        o, c = v - 3 * math.sin(i), v + 3 * math.cos(i)
+        hi, lo = max(o, c) + 6, min(o, c) - 6
+        if f"{m:%H:%M}" == "13:05":
+            hi, lo = v + 420, v - 410
+        ohlc.append([round(o, 2), round(hi, 2), round(lo, 2), round(c, 2)])
+        vix.append(round(14 + 0.4 * math.sin(i / 50), 2))
+        for k, (base, beta) in legs.items():
+            out[k].append(round(max(0.05, base + beta * (v - 25000) / 10), 2))
+    return {"t": t, "index": {"label": "NIFTY 50", "ohlc": ohlc}, "vix": vix, "legs": out}
+
+
+async def seed_repair_cases(pool, ids):
+    """Repairs of yesterday's flagged days (app/repair/dayrepair.py), as the
+    repair worker leaves them: one planned and ready to push, one waiting
+    for a path at 13:05, and one applied (undoable)."""
+    day = datetime.now(IST).date() - timedelta(days=1)
+
+    def f(minute, action, symbol, price, reason, qty=75, phase="open", trigger=None):
+        return {"minute": minute, "phase": phase, "at": f"{day}T{minute}:00+05:30", "action": action, "symbol": symbol,
+                "token": 1, "qty": qty, "price": price, "reason": reason, "realized": None,
+                "meta": {"trigger": trigger} if trigger else {}}
+    pe, pe2, ce = "NIFTY26NOV22400PE", "NIFTY26NOV22800PE", "NIFTY26NOV23550CE"
+    ready = {
+        "from": "13:31", "start": f"captured at the open of {day:%d %b}, the morning replayed to 13:31", "choices": {},
+        "complete": True, "ambiguity": None, "fills_key": "e2e-ready", "can_apply": True, "why_not": [],
+        "fills": [f("13:31", "buy", pe, 243.5, "continuous_50pct_trigger", trigger={"ratio": 0.48, "threshold": 0.5, "ce": 117.2, "pe": 243.5}),
+                  f("13:31", "sell", pe2, 151.2, "continuous_50pct_trigger", trigger={"target_premium": 150.0, "band": "0.80–0.95"})],
+        "app_fills": [f("10:00", "sell", pe, 138.95, "initial_entry"), f("10:00", "sell", ce, 161.85, "initial_entry")],
+        "replaced": [],
+        "decisions": [{"at": "13:12:00", "rule": "continuous_50pct_trigger", "outcome": "no_action",
+                       "summary": "PE at 2.1× the CE: not yet past the 50% trigger", "data": {"ratio": 0.53}},
+                      {"at": "15:13:00", "rule": "eod_check", "outcome": "no_action", "summary": "Gap fine at the end-of-day check", "data": {}}],
+        "auto": [], "notes": [], "problems": [], "blind": [], "estimated": [],
+        "end": {"app": [{"symbol": pe, "side": "short", "qty": 75.0}, {"symbol": ce, "side": "short", "qty": 75.0}],
+                "after": [{"symbol": pe2, "side": "short", "qty": 75.0}, {"symbol": ce, "side": "short", "qty": 75.0}]},
+        "summary": {"pnl": -1840.0, "left": -6796.0, "change": 4956.0, "booked": -6967.5, "charges": 64.0, "fills": 2},
+        "curve": [], "series": _case_series(day, {pe: (180, -0.9), pe2: (110, -0.7), ce: (150, 0.8)}),
+    }
+    amb = {**ready, "from": "13:05", "complete": False, "can_apply": False, "fills_key": "e2e-amb",
+           "fills": [], "replaced": [f("13:05", "buy", "NIFTY26NOV27000CE", 18.4, "continuous_50pct_trigger")],
+           "ambiguity": {"minute": "13:05", "natural": "down_first",
+                         "candles": [{"label": "NIFTY 50", "token": 256265, "open": 25010.0, "high": 25430.0, "low": 24600.0, "close": 25020.0},
+                                     {"label": "NIFTY26NOV27000CE", "token": 2, "open": 18.0, "high": 31.0, "low": 9.5, "close": 18.4}],
+                         "paths": {"up_first": {"fills": [f("13:05", "buy", "NIFTY26NOV27000CE", 31.0, "continuous_50pct_trigger", phase="up")],
+                                                "pnl": -980.0, "open": [{"symbol": "NIFTY26NOV24000PE"}]},
+                                   "down_first": {"fills": [], "pnl": 120.0, "open": [{"symbol": "NIFTY26NOV24000PE"}, {"symbol": "NIFTY26NOV27000CE"}]}}},
+           "end": {"app": [{"symbol": "NIFTY26NOV24000PE", "side": "short", "qty": 75.0}], "after": []},
+           "series": _case_series(day, {"NIFTY26NOV27000CE": (18, 0.25), "NIFTY26NOV24000PE": (60, -0.4)})}
+    for name, res in (("Nifty Strangle A", ready), ("Nifty Monthly Strangle", amb)):
+        await pool.execute("INSERT INTO repair_drafts (deployment_id, day, choices) VALUES ($1, $2, '{}')", ids[name], day)
+        await pool.execute("INSERT INTO repair_jobs (deployment_id, day, kind, status, result, finished_at) "
+                           "VALUES ($1, $2, 'plan', 'done', $3, now())", ids[name], day, res)
+    # applied: undoing it changes nothing (it added nothing here) but takes it off
+    dep = ids["Bankex Strangle"]
+    cash = await pool.fetchval("SELECT current_cash::text FROM deployments WHERE id = $1", dep)
+    state = await pool.fetchrow("SELECT state FROM deployment_state WHERE deployment_id = $1", dep)
+    await pool.execute(
+        "INSERT INTO stall_repairs (deployment_id, day, window_from, window_to, choices, summary, undo) VALUES ($1, $2, $3, $4, '{}', $5, $6)",
+        dep, day, datetime.combine(day, time(14, 2), IST), datetime.combine(day, time(15, 30), IST),
+        {"fills": 1, "kind": "day", "pnl": 410.0, "left": -220.0, "change": 630.0,
+         "fills_detail": [f("14:02", "buy", "BANKEX26NOV66300CE", 61.0, "checkpoint_target", qty=30)],
+         "replaced": [f("14:40", "buy", "BANKEX26NOV66300CE", 74.0, "stop", qty=30)]},
+        {"cash": cash, "had_state": state is not None, "state": state["state"] if state else None, "positions": [],
+         "added": {"positions": [], "lots": [], "events": [], "decisions": []},
+         "journal": "00000000-0000-0000-0000-000000000000", "event": "00000000-0000-0000-0000-000000000000"})
 
 
 GEEK_NAME = "Nifty Monthly Strangle"

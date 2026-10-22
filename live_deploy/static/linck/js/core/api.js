@@ -44,6 +44,12 @@ export const api = {
   // the end-of-day check (app/repair/daycheck.py)
   dayChecks: day => req(`/v2/day-checks${day ? `?day=${enc(day)}` : ''}`),
   runDayCheck: body => post('/v2/day-checks/run', body || {}),
+  // repairing a flagged day (app/repair/dayrepair.py)
+  repairCase: (day, dep) => req(`/v2/repair-cases/${enc(day)}/${enc(dep)}`),
+  planRepair: (day, dep, choices) => post(`/v2/repair-cases/${enc(day)}/${enc(dep)}/plan`, { choices }),
+  pushRepair: (day, dep) => post(`/v2/repair-cases/${enc(day)}/${enc(dep)}/push`),
+  repairJob: id => req(`/v2/repair-jobs/${id}`),
+  undoRepair: id => post(`/v2/repairs/${id}/undo`),
   me: () => req('/auth/me'),
   logout: () => post('/auth/logout'),
   logoutEverywhere: () => post('/auth/logout-everywhere'),

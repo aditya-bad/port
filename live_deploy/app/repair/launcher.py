@@ -66,3 +66,45 @@ class DayCheckLauncher:
                 "error = COALESCE(error, $2) WHERE id = $1 AND status = 'running'",
                 rid, f"The check stopped (exit {rc}). {tail}".strip())
         self.tasks.pop(rid, None)
+
+
+WORKER = ROOT / "custom_scripts" / "repair_worker.py"
+
+
+class RepairWorkerLauncher:
+    """Keeps one repair worker (custom_scripts/repair_worker.py) running
+    while the Repair page has jobs for it: started on demand, it stops by
+    itself when idle. A worker that dies mid-job has that job marked failed
+    with its last words."""
+
+    def __init__(self, pool, script: Path = WORKER, python: str = sys.executable, idle: float = 600):
+        self.pool = pool
+        self.script, self.python, self.idle = script, python, idle
+        self.task: Optional[asyncio.Task] = None
+
+    async def ensure(self) -> None:
+        if self.task is not None and not self.task.done():
+            return
+        self.task = asyncio.create_task(self._run(), name="repair-worker")
+
+    async def _run(self) -> None:
+        cmd = [self.python, str(self.script), "--idle", str(self.idle)]
+        tail = ""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, cwd=str(ROOT), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await proc.communicate()
+            text = out.decode(errors="replace") if out else ""
+            for line in text.splitlines():
+                logger.info("repair worker: %s", line)
+            tail = "\n".join(text.strip().splitlines()[-5:])
+            rc = proc.returncode
+        except Exception as e:
+            rc, tail = -1, f"{type(e).__name__}: {e}"
+        if rc != 0:
+            await self.pool.execute(
+                "UPDATE repair_jobs SET status = 'failed', finished_at = now(), error = $1 WHERE status = 'running'",
+                f"The repair worker stopped (exit {rc}). {tail}".strip())
+        # a job queued while it was stopping: start again
+        if await self.pool.fetchval("SELECT 1 FROM repair_jobs WHERE status = 'queued' LIMIT 1") and rc == 0:
+            self.task = asyncio.create_task(self._run(), name="repair-worker")
