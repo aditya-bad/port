@@ -3,7 +3,8 @@
 // with the index and its future marked; every position under it, new ones
 // joining and closed ones greyed with what they booked; steps of 5m…1D as
 // fine as the stored prices go; play pausing at each trade; the timeline
-// to drag; a chain of cycles; a phone.
+// to drag; a chain of cycles; a phone. Controls, payoff and positions share
+// one screen, and a closed leg keeps its entry and exit.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BASE, IDS, browser, context, api } from './helper.mjs';
@@ -33,7 +34,7 @@ test('the payoff of what’s held, the positions under it, step by step to the n
   assert.match(await chart.innerHTML(), /NIFTY 50 [\d,.]+/);
   assert.match(await chart.innerHTML(), /FUT [\d,.]+/);
   assert.match(await p.locator('[data-rp="strip"]').innerText(), /Future · NIFTY26NOVFUT[\s\S]*basis/);
-  assert.match(await p.locator('[data-rp="strip"]').innerText(), /Max loss at expiry\s*Unlimited/, 'a short strangle');
+  assert.match(await p.locator('[data-rp="paystats"]').innerText(), /Max loss\s*Unlimited/, 'a short strangle');
   assert.match(await p.locator('[data-rp="banner"]').innerText(), /New cycle 10[\s\S]*first closed cycle 9/);
   // the P&L on the chart is the P&L of the step
   const pnl = (await p.locator('[data-rp="strip"] .rp-cell', { hasText: 'P&L' }).locator('b').innerText()).trim();
@@ -58,13 +59,15 @@ test('the payoff of what’s held, the positions under it, step by step to the n
   await p.click('[data-act="play"]');
   await p.waitForFunction(f => +document.querySelector('[data-range]').value === f, adj.frame, { timeout: 30000 });
   await p.waitForTimeout(300);
-  assert.match(await p.locator('.rp-play').innerText(), /Play/, 'paused');
+  assert.match(await p.locator('.rp-ctl .rp-play').innerText(), /Play/, 'paused');
   assert.ok(await p.locator('.rp-banner.here').count(), 'on the trade itself');
   assert.match(await p.locator('[data-rp="banner"]').innerText(), new RegExp(adj.label));
   assert.ok(await p.locator('[data-rp="pos"] .tr.rp-fresh').count() >= 1, 'the new leg, highlighted');
   const gone = p.locator('[data-rp="pos"] .tr.rp-closed');
   assert.ok(await gone.count() >= 1, 'the closed leg, greyed');
-  assert.match(await gone.first().innerText(), /Closed 15:13 · Adjustment/);
+  assert.match(await gone.first().innerText(), /Closed · Adjustment/);
+  assert.match(await gone.first().locator('[data-cell="exit"]').innerText(), /[\d,.]+\s*15:13/, 'its exit: price and time');
+  assert.match(await gone.first().locator('[data-cell="entry"]').innerText(), /[\d,.]+\s*(\d+ \w+ )?\d\d:\d\d/, 'and its entry (with its day when it was another)');
   assert.match(await gone.first().innerText(), /[+−]₹[\d,]+/, 'with what it booked');
   assert.match(await p.locator('[data-rp="pos"] .rp-total').innerText(), /open [+−]?₹[\d,]+ · booked [+−]?₹[\d,]+/);
 
@@ -134,7 +137,7 @@ test('every kind of deployment has it, and it fits a phone', async () => {
     }
     const s = p.locator('[data-rp="stage"] svg');
     if (await s.count()) {
-      assert.match(await s.getAttribute('viewBox'), /^0 0 420 380$/, `${name}: drawn for the phone, not shrunk`);
+      assert.match(await s.getAttribute('viewBox'), /^0 0 420 280$/, `${name}: drawn for the phone`);
       const w = await s.evaluate(x => x.getBoundingClientRect().width);
       const cw = await p.locator('[data-rp="stage"]').evaluate(x => x.clientWidth);
       assert.ok(w <= cw + 1, `${name}: the chart fits`);
@@ -143,4 +146,84 @@ test('every kind of deployment has it, and it fits a phone', async () => {
     assert.deepEqual(ctx.errors, [], name);
     await ctx.close();
   }
+});
+
+const fmt = v => v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const inView = async (p, sel, h) => { const r = await p.locator(sel).first().boundingBox(); return r && r.y >= 0 && r.y + Math.min(r.height, 40) <= h; };
+
+test('one screen: the controls, the payoff and the positions together', async () => {
+  const ctx = await context(b, { width: 1440, height: 900 });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/replay`);
+  await ready(p);
+  for (const sel of ['.rp-ctl', '[data-rp="strip"]', '[data-rp="stage"] svg', '[data-rp="pos"] .tr:not(.th)']) {
+    assert.ok(await inView(p, sel, 900), `${sel} is on the first screen`);
+  }
+  const svgBox = await p.locator('[data-rp="stage"] svg').boundingBox();
+  assert.ok(Math.abs(svgBox.height - 295) <= 2, `the chart's height follows the window (${svgBox.height})`);
+  // a shorter window: scroll to the positions and the controls stay put, with the chart between
+  await p.setViewportSize({ width: 1366, height: 768 });
+  await p.waitForTimeout(400);
+  await p.locator('[data-rp="pos"] .tr:not(.th)').nth(1).scrollIntoViewIfNeeded();
+  assert.ok(await inView(p, '.rp-ctl', 768), 'the controls stay on screen');
+  const s = await p.locator('[data-rp="stage"] svg').boundingBox();
+  assert.ok(s.y + s.height > 150 && s.y < 768, 'and the payoff is still in sight');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('every position, open or closed, shows its entry, its exit and what it made', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  const d = await api(ctx, `/v2/deployments/${ID}/geek/replay`);
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/replay`);
+  await ready(p);
+  assert.deepEqual(await p.locator('[data-rp="pos"] .tr.th > span').allInnerTexts(), ['Instrument', 'Qty', 'Entry', 'Exit', 'Now', 'IV', 'P&L', '%', 'Status']);
+  await p.click('[data-act="to"][data-f="' + (d.frames.length - 1) + '"]');
+  await p.waitForTimeout(300);
+  const shut = d.legs.filter(l => l.t1);
+  assert.ok(shut.length, 'the fixture has closed legs');
+  const closedRows = p.locator('[data-rp="pos"] .tr.rp-closed');
+  assert.equal(await closedRows.count(), shut.length, 'every closed leg is still listed');
+  const text = (await closedRows.allInnerTexts()).join('\n');
+  for (const l of shut) {
+    assert.ok(text.includes(fmt(l.entry)), `entry ${fmt(l.entry)} of ${l.symbol}`);
+    assert.ok(text.includes(fmt(l.exit)), `exit ${fmt(l.exit)} of ${l.symbol}`);
+  }
+  assert.match(text, /[+−]\d+\.\d%/, 'and the % it made');
+  const open = p.locator('[data-rp="pos"] .tr:not(.th):not(.rp-total):not(.rp-closed)');
+  if (await open.count()) assert.match(await open.first().locator('[data-cell="exit"]').innerText(), /open/);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('on a phone, play and step stay in reach at the bottom', async () => {
+  const ctx = await context(b, { width: 390, height: 844 });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/replay`);
+  await ready(p);
+  await p.locator('[data-rp="pos"]').scrollIntoViewIfNeeded();
+  const bar = p.locator('.rp-mini');
+  const box = await bar.boundingBox();
+  assert.ok(box && box.y + box.height >= 840 && box.y > 700, `pinned to the bottom (${box && box.y})`);
+  assert.match(await bar.innerText(), /Play[\s\S]*\d\d:\d\d[\s\S]*₹/);
+  await bar.locator('[data-act="fwd"]').click();
+  assert.equal(await step(p), 1);
+  await bar.locator('[data-act="play"]').click();
+  assert.match(await bar.locator('.rp-play').innerText(), /Pause/);
+  await bar.locator('[data-act="play"]').click();
+  assert.match(await bar.locator('.rp-play').innerText(), /Play/);
+  assert.equal(await p.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, 'nothing sideways');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('the mini bar stays out of the way on a desktop', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/replay`);
+  await ready(p);
+  assert.equal(await p.locator('.rp-mini').isVisible(), false);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
 });

@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   eventAt, nextEvent, prevEvent, advance, change, frameOf, positionsAt, stepsFor, stepTo, asOf,
-  payoff, breakevens, extremes, rangeOf, mismatched, payoffChart, grid, KIND,
+  payoff, breakevens, extremes, rangeOf, mismatched, payoffChart, grid, KIND, payoffHeight, pnlPct,
 } from '../../static/linck/js/pages/geek/replay.js';
 import { bs, black76, yearsTo } from '../../static/linck/js/data/options.js';
 
@@ -185,8 +185,24 @@ test('the chart: both curves, the index tagged, the breakevens, the P&L at the i
   assert.match(s, /class="rp-be"/);
   assert.match(s, /S CE 25200/); assert.match(s, /S PE 24800/);
   assert.match(s, /data-scrub=/, 'hovering it reads the curves');
-  // narrow screens get a narrower drawing, not a shrunken one
-  assert.match(String(payoffChart(D, 0, payoff(D, 0, xs), xs, 360)), /viewBox="0 0 420 380"/);
+  // drawn at the size it's shown at, so its text stays readable; never narrower than 420
+  assert.match(String(payoffChart(D, 0, payoff(D, 0, xs), xs, 1150, 295)), /viewBox="0 0 1150 295"/);
+  assert.match(String(payoffChart(D, 0, payoff(D, 0, xs), xs, 360, 280)), /viewBox="0 0 420 280"/);
+});
+
+test('the chart’s height leaves room for the controls above it and the positions under it', () => {
+  assert.equal(payoffHeight(1440, 900), 295);
+  assert.equal(payoffHeight(1366, 768), 236);
+  assert.equal(payoffHeight(1920, 1200), 360, 'never taller than 360');
+  assert.equal(payoffHeight(1280, 600), 210, 'never shorter than 210');
+  assert.equal(payoffHeight(390, 844), 280, 'a phone');
+});
+
+test('a leg’s P&L as a % of what it was entered for', () => {
+  assert.equal(pnlPct({ entry: 200, qty: 75 }, 1500), 10, 'a short that fell 20 points of 200');
+  assert.equal(pnlPct({ entry: 200, qty: 75 }, -3000), -20);
+  assert.equal(pnlPct({ entry: 200, qty: 75 }, null), null, 'no P&L yet');
+  assert.equal(pnlPct({ entry: 0, qty: 75 }, 100), null, 'no entry price');
 });
 
 test('every kind the backend sends has a label and a colour', () => {

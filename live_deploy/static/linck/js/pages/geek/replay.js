@@ -5,7 +5,9 @@
 // price at that moment), with where the index and its future stand. Under
 // it every position: new ones join as they're opened, closed ones grey out
 // with what they booked. Step 1m, 5m, 15m, 30m, 1h or a day at a time (as
-// fine as the stored prices go), or play it.
+// fine as the stored prices go), or play it. The controls, the payoff and
+// the positions share one screen: the chart's height follows the window,
+// and on a phone a bar at the bottom keeps play and step in reach.
 // Keys: Space play/pause · ← → one step · [ ] previous / next trade.
 
 import { api } from '../../core/api.js';
@@ -204,6 +206,9 @@ export function extremes(ys) {
 
 let PW = 1000, PH = 430;
 const PL = 72, PR = 24, PT = 46, PB = 58;
+// The payoff's height for a window vw × vh: about a third of the window, so
+// the controls above it and the positions under it fit on the same screen.
+export const payoffHeight = (vw, vh) => (vw < 700 ? 280 : Math.round(Math.max(210, Math.min(360, vh * 0.45 - 110))));
 let clipN = 0;
 const niceStep = span => { const p = 10 ** Math.floor(Math.log10(span / 5)); return [1, 2, 2.5, 5, 10].map(m => m * p).find(s => span / s <= 6) || p * 10; };
 
@@ -216,9 +221,9 @@ export function mismatched(D, i) {
   return f.legs.map(x => D.legs[x[0]]).filter(l => l.strike && Math.abs(l.strike / f.idx - 1) > 0.35);
 }
 
-export function payoffChart(D, i, P, xs, width = 1000) {
-  PW = Math.round(Math.max(420, Math.min(1000, width)));
-  PH = PW < 640 ? 380 : 430;
+export function payoffChart(D, i, P, xs, width = 1000, height = 430) {
+  PW = Math.round(Math.max(420, width));   // drawn at the width it's shown at: text stays its size
+  PH = Math.round(height);
   const f = D.frames[i];
   const [lo, hi, spot] = rangeOf(D, i);
   const all = [...P.expiry, ...(P.now || []), 0];
@@ -291,12 +296,12 @@ const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
 // ── the timeline: P&L across the whole replay, its trades, the playhead ─
 
-const TW = 1000, TH = 64;
+const TW = 1000, TH = 48;
 function timeline(D, i) {
   const F = D.frames, n = F.length, v = F.map(f => f.pnl);
   let lo = Math.min(0, ...v), hi = Math.max(0, ...v);
   if (hi === lo) { hi += 1; lo -= 1; }
-  const X = k => 4 + k / Math.max(1, n - 1) * (TW - 8), Y = x => 14 + (hi - x) / (hi - lo) * (TH - 20);
+  const X = k => 4 + k / Math.max(1, n - 1) * (TW - 8), Y = x => 12 + (hi - x) / (hi - lo) * (TH - 16);
   let s = '', day = '';
   F.forEach((f, k) => { const d = ist(f.t).key; if (d !== day) { if (day) s += `<line x1="${X(k)}" x2="${X(k)}" y1="10" y2="${TH}" stroke="var(--line)"/>`; day = d; } });
   s += `<line x1="0" x2="${TW}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line2)" stroke-dasharray="3 3"/>`;
@@ -313,21 +318,29 @@ function timeline(D, i) {
 
 // ── around the chart ───────────────────────────────────────────────────
 
-function strip(D, i, P, xs) {
+// The readout under the controls: where everything stands at this step.
+function strip(D, i) {
   const F = D.frames, f = F[i];
-  const cell = (l, v, sub, cls = '') => html`<div class="rp-cell"><span>${l}</span><b class="${cls}">${v}</b>${sub ? html`<i>${sub}</i>` : ''}</div>`;
-  const ex = f.legs.length ? extremes(P.expiry) : null;
-  const be = f.legs.length ? breakevens(xs, P.expiry) : [];
+  const cell = (l, v, sub, cls = '', k = '') => html`<div class="rp-cell ${k}"><span>${l}</span><b class="${cls}">${v}</b>${sub ? html`<i>${sub}</i>` : ''}</div>`;
   return html`<div class="rp-strip">
-    ${cell(dShort(f.t), hhmm(asOf(D, i)), `step ${i + 1} of ${F.length}`)}
-    ${cell(D.index_name, f.idx == null ? '—' : price(f.idx), `${sgn(change(F, 0, i, 'idx'))} since the start`)}
-    ${D.future ? cell(`Future · ${D.future.symbol}`, f.fut == null ? '—' : price(f.fut), f.fut != null && f.idx != null ? `basis ${sgn(f.fut - f.idx)} pts` : '') : ''}
-    ${cell('India VIX', f.vix == null ? '—' : f.vix.toFixed(2), `${sgn(change(F, 0, i, 'vix'), 2)} since the start`)}
-    ${cell('P&L', inr(f.pnl), `booked ${inr(f.booked)} · open ${inr(f.pnl - f.booked)}`, tone(f.pnl))}
-    ${ex ? cell('Max profit at expiry', ex.maxUnlimited ? 'Unlimited' : inr(ex.max), 'in the range shown', ex.maxUnlimited ? 'pos' : tone(ex.max)) : ''}
-    ${ex ? cell('Max loss at expiry', ex.minUnlimited ? 'Unlimited' : inr(ex.min), 'in the range shown', ex.minUnlimited ? 'neg' : tone(ex.min)) : ''}
-    ${ex ? cell('Breakevens', be.length ? be.map(b => Math.round(b).toLocaleString('en-IN')).join(' · ') : 'none', be.length && f.idx != null ? be.map(b => `${sgn((b / f.idx - 1) * 100, 1)}%`).join(' · ') : '') : ''}
+    ${cell(dShort(f.t), hhmm(asOf(D, i)), `${i + 1} / ${F.length}`)}
+    ${cell(`${D.index_name} · since start`, f.idx == null ? '—' : price(f.idx), sgn(change(F, 0, i, 'idx')))}
+    ${D.future ? cell(`Future · ${D.future.symbol}`, f.fut == null ? '—' : price(f.fut), f.fut != null && f.idx != null ? `basis ${sgn(f.fut - f.idx)}` : '') : ''}
+    ${cell('India VIX · since start', f.vix == null ? '—' : f.vix.toFixed(2), sgn(change(F, 0, i, 'vix'), 2))}
+    ${cell('P&L', inr(f.pnl), `booked ${inr(f.booked)} · open ${inr(f.pnl - f.booked)}`, `${tone(f.pnl)}`, 'wide')}
   </div>`;
+}
+
+// What the payoff says about what's held: in the chart's header.
+function payStats(D, i, P, xs) {
+  const f = D.frames[i];
+  if (!f.legs.length) return '';
+  const ex = extremes(P.expiry), be = breakevens(xs, P.expiry);
+  return html`<span class="rp-stats">
+    <span>Max profit <b class="${ex.maxUnlimited ? 'pos' : tone(ex.max)}">${ex.maxUnlimited ? 'Unlimited' : inr(ex.max)}</b></span>
+    <span>Max loss <b class="${ex.minUnlimited ? 'neg' : tone(ex.min)}">${ex.minUnlimited ? 'Unlimited' : inr(ex.min)}</b></span>
+    <span>Breakevens <b>${be.length ? be.map(b => `${Math.round(b).toLocaleString('en-IN')}${f.idx != null ? ` (${sgn((b / f.idx - 1) * 100, 1)}%)` : ''}`).join(' · ') : 'none'}</b></span>
+    <span class="mute">at expiry, in the range shown</span></span>`;
 }
 
 function banner(D, i, dep) {
@@ -337,14 +350,17 @@ function banner(D, i, dep) {
   const ago = Math.round((ms(D.frames[i].t) - ms(D.frames[e.frame].t)) / 60000);
   return html`<div class="rp-banner ${here ? 'here' : ''}" style="--k:${c}">
     <span class="rp-chip" style="--k:${c}">${lab}${e.cycle != null && e.kind === 'new' ? ` ${e.cycle}` : ''}</span>
-    <b class="small">${e.rule}</b> ${fixTag(e.repaired, dep)}
+    <b class="small" ${e.why ? html`data-tip="${`saw: ${e.why}`}"` : ''}>${e.rule}</b> ${fixTag(e.repaired, dep)}
     <span class="mono tiny">${dStamp(e.t)}${here ? ' · now' : ` · ${ago < 120 ? `${ago} min` : ago < 2880 ? `${Math.round(ago / 60)} h` : `${Math.round(ago / 1440)} days`} ago`}</span>
     ${e.booked != null ? html`<span class="small">booked <b class="${tone(e.booked)}">${inr(e.booked)}</b></span>` : ''}
     ${e.closed_before ? html`<span class="tiny">first closed ${e.closed_before.cycle != null ? `cycle ${e.closed_before.cycle}` : 'the episode before'}${e.closed_before.booked != null ? html`, booking <b class="${tone(e.closed_before.booked)}">${inr(e.closed_before.booked)}</b>` : ''}</span>` : ''}
     <span class="rp-fills">${e.fills.map(x => html`<span class="tiny"><b>${x.action === 'sell' ? 'Sold' : 'Bought'}</b> ${x.qty} <span class="mono">${x.symbol}</span> @ ${price(x.price)}</span>`)}</span>
-    ${e.why ? html`<span class="tiny mute rp-why">saw: ${e.why}</span>` : ''}
+    ${e.why ? html`<span class="tiny mute rp-why" data-tip="${`saw: ${e.why}`}">saw: ${e.why}</span>` : ''}
   </div>`;
 }
+
+// A leg's P&L as a % of what it was entered for (its premium × quantity).
+export const pnlPct = (l, pnl) => (pnl == null || !l.entry || !l.qty ? null : pnl / (l.entry * l.qty) * 100);
 
 function positions(D, i, dep) {
   const P = positionsAt(D, i);
@@ -352,24 +368,32 @@ function positions(D, i, dep) {
   const open = P.filter(p => !p.closed), closed = P.filter(p => p.closed), L = [...open, ...closed];
   const sum = xs => xs.reduce((t, p) => t + (p.pnl || 0), 0);
   const how = t => (t ? t.label || kindOf(t.kind)[0] : '');
+  const today = dShort(D.frames[i].t);
+  const at = t => html`<span class="tiny mute nowrap">${dShort(t) !== today ? `${dShort(t).replace(/ '\d\d$/, '')} ` : ''}${hhmm(t)}</span>`;
   const rows = L.map(p => {
-    const l = p.l;
+    const l = p.l, pct = pnlPct(l, p.pnl);
     const entryTip = `Entered ${dStamp(l.t0)}${l.s0 ? `\n${D.index_name}  ${price(l.s0)}` : ''}${l.f0 ? `\nFuture  ${price(l.f0)}` : ''}${l.iv ? `\nVolatility  ${l.iv}%` : ''}${l.opened_by ? `\nBy  ${how(l.opened_by)} · ${l.opened_by.rule}` : ''}`;
+    const exitTip = p.closed ? `Closed ${dStamp(l.t1)}${l.closed_by ? `\nBy  ${how(l.closed_by)} · ${l.closed_by.rule}` : ''}` : '';
     return [
       html`<span class="col" style="gap:0"><b class="mono small" style="color:${legColor(l)}">${legName(l)}</b><span class="tiny mute">${l.expiry ? dShort(l.expiry) : l.symbol}</span></span> ${fixTag(l.repaired, dep)}`,
       html`<span class="small">${l.side === 'short' ? 'Sold' : 'Bought'} ${l.qty}</span>`,
-      html`<b class="mono ${tone(p.pnl)}">${p.pnl == null ? '—' : inr(p.pnl)}</b>`,
-      html`<span class="col" style="gap:0" data-tip="${entryTip}"><span class="mono">${price(l.entry)}</span><span class="tiny mute nowrap">${dShort(l.t0) !== dShort(D.frames[i].t) ? `${dShort(l.t0).replace(/ '\d\d$/, '')} ` : ''}${hhmm(l.t0)}</span></span>`,
-      p.closed ? html`<span class="mono">${price(p.now)}</span>` : html`<span class="mono ${p.stale ? 'mute' : ''}" ${p.stale ? html`data-tip="No price stored at this step: shown at entry"` : ''}>${p.now == null ? '—' : price(p.now)}</span>`,
+      html`<span class="col" style="gap:0" data-tip="${entryTip}" data-cell="entry"><span class="mono">${price(l.entry)}</span>${at(l.t0)}</span>`,
+      p.closed ? html`<span class="col" style="gap:0" data-tip="${exitTip}" data-cell="exit"><span class="mono">${price(l.exit)}</span>${at(l.t1)}</span>`
+        : html`<span class="tiny mute" data-cell="exit">open</span>`,
+      p.closed ? html`<span class="mute">—</span>`
+        : html`<span class="mono ${p.stale ? 'mute' : ''}" data-cell="now" ${p.stale ? html`data-tip="No price stored at this step: shown at entry"` : ''}>${p.now == null ? '—' : price(p.now)}</span>`,
       html`<span class="mono small">${p.iv != null ? `${p.iv.toFixed(1)}%` : '—'}</span>`,
-      p.closed ? html`<span class="small">Closed ${hhmm(l.t1)}${dShort(l.t1) !== dShort(D.frames[i].t) ? ` · ${dShort(l.t1)}` : ''}${l.closed_by ? ` · ${how(l.closed_by)}` : ''}</span>`
+      html`<b class="mono ${tone(p.pnl)}">${p.pnl == null ? '—' : inr(p.pnl)}</b>`,
+      html`<span class="mono small ${tone(p.pnl)}" data-cell="pct">${pct == null ? '—' : `${sgn(pct, 1)}%`}</span>`,
+      p.closed ? html`<span class="small" data-tip="${exitTip}">Closed${l.closed_by ? ` · ${how(l.closed_by)}` : ''}</span>`
         : p.fresh ? html`<span class="rp-chip sm" style="--k:var(--b)">New${l.opened_by ? ` · ${how(l.opened_by)}` : ''}</span>` : html`<span class="small">Open</span>`,
     ];
   });
-  rows.push([html`<b class="small">Total</b>`, html`<span class="tiny mute">${open.length} open · ${closed.length} closed</span>`,
-    html`<b class="mono ${tone(sum(P))}">${inr(sum(P))}</b>`, '', '', '', html`<span class="tiny">open <b class="${tone(sum(open))}">${inr(sum(open))}</b> · booked <b class="${tone(sum(closed))}">${inr(sum(closed))}</b></span>`]);
-  return table([['Instrument', 'minmax(108px,1fr)'], ['Qty', '74px'], ['P&L', '96px', 'num'], ['Entry', '104px', 'num'], ['Price', '80px', 'num'], ['IV', '66px', 'num'], ['', '10px'], ['Status', 'minmax(150px,1.1fr)']],
-    rows, { minw: 720, rowCls: k => (k === L.length ? 'rp-total' : L[k].fresh && !L[k].closed ? 'rp-fresh' : L[k].justClosed ? 'rp-gone rp-closed' : L[k].closed ? 'rp-closed' : '') });
+  rows.push([html`<b class="small">Total</b>`, html`<span class="tiny mute nowrap">${open.length} open · ${closed.length} closed</span>`, '', '', '', '',
+    html`<b class="mono ${tone(sum(P))}">${inr(sum(P))}</b>`, '', html`<span class="tiny">open <b class="${tone(sum(open))}">${inr(sum(open))}</b> · booked <b class="${tone(sum(closed))}">${inr(sum(closed))}</b></span>`]);
+  return table([['Instrument', 'minmax(118px,1.1fr)'], ['Qty', '74px'], ['Entry', '92px', 'num'], ['Exit', '92px', 'num'], ['Now', '78px', 'num'],
+    ['IV', '58px', 'num'], ['P&L', '96px', 'num'], ['%', '64px', 'num'], ['Status', 'minmax(150px,1.2fr)']],
+  rows, { minw: 860, cls: 'rp-pos', rowCls: k => (k === L.length ? 'rp-total' : L[k].fresh && !L[k].closed ? 'rp-fresh' : L[k].justClosed ? 'rp-gone rp-closed' : L[k].closed ? 'rp-closed' : '') });
 }
 
 function eventList(D, i) {
@@ -434,7 +458,17 @@ export default {
       <div class="rp-track" data-track>
         <div data-rp="track"></div>
         <input class="sr-only" type="range" min="0" max="${n - 1}" value="${i}" data-range aria-label="Replay position">
-      </div></div>`;
+      </div>
+      <div data-rp="strip"></div></div>`;
+    }
+
+    // On a phone the dock scrolls away with the page: play and step stay here.
+    function mini() {
+      return html`<div class="rp-mini" role="group" aria-label="Replay controls">
+        <button type="button" class="btn btn-sm" data-act="back" aria-label="Step back">‹</button>
+        <button type="button" class="btn btn-sm rp-play" data-act="play" aria-label="Play">▶ Play</button>
+        <button type="button" class="btn btn-sm" data-act="fwd" aria-label="Step forward">›</button>
+        <span data-rp="mini"></span></div>`;
     }
 
     function paint() {
@@ -444,20 +478,21 @@ export default {
       if (!D.frames || !D.frames.length) { mount(el, html`${head('Replay')}${picker()}${empty('No prices for this window', D.market_error || 'No prices were found for it.')}`); return; }
       i = Math.max(0, Math.min(D.frames.length - 1, i));
       if (step == null || !stepsFor(D.interval).some(([, m]) => m === step)) step = stepsFor(D.interval)[0][1];
-      mount(el, html`${head('Replay', `the payoff of what was held, step by step against ${D.index_name}`, D.market_error ? 'index and VIX unavailable' : '')}
-        ${picker()}
+      mount(el, html`<div class="rp-view">
+        <div class="rp-top">${head('Replay', '', D.market_error ? 'index and VIX unavailable' : '')}
+        ${picker()}</div>
         ${controls()}
-        <div data-rp="strip"></div>
         <div data-rp="banner"></div>
-        <div class="gk-panel rp-pay"><h3>Payoff <span class="s" data-rp="paysub"></span></h3>
-          <div class="gk-wide" data-rp="stage"></div>
+        <div class="gk-panel rp-pay"><h3>Payoff <span class="s" data-rp="paysub"></span><span data-rp="paystats"></span></h3>
+          <div class="rp-canvas" data-rp="stage"></div>
           <div class="rp-legend tiny" data-rp="legend"></div></div>
-        <div class="gk-panel"><h3>Positions <span class="s">new ones join as they’re opened · closed ones grey out with what they booked</span></h3><div data-rp="pos"></div></div>
+        <div class="gk-panel"><h3>Positions <span class="s">new ones join as they’re opened · closed ones grey out, entry and exit kept</span></h3><div data-rp="pos"></div></div>
         <div class="gk-two">
           <div class="gk-panel"><h3>Trades <span class="s">${D.events.length} · click one to go there</span></h3><div data-rp="list"></div></div>
           <div class="gk-panel"><h3>Episodes <span class="s">click one to replay it · From and To above for a chain</span></h3>${episodes()}</div>
         </div>
-        ${D.unpriced && D.unpriced.length ? html`<p class="gk-note">No stored prices for ${D.unpriced.join(', ')}: shown at entry until they close.</p>` : ''}`);
+        ${D.unpriced && D.unpriced.length ? html`<p class="gk-note">No stored prices for ${D.unpriced.join(', ')}: shown at entry until they close.</p>` : ''}
+        ${mini()}</div>`);
       update();
     }
 
@@ -469,11 +504,13 @@ export default {
       const bad = mismatched(D, i);
       const P = R && f.legs.length && !bad.length ? payoff(D, i, xs) : null;
       set('track', timeline(D, i));
-      set('strip', strip(D, i, P || { expiry: [0] }, xs));
+      set('strip', strip(D, i));
+      set('paystats', P ? payStats(D, i, P, xs) : '');
+      set('mini', html`<span class="mono small">${dShort(f.t).replace(/ '\d\d$/, '')} ${hhmm(asOf(D, i))}</span> <b class="mono small ${tone(f.pnl)}">${inr(f.pnl)}</b>`);
       set('banner', banner(D, i, g.id));
       if (P) {
         const st = el.querySelector('[data-rp="stage"]');
-        set('stage', payoffChart(D, i, P, xs, st ? st.clientWidth : 1000));
+        set('stage', payoffChart(D, i, P, xs, st ? st.clientWidth : 1000, payoffHeight(window.innerWidth, window.innerHeight)));
         set('paysub', html`at expiry${P.target ? ` (${dShort(P.target)})` : ''}${P.now ? ` and today at ${hhmm(asOf(D, i))}` : ''} · ${D.index_name} ${R[2] ? price(R[2]) : ''}`);
         set('legend', html`<span><i class="rp-k ink"></i>At expiry${P.target ? ` · ${dShort(P.target)}` : ''}</span>
           ${P.now ? html`<span><i class="rp-k b"></i>Today · from each leg’s price now</span>` : ''}
@@ -492,8 +529,7 @@ export default {
       set('list', eventList(D, i));
       const r = el.querySelector('[data-range]');
       if (r && +r.value !== i) r.value = i;
-      const b = el.querySelector('.rp-play');
-      if (b) { b.textContent = playing ? '❚❚ Pause' : '▶ Play'; b.setAttribute('aria-label', playing ? 'Pause' : 'Play'); }
+      el.querySelectorAll('.rp-play').forEach(b => { b.textContent = playing ? '❚❚ Pause' : '▶ Play'; b.setAttribute('aria-label', playing ? 'Pause' : 'Play'); });
     }
 
     function stop() { playing = false; if (timer) clearInterval(timer); timer = null; update(); }
