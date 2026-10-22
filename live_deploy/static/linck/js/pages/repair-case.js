@@ -185,6 +185,7 @@ export default {
 
     function stateBar() {
       const pl = c.plan, ap = c.apply;
+      if (!c.check && !c.applied) return '';   // only what the deployment reported: nothing planned
       if (c.applied) {
         return html`<div class="rc-state t-ok"><b>Repaired</b><span>Applied ${hhmm(c.applied.applied_at)} from ${hhmm(c.applied.from)}: ${plural(c.applied.summary.fills || 0, 'trade')} in place of the app’s ${c.applied.replaced.length}.</span>
           <span class="grow"></span><button type="button" class="btn btn-sm" data-act="undo">Undo the repair</button></div>`;
@@ -217,7 +218,15 @@ export default {
       mount(main, html`${head()}<div class="page" style="padding-top:4px">
         ${c.check ? html`<div class="rc-found"><span class="dc-pill ${p[1]}">${p[0]}</span><span>${c.check.headline}</span></div>
           ${(c.check.rules || []).map(r => html`<div class="dc-rule ${r.severity}"><b>${r.title}</b><span>${r.detail}</span></div>`)}`
-        : html`<div class="rc-found"><span class="dc-pill t-mute">Not checked</span><span>This day wasn’t checked after the close; the repair was made with the stall-repair script.</span></div>`}
+        : html`<div class="rc-found"><span class="dc-pill t-mute">Not checked</span><span>${c.applied
+          ? 'This day wasn’t checked after the close; the repair was made with the stall-repair script.'
+          : 'This day hasn’t been checked after the close yet. Run the day check on the Repair page to replay it; below is what the deployment reported about it.'}</span></div>`}
+        ${(c.reported || []).length ? html`${sect('What the deployment reported that day', 'Its own protections and its strategy, as they happened')}
+          <div class="rc-reported">${c.reported.map(x => html`<div class="${x.resolved_at ? 'done' : ''}">
+            <span class="mono tiny">${hhmm(x.first_at)}</span>
+            <span class="col" style="gap:2px;min-width:0"><b class="small">${x.title}</b><span class="tiny mute">${x.detail || ''}</span></span>
+            <span class="tiny ${x.resolved_at ? 'mute' : x.severity === 'critical' ? 'neg' : ''}">${x.resolved_at ? (x.resolved_by === 'dismissed' ? 'dismissed' : 'cleared') : x.severity === 'info' ? 'noted' : x.severity}</span>
+          </div>`)}</div>` : ''}
         ${stateBar()}
         ${choicesBar()}
         ${shown ? html`

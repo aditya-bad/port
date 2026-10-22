@@ -423,14 +423,20 @@ class TrendCreditSpreadStrategy(StrategyBase):
         # source of truth for "how many entries already happened today"
         # the way SuperTrend itself gets re-derived fresh from Kite).
         persisted = await runner.load_state()
+        today = clock.now_ist().date()
         if persisted:
-            today_str = persisted.get("today")
-            if today_str:
-                try:
-                    if date.fromisoformat(today_str) == clock.now_ist().date():
-                        self.trades_today = persisted.get("trades_today", 0)
-                except ValueError:
-                    pass
+            try:
+                if persisted.get("version") != 1:
+                    raise ValueError(f"version {persisted.get('version')!r}")
+                today_str = persisted.get("today")
+                if today_str is not None and date.fromisoformat(today_str) == today:
+                    self.trades_today = int(persisted.get("trades_today", 0))
+            except (AttributeError, TypeError, ValueError):
+                await self.state_unusable(runner, "The saved state was unreadable",
+                                          "Today's trades are counted from the book instead.")
+        # The book is the floor: a state saved before the last entry (an
+        # ungraceful restart) or lost never lets the daily cap reset.
+        self.trades_today = max(self.trades_today, await self.entries_on(runner, today, "short"))
 
         # Resume-safety: reclassify whichever positions are still open by
         # their own stamped leg_role — see module docstring's Section 7.
@@ -528,7 +534,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             today_str = state.get("today")
             self.today = date.fromisoformat(today_str) if today_str else None
             if self.today == clock.now_ist().date():
-                self.trades_today = state.get("trades_today", 0)
+                self.trades_today = max(self.trades_today, int(state.get("trades_today", 0)))
         except (KeyError, TypeError, ValueError):
             logger.exception(
                 "%s: persisted state was malformed — ignoring it and falling "
@@ -541,6 +547,11 @@ class TrendCreditSpreadStrategy(StrategyBase):
             runner.deployment_name, self.st.trend,
         )
         return True
+
+    def tracked_tokens(self) -> set:
+        """Every leg this strategy holds (StrategyBase.tracked_tokens)."""
+        legs = [getattr(self, "short_leg", None), getattr(self, "long_leg", None), getattr(self, "_orphan_leg", None)]
+        return {int(l["token"]): l.get("symbol") for l in legs if l}
 
     def get_persistable_state(self) -> Optional[dict]:
         """See StrategyBase's own docstring. Only the SuperTrend/day-
@@ -665,7 +676,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             if candle["date"].date() == now.date():   # a session's last candle always closes on the next morning's first tick
                 await self.decide(runner, now, "stale_candle", "blocked",
                                   f"Candle {candle['date']:%H:%M} arrived {(now - candle['date']).total_seconds() / 60:.0f} min late (feed gap): no new entry off it",
-                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)})
+                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)}, fault=True)
 
         t = now.time()   # real wall-clock time, for the expiry-day cutoff
         before_cutoff = self.expiry_day_force_exit_time is None or t < self.expiry_day_force_exit_time
@@ -777,7 +788,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
                 "Kite session yet — skipping", runner.deployment_name, spread_side,
             )
             await self.decide(runner, candle["date"], "entry", "blocked",
-                              f"SuperTrend flipped {new_trend} (sell a {spread_side.replace('_', ' ')} spread) but Kite isn't connected", trigger_values)
+                              f"SuperTrend flipped {new_trend} (sell a {spread_side.replace('_', ' ')} spread) but Kite isn't connected", trigger_values, fault=True, missed=True)
             return
         except Exception as e:
             logger.exception(
@@ -786,7 +797,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             )
             await self.decide(runner, candle["date"], "entry", "blocked",
                               f"SuperTrend flipped {new_trend} but the {spread_side.replace('_', ' ')} spread's legs couldn't be found or priced: {e}",
-                              {**trigger_values, "error": str(e)[:200]})
+                              {**trigger_values, "error": str(e)[:200]}, fault=True, missed=True)
             return
 
         if short_price is None or long_price is None:
@@ -795,7 +806,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
                 "spread — skipping this entry", runner.deployment_name, spread_side,
             )
             await self.decide(runner, candle["date"], "entry", "blocked",
-                              f"SuperTrend flipped {new_trend} but there was no live quote for a leg of the {spread_side.replace('_', ' ')} spread", trigger_values)
+                              f"SuperTrend flipped {new_trend} but there was no live quote for a leg of the {spread_side.replace('_', ' ')} spread", trigger_values, fault=True, missed=True)
             return
         if short_leg.strike == long_leg.strike:
             logger.warning(
@@ -807,7 +818,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             )
             await self.decide(runner, candle["date"], "entry", "blocked",
                               f"Short and long legs came out at the same strike ({short_leg.strike:g}): the option chain is too narrow for these settings",
-                              {**trigger_values, "strike": short_leg.strike})
+                              {**trigger_values, "strike": short_leg.strike}, fault=True, missed=True)
             return
         credit_per_unit = short_price - long_price
         if credit_per_unit <= 0:
@@ -819,7 +830,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             )
             await self.decide(runner, candle["date"], "entry", "blocked",
                               f"The short leg ({short_price:.2f}) wasn't pricier than the long leg ({long_price:.2f}): a debit, not a credit (illiquid or stale quotes?)",
-                              {**trigger_values, "short_price": short_price, "long_price": long_price})
+                              {**trigger_values, "short_price": short_price, "long_price": long_price}, fault=True, missed=True)
             return
 
         qty = self.lots_per_trade * short_leg.lot_size
@@ -903,7 +914,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
         if short_price is None or long_price is None:
             if (getattr(self, '_entered_at', None) is None or (ts - self._entered_at).total_seconds() > 120):
                 await self.decide(runner, ts, "exit_checks", "blocked",
-                                  "No live price yet for a leg: profit target and stop wait for one", once="no_price")
+                                  "No live price yet for a leg: profit target and stop wait for one", once="no_price", fault=True)
             return   # wait for a live tick on both legs
 
         qty = self.short_leg["qty"]
@@ -1012,7 +1023,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
         if pos is None:
             self._orphan_leg = None
             return
-        price = runner.dispatcher.last_prices.get(leg["token"], leg["entry_price"])
+        price, _src = await self.exit_price(runner, leg["token"], leg["symbol"], leg["entry_price"])
         meta = build_trade_meta(
             trigger="orphan_leg_cleanup", action="close_orphan",
             trigger_values={"note": "other leg of this spread was missing on resume"},

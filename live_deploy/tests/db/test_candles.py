@@ -208,10 +208,18 @@ def test_no_kite_session_reports_and_keeps_what_is_stored(pool_run, monkeypatch,
 
 # ── After the close ───────────────────────────────────────────────────
 
+async def alone(pool):
+    """The backfill fetches what every deployment held that day: other
+    tests' deployments (the strategy simulations trade the same days in
+    this worker's database) would be fetched too."""
+    await pool.execute("DELETE FROM deployments")
+
+
 def test_backfill_fetches_each_held_instrument_once(pool_run, monkeypatch, frozen_today):
     k = _mk(monkeypatch)
 
     async def go(pool):
+        await alone(pool)
         intra = (await queries.create_deployment(pool, "I", "intraday_dtt_simple", "intraday", 500000, {}))["id"]
         pos = (await queries.create_deployment(pool, "P", "strangle_monthly_v2", "positional", 500000, {}))["id"]
         sym = "NIFTY26O2723000CE"
@@ -273,6 +281,7 @@ def test_backfill_skips_held_futures_and_stocks(pool_run, monkeypatch, frozen_to
     k = _mk(monkeypatch)
 
     async def go(pool):
+        await alone(pool)
         d = (await queries.create_deployment(pool, "F", "calendar_btst", "positional", 1e7, {}))["id"]
         await fill(pool, d, "NIFTY26NOVFUT", 990, "buy", 75, 25000, at(DAY, 10, 0))
         await fill(pool, d, "NIFTY26NOV25000PE", 991, "sell", 75, 100, at(DAY, 10, 0))
@@ -286,6 +295,7 @@ def test_migration_0022_removes_stored_index_candles_and_keeps_options(pool_run)
     sql = (Path(C.__file__).parent / "db" / "migrations" / "0022_candles_options_only.sql").read_text()
 
     async def go(pool):
+        await alone(pool)
         d = (await queries.create_deployment(pool, "D", "strangle_monthly_v2", "positional", 1e6, {}))["id"]
         await fill(pool, d, "NIFTY26NOV25000CE", 31, "sell", 75, 100, at(DAY, 10, 0))
         await queries.upsert_contracts(pool, [{"instrument_token": 32, "tradingsymbol": "NIFTY26DEC24000PE", "instrument_type": "PE"},
@@ -349,6 +359,7 @@ def test_two_backfills_never_run_at_once(pool_run, monkeypatch, frozen_today):
     k = _mk(monkeypatch, delay=0.02)
 
     async def go(pool):
+        await alone(pool)
         d = (await queries.create_deployment(pool, "D", "strangle_monthly_v2", "positional", 1e6, {}))["id"]
         await fill(pool, d, "NIFTY26O2725000CE", 41, "sell", 75, 100, at(DAY, 10, 0))
         await fill(pool, d, "NIFTY26O2725000PE", 42, "sell", 75, 100, at(DAY, 10, 0))
@@ -374,6 +385,7 @@ def test_result_is_saved_before_the_run_stops_showing_as_running(pool_run, monke
             seen.append(svc.progress is not None)       # still showing as running when the result lands
             return await real(pool_, key, value)
         monkeypatch.setattr(queries, "set_app_scratch", spy)
+        await alone(pool)
         d = (await queries.create_deployment(pool, "D", "strangle_monthly_v2", "positional", 1e6, {}))["id"]
         await fill(pool, d, "NIFTY26O2725000CE", 51, "sell", 75, 100, at(DAY, 10, 0))
         await svc.backfill_day(DAY)

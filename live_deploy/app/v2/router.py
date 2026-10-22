@@ -340,9 +340,52 @@ async def dismiss_issue(issue_id: int, request: Request):
         issue_id, datetime.now(timezone.utc))
     if row is None:
         raise HTTPException(404, "No such open issue")
+    if row["key"].startswith("strat:"):   # a deployment's own report: closed with it, so it doesn't come straight back
+        await request.app.state.db_pool.execute(
+            "UPDATE strategy_issues SET resolved_at = now(), resolved_by = 'dismissed' WHERE id = $1 AND resolved_at IS NULL",
+            int(row["key"].split(":", 1)[1]))
     if getattr(request.app.state, "ops", None) is not None:
         await request.app.state.ops.refresh_open()
     return ops_health.issue(row)
+
+
+# ── What the deployments report about themselves (app/deployments/health.py) ──
+
+def _strategy_issue_json(r) -> dict:
+    return {
+        "id": r["id"], "deployment_id": str(r["deployment_id"]), "name": r["deployment_name"], "strategy": r["strategy_name"],
+        "key": r["key"], "kind": r["kind"], "severity": r["severity"], "source": r["source"], "title": r["title"],
+        "detail": r["detail"], "data": r["data"] or {}, "day": r["day"].isoformat() if r["day"] else None,
+        "first_at": r["first_at"].isoformat(), "last_at": r["last_at"].isoformat(), "count": r["count"],
+        "expires_at": r["expires_at"].isoformat() if r["expires_at"] else None,
+        "resolved_at": r["resolved_at"].isoformat() if r["resolved_at"] else None, "resolved_by": r["resolved_by"],
+    }
+
+
+@router.get("/strategy-issues")
+async def get_strategy_issues(request: Request, all: bool = False, deployment: Optional[UUID] = None):
+    """What the deployments report about themselves: open ones (worst
+    first), or with `all` the recently closed too."""
+    rows = await queries.list_strategy_issues(request.app.state.db_pool, open_only=not all, deployment_id=deployment,
+                                              limit=200 if all else 500)
+    return {"issues": [_strategy_issue_json(r) for r in rows]}
+
+
+@router.post("/strategy-issues/{issue_id}/dismiss")
+async def dismiss_strategy_issue(issue_id: int, request: Request):
+    """Close one by hand (you've dealt with it). If the deployment reports
+    it again, it comes back as a new one."""
+    pool = request.app.state.db_pool
+    row = await pool.fetchrow(
+        "UPDATE strategy_issues SET resolved_at = now(), resolved_by = 'dismissed' WHERE id = $1 AND resolved_at IS NULL RETURNING id",
+        issue_id)
+    if row is None:
+        raise HTTPException(404, "No such open issue")
+    await pool.execute("UPDATE ops_issues SET resolved_at = now(), resolved_by = 'dismissed' "
+                       "WHERE key = $1 AND resolved_at IS NULL", f"strat:{issue_id}")
+    if getattr(request.app.state, "ops", None) is not None:
+        await request.app.state.ops.refresh_open()
+    return {"id": issue_id, "dismissed": True}
 
 
 # ── End-of-day check (app/repair/daycheck.py) ────────────────────────
@@ -448,7 +491,11 @@ async def get_repair_case(day: str, deployment_id: UUID, request: Request):
     check = await pool.fetchrow("SELECT * FROM day_checks WHERE deployment_id = $1 AND day = $2", deployment_id, d)
     live = await pool.fetchrow(
         "SELECT * FROM stall_repairs WHERE deployment_id = $1 AND day = $2 AND undone_at IS NULL", deployment_id, d)
-    if check is None and live is None:   # a repair made by the script, with no check of its day, still has a case
+    reported = await pool.fetch(
+        "SELECT i.*, d.deployment_name, d.strategy_name FROM strategy_issues i JOIN deployments d ON d.id = i.deployment_id "
+        "WHERE i.deployment_id = $1 AND i.day = $2 ORDER BY i.first_at", deployment_id, d)
+    if check is None and live is None and not reported:
+        # a repair made by the script, or an issue the deployment reported about the day, still has a case
         raise HTTPException(404, "That day hasn't been checked for this deployment")
     draft = await pool.fetchrow("SELECT * FROM repair_drafts WHERE deployment_id = $1 AND day = $2", deployment_id, d)
     plan = await pool.fetchrow(
@@ -463,6 +510,7 @@ async def get_repair_case(day: str, deployment_id: UUID, request: Request):
         "check": {"status": check["status"], "headline": check["headline"], "rules": check["rules"] or [],
                   "diff": check["diff"] or {}, "replay": check["replay"] or {}, "checked_at": check["checked_at"].isoformat()} if check else None,
         "draft": {"choices": choices, "updated_at": draft["updated_at"].isoformat() if draft else None},
+        "reported": [_strategy_issue_json(r) for r in reported],
         "plan": _job_json(plan),
         "plan_is_draft": bool(plan and plan["status"] == "done" and (plan["choices"] or {}) == choices),
         "apply": _job_json(apply_, result=True),

@@ -68,6 +68,7 @@ class Problem:
     severity: str = "critical"
     deployment_id: Optional[str] = None
     data: dict = field(default_factory=dict)
+    repeat: bool = True        # alert every minute while open; False: once, when it opens
 
 
 def _ist(dt: datetime) -> datetime:
@@ -253,8 +254,30 @@ class OpsMonitor:
             await self._announce_export(success)
         await self._keep_day(now, success)
         problems += await self._day_check_problems(now)
+        problems += await self._strategy_issues(now)
         await self._sync(now, problems)
         return self.open
+
+    # ── what the deployments report about themselves ───────────────────
+
+    async def _strategy_issues(self, now: datetime) -> list[Problem]:
+        """Each open issue a deployment reported (app/deployments/
+        health.py: a strategy that keeps failing, a fill
+        that failed, legs it lost track of, an entry it couldn't make…).
+        Critical ones alert every minute until they clear; warnings once.
+        Ones past their expiry are closed first."""
+        await queries.expire_strategy_issues(self.pool)
+        out = []
+        for r in await queries.list_strategy_issues(self.pool, open_only=True, limit=500):
+            if r["severity"] == "info":
+                continue
+            out.append(Problem(
+                f"strat:{r['id']}", f"strategy:{r['kind']}", f"{r['deployment_name']}: {r['title']}",
+                (r["detail"] or "") + (f" ({r['count']} times)" if r["count"] > 1 else ""),
+                severity=r["severity"], deployment_id=str(r["deployment_id"]),
+                data={"strategy_issue_id": r["id"], "kind": r["kind"], "day": r["day"].isoformat() if r["day"] else None},
+                repeat=r["severity"] == "critical"))
+        return out
 
     # ── the end-of-day check ───────────────────────────────────────────
 
@@ -342,7 +365,7 @@ class OpsMonitor:
                     "UPDATE ops_issues SET title = $2, detail = $3, data = $4, severity = $5, last_seen_at = $6 "
                     "WHERE id = $1 RETURNING *", row["id"], p.title, p.detail, p.data, p.severity, now)
             snoozed = row["snoozed_until"] is not None and row["snoozed_until"] > now
-            due = row["last_alert_at"] is None or now - row["last_alert_at"] >= ALERT_EVERY
+            due = row["last_alert_at"] is None or (p.repeat and now - row["last_alert_at"] >= ALERT_EVERY)
             if not snoozed and due:
                 await self.pool.execute(
                     "UPDATE ops_issues SET last_alert_at = $2, alerts = alerts + 1 WHERE id = $1", row["id"], now)

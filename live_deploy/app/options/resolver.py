@@ -151,6 +151,7 @@ _CACHE_LOCKS: dict[str, asyncio.Lock] = {}
 # (same pattern _INSTRUMENT_CACHE/_CACHE_LOCKS above already use) is what
 # makes the throttle actually see everything.
 _KITE_CALL_MIN_INTERVAL = 0.35   # seconds between successive Kite REST calls, process-wide (~3/sec)
+_KITE_CALL_TIMEOUT = 45.0        # seconds before a Kite REST call that hasn't answered is abandoned (the instrument dump is the slowest)
 _kite_call_lock = asyncio.Lock()
 _kite_call_next_allowed_at = 0.0   # time.monotonic() timestamp; 0.0 == "no reservation yet"
 
@@ -917,7 +918,11 @@ class OptionsResolver:
                     now = time.monotonic()
                 _kite_call_next_allowed_at = now + _KITE_CALL_MIN_INTERVAL
             try:
-                return await asyncio.to_thread(fn, *args)
+                # a call that hangs (a dead connection) gives up instead of
+                # holding the strategy that made it forever
+                return await asyncio.wait_for(asyncio.to_thread(fn, *args), _KITE_CALL_TIMEOUT)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"Kite didn't answer {getattr(fn, '__name__', 'a call')} within {_KITE_CALL_TIMEOUT:.0f}s")
             except KiteException as exc:
                 if getattr(exc, "code", None) != 429:
                     raise

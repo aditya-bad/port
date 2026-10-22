@@ -20,6 +20,7 @@ const WATCHED = [
   ['Database', 'Answers every minute.'],
   ['Each running deployment', 'Its strategy is running, and acting on prices while they flow (not silent for 3 min).'],
   ['Strategy errors', 'Any in the last 5 minutes.'],
+  ['What deployments report', 'A strategy that keeps failing or can’t start, a fill that failed, legs it lost track of, an entry it couldn’t make, prices it couldn’t trust — critical ones alert every minute, warnings once.'],
   ['Open legs', 'Have traded today (after 09:45): a leg priced from an old trade can’t be managed.'],
   ['The 15:45 export', 'Today’s option candles saved from Kite — it says when it’s done, and alerts if it fails.'],
 ];
@@ -64,6 +65,7 @@ function issueCard(x) {
     <div class="ops-head">
       <span class="ops-sev">${x.severity === 'critical' ? 'Critical' : 'Warning'}</span>
       <h4>${x.title}</h4>
+      ${x.data && x.data.day && x.deployment_id ? html`<a class="small" href="${href(`repair/${x.data.day}/${x.deployment_id}`)}">Review ${dDay(fromDay(x.data.day))} ›</a>` : ''}
       ${x.deployment_id ? html`<a class="small" href="${href(`d/${x.deployment_id}`)}">Open deployment ›</a>` : ''}
     </div>
     <p>${x.detail}</p>
@@ -81,6 +83,30 @@ function issueCard(x) {
       <button type="button" class="btn btn-sm btn-quiet" data-act="dismiss" data-id="${x.id}" data-tip="${'Close it by hand\nIf the check still finds the problem,\nit opens again as a new issue.'}">Dismiss</button>
     </div>
   </article>`;
+}
+
+// ── What the deployments report about themselves ────────────────────
+const KIND_WORDS = {
+  crash: 'Keeps failing', fill_failed: 'Fill failed', legs_mismatch: 'Legs out of step',
+  resynced: 'Re-synced', bad_ticks: 'Bad prices', exit_at_entry: 'Closed at entry', square_off_failed: 'Square-off failed',
+  cash_negative: 'Cash below zero', state_unsaved: 'State not saved', bad_order: 'Order refused', blocked: 'Blocked',
+  missed_trade: 'Missed trade', entry_delayed: 'Entry late', entry_skipped: 'Entry skipped',
+  state_lost: 'State lost', adjustment_delayed: 'Roll late', unhedged: 'Unhedged', feed_gap: 'No prices',
+};
+const CLOSED_HOW = { cleared: 'cleared itself', expired: 'went away', dismissed: 'dismissed' };
+
+function reportedSection(rows) {
+  if (rows === null) return loading(3);
+  if (!rows.length) return html`<p class="small mute" style="margin:0">Nothing reported recently.</p>`;
+  return html`<div class="rp-reported" role="table">${rows.map(x => html`<div class="tr ${x.resolved_at ? 'done' : ''}" role="row" data-sissue="${x.id}">
+    <span class="si-sev t-${x.severity === 'critical' ? 'bad' : x.severity === 'warning' ? 'warn' : 'mute'}">${KIND_WORDS[x.kind] || x.kind.replace(/_/g, ' ')}</span>
+    <span class="col" style="gap:2px;min-width:0"><b class="small">${x.name}: ${x.title}</b><span class="tiny mute">${x.detail || ''}</span></span>
+    <span class="col tiny mute" style="gap:2px;text-align:right">
+      <span>${x.source === 'strategy' ? 'by the strategy' : 'by the runner'} · ${dStamp(x.first_at)}${x.count > 1 ? ` · ${x.count}×` : ''}</span>
+      <span>${x.resolved_at ? `${CLOSED_HOW[x.resolved_by] || x.resolved_by} ${dStamp(x.resolved_at)}` : x.severity === 'info' ? 'noted' : html`<b class="t-${x.severity === 'critical' ? 'bad' : 'warn'}">open</b>`}</span>
+      ${x.day ? html`<a href="${href(`repair/${x.day}/${x.deployment_id}`)}">Review ${dDay(fromDay(x.day))} ›</a>` : ''}
+      ${x.resolved_at ? '' : html`<button type="button" class="linkish" data-act="dismissReport" data-id="${x.id}">Dismiss</button>`}
+    </span></div>`)}</div>`;
 }
 
 // ── The day check ──────────────────────────────────────────────────
@@ -184,7 +210,11 @@ function clearedTable(rows) {
 export default {
   title: () => 'Repair',
   render(main) {
-    let d = null, err = null, busy = false, dc = null, dcDay = '', dcTimer = null;
+    let d = null, err = null, busy = false, dc = null, dcDay = '', dcTimer = null, reported = null;
+    async function loadReported() {
+      try { reported = (await api.strategyIssues(true)).issues; } catch (e) { reported = []; }
+      paint();
+    }
     async function load(fresh = false) {
       try {
         d = fresh ? await api.opsCheck() : await api.ops();
@@ -213,6 +243,8 @@ export default {
           ${sect('Open issues', d.open.length ? 'Each alerts your phone every minute until it clears or you snooze it' : '')}
           ${d.open.length ? html`<div class="ops-list">${d.open.map(issueCard)}</div>`
             : html`<div class="ops-ok"><b>Nothing needs you.</b><span>Everything the monitor watches is fine.</span></div>`}
+          ${sect('Reported by the deployments', 'What each running deployment reported about itself — open ones first, then the last few days')}
+          ${reportedSection(reported)}
           ${sect('Day check', 'Each deployment’s day replayed from its open and checked against what the app did')}
           ${dayCheckSection(dc, dcDay)}
           ${sect('What’s watched', 'Checked every minute')}
@@ -237,16 +269,24 @@ export default {
           await loadChecks();
         } catch (e) { fail(e, 'Couldn’t start the day check'); }
       },
+      dismissReport: async x => {
+        try { await api.dismissStrategyIssue(x.id); say('Dismissed. If the deployment reports it again, it comes back.'); await load(); await loadReported(); pollStatus(); }
+        catch (e) { fail(e, 'Couldn’t dismiss it'); }
+      },
       dismiss: async x => {
         try { await api.dismissIssue(x.id); say('Dismissed. If the problem is still there, the next check opens it again.'); await load(); pollStatus(); } catch (e) { fail(e, 'Couldn’t dismiss it'); }
       },
     });
-    const offEv = listen('event', ev => { if (/^health_/.test(ev.event_type || '')) { load(); loadChecks(); } });
+    const offEv = listen('event', ev => {
+      if (/^health_/.test(ev.event_type || '')) { load(); loadChecks(); loadReported(); }
+      else if (/^strategy_issue/.test(ev.event_type || '')) loadReported();
+    });
     const offDay = on(main, 'change', '[data-f="dcDay"]', (e, el) => { dcDay = el.value; dc = null; paint(); loadChecks(); });
-    const timer = setInterval(() => load(), 30000);
+    const timer = setInterval(() => { load(); loadReported(); }, 30000);
     paint();
     load();
     loadChecks();
+    loadReported();
     return () => { offActs(); offEv(); offDay(); clearInterval(timer); clearTimeout(dcTimer); };
   },
 };

@@ -121,9 +121,22 @@ class ReplayRunner(DeploymentRunner):
         self.window = window
         self.log: list[dict] = []
         self.problems: list[str] = []
+        # a replay revisits minutes (both ways through one) and runs on
+        # candles: no tick filter, no breaker resting the strategy, and
+        # what it reports stays with the replay, not the live deployment
+        self.filter_ticks = False
+        self.use_breaker = False
+        self.resync_enabled = False
+        self.issues.enabled = False
 
     def _is_stale_tick(self, tick: dict) -> bool:
         return False   # replayed ticks are in the past by design
+
+    async def report(self, kind, title, detail=None, **kw):
+        self.problems.append(f"{self.clock.minute:%H:%M} {title}{f': {detail}' if detail else ''}")
+
+    async def _report(self, kind, title, detail=None, **kw):
+        await self.report(kind, title, detail, **kw)
 
     async def _fill(self, action, symbol, instrument_token, qty, price, executed_at, reason, metadata):
         at = self.clock.now_ist() if executed_at is None else \
@@ -312,7 +325,8 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         out.start_positions = _legs(runner, disp)
         out.start_equity = _equity(runner, disp)
 
-        await runner.strategy.on_start(runner)
+        await runner.strategy.on_start(runner)   # a replay that can't start stops here, with the error
+        runner.started = True
         await runner.checkpoint_state()
 
         async def play(m: datetime, order: str) -> list[dict]:

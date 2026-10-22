@@ -86,6 +86,22 @@ def test_buy_beyond_cash_is_refused_and_changes_nothing(pool_run):
     pool_run(go)
 
 
+def test_buying_back_a_short_is_never_refused_for_cash(pool_run):
+    """An exit can't wait for cash: a short that ran badly against you is
+    bought back even when that takes cash below zero (migration 0034) —
+    refused, it stayed open with nothing able to close it. Opening buys
+    are still checked."""
+    async def go(pool):
+        d = await dep(pool, capital=1000)
+        await fill(pool, d, "X", 1, "sell", 10, 50.0, T0)              # +500
+        await fill(pool, d, "X", 1, "buy", 10, 400.0, T0 + timedelta(minutes=1))   # −4000
+        assert await cash(pool, d) == 1000 + 500 - 4000
+        assert await queries.list_open_positions(pool, d) == []
+        with pytest.raises(queries.InsufficientCash):
+            await fill(pool, d, "Y", 2, "buy", 1, 10.0, T0 + timedelta(minutes=2))
+    pool_run(go)
+
+
 def test_reopening_after_a_close_is_a_new_position(pool_run):
     async def go(pool):
         d = await dep(pool)

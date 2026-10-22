@@ -20,7 +20,7 @@ one qty-equality check in record_fill — the schema already supports it.
 
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
 
@@ -609,9 +609,9 @@ async def record_fill(
 
     Raises InsufficientCash / ClosingQtyMismatch as clean, catchable
     exceptions from application-level checks made INSIDE the same
-    transaction (after locking the deployment row) — the DB's own
-    `current_cash >= 0` CHECK constraint still exists underneath as a
-    last-resort safety net, but callers should never see it directly.
+    transaction (after locking the deployment row). Only an opening or
+    adding buy is checked for cash: a buy that closes a short always
+    goes through, even into negative cash (migration 0034).
     """
     if action not in ("buy", "sell"):
         raise ValueError(f"action must be 'buy' or 'sell', got {action!r}")
@@ -628,15 +628,6 @@ async def record_fill(
             if deployment is None:
                 raise ValueError(f"No such deployment: {deployment_id}")
 
-            if action == "buy":
-                cost = qty * price
-                if cost > float(deployment["current_cash"]) + 1e-9:
-                    raise InsufficientCash(
-                        f"Buy {qty} @ {price} costs {cost:.2f}, but deployment "
-                        f"{deployment['deployment_name']} only has "
-                        f"{float(deployment['current_cash']):.2f} cash."
-                    )
-
             existing = await conn.fetchrow(
                 """
                 SELECT * FROM positions
@@ -645,6 +636,19 @@ async def record_fill(
                 """,
                 deployment_id, instrument_token,
             )
+
+            # An opening (or adding) buy needs the cash; buying back a
+            # short never waits for it — an exit that's refused leaves the
+            # short open with nothing able to close it (migration 0034).
+            closing = existing is not None and existing["side"] == "short"
+            if action == "buy" and not closing:
+                cost = qty * price
+                if cost > float(deployment["current_cash"]) + 1e-9:
+                    raise InsufficientCash(
+                        f"Buy {qty} @ {price} costs {cost:.2f}, but deployment "
+                        f"{deployment['deployment_name']} only has "
+                        f"{float(deployment['current_cash']):.2f} cash."
+                    )
 
             realized_pnl: Optional[float] = None
 
@@ -2948,3 +2952,64 @@ async def mark_health_alert_sent(pool: asyncpg.Pool, deployment_id: UUID, key: s
             key, deployment_id,
         )
     return res.endswith(" 1")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# STRATEGY ISSUES — what a running deployment reports about itself
+# (app/deployments/health.py; migration 0034)
+# ─────────────────────────────────────────────────────────────────────────
+
+async def upsert_strategy_issue(
+    pool: asyncpg.Pool, deployment_id: UUID, key: str, kind: str, severity: str, source: str,
+    title: str, detail: Optional[str], data: Optional[dict], day: Optional[date], expires_at: Optional[datetime],
+    count: int = 1,
+) -> bool:
+    """Open the issue, or bring the open one up to date (its latest
+    title, detail and data; `count` more sightings). True when it's new."""
+    return await pool.fetchval(
+        """
+        INSERT INTO strategy_issues (deployment_id, key, kind, severity, source, title, detail, data, day, expires_at, count)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        ON CONFLICT (deployment_id, key) WHERE resolved_at IS NULL DO UPDATE SET
+            kind = EXCLUDED.kind, severity = EXCLUDED.severity, title = EXCLUDED.title, detail = EXCLUDED.detail, data = EXCLUDED.data,
+            day = COALESCE(EXCLUDED.day, strategy_issues.day), expires_at = EXCLUDED.expires_at,
+            last_at = now(), count = strategy_issues.count + EXCLUDED.count
+        RETURNING (xmax = 0)
+        """,
+        deployment_id, key, kind, severity, source, title, detail, data or {}, day, expires_at, count,
+    )
+
+
+async def resolve_strategy_issue(pool: asyncpg.Pool, deployment_id: UUID, key: str, by: str = "cleared") -> bool:
+    return bool(await pool.fetchval(
+        "UPDATE strategy_issues SET resolved_at = now(), resolved_by = $3 "
+        "WHERE deployment_id = $1 AND key = $2 AND resolved_at IS NULL RETURNING 1",
+        deployment_id, key, by,
+    ))
+
+
+async def open_strategy_issue_keys(pool: asyncpg.Pool, deployment_id: UUID) -> set[str]:
+    return {r["key"] for r in await pool.fetch(
+        "SELECT key FROM strategy_issues WHERE deployment_id = $1 AND resolved_at IS NULL", deployment_id)}
+
+
+async def expire_strategy_issues(pool: asyncpg.Pool) -> int:
+    """Resolve every open issue past its expiry ("expired")."""
+    rows = await pool.fetch(
+        "UPDATE strategy_issues SET resolved_at = now(), resolved_by = 'expired' "
+        "WHERE resolved_at IS NULL AND expires_at IS NOT NULL AND expires_at < now() RETURNING id")
+    return len(rows)
+
+
+async def list_strategy_issues(pool: asyncpg.Pool, open_only: bool = True, deployment_id: Optional[UUID] = None,
+                               limit: int = 200) -> list[asyncpg.Record]:
+    return await pool.fetch(
+        """
+        SELECT i.*, d.deployment_name, d.strategy_name, d.mode
+        FROM strategy_issues i JOIN deployments d ON d.id = i.deployment_id
+        WHERE ($1::bool IS FALSE OR i.resolved_at IS NULL) AND ($2::uuid IS NULL OR i.deployment_id = $2)
+        ORDER BY i.resolved_at IS NOT NULL, CASE i.severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, i.last_at DESC
+        LIMIT $3
+        """,
+        open_only, deployment_id, limit,
+    )

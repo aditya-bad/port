@@ -234,18 +234,22 @@ class CalendarBTSTStrategy(StrategyBase):
         # itself from the DB in that case, more accurately than this
         # ever could.
         persisted = await runner.load_state()
-        if persisted and persisted.get("version") == 1:
+        if persisted:
             try:
+                if persisted.get("version") != 1:
+                    raise ValueError(f"version {persisted.get('version')!r}")
                 today_str = persisted.get("today")
                 self.today = date.fromisoformat(today_str) if today_str else None
                 self.entered_today = bool(persisted.get("entered_today", False))
-            except (KeyError, TypeError, ValueError):
+            except (AttributeError, KeyError, TypeError, ValueError):
                 logger.exception(
                     "%s: persisted today/entered_today state was malformed — "
                     "ignoring it", runner.deployment_name,
                 )
                 self.today = None
                 self.entered_today = False
+                await self.state_unusable(runner, "The saved state was unreadable",
+                                          "Whether today's entry was made is taken from the book instead.")
 
         # Resume-safety: reattach to any already-open leg(s) from the DB.
         found = [
@@ -299,6 +303,10 @@ class CalendarBTSTStrategy(StrategyBase):
         day = ts.date()
         if self.today is None:
             self.today = day
+            # the book says whether today's entry was already made (saved
+            # state can be lost or stale)
+            if not self.entered_today and await self.opened_today(runner, day):
+                self.entered_today = True
             self._late_start_today = (
                 ts.time() >= self.entry_time and not self.entered_today
                 and self.entry_day is None
@@ -340,10 +348,18 @@ class CalendarBTSTStrategy(StrategyBase):
                               {"catch_up_late_entry": False})
             return
 
-        await self._enter(runner, ts)
-        self.entered_today = True
+        if self.entry_should_wait(ts):
+            return
+        if await self._enter(runner, ts):
+            self.entered_today = True
+            await self.entry_done(runner, ts)
+        elif await self.entry_failed(runner, ts, self.entry_time, self._entry_error):
+            self.entered_today = True
 
-    async def _enter(self, runner, ts) -> None:
+    async def _enter(self, runner, ts) -> bool:
+        """True once the spread is on; False when it couldn't be made now
+        (no Kite, no chain, no price) — tried again a minute later
+        (StrategyBase.entry_failed)."""
         try:
             this_week_expiry = await self.resolver.resolve_expiry(self.options_underlying, "THIS_WEEK")
             switched_to_next_week = False
@@ -404,8 +420,9 @@ class CalendarBTSTStrategy(StrategyBase):
                 "%s: entry_time reached but no Kite session yet — skipping "
                 "today's entry", runner.deployment_name,
             )
-            await self.decide(runner, ts, "entry", "blocked", f"{self.entry_time:%H:%M} entry due but Kite isn't connected: no spread today")
-            return
+            await self.decide(runner, ts, "entry", "blocked", f"{self.entry_time:%H:%M} entry due but Kite isn't connected: trying again")
+            self._entry_error = "Kite isn't connected"
+            return False
         except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the calendar spread for entry "
@@ -413,7 +430,8 @@ class CalendarBTSTStrategy(StrategyBase):
             )
             await self.decide(runner, ts, "entry", "blocked",
                               f"{self.entry_time:%H:%M} entry due but the calendar spread couldn't be found or priced: {e}", {"error": str(e)[:200]})
-            return
+            self._entry_error = f"The calendar spread couldn't be found or priced ({str(e)[:160]})"
+            return False
 
         qty = self.lots_per_trade * short_ce.lot_size   # all 4 legs share the same lot_size
 
@@ -487,6 +505,7 @@ class CalendarBTSTStrategy(StrategyBase):
             long_ce.tradingsymbol, long_ce_price, long_pe.tradingsymbol, long_pe_price, long_expiry,
             strike, " (switched to next week -- see above)" if switched_to_next_week else "",
         )
+        return True
 
     # ── Exit ─────────────────────────────────────────────────────────────
 
@@ -506,8 +525,7 @@ class CalendarBTSTStrategy(StrategyBase):
         had_legs = bool(self.short_legs or self.long_legs)
         for token, leg in list(self.short_legs.items()):
             pos = runner.open_positions.get(token)
-            price = runner.dispatcher.last_prices.get(token) or leg["entry_price"]
-            src = "last_tick" if runner.dispatcher.last_prices.get(token) else "entry_price"
+            price, src = await self.exit_price(runner, token, leg["symbol"], leg["entry_price"])
             if pos is not None:
                 await runner.buy(
                     leg["symbol"], token, float(pos["qty"]), price, ts,
@@ -520,8 +538,7 @@ class CalendarBTSTStrategy(StrategyBase):
             runner.dispatcher.release_instruments([token])
         for token, leg in list(self.long_legs.items()):
             pos = runner.open_positions.get(token)
-            price = runner.dispatcher.last_prices.get(token) or leg["entry_price"]
-            src = "last_tick" if runner.dispatcher.last_prices.get(token) else "entry_price"
+            price, src = await self.exit_price(runner, token, leg["symbol"], leg["entry_price"])
             if pos is not None:
                 await runner.sell(
                     leg["symbol"], token, float(pos["qty"]), price, ts,
@@ -548,6 +565,10 @@ class CalendarBTSTStrategy(StrategyBase):
             "%s: strategy stopped (%d short leg(s), %d long leg(s) still open)",
             runner.deployment_name, len(self.short_legs), len(self.long_legs),
         )
+
+    def tracked_tokens(self) -> set:
+        """Every leg this strategy holds (StrategyBase.tracked_tokens)."""
+        return {int(t): l.get("symbol") for d in (getattr(self, "short_legs", {}), getattr(self, "long_legs", {})) for t, l in d.items()}
 
     def get_persistable_state(self) -> Optional[dict]:
         """today/entered_today only — see on_start's restore block for

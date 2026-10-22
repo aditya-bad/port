@@ -212,6 +212,7 @@ async def seed():
     await seed_ops(pool, ids)
     await seed_day_checks(pool, ids)
     await seed_repair_cases(pool, ids)
+    await seed_strategy_issues(pool, ids)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -644,6 +645,30 @@ async def seed_ops(pool, ids):
         "INSERT INTO ops_issues (key, kind, severity, title, detail, opened_at, last_seen_at, resolved_at, resolved_by, alerts) "
         "VALUES ('kite:stall', 'kite_stall', 'critical', 'Kite prices stopped', 'No ticks since 12:15.', $1, $2, $2, 'cleared', 5)",
         now - timedelta(hours=3), now - timedelta(hours=2, minutes=55))
+
+
+async def seed_strategy_issues(pool, ids):
+    """What deployments reported about themselves (app/deployments/
+    health.py): a strangle short left without its hedge (open, critical),
+    yesterday's late DTT entry that went through in the end (cleared),
+    and a stretch with no prices yesterday (a note)."""
+    now = datetime.now(timezone.utc)
+    yday = datetime.now(IST).date() - timedelta(days=1)
+    rows = [
+        (ids["Nifty Strangle A"], "unhedged:1", "unhedged", "critical", "strategy", "A PE short is open without its hedge",
+         "The protective leg for the short at 22400 couldn't be bought (ConnectionError: Kite is down).", datetime.now(IST).date(),
+         now - timedelta(minutes=20), 1, None, None),
+        (ids["BankNifty DTT Plain"], f"entry:{yday}", "entry_delayed", "warning", "strategy", "The 10:00 entry hasn't gone through yet",
+         "Kite didn't answer the option chain lookup. Trying again every minute until 10:30.", yday,
+         datetime.combine(yday, time(10, 0), IST), 3, datetime.combine(yday, time(10, 3), IST), "cleared"),
+        (ids["Sensex Credit Spread"], f"feed_gap:{yday}:1100", "feed_gap", "info", "runner", "No prices from 11:00 to 11:20",
+         "20 minutes without a tick for the underlying.", yday, datetime.combine(yday, time(11, 20), IST), 1, None, None),
+    ]
+    for dep, key, kind, sev, src, title, detail, day, first, count, resolved, by in rows:
+        await pool.execute(
+            "INSERT INTO strategy_issues (deployment_id, key, kind, severity, source, title, detail, day, first_at, last_at, count, resolved_at, resolved_by) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10, $11, $12)",
+            dep, key, kind, sev, src, title, detail, day, first, count, resolved, by)
 
 
 async def seed_day_checks(pool, ids):

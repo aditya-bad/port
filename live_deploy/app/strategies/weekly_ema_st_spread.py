@@ -289,6 +289,7 @@ CONFIG:
 
 import asyncio
 import logging
+import math
 from collections import deque
 from datetime import date, datetime, timedelta, time as dtime
 from typing import Optional
@@ -301,6 +302,10 @@ from .registry import register_strategy
 from .trade_meta import build_trade_meta
 
 logger = logging.getLogger("live_deploy.strategies.weekly_ema_st_spread")
+
+
+def _aware(dt: datetime) -> datetime:
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=_IST)
 
 EXPIRY_SELECTOR = "THIS_WEEK"   # identity, not a config knob -- see module docstring
 
@@ -392,7 +397,7 @@ async def _fetch_hourly_seed_from_kite(dispatcher, instrument_token: int, lookba
     kite = get_kite_connect(dispatcher)
     now = clock.now_ist().replace(tzinfo=None)
     start = datetime.combine(now.date() - timedelta(days=lookback_days), dtime(0, 0))
-    raw = await asyncio.to_thread(kite.historical_data, instrument_token, start, now, "60minute")
+    raw = await asyncio.wait_for(asyncio.to_thread(kite.historical_data, instrument_token, start, now, "60minute"), 45)
     candles = []
     for c in raw:
         d = c["date"]
@@ -520,18 +525,42 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
         # restored UNCONDITIONALLY here, before either seeding path
         # runs, from whatever this deployment last persisted.
         persisted = await runner.load_state()
-        if persisted and persisted.get("version") == 1:
-            self.touched_ema_since_exit = bool(persisted.get("touched_ema_since_exit", True))
-            self._gap_exit_pending = bool(persisted.get("gap_exit_pending", False))
-            self._gap_trading_days_elapsed = int(persisted.get("gap_trading_days_elapsed", 0))
-            self.lots_per_trade = int(persisted.get("lots_per_trade", self.lots_per_trade))
-            self.cum_pnl_since_stepup = float(persisted.get("cum_pnl_since_stepup", 0.0))
-            persisted_today = persisted.get("today")
-            if persisted_today:
+        # Saved state that can't be read is reported and treated as none,
+        # except that the re-entry gate is rebuilt from the book (below):
+        # the default — gate open — would re-enter straight after an exit.
+        last_exit = None
+        if persisted:
+            try:
+                if persisted.get("version") != 1:
+                    raise ValueError(f"version {persisted.get('version')!r}")
+                touched = bool(persisted.get("touched_ema_since_exit", True))
+                gap_pending = bool(persisted.get("gap_exit_pending", False))
+                gap_days = int(persisted.get("gap_trading_days_elapsed", 0))
+                lots = int(persisted.get("lots_per_trade", self.lots_per_trade))
+                cum = float(persisted.get("cum_pnl_since_stepup", 0.0))
+                if lots < 1 or not math.isfinite(cum):
+                    raise ValueError(f"lots_per_trade {lots}, cum_pnl_since_stepup {cum}")
+            except (AttributeError, TypeError, ValueError):
+                logger.exception("%s: persisted state was malformed — ignoring it", runner.deployment_name)
+                persisted = None
                 try:
-                    self.today = date.fromisoformat(persisted_today)
-                except ValueError:
-                    self.today = None
+                    last_exit = await runner.last_exit_at()
+                except Exception:
+                    last_exit = None
+                await self.state_unusable(
+                    runner, "The saved state was unreadable",
+                    f"Lot size is back to {self.lots_per_trade} from the config"
+                    + (f"; no new entry until price touches EMA({self.ema_period}) after the last exit at "
+                       f"{last_exit.astimezone(_IST):%d %b %H:%M}" if last_exit else "") + ".")
+            else:
+                self.touched_ema_since_exit, self._gap_exit_pending = touched, gap_pending
+                self._gap_trading_days_elapsed, self.lots_per_trade, self.cum_pnl_since_stepup = gap_days, lots, cum
+                persisted_today = persisted.get("today")
+                if persisted_today:
+                    try:
+                        self.today = date.fromisoformat(persisted_today)
+                    except (TypeError, ValueError):
+                        self.today = None
 
         # Resume-safety: reattach any already-open sold/hedge leg(s).
         # `positions.side` ("short"/"long") is what tells them apart --
@@ -582,6 +611,8 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
                     runner.deployment_name, self.sold_symbol or self.hedge_symbol,
                 )
 
+        if last_exit is not None:
+            self.touched_ema_since_exit = False   # until a replay or live candle shows the touch
         # PRIMARY seeding path: fresh, gap-free 1H candles straight from
         # Kite's REST API, replayed through BOTH indicators together
         # right now -- see fetch_seed_from_kite's own docstring
@@ -600,7 +631,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             for c in seed_candles:
                 fresh_st.update(c)
                 v = fresh_ema.update(c)
-                if v is not None:
+                if v is not None and (last_exit is None or _aware(c["date"]) >= last_exit):
                     crossed = prev_close is not None and (prev_close - v) * (c["close"] - v) < 0
                     if crossed or (c["low"] <= v <= c["high"]):
                         touched_during_replay = True
@@ -617,7 +648,9 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             # gate re-entry against) or a pre-this-feature open position
             # being resumed for the first time (best-effort, better than
             # nothing).
-            if persisted is None:
+            if last_exit is not None:     # state lost: touched since the book's last exit
+                self.touched_ema_since_exit = touched_during_replay
+            elif persisted is None:
                 self.touched_ema_since_exit = touched_during_replay or not (self.sold_token or self.hedge_token)
 
             logger.info(
@@ -679,6 +712,11 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             round(self.ema.value, 2) if self.ema.value is not None else None,
         )
         return True
+
+    def tracked_tokens(self) -> set:
+        """Every leg this strategy holds (StrategyBase.tracked_tokens)."""
+        pairs = ((getattr(self, "sold_token", None), getattr(self, "sold_symbol", None)), (getattr(self, "hedge_token", None), getattr(self, "hedge_symbol", None)))
+        return {int(t): s for t, s in pairs if t is not None}
 
     def get_persistable_state(self) -> Optional[dict]:
         if self.st.trend is None and self.ema.value is None:
@@ -815,7 +853,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             if candle["date"].date() == now.date():   # a session's last candle always closes on the next morning's first tick
                 await self.decide(runner, now, "stale_candle", "blocked",
                                   f"Candle {candle['date']:%H:%M} arrived {(now - candle['date']).total_seconds() / 60:.0f} min late (feed gap): no new entry off it",
-                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)})
+                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)}, fault=True)
 
         prev_close = self._prev_close
         new_ema = self.ema.update(candle)
@@ -947,7 +985,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
                 "yet — skipping", runner.deployment_name, side, option_type,
             )
             await self.decide(runner, candle["date"], "entry", "blocked",
-                              f"{side.capitalize()} signal (sell a {option_type} spread) but Kite isn't connected", trigger_values)
+                              f"{side.capitalize()} signal (sell a {option_type} spread) but Kite isn't connected", trigger_values, fault=True, missed=True)
             return
         except Exception as e:
             logger.exception(
@@ -956,7 +994,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             )
             await self.decide(runner, candle["date"], "entry", "blocked",
                               f"{side.capitalize()} signal but the {option_type} spread couldn't be found or priced: {e}",
-                              {**trigger_values, "error": str(e)[:200]})
+                              {**trigger_values, "error": str(e)[:200]}, fault=True, missed=True)
             return
 
         sold_price = sold_leg.last_price
@@ -1072,12 +1110,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
         except Exception:
             price = runner.dispatcher.last_prices.get(token)
             if price is None:
-                logger.warning(
-                    "%s: no live/last price for %s on exit (%s) — using entry "
-                    "price %.2f (zero P&L on this leg)",
-                    runner.deployment_name, symbol, reason, entry_price,
-                )
-                return float(entry_price)
+                return (await self.exit_price(runner, token, symbol, entry_price))[0]
             logger.warning(
                 "%s: LTP fetch failed for %s on exit (%s) — using dispatcher's "
                 "last known tick price %.2f instead",

@@ -72,6 +72,108 @@ class StrategyBase(ABC):
     @abstractmethod
     async def on_stop(self, runner: "Any") -> None: ...
 
+    # ── an entry that couldn't be made right now ────────────────────────
+    #
+    # A once-a-day entry (the straddles, the calendar) used to give up the
+    # whole day on its first failure — Kite down for a minute at the entry
+    # time cost the day, silently. Now: tried again every minute for
+    # `entry_retry_minutes` (config, default 30) after the entry time,
+    # reported as delayed meanwhile, as skipped if the window passes, and
+    # cleared once it goes through.
+
+    ENTRY_RETRY_MINUTES = 30
+
+    def entry_should_wait(self, ts: "Any") -> bool:
+        nxt = self.__dict__.get("_entry_next_try")
+        return nxt is not None and ts < nxt
+
+    async def entry_failed(self, runner: "Any", ts: "Any", entry_time: "Any", why: str) -> bool:
+        """Note a failed entry attempt; True when it's time to give up for
+        today (the retry window is over)."""
+        from datetime import datetime as _dt, timedelta as _td
+        mins = int((getattr(runner, "config", {}) or {}).get("entry_retry_minutes", self.ENTRY_RETRY_MINUTES))
+        deadline = _dt.combine(ts.date(), entry_time) + _td(minutes=mins)
+        self.__dict__["_entry_next_try"] = ts + _td(minutes=1)
+        report = getattr(runner, "report", None)
+        key, day = f"entry:{ts.date()}", ts.date()
+        if ts < deadline:
+            if report is not None:
+                await report("entry_delayed", f"The {entry_time:%H:%M} entry hasn't gone through yet",
+                             f"{why}. Trying again every minute until {deadline:%H:%M}.", key=key, day=day)
+            return False
+        self.__dict__["_entry_next_try"] = None
+        if report is not None:
+            await report("entry_skipped", "Today's entry was skipped",
+                         f"{why}. Tried from {entry_time:%H:%M} until {deadline:%H:%M}; next at the next session's entry.",
+                         key=key, day=day)
+        return True
+
+    async def entry_done(self, runner: "Any", ts: "Any") -> None:
+        """The entry went through: a delay reported for it is cleared."""
+        self.__dict__["_entry_next_try"] = None
+        resolve = getattr(runner, "resolve", None)
+        if resolve is not None:
+            await resolve(f"entry:{ts.date()}")
+
+    async def opened_today(self, runner: "Any", day: "Any") -> bool:
+        """Whether this deployment opened anything on `day`, from the book:
+        what "already entered today" rests on when saved state is lost or
+        corrupt, so a restart never enters a second time."""
+        fn = getattr(runner, "opened_on", None)
+        if fn is None:
+            return False
+        try:
+            return bool(await fn(day))
+        except Exception:
+            return False
+
+    # ── saved state it can't use ────────────────────────────────────────
+    #
+    # Saved state that's garbage (a bad write, a half-finished migration)
+    # used to be dropped silently, and whatever it held — today's trade
+    # count, a re-entry gate — reset to its fresh-deploy default: a
+    # strategy past its daily cap could trade again. Now it's reported,
+    # and what can be rebuilt from the book is.
+
+    async def state_unusable(self, runner: "Any", why: str, fallback: str) -> None:
+        report = getattr(runner, "report", None)
+        if report is None:
+            return
+        from datetime import timedelta as _td
+        await report("state_lost", "Saved state couldn't be used at start", f"{why}. {fallback}",
+                     key="state_lost", ttl=_td(hours=24))
+
+    async def entries_on(self, runner: "Any", day: "Any", side: "Optional[str]" = None) -> int:
+        """Positions this deployment opened on `day`, from the book (0 if
+        it can't say)."""
+        fn = getattr(runner, "positions_opened_on", None)
+        if fn is None:
+            return 0
+        try:
+            return int(await fn(day, side))
+        except Exception:
+            return 0
+
+    async def exit_price(self, runner: "Any", token: int, symbol: str, entry: float) -> tuple:
+        """The price to close a leg at when it must close now and its
+        price isn't to hand: DeploymentRunner.exit_price's ladder (live,
+        quote, today's stored candle, then its entry — reported). (price,
+        source)."""
+        fn = getattr(runner, "exit_price", None)
+        if fn is not None:
+            return await fn(token, symbol, entry)
+        p = runner.dispatcher.last_prices.get(token)
+        return (float(p), "live") if p else (float(entry), "entry")
+
+    def tracked_tokens(self) -> "Optional[set | dict]":
+        """The instrument tokens of every leg this strategy believes it
+        holds right now (a dict {token: symbol} names them in a report). The runner checks them against the book's open
+        positions (DeploymentRunner.check_legs) after a failure and every
+        5 minutes, and reports a leg the strategy has lost track of (never
+        managed, and positional: never closed) or one it thinks it holds
+        that isn't there. None (the default) means it can't say."""
+        return None
+
     def get_persistable_state(self) -> Optional[dict]:
         """
         Override to return a JSON-serializable dict of whatever
@@ -222,10 +324,23 @@ class StrategyBase(ABC):
         return out
 
     async def decide(self, runner: "Any", ts: "Any", rule: str, outcome: str, summary: str,
-                     data: Optional[dict] = None, once: "Any" = None) -> None:
+                     data: Optional[dict] = None, once: "Any" = None, fault: bool = False, missed: bool = False) -> None:
+        """`fault`: blocked because something is wrong (no Kite, no price,
+        a late candle) rather than by design (a cap, a cut-off) — blocked
+        for 10 minutes running, it's raised as an issue. `missed`: a trade
+        that was due is lost for good (a signal acted on now or never) —
+        raised at once, with the day, for the Repair page."""
         record = getattr(runner, "record_decision", None)
         if record is None or ts is None:
             return
+        # every check, before the once-a-day dedupe: a rule that stays
+        # blocked is raised as an issue (DeploymentRunner.note_decision)
+        note = getattr(runner, "note_decision", None)
+        if note is not None:
+            try:
+                await note(ts, rule, outcome, summary, fault=fault, missed=missed)
+            except Exception:
+                pass
         if once is not None:
             seen = self.__dict__.setdefault("_decided_once", set())
             key = (rule, outcome, once, ts.date())

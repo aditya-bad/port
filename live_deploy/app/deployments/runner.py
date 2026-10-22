@@ -19,6 +19,7 @@ Postgres when a runner starts up IS the current state, no replay needed.
 import asyncio
 import json
 import logging
+import math
 from datetime import datetime, time, timedelta, timezone
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
@@ -27,6 +28,7 @@ import asyncpg
 
 from ..db import queries
 from ..slippage import resolve_book_price
+from .health import DROP_WORDS, BlockedWatch, Breaker, Issues, TickFilter, describe
 from .strategy_base import StrategyBase
 
 logger = logging.getLogger("live_deploy.runner")
@@ -131,6 +133,27 @@ class DeploymentRunner:
         # previous session's last price, per signal token: the market
         # context stamped on every fill (see market_context). Logging only.
         self._session: dict[int, dict] = {}
+        self._last_index_tick: Optional[datetime] = None   # IST, for _note_gap
+
+        # What keeps it safe and how it says so (app/deployments/health.py):
+        # ticks checked before the strategy sees them, what it reports
+        # about itself, a strategy that keeps failing called less often,
+        # a rule blocked for a while raised.
+        self.ticks = TickFilter()
+        self.issues = Issues(pool, self.deployment_id, self._record_event, self.deployment_name)
+        self.breaker = Breaker()
+        self.blocked = BlockedWatch()
+        self.filter_ticks = True        # the repair engine's replays turn these off (app/repair/engine.py)
+        self.use_breaker = True
+        self.resync_enabled = True
+        self.started = strategy is None   # the strategy's on_start has completed
+        self._check_legs = False          # a failure may have left a trade half-done
+        self._legs_checked_at: Optional[datetime] = None
+        self._mismatch_seen = 0
+        self._state_fails = 0
+        # "now" for the protections above (when to call a resting strategy
+        # again): the wall clock live; a simulation sets it to its own time
+        self.clock_now: Callable[[], datetime] = lambda: datetime.now(timezone.utc)
 
     @property
     def tokens(self) -> set[int]:
@@ -162,14 +185,81 @@ class DeploymentRunner:
         # _run() begins pulling from it, against a now-fully-initialized
         # strategy.
         if self.strategy is not None:
-            await self.strategy.on_start(self)
-            await self.checkpoint_state()
+            await self.start_strategy()
         self._task = asyncio.create_task(self._run(), name=f"runner:{self.deployment_name}")
         logger.info(
             "Runner started: %s (%s, %s) — %d open position(s), tokens=%s",
             self.deployment_name, self.strategy_name, self.mode,
             len(self.open_positions), sorted(self.tokens),
         )
+
+    START_TIMEOUT = 120   # seconds for on_start (it may fetch candles and the instrument list from Kite)
+    TICK_TIMEOUT = 90     # seconds for one on_tick: longer means a call hung
+
+    async def start_strategy(self) -> None:
+        """Start the strategy (its on_start), within START_TIMEOUT. A
+        failure raises, as it always has: the manager rolls a create or
+        resume back to paused and says why, and its watchdog retries a
+        deployment that should be running (DeploymentManager.
+        watchdog_loop). A strategy never starts cold over state it
+        couldn't read: load_state raising fails the start."""
+        await asyncio.wait_for(self.strategy.on_start(self), self.START_TIMEOUT)
+        self.started = True
+        await self.checkpoint_state()
+        await self.check_legs("start")
+
+    async def opened_on(self, day) -> bool:
+        """Whether this deployment opened any position on IST `day` (the
+        book, not the strategy's memory)."""
+        return await self.positions_opened_on(day) > 0
+
+    async def positions_opened_on(self, day, side: Optional[str] = None) -> int:
+        """How many positions this deployment opened on IST `day`
+        ("short"/"long" for one side only), from the book."""
+        return int(await self.pool.fetchval(
+            "SELECT count(*) FROM positions WHERE deployment_id = $1 AND (opened_at AT TIME ZONE 'Asia/Kolkata')::date = $2"
+            " AND ($3::text IS NULL OR side = $3)", self.deployment_id, day, side))
+
+    async def last_exit_at(self) -> Optional[datetime]:
+        """When this deployment last closed a position, from the book."""
+        return await self.pool.fetchval(
+            "SELECT max(closed_at) FROM positions WHERE deployment_id = $1 AND closed_at IS NOT NULL", self.deployment_id)
+
+    async def report(self, kind: str, title: str, detail: Optional[str] = None, **kw) -> None:
+        """For a strategy to report a problem it handled but you should
+        know about — an entry it had to delay or skip, a leg it couldn't
+        price, anything the Repair page should look at. Keyword args:
+        severity ("warning", "critical", "info"), day (the trading day
+        it's about), key (one open issue per key; default `kind`), data,
+        ttl (a timedelta: it clears itself unless reported again by
+        then). Never raises. Resolve it with `await runner.resolve(key)`."""
+        kw.setdefault("source", "strategy")
+        await self.issues.report(kind, title, detail, **kw)
+
+    async def resolve(self, key: str) -> None:
+        await self.issues.resolve(key)
+
+    async def _report(self, kind: str, title: str, detail: Optional[str] = None, **kw) -> None:
+        kw.setdefault("source", "runner")
+        await self.issues.report(kind, title, detail, **kw)
+
+    async def note_decision(self, ts: datetime, rule: str, outcome: str, summary: str,
+                            fault: bool = False, missed: bool = False) -> None:
+        """Every check a strategy notes (StrategyBase.decide). A block
+        caused by a fault: a trade lost for good (`missed`) is raised at
+        once; otherwise a rule blocked for 10 minutes running is, cleared
+        when it next gets through. Blocks by design (a cap, a cut-off)
+        are never raised."""
+        if outcome == "blocked" and missed:
+            await self.report("missed_trade", f"A trade that was due didn't happen ({rule.replace('_', ' ')})", summary,
+                              key=f"missed:{rule}:{ts.date()}", day=ts.date(), data={"rule": rule, "at": ts.isoformat()})
+        elif outcome == "blocked" and fault:
+            hit = self.blocked.blocked(rule, ts, summary)
+            if hit is not None:
+                await self.report("blocked", f"“{rule.replace('_', ' ')}” has been blocked since {hit[0]:%H:%M}", hit[1],
+                                  key=f"blocked:{rule}", day=ts.date(), ttl=timedelta(minutes=30))
+        elif outcome != "blocked" and self.blocked.through(rule):
+            await self.issues.resolve(f"blocked:{rule}")
 
     async def stop(self) -> None:
         self._running = False
@@ -243,7 +333,13 @@ class DeploymentRunner:
             return
         if state is None:
             return
-        await queries.save_deployment_state(self.pool, self.deployment_id, state)
+        try:
+            await queries.save_deployment_state(self.pool, self.deployment_id, self._clean_state(state))
+        except Exception as e:
+            logger.exception("%s: persisting strategy state failed", self.deployment_name)
+            await self._report("state_unsaved", "The strategy's state couldn't be saved",
+                               f"{describe(e)[0]}. A restart would resume from the last saved state.", severity="warning")
+            return
         logger.info("%s: persisted strategy state (%d top-level key(s))",
                     self.deployment_name, len(state))
 
@@ -546,29 +642,159 @@ class DeploymentRunner:
             raise
 
     async def process_tick(self, t: dict) -> None:
-        """One live tick: the intraday safety net, the strategy, then a
-        state checkpoint. Nothing here may raise into the tick loop."""
+        """One live tick: checked, the intraday safety net, the strategy
+        (if it's started and not resting after repeated failures), a
+        state checkpoint, and the strategy's legs checked against the
+        book when something failed (and every 5 minutes). Nothing here
+        may raise into the tick loop."""
+        if self.filter_ticks:
+            t, why = self.ticks.check(t)
+            if why is not None:
+                await self._bad_tick(why)
+            if t is None:
+                return
         self.last_tick_at = datetime.now(timezone.utc)
         try:
             self._note_session(t)
+            await self._note_gap(t)
         except Exception:
             logger.exception("%s: noting the session failed — continuing", self.deployment_name)
         try:
             await self._intraday_guard(t)
         except Exception:
             logger.exception("%s: intraday guard raised — continuing", self.deployment_name)
+        if self.strategy is None:
+            return
+        if not self.started:
+            return
+        now = self.clock_now()
+        if self.use_breaker and not self.breaker.allow(now):
+            return
         try:
-            await self.strategy.on_tick(self, t)
-        except Exception:
-            logger.exception(
-                "Strategy on_tick raised for deployment %s — continuing",
-                self.deployment_name,
-            )
-            await self._record_event(
-                "strategy_error",
-                message="on_tick raised an exception; see server logs",
-            )
+            await asyncio.wait_for(self.strategy.on_tick(self, t), self.TICK_TIMEOUT)
+        except Exception as e:
+            await self._strategy_failed(e, t)
+        else:
+            if self.breaker.succeeded() and self.issues.is_open("crash"):
+                await self.issues.resolve("crash")
         await self.checkpoint_state()
+        ts = t.get("exchange_timestamp")
+        if self._check_legs:
+            await self.check_legs("failure")
+        elif isinstance(ts, datetime) and (self._legs_checked_at is None or ts - self._legs_checked_at >= timedelta(minutes=5)
+                                           or ts < self._legs_checked_at):
+            self._legs_checked_at = ts
+            await self.check_legs("periodic")
+
+    async def _resync(self, lost: set, phantom: set, labels: dict) -> bool:
+        """The strategy lost track of what it holds (a trade failed half-way,
+        a leg recorded before its fill went through): restart it from the
+        book — a fresh instance through on_start, exactly what a restart
+        does, which every strategy is tested to resume from with the same
+        trades (tests/strategies/test_crash_recovery.py). True if it then
+        agrees with the book."""
+        name = lambda x: self.open_positions.get(x, {}).get("symbol") or labels.get(x) or str(x)  # noqa: E731
+        what = "; ".join(p for p in (
+            f"it had lost track of {', '.join(sorted(name(x) for x in lost))}" if lost else "",
+            f"it thought it held {', '.join(sorted(name(x) for x in phantom))}" if phantom else "") if p)
+        old = self.strategy
+        try:
+            await self._reload_positions()
+            fresh = type(old)()
+            await asyncio.wait_for(fresh.on_start(self), self.START_TIMEOUT)
+            tracked = fresh.tracked_tokens()
+        except Exception:
+            logger.exception("%s: re-syncing the strategy from the book failed", self.deployment_name)
+            self.strategy = old
+            return False
+        if tracked is None or {int(x) for x in tracked} != set(self.open_positions):
+            return False
+        self.strategy = fresh
+        self._mismatch_seen = 0
+        self._last_saved_state = None
+        await self.checkpoint_state()
+        logger.warning("%s: re-synced the strategy from the book (%s)", self.deployment_name, what)
+        await self._report("resynced", "The strategy was re-synced from the book",
+                           f"After a failure {what}. It was restarted from the book, as a restart would, and now "
+                           f"manages exactly what's open. Worth a look on the Repair page.",
+                           severity="warning", day=self.clock_now().astimezone(self._IST).date(),
+                           data={"lost": sorted(lost), "phantom": sorted(phantom)}, ttl=timedelta(hours=12))
+        if self.issues.is_open("legs_mismatch"):
+            await self.issues.resolve("legs_mismatch")
+        return True
+
+    async def _strategy_failed(self, e: BaseException, t: dict) -> None:
+        sig, where = describe(e) if not isinstance(e, asyncio.TimeoutError) else \
+            (f"on_tick took longer than {self.TICK_TIMEOUT}s (a call that hung?)", "")
+        now = self.clock_now()
+        skip = self.breaker.failed(now, sig)
+        if self.breaker.should_log(sig, now):
+            logger.error("%s: the strategy raised on a tick — %s%s", self.deployment_name, sig,
+                         f" ({where})" if where else "", exc_info=(type(e), e, e.__traceback__))
+            await self._record_event("strategy_error", message=f"{sig}{f' — {where}' if where else ''}",
+                                     metadata={"where": where, "in_a_row": self.breaker.fails})
+        self._check_legs = True
+        ts = t.get("exchange_timestamp")
+        if self.breaker.fails >= 2 or skip is not None:
+            nxt = f" It's called again at {skip.astimezone(self._IST):%H:%M}." if skip else ""
+            await self._report(
+                "crash", "The strategy keeps failing",
+                f"{sig}{f' (at {where})' if where else ''}. {self.breaker.fails} tick(s) in a row, {self.breaker.total} in all.{nxt}"
+                f"{' The intraday safety net still squares off at the cut-off.' if self.mode == 'intraday' else ''}",
+                severity="critical", data={"error": sig, "where": where, "in_a_row": self.breaker.fails, "total": self.breaker.total},
+                day=ts.date() if isinstance(ts, datetime) else None)
+
+    async def _bad_tick(self, why: str) -> None:
+        if why in ("duplicate", "held"):   # a repeat carries nothing new; a held one may yet be confirmed
+            return
+        counts = {k: v for k, v in self.ticks.dropped.items() if k not in ("duplicate", "held")}
+        await self._report(
+            "bad_ticks", "Bad prices from the feed were dropped",
+            "Not passed to the strategy: " + ", ".join(f"{n} {DROP_WORDS.get(k, k)}" for k, n in sorted(counts.items())) + ".",
+            severity="warning", data=counts, ttl=timedelta(minutes=30))
+
+    async def check_legs(self, why: str) -> None:
+        """The legs the strategy believes it holds (tracked_tokens) against
+        the book's open positions: a leg in the book it has lost track of
+        is never managed (and, positional, never closed); one it thinks it
+        holds that isn't there makes it act on nothing. Reported — the
+        book is what's real, and a person decides what to do — and
+        cleared when they agree again. After a failure it's checked at
+        once; otherwise a mismatch must show twice, 5 minutes apart."""
+        self._check_legs = False
+        if self.strategy is None or not self.started:
+            return
+        try:
+            tracked = self.strategy.tracked_tokens()
+        except Exception:
+            logger.exception("%s: tracked_tokens() raised", self.deployment_name)
+            return
+        if tracked is None:
+            return
+        labels = {int(k): v for k, v in tracked.items() if k is not None} if isinstance(tracked, dict) else {}
+        tracked = {int(x) for x in tracked if x is not None}
+        book = set(self.open_positions)
+        lost, phantom = book - tracked, tracked - book
+        if not lost and not phantom:
+            self._mismatch_seen = 0
+            if self.issues.is_open("legs_mismatch"):
+                await self.issues.resolve("legs_mismatch")
+            return
+        self._mismatch_seen += 1
+        if why == "periodic" and self._mismatch_seen < 2:
+            return
+        if why in ("failure", "periodic") and self.resync_enabled and await self._resync(lost, phantom, labels):
+            return
+        names = lambda toks: ", ".join(sorted(self.open_positions.get(x, {}).get("symbol") or labels.get(x) or str(x) for x in toks))  # noqa: E731
+        parts = []
+        if lost:
+            parts.append(f"open in the book but not managed by the strategy: {names(lost)}"
+                         + (" (the intraday safety net closes it at the cut-off)" if self.mode == "intraday" else " — nothing will close it"))
+        if phantom:
+            parts.append(f"the strategy thinks it holds {names(phantom)}, which isn't open in the book")
+        await self._report("legs_mismatch", "The strategy and the book disagree on what's held", "; ".join(parts) + ".",
+                           severity="critical", data={"lost": sorted(lost), "phantom": sorted(phantom), "why": why},
+                           day=self.clock_now().astimezone(self._IST).date())
 
     # ── Crash safety: persist strategy state as it changes ────────────
     #
@@ -592,17 +818,39 @@ class DeploymentRunner:
         if state is None:
             return
         try:
-            blob = json.dumps(state, sort_keys=True, default=str)
+            blob = json.dumps(self._clean_state(state), sort_keys=True, default=str, allow_nan=False)
         except (TypeError, ValueError):
             logger.exception("%s: strategy state isn't JSON-serializable — not checkpointed", self.deployment_name)
+            await self._report("state_unsaved", "The strategy's state can't be saved",
+                               "It isn't plain data. A restart would resume from the last state saved.", severity="warning")
             return
         if blob == self._last_saved_state:
             return
         try:
             await queries.save_deployment_state(self.pool, self.deployment_id, json.loads(blob))
             self._last_saved_state = blob
-        except Exception:
+            if self._state_fails:
+                self._state_fails = 0
+                await self.issues.resolve("state_unsaved")
+        except Exception as e:
+            self._state_fails += 1
             logger.exception("%s: saving strategy state failed — will retry on the next tick", self.deployment_name)
+            if self._state_fails >= 3:
+                await self._report("state_unsaved", "The strategy's state isn't being saved",
+                                   f"{describe(e)[0]} ({self._state_fails} tries). A restart would resume from the last state saved.",
+                                   severity="warning")
+
+    @staticmethod
+    def _clean_state(v):
+        """A number that isn't finite (NaN, ∞ — an indicator a bad price got
+        into) saved as None: JSON can't hold it, and the database refuses it."""
+        if isinstance(v, float) and not math.isfinite(v):
+            return None
+        if isinstance(v, dict):
+            return {k: DeploymentRunner._clean_state(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [DeploymentRunner._clean_state(x) for x in v]
+        return v
 
     # ── Intraday safety net ───────────────────────────────────────────
     #
@@ -649,11 +897,19 @@ class DeploymentRunner:
         await self.close_open_positions(ts, "square_off_sweep")
 
     async def _exit_price(self, pos: dict) -> tuple[float, str]:
-        """Best available price to close `pos` at: the live tick cache,
-        else one quote, else its own average entry (zero P&L, logged)."""
-        token = int(pos["instrument_token"])
+        return await self.exit_price(int(pos["instrument_token"]), pos["symbol"], float(pos["avg_entry_price"]))
+
+    async def exit_price(self, token: int, symbol: str, entry: float) -> tuple[float, str]:
+        """The best price to close a leg at when it must close now: the
+        live tick cache, else one quote, else its last stored 1-minute
+        candle (today's), else its entry — zero P&L on the leg, reported,
+        and left for the Repair page to price from Kite's candles.
+        (price, source): "live", "quote", "candle" or "entry". For every
+        strategy's own forced exits too, so none closes at its entry price
+        without saying so."""
+        token = int(token)
         price = self.dispatcher.last_prices.get(token)
-        if price is not None:
+        if price is not None and isinstance(price, (int, float)) and math.isfinite(price) and price > 0:
             return float(price), "live"
         try:
             from ..options import OptionsResolver   # lazy: options imports the dispatcher layer
@@ -663,11 +919,25 @@ class DeploymentRunner:
                 return float(q["last_price"]), "quote"
         except Exception:
             pass
+        try:
+            row = await self.pool.fetchrow(
+                "SELECT close, minute FROM candles_1m WHERE instrument_token = $1 AND minute >= $2 ORDER BY minute DESC LIMIT 1",
+                token, datetime.now(timezone.utc) - timedelta(hours=18))
+            if row and row["close"] and float(row["close"]) > 0:
+                return float(row["close"]), "candle"
+        except Exception:
+            pass
         logger.warning(
-            "%s: no price for %s — closing at its average entry %.2f (zero P&L on this leg)",
-            self.deployment_name, pos["symbol"], float(pos["avg_entry_price"]),
+            "%s: no price for %s — closing at its entry %.2f (zero P&L on this leg)",
+            self.deployment_name, symbol, entry,
         )
-        return float(pos["avg_entry_price"]), "entry"
+        await self._report(
+            "exit_at_entry", f"{symbol} was closed at its entry price",
+            "No live price, quote or stored candle for it at the time, so it was booked at zero P&L. "
+            "Its real exit price can be taken from Kite's candles on the Repair page.",
+            severity="critical", key=f"exit_at_entry:{symbol}", day=self.clock_now().astimezone(self._IST).date(),
+            data={"symbol": symbol, "token": token, "entry": entry})
+        return float(entry), "entry"
 
     async def close_open_positions(
         self, executed_at: Optional[datetime], reason: str, tokens: Optional[set[int]] = None,
@@ -702,6 +972,15 @@ class DeploymentRunner:
                     "strategy_error", message=f"{reason}: could not close {pos['symbol']} ({e})",
                     metadata={"reason": reason, "symbol": pos["symbol"]},
                 )
+        if failed:
+            await self._report(
+                "square_off_failed", f"{reason.replace('_', ' ').capitalize()} couldn't close {', '.join(failed)}",
+                "Tried again on the next ticks. Until then these legs stay open.",
+                severity="critical", key=f"close_failed:{reason}", data={"failed": failed, "closed": closed},
+                day=self.clock_now().astimezone(self._IST).date())
+        elif self.issues.is_open(f"close_failed:{reason}") and not any(
+                tokens is None or tok in tokens for tok in self.open_positions):
+            await self.issues.resolve(f"close_failed:{reason}")
         if closed:
             logger.warning("%s: %s closed %s", self.deployment_name, reason, ", ".join(closed))
             await self._record_event(
@@ -721,6 +1000,27 @@ class DeploymentRunner:
     # Added to the fill's metadata under "context" (never replacing one a
     # strategy set); logging only: computing it can never fail or change
     # a fill.
+
+    FEED_GAP = timedelta(minutes=5)
+
+    async def _note_gap(self, t: dict) -> None:
+        """A stretch of the session with no tick for the underlying is put
+        on that day's record (info: the feed monitor alerts on the outage
+        itself) — what the strategy didn't see, and why it may have done
+        less that day."""
+        tok, ts = t.get("instrument_token"), t.get("exchange_timestamp")
+        if tok not in self.tokens or not isinstance(ts, datetime):
+            return
+        at = ts.astimezone(self._IST) if ts.tzinfo else ts
+        last, self._last_index_tick = self._last_index_tick, at
+        if last is None or last.date() != at.date() or at - last < self.FEED_GAP or last.time() < time(9, 15):
+            return
+        mins = round((at - last).total_seconds() / 60)
+        await self._report("feed_gap", f"No prices from {last:%H:%M} to {at:%H:%M}",
+                           f"{mins} minutes without a tick for the underlying. Whatever the strategy would have "
+                           "done in that window it didn't see: an entry or exit due then was skipped or came late.",
+                           severity="info", key=f"feed_gap:{at.date()}:{last:%H%M}", day=at.date(), ttl=timedelta(hours=12),
+                           data={"from": last.isoformat(), "to": at.isoformat(), "minutes": mins})
 
     def _note_session(self, t: dict) -> None:
         """The day so far from the ticks. A full-mode tick carries the
@@ -804,6 +1104,13 @@ class DeploymentRunner:
         metadata: Optional[dict],
     ) -> dict:
         executed_at = executed_at or datetime.now(timezone.utc)
+        for what, v in (("price", price), ("quantity", qty)):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+                await self._report("bad_order", f"Refused a {action} of {symbol} at {what} {v!r}",
+                                   f"A {what} has to be a positive number; the strategy produced {v!r}. Nothing was traded.",
+                                   severity="critical", key=f"bad_order:{symbol}", data={"symbol": symbol, what: repr(v)})
+                self._check_legs = True
+                raise ValueError(f"refusing a {action} of {symbol}: {what} {v!r}")
         if executed_at.tzinfo is None:
             # Every strategy passes the TICK's own exchange_timestamp
             # here — naive, per Kite's own convention (see
@@ -829,12 +1136,28 @@ class DeploymentRunner:
                 metadata = {**metadata, "context": self.market_context(executed_at, metadata)}
             except Exception:
                 logger.exception("%s: market context failed — the fill goes ahead without it", self.deployment_name)
-        book_price = await resolve_book_price(self.dispatcher, instrument_token, action, qty)
-        result = await queries.record_fill(
-            self.pool, self.deployment_id, symbol, instrument_token, action,
-            qty, price, executed_at, reason=reason, metadata=metadata,
-            book_price=book_price,
-        )
+        try:
+            book_price = await resolve_book_price(self.dispatcher, instrument_token, action, qty)
+        except Exception:
+            book_price = None   # slippage is an estimate: never a reason not to fill
+        try:
+            result = await queries.record_fill(
+                self.pool, self.deployment_id, symbol, instrument_token, action,
+                qty, price, executed_at, reason=reason, metadata=metadata,
+                book_price=book_price,
+            )
+        except Exception as e:
+            self._check_legs = True
+            await self._report(
+                "fill_failed", f"A {action} of {qty:g} {symbol} didn't go through",
+                f"{describe(e)[0]}. If it was one leg of a trade, the others may have gone through without it — "
+                f"the strategy's legs are checked against the book.",
+                severity="critical", key=f"fill_failed:{symbol}",
+                day=executed_at.astimezone(self._IST).date(),
+                data={"symbol": symbol, "action": action, "qty": qty, "price": price, "reason": reason, "error": describe(e)[0]})
+            raise
+        if self.issues.is_open(f"fill_failed:{symbol}"):
+            await self.issues.resolve(f"fill_failed:{symbol}")
 
         # Refresh from the DB rather than replicating averaging/closing
         # math here — see module docstring.
@@ -848,6 +1171,13 @@ class DeploymentRunner:
 
         dep_row = await queries.get_deployment(self.pool, self.deployment_id)
         self.cash = float(dep_row["current_cash"])
+        if self.cash < 0:
+            await self._report("cash_negative", "Cash went below zero",
+                               f"Closing {symbol} cost more than the cash left: cash is now {self.cash:,.2f}. "
+                               "Exits are never refused for cash; new entries are until it's back above their cost.",
+                               severity="critical", data={"cash": self.cash})
+        elif self.issues.is_open("cash_negative"):
+            await self.issues.resolve("cash_negative")
 
         await self._record_event(
             f"fill_{action}",

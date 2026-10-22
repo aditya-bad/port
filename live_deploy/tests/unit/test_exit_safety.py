@@ -27,6 +27,8 @@ class FakeRunner:
     _IST = DeploymentRunner._IST
     close_open_positions = DeploymentRunner.close_open_positions
     _exit_price = DeploymentRunner._exit_price
+    exit_price = DeploymentRunner.exit_price
+    clock_now = staticmethod(lambda: datetime.now(timezone.utc))
     _intraday_guard = DeploymentRunner._intraday_guard
 
     def __init__(self, positions, fail=(), mode="intraday"):
@@ -37,9 +39,19 @@ class FakeRunner:
             release_instruments=lambda tokens: None, add_instruments=lambda items: None,
         )
         self.fail = set(fail)
-        self.fills, self.events = [], []
+        self.fills, self.events, self.reports = [], [], []
         self._square_off_at = time(15, 0)
         self._last_sweep_try = None
+        self.resolved = []
+
+        async def resolve(key):
+            self.resolved.append(key)
+            self.reports = [x for x in self.reports if x["key"] != key]
+        self.issues = SimpleNamespace(is_open=lambda key: any(x["key"] == key for x in self.reports), resolve=resolve)
+
+    async def _report(self, kind, title, detail=None, **kw):
+        if not self.issues.is_open(kw.get("key", kind)):
+            self.reports.append({"kind": kind, "key": kw.get("key", kind), "title": title})
 
     async def _fill(self, action, symbol, token, qty, price, ts=None, reason=None, metadata=None):
         if token in self.fail:
@@ -100,9 +112,11 @@ def test_dtt_flatten_retries_a_leg_that_keeps_failing_next_tick():
     asyncio.run(s._flatten_all(r, TS, "force_exit", {}))
     assert 2 in r.open_positions and [l["token"] for l in s.legs["PE"]] == [2]
     assert "strategy_error" in r.events
+    assert [x["kind"] for x in r.reports] == ["square_off_failed"], "a leg left open is raised as an issue"
     r.healthy = True
     asyncio.run(s._flatten_all(r, TS, "force_exit", {}))
     assert r.open_positions == {} and s.legs == {"CE": [], "PE": []}
+    assert r.reports == [] and r.resolved, "and cleared once it closes"
 
 
 def test_dtt_flatten_sweeps_positions_it_was_not_tracking():

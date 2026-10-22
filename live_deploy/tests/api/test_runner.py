@@ -60,9 +60,11 @@ def test_only_fresh_ticks_for_its_own_tokens_reach_the_strategy(client, monkeypa
     monkeypatch.setattr(r.strategy, "on_tick", on_tick)
     tok = next(iter(r.tokens))
     now = datetime.now()
-    _run_ticks(client, r, [tick(tok, now, 1.0), tick(999999, now, 2.0),
-                           tick(tok, now - timedelta(minutes=10), 3.0), tick(tok, now, 4.0)])
-    assert seen == [1.0, 4.0]
+    # (prices an index makes: a jump of several % in a second is held as a
+    # spike until confirmed — app/deployments/health.py: TickFilter)
+    _run_ticks(client, r, [tick(tok, now, 100.0), tick(999999, now, 2.0),
+                           tick(tok, now - timedelta(minutes=10), 99.0), tick(tok, now, 100.5)])
+    assert seen == [100.0, 100.5]
 
 
 def test_a_strategy_that_raises_keeps_running_and_records_an_error(client, monkeypatch):
@@ -81,7 +83,9 @@ def test_a_strategy_that_raises_keeps_running_and_records_an_error(client, monke
     assert len(calls) == 2, "the runner survives and keeps feeding ticks"
     assert not r._task.done()
     events = [e["event_type"] for e in client.get(f"/deployments/{d['id']}/events").json()]
-    assert events.count("strategy_error") == 2
+    assert events.count("strategy_error") == 1, "the same error is recorded once, not on every tick"
+    issues = client.get(f"/v2/strategy-issues?deployment={d['id']}").json()["issues"]
+    assert [x["kind"] for x in issues] == ["crash"], "failing twice in a row is reported"
 
 
 # ── Execution notifications ───────────────────────────────────────────

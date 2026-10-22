@@ -251,14 +251,20 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         # IS today — a restart on a NEW day should start that day's
         # count at 0, same as the normal _roll_over_day path would.
         persisted = await runner.load_state()
+        today = clock.now_ist().date()
         if persisted:
-            today_str = persisted.get("today")
-            if today_str:
-                try:
-                    if date.fromisoformat(today_str) == clock.now_ist().date():
-                        self.trades_today = persisted.get("trades_today", 0)
-                except ValueError:
-                    pass
+            try:
+                if persisted.get("version") != 1:
+                    raise ValueError(f"version {persisted.get('version')!r}")
+                today_str = persisted.get("today")
+                if today_str is not None and date.fromisoformat(today_str) == today:
+                    self.trades_today = int(persisted.get("trades_today", 0))
+            except (AttributeError, TypeError, ValueError):
+                await self.state_unusable(runner, "The saved state was unreadable",
+                                          "Today's trades are counted from the book instead.")
+        # The book is the floor: a state saved before the last entry (an
+        # ungraceful restart) or lost never lets the daily cap reset.
+        self.trades_today = max(self.trades_today, await self.entries_on(runner, today))
 
         self.prev_day_ohlc: Optional[dict] = cfg.get("prev_day_ohlc")
         self.pivots: Optional[dict] = None
@@ -402,7 +408,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             # stays a complete, correct restore on its own, regardless
             # of which call site reaches it.
             if self.today == clock.now_ist().date():
-                self.trades_today = state.get("trades_today", 0)
+                self.trades_today = max(self.trades_today, int(state.get("trades_today", 0)))
         except (KeyError, TypeError, ValueError):
             logger.exception(
                 "%s: persisted state was malformed — ignoring it and "
@@ -415,6 +421,11 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             runner.deployment_name, self.st.trend, bool(self.pivots),
         )
         return True
+
+    def tracked_tokens(self) -> set:
+        """Every leg this strategy holds (StrategyBase.tracked_tokens)."""
+        t = getattr(self, "active_leg_token", None)
+        return {int(t): getattr(self, "active_leg_symbol", None)} if t is not None else {}
 
     def get_persistable_state(self) -> Optional[dict]:
         """See StrategyBase's own docstring for when this gets called.
@@ -573,7 +584,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             if candle["date"].date() == now.date():   # a session's last candle always closes on the next morning's first tick
                 await self.decide(runner, now, "stale_candle", "blocked",
                                   f"Candle {candle['date']:%H:%M} arrived {(now - candle['date']).total_seconds() / 60:.0f} min late (feed gap): no new entry off it",
-                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)})
+                                  {"candle": candle["date"].isoformat(), "late_min": round((now - candle["date"]).total_seconds() / 60, 1)}, fault=True)
 
         t = now.time()   # real wall-clock time -- deliberately used for the
                           # force-exit cutoff below (must reflect reality
@@ -637,7 +648,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         # leg").
         if not stale and self.active_leg_token is None and self.pivots is None and after_open:
             await self.decide(runner, now, "pivot_break", "blocked",
-                              "No pivot levels yet (no previous-day prices): no entries until they're known", once="no_pivots")
+                              "No pivot levels yet (no previous-day prices): no entries until they're known", once="no_pivots", fault=True)
         if not stale and self.active_leg_token is None and self.pivots is not None \
                 and self.prev_trend is not None and after_open and not before_cutoff \
                 and self._broken_level(candle["close"]) is not None:
@@ -768,7 +779,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             )
             await self.decide(runner, candle["date"], "entry", "blocked",
                               f"{trigger_values.get('broken_level_key')} broken (sell {option_type}) but Kite isn't connected",
-                              {**trigger_values, "side": side})
+                              {**trigger_values, "side": side}, fault=True, missed=True)
             return
         except Exception as e:
             logger.exception(
@@ -777,7 +788,7 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
             )
             await self.decide(runner, candle["date"], "entry", "blocked",
                               f"{trigger_values.get('broken_level_key')} broken (sell {option_type}) but the ATM {option_type} couldn't be found or priced: {e}",
-                              {**trigger_values, "side": side, "error": str(e)[:200]})
+                              {**trigger_values, "side": side, "error": str(e)[:200]}, fault=True, missed=True)
             return
 
         qty = self.lots_per_trade * leg.lot_size
@@ -828,22 +839,10 @@ class PivotSupertrendOptionsStrategy(StrategyBase):
         try:
             price = await self.resolver.get_ltp(key)
         except Exception:
-            price = runner.dispatcher.last_prices.get(self.active_leg_token)
-            price_source = "last_tick"
-            if price is None:
-                price_source = "entry_price"
-                price = float(pos["avg_entry_price"])
-                logger.warning(
-                    "%s: no live/last price for %s on exit (%s) — buying back "
-                    "at avg_entry_price %.2f (zero P&L on this close)",
-                    runner.deployment_name, self.active_leg_symbol, reason, price,
-                )
-            else:
-                logger.warning(
-                    "%s: LTP fetch failed for %s on exit (%s) — using dispatcher's "
-                    "last known tick price %.2f instead",
-                    runner.deployment_name, self.active_leg_symbol, reason, price,
-                )
+            price, price_source = await self.exit_price(runner, self.active_leg_token, self.active_leg_symbol,
+                                                        float(pos["avg_entry_price"]))
+            logger.warning("%s: LTP fetch failed for %s on exit (%s) — closing at %.2f (%s)",
+                           runner.deployment_name, self.active_leg_symbol, reason, price, price_source)
 
         qty = float(pos["qty"])
         option_type = "CE" if self.active_leg_symbol.endswith("CE") else "PE"

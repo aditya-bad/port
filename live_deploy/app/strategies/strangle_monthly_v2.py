@@ -769,6 +769,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         )
         # See module docstring's "STALE-PRICE GUARD".
         self._confirm_cooldown_until: dict[str, datetime] = {}
+        self._waiting_for_price = False
+        self._roll_blocked_noted: dict[str, datetime] = {}   # side -> when a roll that couldn't resolve was last noted
         self._stale_logged: set = set()
         # Geek mode's decision log (runner.record_decision): what to note
         # next, and when each kind of refute was last noted.
@@ -1109,21 +1111,35 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             return
 
         prices: dict[int, float] = {}
+        note = getattr(runner, "note_decision", None)
         for side_legs in self.legs.values():
             for leg in side_legs:
                 p = runner.dispatcher.last_prices.get(leg["token"])
                 if p is None:
-                    return   # wait for a live tick on every open leg
+                    # wait for a live tick on every open leg; held for 10
+                    # minutes, that's raised as an issue
+                    self._waiting_for_price = True
+                    if note is not None:
+                        await note(ts, "leg_prices", "blocked",
+                                   f"Holding all management: no price for {leg['symbol']}", fault=True)
+                    return
                 prices[leg["token"]] = p
+        if self._waiting_for_price:
+            self._waiting_for_price = False
+            if note is not None:
+                await note(ts, "leg_prices", "ok", "Every leg priced again")
 
         # STALE-PRICE GUARD layer 1 (see module docstring): no decision
         # until every open short leg has actually traded this session.
         if self._stale_legs(runner, ts):
+            note = getattr(runner, "note_decision", None)
+            if note is not None:   # every tick it holds: held long enough, it's raised as an issue
+                await note(ts, "stale_price_guard", "blocked", "Holding all management: a short leg hasn't traded yet this session", fault=True)
             if self._stale_report:
                 await self._decide(
                     runner, ts, "stale_price_guard", "blocked",
                     f"Holding all management: {', '.join(self._stale_report)} not traded yet this session",
-                    {"legs": self._stale_report},
+                    {"legs": self._stale_report}, fault=True,
                 )
                 self._stale_report = None
             return
@@ -1362,7 +1378,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             await self._decide(
                 runner, ts, name, "blocked",
                 "Not acted on: live quotes don't confirm the tick prices",
-                {"tick": tick_view, "quote": quote_view},
+                {"tick": tick_view, "quote": quote_view}, fault=True,
             )
         logger.warning(
             "%s: %s fired on tick prices %s but live quotes %s don't confirm it — "
@@ -1383,14 +1399,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         for side in ("CE", "PE"):
             keep = []
             for leg in list(self.legs[side]):
-                price = runner.dispatcher.last_prices.get(leg["token"])
-                if price is None:
-                    price = leg["entry_price"]
-                    logger.warning(
-                        "%s: no live price for %s on flatten (%s) — closing "
-                        "at entry_price %.2f (zero P&L on this leg)",
-                        runner.deployment_name, leg["symbol"], trigger, price,
-                    )
+                price, _src = await self.exit_price(runner, leg["token"], leg["symbol"], leg["entry_price"])
                 try:
                     await self._close_leg(runner, ts, side, leg, trigger, trigger_values, _skip_list_remove=True)
                 except Exception:
@@ -1435,9 +1444,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self, runner, ts, side: str, leg: dict, trigger: str, trigger_values: dict,
         _skip_list_remove: bool = False,
     ) -> None:
-        price = runner.dispatcher.last_prices.get(leg["token"])
-        if price is None:
-            price = leg["entry_price"]
+        price, _src = await self.exit_price(runner, leg["token"], leg["symbol"], leg["entry_price"])
         pos = runner.open_positions.get(leg["token"])
         if pos is not None:
             if not _skip_list_remove:
@@ -1469,31 +1476,12 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         if self.enable_hedging:
             await self._close_hedge_for(runner, ts, leg["token"], trigger)
 
-    async def _open_leg(
-        self, runner, ts, side: str, target_premium: float, trigger: str,
-        trigger_values: dict, exclude_strikes=None,
-        reversed_hedge_order: bool = False, hedge_point_distance: Optional[float] = None,
-        prices: Optional[dict] = None,
-    ) -> dict:
-        """
-        `reversed_hedge_order` / `hedge_point_distance`: set by callers
-        that just closed the leg being replaced (Section 5's roll,
-        Section 6's replace — every trigger, on both, since neither
-        section grows a side's leg count any more) — per the module
-        docstring's "HEDGING" roll-order requirement, a REPLACE must
-        place the new protective leg BEFORE the new short (reversed
-        from the plain short-then-hedge order the `else` branch below
-        uses, for a hypothetical caller with nothing existing being
-        closed first, so there's no exposure gap to protect against —
-        `_enter`'s own initial entry doesn't call `_open_leg` at all,
-        it sells directly and hedges via `_open_hedge_for_short_leg`,
-        so no current caller actually takes that branch).
-        `hedge_point_distance`, if given, is the REPLACED
-        leg's own hedge distance, carried forward onto the new leg
-        instead of resolving a fresh premium-target hedge — "roll in
-        lockstep... to maintain a fixed point-distance."
-        """
-        exclude = {l["strike"] for l in self.legs[side]}
+    async def _pick_leg(self, runner, side: str, target_premium: float, exclude_strikes=None,
+                        without: Optional[dict] = None) -> tuple:
+        """The (leg, price) `_open_leg` would sell on `side` — read-only,
+        places nothing. `without`: a leg about to be closed, so not
+        excluded as already held."""
+        exclude = {l["strike"] for l in self.legs[side] if l is not without}
         if exclude_strikes:
             exclude |= set(exclude_strikes)
         # Resolve (read-only, places no order) BEFORE any trade at all —
@@ -1539,6 +1527,82 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 )
                 leg = await self.resolver.get_leg(self.instrument, self.contract_expiry, opposite_strike, side)
                 price = await self.resolver.get_ltp(leg)
+
+        return leg, price
+
+    async def _replace_leg(
+        self, runner, ts, side: str, old: dict, target_premium: float, trigger: str,
+        trigger_values: dict, prices: dict,
+    ) -> bool:
+        """Close `old` and sell its replacement — the replacement resolved
+        FIRST, so a lookup that fails (Kite down) closes nothing: the old
+        leg stays on, it's reported, and the trigger tries again. Closing
+        first used to leave the side empty for the rest of the day."""
+        try:
+            picked = await self._pick_leg(runner, side, target_premium, without=old)
+        except Exception as e:
+            sig = f"{type(e).__name__}: {e}"[:200]
+            last = self._roll_blocked_noted.get(side)
+            if last is None or ts - last >= timedelta(minutes=5):
+                self._roll_blocked_noted[side] = ts
+                logger.warning("%s: %s roll of %s not done — couldn't resolve the replacement: %s",
+                               runner.deployment_name, side, old["symbol"], sig)
+                await self._decide(runner, ts, trigger, "blocked",
+                                   f"Not rolled: couldn't find the replacement {side} leg ({sig}); {old['symbol']} stays on and the roll is tried again",
+                                   {**trigger_values, "side": side, "error": sig}, fault=True)
+                report = getattr(runner, "report", None)
+                if report is not None:
+                    await report("adjustment_delayed", f"The {side} roll ({trigger.replace('_', ' ')}) couldn't go through",
+                                 f"{old['symbol']} was kept on rather than closed with nothing to replace it: {sig}. "
+                                 "It's tried again on the next tick that still calls for it.",
+                                 key=f"roll:{side}", day=ts.date(), ttl=timedelta(hours=6),
+                                 data={"trigger": trigger, "side": side, "symbol": old["symbol"]})
+            return False
+        old_hedge = self.hedges.get(old["token"])
+        point_distance = old_hedge["point_distance"] if old_hedge else None
+        await self._close_leg(runner, ts, side, old, trigger, trigger_values)
+        await self._open_leg(
+            runner, ts, side, target_premium, trigger, trigger_values,
+            reversed_hedge_order=True, hedge_point_distance=point_distance, prices=prices, picked=picked,
+        )
+        if self._roll_blocked_noted.pop(side, None) is not None:
+            resolve, note = getattr(runner, "resolve", None), getattr(runner, "note_decision", None)
+            if resolve is not None:
+                await resolve(f"roll:{side}")
+            if note is not None:   # the rule got through: clears its "blocked" too
+                await note(ts, trigger, "acted", f"{side} rolled")
+        return True
+
+    async def _open_leg(
+        self, runner, ts, side: str, target_premium: float, trigger: str,
+        trigger_values: dict, exclude_strikes=None,
+        reversed_hedge_order: bool = False, hedge_point_distance: Optional[float] = None,
+        prices: Optional[dict] = None, picked: Optional[tuple] = None,
+    ) -> dict:
+        """
+        `picked`: the (leg, price) `_pick_leg` already resolved — a
+        replace resolves before it closes anything (`_replace_leg`).
+
+        `reversed_hedge_order` / `hedge_point_distance`: set by callers
+        that just closed the leg being replaced (Section 5's roll,
+        Section 6's replace — every trigger, on both, since neither
+        section grows a side's leg count any more) — per the module
+        docstring's "HEDGING" roll-order requirement, a REPLACE must
+        place the new protective leg BEFORE the new short (reversed
+        from the plain short-then-hedge order the `else` branch below
+        uses, for a hypothetical caller with nothing existing being
+        closed first, so there's no exposure gap to protect against —
+        `_enter`'s own initial entry doesn't call `_open_leg` at all,
+        it sells directly and hedges via `_open_hedge_for_short_leg`,
+        so no current caller actually takes that branch).
+        `hedge_point_distance`, if given, is the REPLACED
+        leg's own hedge distance, carried forward onto the new leg
+        instead of resolving a fresh premium-target hedge — "roll in
+        lockstep... to maintain a fixed point-distance."
+        """
+        if picked is None:
+            picked = await self._pick_leg(runner, side, target_premium, exclude_strikes)
+        leg, price = picked
 
         self.adjustments_used += 1
         role = f"adjustment_{self.adjustments_used}"
@@ -1647,13 +1711,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # (which pops it from self.hedges) -- this is a REPLACE, so the
         # reversed hedge-before-short order applies (see module
         # docstring's "HEDGING").
-        old_hedge = self.hedges.get(cheapest["token"])
-        point_distance = old_hedge["point_distance"] if old_hedge else None
-        await self._close_leg(runner, ts, side, cheapest, trigger, trigger_values)
-        await self._open_leg(
-            runner, ts, side, new_leg_target, trigger, trigger_values,
-            reversed_hedge_order=True, hedge_point_distance=point_distance, prices=prices,
-        )
+        await self._replace_leg(runner, ts, side, cheapest, new_leg_target, trigger, trigger_values, prices)
 
     # ── Section 6: EOD 80% check — ALWAYS replaces (never grows) ────────
 
@@ -1725,13 +1783,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
 
         # Same reversed hedge-before-short ordering as Section 5's roll
         # -- this is ALSO a replace (close then open).
-        old_hedge = self.hedges.get(cheapest["token"])
-        point_distance = old_hedge["point_distance"] if old_hedge else None
-        await self._close_leg(runner, ts, smaller_side, cheapest, "eod_gap_check", trigger_values)
-        await self._open_leg(
-            runner, ts, smaller_side, new_leg_target, "eod_gap_check", trigger_values,
-            reversed_hedge_order=True, hedge_point_distance=point_distance, prices=prices,
-        )
+        await self._replace_leg(runner, ts, smaller_side, cheapest, new_leg_target, "eod_gap_check", trigger_values, prices)
 
     # ── Section 7: convergence detection + active-management delegation ─
 
@@ -1774,13 +1826,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             "instead of converging into a straddle", runner.deployment_name, tested_side,
             nearest["symbol"], prices[nearest["token"]], new_target,
         )
-        old_hedge = self.hedges.get(nearest["token"])
-        point_distance = old_hedge["point_distance"] if old_hedge else None
-        await self._close_leg(runner, ts, tested_side, nearest, "eod_rollout", tv)
-        await self._open_leg(
-            runner, ts, tested_side, new_target, "eod_rollout", tv,
-            reversed_hedge_order=True, hedge_point_distance=point_distance, prices=prices,
-        )
+        await self._replace_leg(runner, ts, tested_side, nearest, new_target, "eod_rollout", tv, prices)
 
     def _check_convergence(self, trigger: str, prices: dict) -> None:
         if self.converged:
@@ -1961,12 +2007,19 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                     strike_window=self.adjustment_strike_window, exclude_strikes={short_leg_obj.strike},
                 )
                 price = hedge.last_price
-        except Exception:
+        except Exception as e:
             logger.exception(
                 "%s: failed to open/roll a protective leg (side=%s) — short "
                 "leg left UNHEDGED, will not retry automatically",
                 runner.deployment_name, side,
             )
+            report = getattr(runner, "report", None)
+            if report is not None:
+                await report("unhedged", f"A {side} short is open without its hedge",
+                             f"The protective leg for the short at {short_leg_obj.strike:g} couldn't be bought "
+                             f"({type(e).__name__}: {str(e)[:160]}). It isn't retried; the short is otherwise managed as usual.",
+                             severity="critical", key=f"unhedged:{short_leg_obj.instrument_token}", day=ts.date(),
+                             data={"side": side, "strike": short_leg_obj.strike})
             return
         # Fixed, same as every other leg this deployment ever opens --
         # never scales off `runner.cash` (see module docstring's
@@ -1991,8 +2044,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
     async def _close_hedge_for(self, runner, ts, short_token: int, trigger: str) -> None:
         hedge = self.hedges.pop(short_token, None)
         if hedge is None:
+            resolve = getattr(runner, "resolve", None)
+            if resolve is not None:   # an unhedged short is closed: nothing left to hedge
+                await resolve(f"unhedged:{short_token}")
             return
-        price = runner.dispatcher.last_prices.get(hedge["token"]) or hedge["entry_price"]
+        price, _src = await self.exit_price(runner, hedge["token"], hedge["symbol"], hedge["entry_price"])
         pos = runner.open_positions.get(hedge["token"])
         if pos is not None:
             await runner.sell(
@@ -2153,9 +2209,22 @@ class StrangleMonthlyV2Strategy(StrategyBase):
 
     # ── Trade-reason metadata (Section 12) ──────────────────────────────
 
-    async def _decide(self, runner, ts, rule: str, outcome: str, summary: str, data: Optional[dict] = None) -> None:
+    def tracked_tokens(self) -> set:
+        """Every leg this strategy holds (StrategyBase.tracked_tokens)."""
+        legs = getattr(self, "legs", None) or {}
+        hedges = getattr(self, "hedges", None) or {}
+        out = {int(l["token"]): l.get("symbol") for side in ("CE", "PE") for l in legs.get(side, [])}
+        out.update({int(h["token"]): h.get("symbol") for h in hedges.values()})
+        return out
+
+    async def _decide(self, runner, ts, rule: str, outcome: str, summary: str, data: Optional[dict] = None,
+                      fault: bool = False, missed: bool = False) -> None:
         """A check that didn't trade, for Geek mode's Decisions view
-        (trades explain themselves through their fills' metadata)."""
+        (trades explain themselves through their fills' metadata). A
+        block caused by a fault is watched (runner.note_decision)."""
+        note = getattr(runner, "note_decision", None)
+        if note is not None:
+            await note(ts, rule, outcome, summary, fault=fault, missed=missed)
         record = getattr(runner, "record_decision", None)
         if record is not None:
             await record(ts, rule, outcome, summary, data or {})

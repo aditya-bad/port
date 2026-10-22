@@ -302,18 +302,22 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         # block below), entered_today=True is established from the DB
         # regardless, unaffected by any of this.
         persisted = await runner.load_state()
-        if persisted and persisted.get("version") == 1:
+        if persisted:
             try:
+                if persisted.get("version") != 1:
+                    raise ValueError(f"version {persisted.get('version')!r}")
                 today_str = persisted.get("today")
                 self.today = date.fromisoformat(today_str) if today_str else None
                 self.entered_today = bool(persisted.get("entered_today", False))
-            except (KeyError, TypeError, ValueError):
+            except (AttributeError, KeyError, TypeError, ValueError):
                 logger.exception(
                     "%s: persisted today/entered_today state was malformed — "
                     "ignoring it", runner.deployment_name,
                 )
                 self.today = None
                 self.entered_today = False
+                await self.state_unusable(runner, "The saved state was unreadable",
+                                          "Whether today's entry was made is taken from the book instead.")
 
         # Leg state — two independent legs, unlike pivot_supertrend_options'
         # single active_leg_*.
@@ -370,6 +374,11 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         day = ts.date()
         if self.today is None:
             self.today = day
+            # the book says whether today's entry was already made — saved
+            # state can be lost or stale, and a second entry is the worst
+            # thing a restart can do
+            if not self.entered_today and await self.opened_today(runner, day):
+                self.entered_today = True
             # This is the very first tick this instance has ever
             # processed — decide once whether we're starting "late"
             # (already past entry_time with no entry yet today).
@@ -425,10 +434,18 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                               {"catch_up_late_entry": False})
             return
 
-        await self._enter(runner, ts)
-        self.entered_today = True
+        if self.entry_should_wait(ts):
+            return
+        if await self._enter(runner, ts):
+            self.entered_today = True
+            await self.entry_done(runner, ts)
+        elif await self.entry_failed(runner, ts, self.entry_time, self._entry_error):
+            self.entered_today = True
 
-    async def _enter(self, runner, ts) -> None:
+    async def _enter(self, runner, ts) -> bool:
+        """True once the straddle is on; False when it couldn't be made now
+        (no Kite, no chain, no price) — tried again a minute later
+        (StrategyBase.entry_failed)."""
         try:
             resolved = await resolve_atm_straddle_legs(
                 self.resolver, self.options_underlying, self.expiry_selector,
@@ -448,8 +465,9 @@ class IntradayDTTSimpleStrategy(StrategyBase):
                 "%s: entry_time reached but no Kite session yet — skipping "
                 "today's entry", runner.deployment_name,
             )
-            await self.decide(runner, ts, "entry", "blocked", f"{self.entry_time:%H:%M} entry due but Kite isn't connected: no straddle today")
-            return
+            await self.decide(runner, ts, "entry", "blocked", f"{self.entry_time:%H:%M} entry due but Kite isn't connected: trying again")
+            self._entry_error = "Kite isn't connected"
+            return False
         except Exception as e:
             logger.exception(
                 "%s: failed to resolve/price the ATM straddle for entry — "
@@ -457,7 +475,8 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             )
             await self.decide(runner, ts, "entry", "blocked",
                               f"{self.entry_time:%H:%M} entry due but the ATM straddle couldn't be found or priced: {e}", {"error": str(e)[:200]})
-            return
+            self._entry_error = f"The ATM straddle couldn't be found or priced ({str(e)[:160]})"
+            return False
 
         qty = self.lots_per_trade * ce_leg.lot_size   # CE/PE share the same lot_size
 
@@ -530,6 +549,7 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             runner.deployment_name, ce_leg.tradingsymbol, ce_price,
             pe_leg.tradingsymbol, pe_price, ce_price + pe_price, spot,
         )
+        return True
 
     # ── Exit ─────────────────────────────────────────────────────────────
 
@@ -550,16 +570,28 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         # prices — an asymmetric resume (only one leg reattached) skips
         # these entirely (see on_start's warning) until force_exit_time.
         if self.ce_token is None or self.pe_token is None:
+            # a lone leg is never by design (both legs always exit
+            # together): a trade that failed half-way, or a restart in the
+            # middle of one. Its own stop still applies — a naked short with
+            # no stop until the square-off is the one place not to be.
             await self.decide(runner, ts, "exit_checks", "blocked",
-                              "Only one leg is open (after a restart): profit target and stops are skipped until the square-off",
-                              {"ce": self.ce_symbol, "pe": self.pe_symbol}, once="one_leg")
+                              "Only one leg is open (a trade failed half-way, or a restart): its stop still applies; "
+                              "the combined profit target waits for the square-off",
+                              {"ce": self.ce_symbol, "pe": self.pe_symbol}, fault=True)
+            tok, entry = (self.ce_token, self.ce_entry_price) if self.ce_token is not None else (self.pe_token, self.pe_entry_price)
+            now = runner.dispatcher.last_prices.get(tok)
+            if now is not None and entry and now >= entry * (1 + self.per_leg_stop_loss_pct):
+                await self._exit_both(runner, ts, "leg_spike_stop",
+                                      now if self.ce_token is not None else None, now if self.pe_token is not None else None,
+                                      trigger_values={"lone_leg": True, "now": round(now, 2), "entry": round(entry, 2),
+                                                      "per_leg_stop_loss_pct": self.per_leg_stop_loss_pct})
             return
 
         ce_now = runner.dispatcher.last_prices.get(self.ce_token)
         pe_now = runner.dispatcher.last_prices.get(self.pe_token)
         if (ce_now is None or pe_now is None) and (getattr(self, '_entered_at', None) is None or (ts - self._entered_at).total_seconds() > 120):
             await self.decide(runner, ts, "exit_checks", "blocked",
-                              "No live price yet for a leg: profit target and stops wait for one", once="no_price")
+                              "No live price yet for a leg: profit target and stops wait for one", once="no_price", fault=True)
         if ce_now is None or pe_now is None:
             return   # no live tick yet for one of the legs — check again next tick
 
@@ -608,9 +640,8 @@ class IntradayDTTSimpleStrategy(StrategyBase):
         trigger_values = trigger_values or {}
         had_position = self.ce_token is not None or self.pe_token is not None
         if self.ce_token is not None:
-            src = "live" if ce_now is not None else "last_tick" if runner.dispatcher.last_prices.get(self.ce_token) else "entry_price"
-            price = ce_now if ce_now is not None else \
-                (runner.dispatcher.last_prices.get(self.ce_token) or self.ce_entry_price)
+            price, src = (ce_now, "live") if ce_now is not None else \
+                await self.exit_price(runner, self.ce_token, self.ce_symbol, self.ce_entry_price)
             pos = runner.open_positions.get(self.ce_token)
             if pos is not None:
                 meta = build_trade_meta(
@@ -623,9 +654,8 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             self.ce_token = self.ce_symbol = self.ce_exchange = self.ce_entry_price = None
 
         if self.pe_token is not None:
-            src = "live" if pe_now is not None else "last_tick" if runner.dispatcher.last_prices.get(self.pe_token) else "entry_price"
-            price = pe_now if pe_now is not None else \
-                (runner.dispatcher.last_prices.get(self.pe_token) or self.pe_entry_price)
+            price, src = (pe_now, "live") if pe_now is not None else \
+                await self.exit_price(runner, self.pe_token, self.pe_symbol, self.pe_entry_price)
             pos = runner.open_positions.get(self.pe_token)
             if pos is not None:
                 meta = build_trade_meta(
@@ -653,6 +683,11 @@ class IntradayDTTSimpleStrategy(StrategyBase):
             "%s: strategy stopped (ce=%s, pe=%s)",
             runner.deployment_name, self.ce_symbol, self.pe_symbol,
         )
+
+    def tracked_tokens(self) -> set:
+        """Every leg this strategy holds (StrategyBase.tracked_tokens)."""
+        pairs = ((getattr(self, "ce_token", None), getattr(self, "ce_symbol", None)), (getattr(self, "pe_token", None), getattr(self, "pe_symbol", None)))
+        return {int(t): s for t, s in pairs if t is not None}
 
     def get_persistable_state(self) -> Optional[dict]:
         """today/entered_today only — see on_start's restore block for

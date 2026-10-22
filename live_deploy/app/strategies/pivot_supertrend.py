@@ -725,7 +725,7 @@ async def fetch_seed_from_kite(
     today = now.date()
 
     candle_start = datetime.combine(today - timedelta(days=lookback_days), dtime(0, 0))
-    raw_candles = await asyncio.to_thread(kite.historical_data, instrument_token, candle_start, now, "5minute")
+    raw_candles = await asyncio.wait_for(asyncio.to_thread(kite.historical_data, instrument_token, candle_start, now, "5minute"), 45)
     # Kite's last candle is the one still FORMING. Feeding it to
     # SuperTrend would count that slot twice: once partial now, again
     # when the CandleAggregator completes it. It goes to the aggregator
@@ -749,7 +749,7 @@ async def fetch_seed_from_kite(
         # holiday cluster right before "today" still resolves to a real
         # completed day, not an empty result.
         daily_start = datetime.combine(today - timedelta(days=lookback_days + 10), dtime(0, 0))
-        daily_raw = await asyncio.to_thread(kite.historical_data, instrument_token, daily_start, now, "day")
+        daily_raw = await asyncio.wait_for(asyncio.to_thread(kite.historical_data, instrument_token, daily_start, now, "day"), 45)
         candidates = []
         for row in daily_raw:
             row_date = row["date"].date() if hasattr(row["date"], "date") else row["date"]

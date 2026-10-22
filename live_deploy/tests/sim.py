@@ -247,7 +247,9 @@ def install(monkeypatch, market: Market) -> FakeKite:
     import app.clock as clock
     from zoneinfo import ZoneInfo
     monkeypatch.setattr(clock, "now_ist", lambda: market.now.replace(tzinfo=ZoneInfo("Asia/Kolkata")))
-    R._INSTRUMENT_CACHE.clear()
+    # a fresh instrument cache for this test, the old one back after it: the
+    # simulated chain must never leak into another test's resolver
+    monkeypatch.setattr(R, "_INSTRUMENT_CACHE", {})
     return kite
 
 
@@ -286,11 +288,16 @@ class Sim:
         sim.strategy = get_strategy_class(strategy_name)()
         sim.runner = DeploymentRunner(row, pool, None, sim.dispatcher, sim.strategy)
         sim.runner._is_stale_tick = lambda t: False   # simulated times are in the past; the real check has its own tests
+        sim.runner.clock_now = sim.now
         sim.dispatcher.publish()
         await sim.runner._reload_positions()
-        await sim.strategy.on_start(sim.runner)
-        await sim.runner.checkpoint_state()
+        await sim.runner.start_strategy()     # exactly what DeploymentRunner.start runs
         return sim
+
+    def now(self) -> datetime:
+        """The simulated time, as the runner's clock (aware)."""
+        from zoneinfo import ZoneInfo
+        return self.market.now.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
 
     async def tick(self, at: str | datetime, spot: float | None = None):
         when = ist(at, self.market.today) if isinstance(at, str) else at
@@ -338,9 +345,9 @@ class Sim:
         self.strategy = type(self.strategy)()
         self.runner = DeploymentRunner(row, self.pool, None, self.dispatcher, self.strategy)
         self.runner._is_stale_tick = lambda t: False
+        self.runner.clock_now = self.now
         await self.runner._reload_positions()
-        await self.strategy.on_start(self.runner)
-        await self.runner.checkpoint_state()
+        await self.runner.start_strategy()
 
 
 async def leg_prices(sim, spot: float | None = None) -> dict[str, float]:

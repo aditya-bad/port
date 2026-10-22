@@ -20,11 +20,18 @@ def strategy(pe_strike_for_target, enabled=True):
     s.eod_gap_floor, s.adjustment_band_max, s.adjustment_strike_window = 0.80, 0.95, 40
     s.eod_rollout_instead_of_straddle = enabled
     s.instrument, s.contract_expiry, s.hedges = "NIFTY", None, {}
-    s.acted = []
+    s.acted, s._roll_blocked_noted = [], {}
 
+    # a replacement is resolved before anything is closed (_replace_leg)
     async def get_leg_by_premium(inst, exp, side, target, **k):
-        return SimpleNamespace(strike=pe_strike_for_target)
-    s.resolver = SimpleNamespace(get_leg_by_premium=get_leg_by_premium)
+        return SimpleNamespace(strike=pe_strike_for_target, last_price=100.0)
+
+    async def get_leg(inst, exp, strike, side):
+        return SimpleNamespace(strike=strike, last_price=100.0)
+
+    async def get_ltp(leg):
+        return 100.0
+    s.resolver = SimpleNamespace(get_leg_by_premium=get_leg_by_premium, get_leg=get_leg, get_ltp=get_ltp)
 
     async def confirm(runner, ts, name, prices, fires):
         return prices
