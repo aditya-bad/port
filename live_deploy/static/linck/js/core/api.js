@@ -41,6 +41,9 @@ export const api = {
   opsCheck: () => post('/v2/ops/check'),
   snoozeIssue: (id, period) => post(`/v2/ops/issues/${id}/snooze`, { for: period }),
   dismissIssue: id => post(`/v2/ops/issues/${id}/dismiss`),
+  // the end-of-day check (app/repair/daycheck.py)
+  dayChecks: day => req(`/v2/day-checks${day ? `?day=${enc(day)}` : ''}`),
+  runDayCheck: body => post('/v2/day-checks/run', body || {}),
   me: () => req('/auth/me'),
   logout: () => post('/auth/logout'),
   logoutEverywhere: () => post('/auth/logout-everywhere'),

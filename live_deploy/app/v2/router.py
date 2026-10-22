@@ -342,3 +342,71 @@ async def dismiss_issue(issue_id: int, request: Request):
     if getattr(request.app.state, "ops", None) is not None:
         await request.app.state.ops.refresh_open()
     return ops_health.issue(row)
+
+
+# ── End-of-day check (app/repair/daycheck.py) ────────────────────────
+
+_CHECK_ORDER = {"rule": 0, "mismatch": 1, "ambiguous": 2, "error": 3, "cant_check": 4, "ok": 5}
+
+
+def _run_json(r) -> Optional[dict]:
+    if r is None:
+        return None
+    return {"id": r["id"], "day": r["day"].isoformat(), "trigger": r["trigger"], "status": r["status"],
+            "progress": r["progress"] or {}, "error": r["error"],
+            "started_at": r["started_at"].isoformat(), "finished_at": r["finished_at"].isoformat() if r["finished_at"] else None}
+
+
+@router.get("/day-checks")
+async def get_day_checks(request: Request, day: Optional[str] = None):
+    """A day's end-of-day check: its latest run and every deployment's
+    result, worst first. Default: the latest day checked."""
+    from datetime import date as _date
+    pool = request.app.state.db_pool
+    days = [r["day"] for r in await pool.fetch(
+        "SELECT day FROM (SELECT day FROM day_check_runs UNION SELECT day FROM day_checks) x GROUP BY day ORDER BY day DESC LIMIT 20")]
+    try:
+        d = _date.fromisoformat(day) if day else (days[0] if days else None)
+    except ValueError:
+        raise HTTPException(422, "day must be a date, YYYY-MM-DD")
+    if d is None:
+        return {"day": None, "days": [], "run": None, "results": [], "counts": {}}
+    run = await pool.fetchrow("SELECT * FROM day_check_runs WHERE day = $1 ORDER BY id DESC LIMIT 1", d)
+    rows = await pool.fetch(
+        "SELECT c.*, dp.deployment_name, dp.strategy_name, dp.mode FROM day_checks c "
+        "JOIN deployments dp ON dp.id = c.deployment_id WHERE c.day = $1", d)
+    results = sorted(({
+        "deployment_id": str(r["deployment_id"]), "name": r["deployment_name"], "strategy": r["strategy_name"],
+        "mode": r["mode"], "status": r["status"], "headline": r["headline"], "rules": r["rules"] or [],
+        "diff": r["diff"] or {}, "replay": r["replay"] or {}, "checked_at": r["checked_at"].isoformat(),
+    } for r in rows), key=lambda x: (_CHECK_ORDER.get(x["status"], 9), x["name"]))
+    counts: dict = {}
+    for x in results:
+        counts[x["status"]] = counts.get(x["status"], 0) + 1
+    return {"day": d.isoformat(), "days": [x.isoformat() for x in days], "run": _run_json(run),
+            "results": results, "counts": counts}
+
+
+class DayCheckIn(BaseModel):
+    day: Optional[str] = None
+    deployment_id: Optional[UUID] = None
+
+
+@router.post("/day-checks/run", status_code=202)
+async def run_day_check(payload: DayCheckIn, request: Request):
+    """Start the end-of-day check now (its own process). Default: today."""
+    from datetime import date as _date
+
+    from ..repair.market import IST
+    launcher = getattr(request.app.state, "daychecks", None)
+    if launcher is None:
+        raise HTTPException(503, "The day check isn't available")
+    try:
+        d = _date.fromisoformat(payload.day) if payload.day else datetime.now(IST).date()
+    except ValueError:
+        raise HTTPException(422, "day must be a date, YYYY-MM-DD")
+    if d > datetime.now(IST).date():
+        raise HTTPException(422, "That day hasn't happened yet")
+    rid = await launcher.start(d, "manual", str(payload.deployment_id) if payload.deployment_id else None)
+    row = await request.app.state.db_pool.fetchrow("SELECT * FROM day_check_runs WHERE id = $1", rid)
+    return _run_json(row)

@@ -15,6 +15,15 @@ an issue (table ops_issues) that stays open until the check passes again:
                        strategy may not act on them, their P&L is old
   export:<day>         the 15:45 option-history export failed, or hadn't
                        run by 16:15
+  daycheck:<day>       the end-of-day check (app/repair/daycheck.py) failed
+  eod:<id>             a deployment the day check found breaking a rule of
+                       a day's end (an intraday one holding legs after its
+                       cut-off, a leg held past expiry) still holds them
+
+It also keeps the day: each deployment's strategy state at the open
+(09:00–09:15) and after the close (from 15:35), and once the export has
+succeeded, starts the end-of-day check (app/repair/launcher.py) and says
+what it found when it's done.
 
 While an issue is open and not snoozed, it alerts every minute — a push
 to every subscribed phone and a toast in every open Linck tab — and once
@@ -75,13 +84,14 @@ def in_market(now: datetime, start: time = MARKET_OPEN) -> bool:
 
 
 class OpsMonitor:
-    def __init__(self, pool, manager, dispatcher, cache=None, event_broadcaster=None, candles=None):
+    def __init__(self, pool, manager, dispatcher, cache=None, event_broadcaster=None, candles=None, launcher=None):
         self.pool = pool
         self.manager = manager
         self.dispatcher = dispatcher
         self.cache = cache
         self.event_broadcaster = event_broadcaster
         self.candles = candles
+        self.launcher = launcher            # app/repair/launcher.py: the end-of-day check
         self.checked_at: Optional[datetime] = None
         self.open: list[dict] = []          # the open issues as of the last check, for /health
         self._db_down_alert: Optional[datetime] = None
@@ -241,8 +251,69 @@ class OpsMonitor:
         problems += exp
         if success is not None:
             await self._announce_export(success)
+        await self._keep_day(now, success)
+        problems += await self._day_check_problems(now)
         await self._sync(now, problems)
         return self.open
+
+    # ── the end-of-day check ───────────────────────────────────────────
+
+    async def _keep_day(self, now: datetime, export_done: Optional[dict]) -> None:
+        from .repair import daycheck
+        n = _ist(now)
+        if not market_day(now):
+            return
+        try:
+            if time(9, 0) <= n.time() < MARKET_OPEN:
+                await daycheck.capture_states(self.pool, n.date(), "open")
+            elif n.time() >= time(15, 35):
+                await daycheck.capture_states(self.pool, n.date(), "close")
+        except Exception:
+            logger.exception("Keeping the day's strategy states failed")
+        if export_done is not None and self.launcher is not None and not await self.pool.fetchval(
+                "SELECT 1 FROM day_check_runs WHERE day = $1", n.date()):
+            try:
+                await self.launcher.start(n.date(), "auto")
+            except Exception:
+                logger.exception("Starting the day check failed")
+        await self._announce_day_checks()
+
+    async def _announce_day_checks(self) -> None:
+        for run in await self.pool.fetch(
+                "SELECT * FROM day_check_runs WHERE status = 'done' AND finished_at > now() - interval '1 day' ORDER BY id"):
+            if not await queries.mark_health_alert_sent(self.pool, None, f"daycheck-done:{run['id']}"):
+                continue
+            rows = await self.pool.fetch(
+                "SELECT c.status, d.deployment_name FROM day_checks c JOIN deployments d ON d.id = c.deployment_id "
+                "WHERE c.run_id = $1 ORDER BY d.deployment_name", run["id"])
+            await self._alert(f"Day check {run['day']:%d %b}: {summary(rows)}",
+                              "; ".join(f"{r['deployment_name']}: {WORDS[r['status']]}" for r in rows if r["status"] != "ok")
+                              or "Every deployment traded as its strategy would have and ended the day as expected.",
+                              {"key": f"daycheck-done:{run['id']}", "kind": "daycheck_done", "severity": "info"})
+
+    async def _day_check_problems(self, now: datetime) -> list[Problem]:
+        out = []
+        since = _ist(now).date() - timedelta(days=4)
+        for run in await self.pool.fetch(
+                "SELECT DISTINCT ON (day) * FROM day_check_runs WHERE day >= $1 ORDER BY day, id DESC", since):
+            if run["status"] == "failed":
+                out.append(Problem(f"daycheck:{run['day']}", "daycheck_failed", "The day check failed",
+                                   f"The end-of-day check of {run['day']:%d %b} stopped: {run['error'] or 'no reason given'}. "
+                                   "Run it again from the Repair page.", data={"run_id": run["id"]}))
+        for r in await self.pool.fetch(
+                "SELECT c.*, d.deployment_name FROM day_checks c JOIN deployments d ON d.id = c.deployment_id "
+                "WHERE c.status = 'rule' AND c.day >= $1 ORDER BY c.day", since):
+            held = {x["symbol"] for x in await self.pool.fetch(
+                "SELECT symbol FROM positions WHERE deployment_id = $1 AND status = 'open'", r["deployment_id"])}
+            for rule in r["rules"] or []:
+                legs = [x for x in rule.get("legs") or [] if x in held]
+                if rule.get("severity") == "critical" and legs:
+                    out.append(Problem(f"eod:{r['deployment_id']}:{rule['rule']}", "end_of_day",
+                                       f"{r['deployment_name']}: {rule['title'].lower()}",
+                                       f"Found by the day check of {r['day']:%d %b}. {rule['detail']} Still open: "
+                                       f"{', '.join(legs)}. Review it on the Repair page.",
+                                       deployment_id=str(r["deployment_id"]), data={"day": r["day"].isoformat(), "legs": legs}))
+        return out
 
     async def _announce_export(self, r: dict) -> None:
         if not await queries.mark_health_alert_sent(self.pool, None, f"export-ok:{r['day']}"):
@@ -318,6 +389,22 @@ class OpsMonitor:
             except Exception:
                 logger.exception("Health monitor check failed — continuing")
             await asyncio.sleep(every_s)
+
+
+WORDS = {"ok": "as expected", "rule": "a rule of the day's end broken", "mismatch": "traded differently from its strategy",
+         "ambiguous": "to review: a minute reads two ways", "cant_check": "couldn't be replayed", "error": "the check failed"}
+
+
+def summary(rows) -> str:
+    n = {}
+    for r in rows:
+        n[r["status"]] = n.get(r["status"], 0) + 1
+    bits = [f"{n['ok']} as expected" if n.get("ok") else "",
+            f"{n.get('mismatch', 0) + n.get('ambiguous', 0)} to review" if n.get("mismatch") or n.get("ambiguous") else "",
+            f"{n['rule']} with a rule broken" if n.get("rule") else "",
+            f"{n['cant_check']} not replayed" if n.get("cant_check") else "",
+            f"{n['error']} failed" if n.get("error") else ""]
+    return ", ".join(b for b in bits if b) or "nothing to check"
 
 
 def issue(r) -> dict:

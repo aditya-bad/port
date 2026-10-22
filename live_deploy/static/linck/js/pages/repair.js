@@ -3,10 +3,12 @@
 // 15:45 option-history export and every deployment each minute; every
 // problem is an issue that alerts every minute until it clears. Here they
 // are: open first, with snooze and dismiss, then the recently cleared.
+// After the 15:45 export, the day check (app/repair/daycheck.py) replays
+// each deployment's day and checks its end: its findings are here too.
 
 import { api } from '../core/api.js';
-import { html, mount, actions } from '../core/dom.js';
-import { hhmm, hhmmss, dStamp, dayKey, plural } from '../core/format.js';
+import { html, mount, actions, on } from '../core/dom.js';
+import { hhmm, hhmmss, dStamp, dDay, dayKey, fromDay, plural, price } from '../core/format.js';
 import { href } from '../core/router.js';
 import { listen } from '../core/store.js';
 import { sect, empty, loading } from '../ui/components.js';
@@ -52,7 +54,7 @@ function statusRow(d) {
     ${cell('Deployments running', String(d.running), 'Strategies with a live runner')}
     ${cell('Today’s export', ev, es)}
     ${cell('Open issues', d.open.length ? String(d.open.length) : 'None', d.open.length ? [crit && `${crit} critical`, warn && plural(warn, 'warning')].filter(Boolean).join(' · ') : 'Everything watched is fine',
-           crit ? 'bad' : d.open.length ? 'warn' : 'ok')}
+           crit ? 't-bad' : d.open.length ? 't-warn' : 't-ok')}
   </div>`;
 }
 
@@ -81,6 +83,91 @@ function issueCard(x) {
   </article>`;
 }
 
+// ── The day check ──────────────────────────────────────────────────
+const CHECK = {
+  rule: ['Rule broken', 'bad', 'The end of the day isn’t what its strategy expects'],
+  mismatch: ['Traded differently', 'bad', 'The replay of its strategy did something the app didn’t, or the other way round'],
+  ambiguous: ['To review', 'warn', 'It traded differently, but a minute could be read two ways: you choose'],
+  error: ['Check failed', 'warn', 'The replay itself failed'],
+  cant_check: ['Not replayed', 'mute', 'No start-of-day state, or no prices for a leg: only the rules were checked'],
+  ok: ['As expected', 'ok', 'Traded as its strategy would have, and ended the day as expected'],
+};
+const pill = st => html`<span class="dc-pill t-${CHECK[st][1]}" data-tip="${CHECK[st][2]}">${CHECK[st][0]}</span>`;
+const fillTxt = f => (f ? html`<span class="mono">${f.minute}</span> ${f.action === 'buy' ? 'Bought' : 'Sold'} ${f.qty} <b class="mono">${f.symbol}</b> @ ${price(f.price)}${f.reason ? html` <span class="tiny mute">${f.reason}</span>` : ''}` : html`<span class="mute">—</span>`);
+
+function runLine(run) {
+  if (!run) return html`<span class="small mute">Not run yet for this day.</span>`;
+  const how = run.trigger === 'auto' ? 'after the export' : 'by hand';
+  if (run.status === 'running') {
+    const p = run.progress || {};
+    return html`<span class="small"><i class="spin" aria-hidden="true"></i> Running ${how} — ${p.done ?? 0} of ${p.total ?? '…'}${p.current ? html` · <b>${p.current}</b>` : ''}</span>`;
+  }
+  if (run.status === 'failed') return html`<span class="small neg">Failed ${hhmm(run.started_at)}: ${run.error || 'no reason given'}</span>`;
+  return html`<span class="small mute">Ran ${how}, ${hhmm(run.started_at)}–${hhmm(run.finished_at)}</span>`;
+}
+
+function tradesTable(diff) {
+  const rows = [
+    ...(diff.missed || []).map(f => ({ rep: f, app: null, k: 'missed', t: f.minute })),
+    ...(diff.extra || []).map(f => ({ rep: null, app: f, k: 'extra', t: f.minute })),
+    ...(diff.matched || []).map(m => ({ rep: m.replay, app: m.app, k: 'same', t: m.replay.minute, m })),
+  ].sort((a, b) => (a.t < b.t ? -1 : a.t > b.t ? 1 : 0));
+  if (!rows.length) return html`<p class="small mute">No trades that day, by the app or the replay.</p>`;
+  return html`<div class="dc-trades">
+    <div class="th"><span>Its strategy, replayed</span><span>The app</span><span></span></div>
+    ${rows.map(r => html`<div class="${r.k}"><span data-l="Strategy">${fillTxt(r.rep)}</span><span data-l="App">${fillTxt(r.app)}</span>
+      <span class="tiny ${r.k === 'same' ? 'mute' : 'neg'}">${r.k === 'missed' ? 'The app didn’t' : r.k === 'extra' ? 'The strategy wouldn’t'
+        : `${r.m.minutes_apart ? `${r.m.minutes_apart} min apart · ` : ''}${r.m.price_diff ? `₹${r.m.price_diff > 0 ? '+' : ''}${r.m.price_diff} vs the candle` : 'same'}`}</span></div>`)}
+  </div>`;
+}
+
+function endState(end) {
+  const legs = xs => (xs.length ? xs.map(l => html`<div class="mono small">${l.side === 'short' ? 'Short' : 'Long'} ${l.qty} ${l.symbol}</div>`) : html`<div class="small mute">Flat</div>`);
+  return html`<div class="dc-end ${end.same ? 'same' : 'diff'}">
+    <div><span class="l">The strategy would have ended with</span>${legs(end.replay || [])}</div>
+    <div><span class="l">The app ended with</span>${legs(end.app || [])}</div>
+  </div>`;
+}
+
+function checkRow(x, open) {
+  const diff = x.diff || {}, rep = x.replay || {};
+  return html`<details class="dc-row t-${CHECK[x.status][1]}" ${open ? 'open' : ''} data-dc="${x.deployment_id}">
+    <summary>${pill(x.status)}<b>${x.name}</b><span class="small mute">${x.strategy} · ${x.mode}</span><span class="dc-head">${x.headline}</span></summary>
+    <div class="dc-body">
+      ${(x.rules || []).map(r => html`<div class="dc-rule ${r.severity}"><b>${r.title}</b><span>${r.detail}</span></div>`)}
+      ${diff.end ? html`${endState(diff.end)}${tradesTable(diff)}` : ''}
+      <div class="dc-notes small mute">
+        ${rep.start ? html`<span>Replayed from the strategy’s state ${rep.start}.</span>` : ''}
+        ${(rep.auto || []).length ? html`<span>Read the usual way at ${rep.auto.map(a => a.minute).join(', ')} — each could be read two ways.</span>` : ''}
+        ${(rep.estimated || []).length ? html`<span>Priced without trades on Kite: ${rep.estimated.join(', ')}.</span>` : ''}
+        ${(rep.notes || []).map(n => html`<span>${n}</span>`)}
+      </div>
+      <div class="row" style="gap:10px"><a class="small" href="${href(`d/${x.deployment_id}`)}">Open deployment ›</a></div>
+    </div>
+  </details>`;
+}
+
+function dayCheckSection(c, day) {
+  if (!c) return loading(3);
+  const results = c.results || [];
+  const flagged = results.filter(x => x.status !== 'ok');
+  const fine = results.filter(x => x.status === 'ok');
+  const counts = Object.entries(c.counts || {}).sort((a, b) => Object.keys(CHECK).indexOf(a[0]) - Object.keys(CHECK).indexOf(b[0]));
+  const days = c.days || [];
+  return html`<div class="dc">
+    <div class="dc-bar">
+      ${days.length ? html`<select class="input" data-f="dcDay" aria-label="Day">${days.map(k => html`<option value="${k}" ${k === (day || c.day) ? 'selected' : ''}>${dDay(fromDay(k))}</option>`)}</select>` : ''}
+      ${runLine(c.run)}
+      <span class="grow"></span>
+      <button type="button" class="btn btn-sm" data-act="runCheck" ${c.run && c.run.status === 'running' ? 'disabled' : ''}>Run the day check${c.day ? ` for ${dDay(fromDay(day || c.day))}` : ' now'}</button>
+    </div>
+    ${counts.length ? html`<div class="dc-counts">${counts.map(([k, n]) => html`<span>${pill(k)} ${n}</span>`)}</div>` : ''}
+    ${!results.length ? empty('', c.day ? 'No results for this day yet.' : 'The day check runs by itself once the 15:45 export succeeds. Each deployment’s day is replayed from its open on Kite’s 1-minute candles and checked against what the app did.')
+      : html`<div class="dc-list">${flagged.map(x => checkRow(x, flagged.length <= 3))}
+        ${fine.length ? html`<details class="dc-fine"><summary>${plural(fine.length, 'deployment')} as expected</summary>${fine.map(x => checkRow(x, false))}</details>` : ''}</div>`}
+  </div>`;
+}
+
 function clearedTable(rows) {
   if (!rows.length) return empty('', 'Nothing has cleared yet.');
   return html`<div class="ops-cleared">
@@ -95,12 +182,18 @@ function clearedTable(rows) {
 export default {
   title: () => 'Repair',
   render(main) {
-    let d = null, err = null, busy = false;
+    let d = null, err = null, busy = false, dc = null, dcDay = '', dcTimer = null;
     async function load(fresh = false) {
       try {
         d = fresh ? await api.opsCheck() : await api.ops();
         err = null;
       } catch (e) { err = e; }
+      paint();
+    }
+    async function loadChecks() {
+      try { dc = await api.dayChecks(dcDay); } catch (e) { dc = { results: [], days: [], counts: {}, run: null, error: e.message }; }
+      clearTimeout(dcTimer);
+      if (dc.run && dc.run.status === 'running') dcTimer = setTimeout(loadChecks, 4000);   // follow a running check
       paint();
     }
     function paint() {
@@ -118,6 +211,8 @@ export default {
           ${sect('Open issues', d.open.length ? 'Each alerts your phone every minute until it clears or you snooze it' : '')}
           ${d.open.length ? html`<div class="ops-list">${d.open.map(issueCard)}</div>`
             : html`<div class="ops-ok"><b>Nothing needs you.</b><span>Everything the monitor watches is fine.</span></div>`}
+          ${sect('Day check', 'Each deployment’s day replayed from its open and checked against what the app did')}
+          ${dayCheckSection(dc, dcDay)}
           ${sect('What’s watched', 'Checked every minute')}
           <dl class="ops-watched">${WATCHED.map(([k, v]) => html`<dt>${k}</dt><dd>${v}</dd>`)}</dl>
           ${sect('Recently closed', 'The last 50')}
@@ -133,14 +228,23 @@ export default {
           await load(); pollStatus();
         } catch (e) { fail(e, 'Couldn’t snooze it'); }
       },
+      runCheck: async () => {
+        try {
+          await api.runDayCheck(dcDay || (dc && dc.day) ? { day: dcDay || dc.day } : {});
+          say('The day check is running. It replays every deployment, so it takes a few minutes.');
+          await loadChecks();
+        } catch (e) { fail(e, 'Couldn’t start the day check'); }
+      },
       dismiss: async x => {
         try { await api.dismissIssue(x.id); say('Dismissed. If the problem is still there, the next check opens it again.'); await load(); pollStatus(); } catch (e) { fail(e, 'Couldn’t dismiss it'); }
       },
     });
-    const offEv = listen('event', ev => { if (/^health_/.test(ev.event_type || '')) load(); });
+    const offEv = listen('event', ev => { if (/^health_/.test(ev.event_type || '')) { load(); loadChecks(); } });
+    const offDay = on(main, 'change', '[data-f="dcDay"]', (e, el) => { dcDay = el.value; dc = null; paint(); loadChecks(); });
     const timer = setInterval(() => load(), 30000);
     paint();
     load();
-    return () => { offActs(); offEv(); clearInterval(timer); };
+    loadChecks();
+    return () => { offActs(); offEv(); offDay(); clearInterval(timer); clearTimeout(dcTimer); };
   },
 };

@@ -210,6 +210,7 @@ async def seed():
     await seed_futures(pool)
     await seed_repair(pool, ids["BankNifty DTT Plain"])
     await seed_ops(pool, ids)
+    await seed_day_checks(pool, ids)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -642,6 +643,50 @@ async def seed_ops(pool, ids):
         "INSERT INTO ops_issues (key, kind, severity, title, detail, opened_at, last_seen_at, resolved_at, resolved_by, alerts) "
         "VALUES ('kite:stall', 'kite_stall', 'critical', 'Kite prices stopped', 'No ticks since 12:15.', $1, $2, $2, 'cleared', 5)",
         now - timedelta(hours=3), now - timedelta(hours=2, minutes=55))
+
+
+async def seed_day_checks(pool, ids):
+    """Yesterday's end-of-day check (app/repair/daycheck.py): one rule
+    broken, one traded differently, one to review, the rest as expected;
+    and an older day all as expected."""
+    today = datetime.now(IST).date()
+    day = today - timedelta(days=1)
+    older = today - timedelta(days=2)
+    run = await pool.fetchval(
+        "INSERT INTO day_check_runs (day, trigger, status, started_at, finished_at, progress) "
+        "VALUES ($1, 'auto', 'done', $2, $3, $4) RETURNING id", day,
+        datetime.combine(day, time(15, 52), IST), datetime.combine(day, time(16, 3), IST), {"total": 9, "done": 9})
+
+    def f(minute, action, symbol, price, reason="", qty=75):
+        return {"minute": minute, "action": action, "symbol": symbol, "qty": qty, "price": price, "reason": reason}
+    rows = {
+        "BankNifty DTT Plain": ("rule", "Still holding 2 leg(s) after its 15:00 cut-off — and the replay found 2 trade(s) the strategy would have made that the app didn't",
+            [{"rule": "flat_after_cutoff", "severity": "critical", "title": "Still holding 2 leg(s) after its 15:00 cut-off",
+              "detail": "An intraday deployment that exits by 15:00 ended the day holding BANKNIFTY26OCT55700CE, BANKNIFTY26OCT55700PE.",
+              "legs": ["BANKNIFTY26OCT55700CE", "BANKNIFTY26OCT55700PE"]}],
+            {"matched": [{"replay": f("10:00", "sell", "BANKNIFTY26OCT55700CE", 412.0, "entry", 35), "app": f("10:00", "sell", "BANKNIFTY26OCT55700CE", 413.2, "entry", 35), "minutes_apart": 0, "price_diff": 1.2}],
+             "missed": [f("15:00", "buy", "BANKNIFTY26OCT55700CE", 241.0, "force_exit", 35), f("15:00", "buy", "BANKNIFTY26OCT55700PE", 899.15, "force_exit", 35)],
+             "extra": [], "end": {"app": [{"symbol": "BANKNIFTY26OCT55700CE", "side": "short", "qty": 35}, {"symbol": "BANKNIFTY26OCT55700PE", "side": "short", "qty": 35}],
+                                  "replay": [], "same": False}}),
+        "Nifty Strangle A": ("mismatch", "The replay found 2 trade(s) the strategy would have made that the app didn't", [],
+            {"matched": [], "missed": [f("13:31", "buy", "NIFTY26NOV22400PE", 243.5, "continuous_50pct_trigger"), f("13:31", "sell", "NIFTY26NOV22800PE", 151.2, "continuous_50pct_trigger")],
+             "extra": [], "end": {"app": [{"symbol": "NIFTY26NOV22400PE", "side": "short", "qty": 75}], "replay": [{"symbol": "NIFTY26NOV22800PE", "side": "short", "qty": 75}], "same": False}}),
+        "Nifty Monthly Strangle": ("ambiguous", "The replay found 1 trade(s) the app made that it wouldn't have — but 1 minute(s) could be read two ways (13:05): choose on the Repair page", [],
+            {"matched": [], "missed": [], "extra": [f("13:05", "buy", "NIFTY26NOV27000CE", 18.4, "continuous_50pct_trigger")],
+             "end": {"app": [], "replay": [], "same": True}}),
+    }
+    for name, d in ids.items():
+        status, headline, rules, diff = rows.get(name, ("ok", "Traded as its strategy would have, and ended the day as expected", [],
+                                                        {"matched": [], "missed": [], "extra": [], "end": {"app": [], "replay": [], "same": True}}))
+        replay = {"start": f"captured at the open of {day:%d %b}", "auto": [{"minute": "13:05"}] if status == "ambiguous" else [],
+                  "notes": [], "estimated": [], "blind": [], "fills": []}
+        await pool.execute(
+            "INSERT INTO day_checks (run_id, day, deployment_id, status, headline, rules, diff, replay) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            run, day, d, status, headline, rules, diff, replay)
+    run2 = await pool.fetchval("INSERT INTO day_check_runs (day, status, finished_at) VALUES ($1, 'done', now()) RETURNING id", older)
+    for d in ids.values():
+        await pool.execute("INSERT INTO day_checks (run_id, day, deployment_id, status, headline) VALUES ($1, $2, $3, 'ok', 'As expected')",
+                           run2, older, d)
 
 
 GEEK_NAME = "Nifty Monthly Strangle"

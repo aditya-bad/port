@@ -405,8 +405,10 @@ async def startup() -> None:
     # deployment, checked every minute; each problem alerts every minute
     # until it clears — see app/ops_health.py.
     from .ops_health import OpsMonitor
+    from .repair.launcher import DayCheckLauncher
+    app.state.daychecks = DayCheckLauncher(db_pool)
     app.state.ops = OpsMonitor(db_pool, manager, dispatcher, cache=cache, event_broadcaster=event_broadcaster,
-                               candles=app.state.candles)
+                               candles=app.state.candles, launcher=app.state.daychecks)
     app.state.ops_task = asyncio.create_task(app.state.ops.loop(), name="ops-health-loop")
     # ── India VIX for Geek mode: looked up and subscribed once Kite logs in
     # (its live value goes on every fill); history comes from Kite when a
