@@ -196,16 +196,25 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
 .tbl.diff tr.r-chg td:first-child { border-left-color: var(--chg-s); background: var(--chg-f); }
 .tbl.diff tr.r-new td:first-child { border-left-color: var(--new-s); background: var(--new-f); }
 .tbl.diff table { font-size: 13.5px; min-width: 980px; }
+svg .pb circle { fill: var(--ink); }
+svg .pb text { font: 600 9.5px var(--f-mono); fill: var(--paper); }
+svg .row { paint-order: stroke; stroke: var(--card); stroke-width: 5px; stroke-linejoin: round; }
+svg .cm { font: 500 10px var(--f-mono); fill: var(--ink); }
+.pbx { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; border-radius: 50%; background: var(--ink); color: var(--paper); font: 600 10.5px/1 var(--f-mono); vertical-align: 1px; flex: none; }
+.legend .pbx { width: 16px; height: 16px; font-size: 9px; margin-right: 6px; }
+td.label[colspan] { font: 500 11px/1.4 var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--mute); }
+.answer + h3 { margin-top: 8px; }
+.cols ul + h3, .cols ol + h3, .cols p + h3 { margin-top: 22px; }
 </style>
 </head>
 <body>
 <header class="top">
   <div class="wrap">
-    <div class="row"><span class="kicker">Linck · Technical architecture · v1</span><span class="kicker">22 Oct 2026</span></div>
+    <div class="row"><span class="kicker">Linck · Technical architecture · v2</span><span class="kicker">22 Oct 2026</span></div>
     <h1>Linck architecture</h1>
-    <p class="lede">The engineering design behind the platform plan: the final architecture and the intermediate one, with every component marked as kept, changed or new, and why. The contracts, the tick path, the strategy runtime, orders and the ledger, the SDK and how it’s built, how we ship, what production looks like at the end, the order we build it in, and the decisions with the alternatives we turned down.</p>
+    <p class="lede">The engineering design behind the platform plan: the final architecture and the intermediate one, with every component marked as kept, changed or new, and why. What each component is and what it’s called elsewhere, which ones are services, where REST, gRPC and events are used, how it all runs on Kubernetes, the broker and feed connectors, how strategies in Python, Go, Rust and TypeScript run on one runtime, the contracts, the tick path, the strategy runtime, orders and the ledger, the SDK and how it’s built, how we ship, what production looks like at the end, the order we build it in, and the decisions with the alternatives we turned down.</p>
     <nav class="toc" aria-label="Contents">
-      <a href="#read">How to read it</a><a href="#drivers">Design drivers</a><a href="#final">Final</a><a href="#inter">Intermediate</a><a href="#diff">What changes</a><a href="#contracts">Contracts</a><a href="#md">Market data</a><a href="#runtime">Strategy runtime</a><a href="#money">Orders, risk, ledger</a><a href="#sdk">The SDK</a><a href="#bus">Messaging</a><a href="#data">Data</a><a href="#ship">Shipping</a><a href="#end">End state</a><a href="#path">Migration</a><a href="#adr">Decisions</a><a href="#open">Open questions</a>
+      <a href="#read">How to read it</a><a href="#drivers">Design drivers</a><a href="#parts">Components</a><a href="#final">Final</a><a href="#inter">Intermediate</a><a href="#diff">What changes</a><a href="#services">Services</a><a href="#proto">Protocols</a><a href="#deploy">Deployment</a><a href="#contracts">Contracts</a><a href="#md">Market data</a><a href="#connect">Connectors</a><a href="#runtime">Strategy runtime</a><a href="#langs">Languages</a><a href="#money">Orders, risk, ledger</a><a href="#sdk">The SDK</a><a href="#bus">Messaging</a><a href="#data">Data</a><a href="#ship">Shipping</a><a href="#end">End state</a><a href="#path">Migration</a><a href="#adr">Decisions</a><a href="#open">Open questions</a>
     </nav>
   </div>
 </header>
@@ -220,7 +229,8 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
       <span><i class="st chg"></i><b>Changed</b> exists in the intermediate architecture as a stand-in; rebuilt or replaced behind the same contract in the final one</span>
       <span><i class="st new"></i><b>New</b> only in the final architecture</span>
     </div>
-    <p>The colours are the same in both diagrams and in the change table (section 04). The one rule that makes the change cheap: <b>every boundary speaks its final contract from the intermediate architecture onward.</b> Swapping a Go market-data service for a Rust one, or Python runner workers for a Rust supervisor, changes what’s behind a protobuf interface, never the interface. Strategies, the web app and the ledger never notice.</p>
+    <p>The colours are the same in both diagrams and in the change table (section 05). The one rule that makes the change cheap: <b>every boundary speaks its final contract from the intermediate architecture onward.</b> Swapping a Go market-data service for a Rust one, or Python runner workers for a Rust supervisor, changes what’s behind a protobuf interface, never the interface. Strategies, the web app and the ledger never notice.</p>
+    <p>Two more conventions. <b>Every box names one language.</b> Where a box names two (“Kotlin · Swift”), they are two separate things, each named in the box; “Go (was Python)” means it’s Go, and was Python in the intermediate architecture. <b>Letters in black circles</b> (<span class="pbx">A</span> to <span class="pbx">L</span>) say how two components talk; section 07 lists each one.</p>
   </div>
 </section>
 
@@ -252,148 +262,222 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
   </div>
 </section>
 
+<section id="parts">
+  <div class="head"><span class="label">02</span><h2>The components</h2><p class="sub">Every part of the platform by what it does. If you know it by another name, the second column is for you. Sections 06 to 13 go into how each is built, deployed and spoken to.</p></div>
+  <div class="body">
+    <div class="tbl"><table>
+      <thead><tr><th>Component</th><th>Also called</th><th>What it does</th><th>Built as</th><th>Language</th></tr></thead>
+      <tbody>
+        <tr><td class="label" colspan="5">Clients and the way in</td></tr>
+        <tr><td>Linck web</td><td>frontend</td><td>The web app: Desk, deployments, Geek mode, repair, reports</td><td>Static files on a CDN</td><td>TypeScript</td></tr>
+        <tr><td>Mobile apps</td><td>—</td><td>Alerts first, then the Desk and controls</td><td>Two native apps</td><td>Kotlin (Android) and Swift (iOS)</td></tr>
+        <tr><td>SDKs</td><td>client libraries</td><td>What a user writes a strategy against</td><td>One library per language</td><td>Python, Go, Rust, TypeScript: four libraries</td></tr>
+        <tr><td>CLI</td><td><span class="mono">linck</span></td><td>Push, deploy, logs; runs a strategy locally against recorded days</td><td>One binary</td><td>Rust</td></tr>
+        <tr><td>Edge gateway</td><td>API gateway, load balancer</td><td>TLS, who you are, rate limits per plan, routing REST, WebSocket and gRPC</td><td>Off the shelf (Envoy) + an auth plug-in</td><td>Envoy config; plug-in in Go</td></tr>
+        <tr><td class="label" colspan="5">Product and control</td></tr>
+        <tr><td>Product API</td><td>backend, BFF</td><td>Everything the screens read and write: book, reports, Geek data, journal, repair cases</td><td>Microservice</td><td>Python</td></tr>
+        <tr><td>Live gateway</td><td>push server</td><td>Live P&amp;L, positions and alerts to open screens</td><td>Microservice</td><td>Go</td></tr>
+        <tr><td>Identity</td><td>auth service</td><td>Users, tenants, sessions, API keys, roles</td><td>Microservice</td><td>Go</td></tr>
+        <tr><td>Control</td><td><b>strategy manager</b>, deployment manager, orchestrator</td><td>Deployments and their lifecycle (paper → shadow → live, start, stop, pause), the strategy registry, the scheduler that places strategies on hosts, risk limits, broker links</td><td>Microservice</td><td>Go</td></tr>
+        <tr><td>Commerce</td><td>billing</td><td>Plans, metering, invoices, marketplace licences and revenue share</td><td>Microservice</td><td>Go</td></tr>
+        <tr><td>Builder</td><td>strategy CI</td><td>Builds a user’s source into a signed strategy artifact and certifies it</td><td>Microservice that starts build jobs</td><td>Go; one build image per SDK language</td></tr>
+        <tr><td>Reference data</td><td>instrument master, symbol master</td><td>Every instrument with our id, lot size, expiry, strike, freeze quantity, and its symbol or token at each broker</td><td>Microservice</td><td>Go</td></tr>
+        <tr><td class="label" colspan="5">Inside each cell: the trading path</td></tr>
+        <tr><td>Market data ingest</td><td><b>tick data ingestor</b>, feed handler, market data service</td><td>Connects to vendors and broker sockets, decodes, cleans, numbers and fans out every tick; archives them</td><td>Microservice: one per feed source, plus a sequencer</td><td>Rust</td></tr>
+        <tr><td>Tick cache agent</td><td>—</td><td>On every runtime host, writes the tick stream into shared memory</td><td>Node agent</td><td>Rust</td></tr>
+        <tr><td>Computed streams</td><td>indicator engine, bar builder</td><td>Bars, indicators, IV and greeks, option-chain views: computed once, read by every strategy that asks</td><td>Microservice</td><td>Rust</td></tr>
+        <tr><td>Strategy runtime</td><td><b>strategy engine</b>, executor, runner</td><td>Runs strategies: hands each its events, enforces its budget, keeps its state, recovers it on another host</td><td>A supervisor on every runtime host + a sandbox per strategy</td><td>Rust (the supervisor); strategies in any SDK language</td></tr>
+        <tr><td>Orders &amp; risk</td><td>OMS, execution engine, risk engine</td><td>Turns intents into orders after risk checks; the only writer of orders, fills, positions and the ledger</td><td>Microservice</td><td>Go</td></tr>
+        <tr><td>Broker gateway</td><td><b>multi-broker connector</b>, broker adapter, EMS</td><td>Speaks each broker’s API: place, modify, cancel, order updates, positions, margins, logins and tokens, rate limits</td><td>Microservice, deployed once per broker</td><td>Go</td></tr>
+        <tr><td>Sim venue</td><td>paper broker, fill simulator</td><td>Fills paper and shadow orders from market depth, with queue and latency models</td><td>Microservice + the same code as a library for backtests</td><td>Rust</td></tr>
+        <tr><td class="label" colspan="5">Platform services</td></tr>
+        <tr><td>Integrity</td><td>reconciliation, audit, repair</td><td>Day check, repair cases, shadow comparison, reconciliation with brokers, strategy issues</td><td>Microservice + Temporal workflows</td><td>Go</td></tr>
+        <tr><td>Backtest farm</td><td>backtester, research engine</td><td>The strategy runtime and the sim venue in batch over the lake: backtests, sweeps, replays</td><td>Batch jobs</td><td>Rust</td></tr>
+        <tr><td>Read models</td><td>analytics, projector</td><td>Turns events into ClickHouse tables for Geek mode, reports and leaderboards</td><td>Event consumer</td><td>Go</td></tr>
+        <tr><td>Notifications</td><td>alerts</td><td>Push, email, Telegram, WhatsApp, webhooks; templates per tenant</td><td>Event consumer</td><td>Go</td></tr>
+        <tr><td>Assistant</td><td>AI copilot</td><td>Writes SDK code, explains a day; read-only tools</td><td>Microservice</td><td>Python</td></tr>
+        <tr><td class="label" colspan="5">Shared code, not services</td></tr>
+        <tr><td>Contracts</td><td>protos, schemas</td><td>Every message and API, generated into each language</td><td>Protobuf repository</td><td>Generated for Go, Rust, Python, TypeScript</td></tr>
+        <tr><td>linck-core</td><td>engine core</td><td>Indicators, the fill model, the protocol codec, determinism helpers: one implementation used by the runtime, the sim venue, the backtest farm and every SDK</td><td>Library</td><td>Rust, with a binding per SDK language</td></tr>
+      </tbody></table></div>
+    <p class="note">Rule used everywhere in this document: a component is written in one language. Where a row names two, they are two separate things (two apps, four SDKs), each named.</p>
+  </div>
+</section>
+
 <section id="final">
-  <div class="head"><span class="label">02</span><h2>Final architecture</h2><p class="sub">Coloured by what happens to each component between the intermediate architecture and this one.</p></div>
+  <div class="head"><span class="label">03</span><h2>Final architecture</h2><p class="sub">Coloured by what happens to each component between the intermediate architecture and this one.</p></div>
   <div class="body">
     <figure>
       <div class="diagram">
-<svg viewBox="0 0 1200 990" role="img" aria-labelledby="fat fad" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 1200 1004" role="img" aria-labelledby="fat fad" xmlns="http://www.w3.org/2000/svg">
   <title id="fat">Final architecture, coloured by change</title>
-  <desc id="fad">Clients: Linck web (kept), mobile apps (new), SDK and CLI (changed), public API (new), partner brokers (new). Edge gateway (changed). Product API in Python (kept) and a Go control plane (changed). Event backbone of Redpanda and NATS (changed). Each cell: Rust market data fabric (changed), Rust computed streams (new), strategy runtime with a Rust supervisor (changed), Go orders and risk (kept), Rust sim venue (changed), ledger shard (changed), state snapshots (changed), Go broker adapters (kept). Platform services: integrity (changed), research (new), analytics (kept), notifications (changed), assistant (new). Stores: Postgres and ClickHouse and Redis kept, lake changed, vault and audit store new.</desc>
-  <defs>
-    <marker id="b1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
-    <marker id="b1b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah md" d="M0 0L10 5L0 10z"/></marker>
-    <marker id="b1g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah ord" d="M0 0L10 5L0 10z"/></marker>
-  </defs>
+  <desc id="fad">Clients reach one edge gateway. Behind it a Python product API, a Go control plane of three services and a Go live gateway. An event backbone of Redpanda and NATS connects them to cells. Each cell has Rust market-data ingest, Rust computed streams, a Rust strategy runtime, Go orders and risk, a Go broker gateway, a tick cache agent on every host, state and leases, a ledger shard and a Rust sim venue. Regional platform services, off-the-shelf data stores, and outside parties below. Letters A to L mark how each pair talks; the protocol table explains them.</desc>
+  <defs><marker id="fa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker><marker id="fab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah md" d="M0 0L10 5L0 10z"/></marker><marker id="fag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah ord" d="M0 0L10 5L0 10z"/></marker></defs>
   <text class="row" x="20" y="24">CLIENTS</text>
-  <g class="n same"><rect x="20" y="34" width="216" height="70"/><text class="t" x="34" y="60">Linck web</text><text class="s" x="34" y="78">today’s app</text><text class="m" x="34" y="95">TypeScript</text></g>
-  <g class="n new"><rect x="256" y="34" width="216" height="70"/><text class="t" x="270" y="60">Mobile apps</text><text class="s" x="270" y="78">native, alerts first</text><text class="m" x="270" y="95">Kotlin · Swift</text></g>
-  <g class="n chg"><rect x="492" y="34" width="216" height="70"/><text class="t" x="506" y="60">SDK &amp; CLI</text><text class="s" x="506" y="78">Python, WASM, remote</text><text class="m" x="506" y="95">Python · Rust · TS · Go</text></g>
-  <g class="n new"><rect x="728" y="34" width="216" height="70"/><text class="t" x="742" y="60">Public API</text><text class="s" x="742" y="78">users’ own tools</text><text class="m" x="742" y="95">REST · gRPC · WebSocket</text></g>
-  <g class="n new"><rect x="964" y="34" width="216" height="70"/><text class="t" x="978" y="60">Partner brokers</text><text class="s" x="978" y="78">white-label (B2B)</text><text class="m" x="978" y="95">API · embedded web</text></g>
-  <path class="e" d="M128 104V118" marker-end="url(#b1)"/><path class="e" d="M364 104V118" marker-end="url(#b1)"/><path class="e" d="M600 104V118" marker-end="url(#b1)"/><path class="e" d="M836 104V118" marker-end="url(#b1)"/><path class="e" d="M1072 104V118" marker-end="url(#b1)"/>
-  <g class="n chg"><rect x="20" y="120" width="1160" height="40"/><text class="t" x="36" y="146">Edge &amp; API gateway</text><text class="m" x="1164" y="145" text-anchor="end">Envoy · OIDC · API keys · per-plan limits · WAF · REST and gRPC · WebSocket</text></g>
-  <path class="e" d="M200 160V190" marker-end="url(#b1)"/><path class="e" d="M700 160V190" marker-end="url(#b1)"/>
-  <text class="row" x="1180" y="184" text-anchor="end">PRODUCT AND CONTROL · PER REGION · NEVER ON THE TICK PATH</text>
-  <g class="n same"><rect x="20" y="192" width="360" height="124"/><text class="t" x="36" y="216">Product API</text><text class="m" x="364" y="215" text-anchor="end">Python · FastAPI</text>
-    <text class="s" x="36" y="234">today’s app minus the control modules</text>
-    <rect class="chip" x="36" y="246" width="160" height="28"/><text class="c" x="46" y="264">Book &amp; reports</text>
-    <rect class="chip" x="204" y="246" width="160" height="28"/><text class="c" x="214" y="264">Geek views</text>
-    <rect class="chip" x="36" y="280" width="160" height="28"/><text class="c" x="46" y="298">Journal · review</text>
-    <rect class="chip" x="204" y="280" width="160" height="28"/><text class="c" x="214" y="298">Repair UI · replay</text></g>
-  <g class="n chg"><rect x="400" y="192" width="780" height="124"/><text class="t" x="416" y="216">Control plane</text><text class="m" x="1164" y="215" text-anchor="end">Go · Postgres</text>
-    <text class="s" x="416" y="234">who may run what, where, on which terms</text>
-    <rect class="chip" x="416" y="246" width="182" height="28"/><text class="c" x="424" y="264">Identity · tenants · plans</text>
-    <rect class="chip" x="606" y="246" width="182" height="28"/><text class="c" x="614" y="264">Strategy registry · signing</text>
-    <rect class="chip" x="796" y="246" width="182" height="28"/><text class="c" x="804" y="264">Scheduler · placement</text>
-    <rect class="chip" x="986" y="246" width="182" height="28"/><text class="c" x="994" y="264">Marketplace · licences</text>
-    <rect class="chip" x="416" y="280" width="182" height="28"/><text class="c" x="424" y="298">Risk policies · kill switch</text>
-    <rect class="chip" x="606" y="280" width="182" height="28"/><text class="c" x="614" y="298">Billing · metering</text>
-    <rect class="chip" x="796" y="280" width="182" height="28"/><text class="c" x="804" y="298">Broker links · token vault</text>
-    <rect class="chip" x="986" y="280" width="182" height="28"/><text class="c" x="994" y="298">Audit · consent</text></g>
-  <path class="e" d="M200 316V334" marker-start="url(#b1)" marker-end="url(#b1)"/><path class="e" d="M790 316V334" marker-start="url(#b1)" marker-end="url(#b1)"/>
-  <g class="n chg"><rect class="bus" x="20" y="336" width="1160" height="44"/><text class="t" x="36" y="363">Event backbone</text><text class="m" x="1164" y="362" text-anchor="end">Redpanda: orders, fills, journal, tick archive  ·  NATS: control, live fan-out  ·  protobuf schemas</text></g>
-  <path class="e" d="M600 382V400" marker-start="url(#b1)" marker-end="url(#b1)"/>
-  <rect class="cellf" x="20" y="402" width="1160" height="266"/>
-  <text class="row" x="36" y="422">CELL × N · TENANTS PINNED · OWN MARKET CACHE, RUNTIME HOSTS, ORDER PARTITION, LEDGER SHARD</text>
-  <g class="n chg"><rect x="47" y="432" width="210" height="150"/><text class="t" x="61" y="458">Market data fabric</text><text class="s" x="61" y="480">feed handlers, sequencer</text><text class="s" x="61" y="497">tick cache, shared memory</text><text class="s" x="61" y="514">gap refill from the log</text><text class="m" x="61" y="568">Rust · was Go</text></g>
-  <g class="n new"><rect x="271" y="432" width="210" height="150"/><text class="t" x="285" y="458">Computed streams</text><text class="s" x="285" y="480">bars, indicators</text><text class="s" x="285" y="497">IV &amp; greeks</text><text class="s" x="285" y="514">option-chain views</text><text class="m" x="285" y="568">Rust</text></g>
-  <g class="n chg"><rect x="495" y="432" width="210" height="150"/><text class="t" x="509" y="458">Strategy runtime</text><text class="s" x="509" y="480">supervisor + sandboxes</text><text class="s" x="509" y="497">Python · WASM · remote</text><text class="s" x="509" y="514">snapshots, leases, budgets</text><text class="m" x="509" y="568">Rust · was Python workers</text></g>
-  <g class="n same"><rect class="box" x="719" y="432" width="210" height="150"/><text class="t" x="733" y="458">Orders &amp; risk</text><text class="s" x="733" y="480">the only writer of money</text><text class="s" x="733" y="497">risk pipeline, kill switches</text><text class="s" x="733" y="514">baskets, outbox</text><text class="m" x="733" y="568">Go</text></g>
-  <g class="n chg"><rect x="943" y="432" width="210" height="150"/><text class="t" x="957" y="458">Sim venue</text><text class="s" x="957" y="480">paper fills from depth</text><text class="s" x="957" y="497">queue &amp; latency model</text><text class="s" x="957" y="514">shadow fills</text><text class="m" x="957" y="568">Rust · was Python</text></g>
-  <path class="e md" d="M257 500H269" marker-end="url(#b1b)"/><path class="e md" d="M481 500H493" marker-end="url(#b1b)"/><path class="e ord" d="M705 500H717" marker-end="url(#b1g)"/><path class="e ord" d="M929 500H941" marker-end="url(#b1g)"/>
-  <g class="n chg"><rect x="47" y="596" width="434" height="58"/><text class="t" x="61" y="620">Ledger shard</text><text class="s" x="61" y="640">one Postgres per cell · was one database</text><text class="m" x="467" y="620" text-anchor="end">Postgres</text></g>
-  <g class="n chg"><rect x="495" y="596" width="210" height="58"/><text class="t" x="509" y="620">State snapshots</text><text class="s" x="509" y="640">local WAL + S3 · was Postgres</text></g>
-  <g class="n same"><rect x="719" y="596" width="434" height="58"/><text class="t" x="733" y="620">Broker adapters</text><text class="s" x="733" y="640">same contract · Kite first, then Upstox, Angel, Dhan, ICICI, FIX</text><text class="m" x="1139" y="620" text-anchor="end">Go</text></g>
-  <path class="e" d="M600 582V594" marker-end="url(#b1)"/><path class="e ord" d="M824 582V594" marker-end="url(#b1g)"/>
-  <text class="row" x="20" y="694">PLATFORM SERVICES · SHARED BY ALL CELLS</text>
-  <g class="n chg"><rect x="20" y="704" width="216" height="86"/><text class="t" x="34" y="730">Integrity</text><text class="s" x="34" y="750">day check · repair · shadow</text><text class="s" x="34" y="766">reconciliation · issues</text><text class="m" x="222" y="730" text-anchor="end">Go · Py</text></g>
-  <g class="n new"><rect x="256" y="704" width="216" height="86"/><text class="t" x="270" y="730">Research</text><text class="s" x="270" y="750">backtest farm · sweeps</text><text class="s" x="270" y="766">notebooks · datasets</text><text class="m" x="458" y="730" text-anchor="end">Rust · Py</text></g>
-  <g class="n same"><rect x="492" y="704" width="216" height="86"/><text class="t" x="506" y="730">Analytics</text><text class="s" x="506" y="750">read models · Geek data</text><text class="s" x="506" y="766">reports · leaderboards</text><text class="m" x="694" y="730" text-anchor="end">SQL</text></g>
-  <g class="n chg"><rect x="728" y="704" width="216" height="86"/><text class="t" x="742" y="730">Notifications</text><text class="s" x="742" y="750">push · email · Telegram</text><text class="s" x="742" y="766">WhatsApp · webhooks</text><text class="m" x="930" y="730" text-anchor="end">Go</text></g>
-  <g class="n new"><rect x="964" y="704" width="216" height="86"/><text class="t" x="978" y="730">Assistant</text><text class="s" x="978" y="750">writes SDK code</text><text class="s" x="978" y="766">explains a day</text><text class="m" x="1166" y="730" text-anchor="end">Python</text></g>
-  <text class="row" x="20" y="814">DATA</text>
-  <g class="n same"><rect x="20" y="822" width="180" height="62"/><text class="t" x="32" y="846">Postgres</text><text class="s" x="32" y="866">control · product</text></g>
-  <g class="n same"><rect x="216" y="822" width="180" height="62"/><text class="t" x="228" y="846">ClickHouse</text><text class="s" x="228" y="866">bars · decisions · analytics</text></g>
-  <g class="n chg"><rect x="412" y="822" width="180" height="62"/><text class="t" x="424" y="846">Lake</text><text class="s" x="424" y="866">Iceberg · was plain Parquet</text></g>
-  <g class="n same"><rect x="608" y="822" width="180" height="62"/><text class="t" x="620" y="846">Redis</text><text class="s" x="620" y="866">sessions · limits · cache</text></g>
-  <g class="n new"><rect x="804" y="822" width="180" height="62"/><text class="t" x="816" y="846">Vault &amp; KMS</text><text class="s" x="816" y="866">broker tokens · keys</text></g>
-  <g class="n new"><rect x="1000" y="822" width="180" height="62"/><text class="t" x="1012" y="846">Audit store</text><text class="s" x="1012" y="866">S3 Object Lock</text></g>
-  <text class="row" x="20" y="908">OUTSIDE OUR CONTROL</text>
-  <g class="n ext"><rect x="20" y="916" width="275" height="56"/><text class="t" x="32" y="940">Exchange &amp; vendor feeds</text><text class="s" x="32" y="959">licensed vendors · broker sockets</text></g>
-  <g class="n ext"><rect x="315" y="916" width="275" height="56"/><text class="t" x="327" y="940">Brokers</text><text class="s" x="327" y="959">orders · positions · margins</text></g>
-  <g class="n ext"><rect x="610" y="916" width="275" height="56"/><text class="t" x="622" y="940">Payments</text><text class="s" x="622" y="959">UPI · cards · mandates</text></g>
-  <g class="n ext"><rect x="905" y="916" width="275" height="56"/><text class="t" x="917" y="940">Messaging</text><text class="s" x="917" y="959">APNs · FCM · email · Telegram</text></g>
+  <g class="n same"><rect x="20" y="34" width="216" height="72"/><text class="t" x="34" y="59">Linck web</text><text class="s" x="34" y="79">the web app</text><text class="m" x="34" y="94">TypeScript</text></g>
+  <g class="n new"><rect x="256" y="34" width="216" height="72"/><text class="t" x="270" y="59">Mobile apps</text><text class="s" x="270" y="79">two native apps: Android, iOS</text><text class="m" x="270" y="94">Kotlin · Swift</text></g>
+  <g class="n chg"><rect x="492" y="34" width="216" height="72"/><text class="t" x="506" y="59">SDKs &amp; CLI</text><text class="s" x="506" y="79">SDKs: Python, Go, Rust, TS</text><text class="m" x="506" y="94">CLI: Rust</text></g>
+  <g class="n new"><rect x="728" y="34" width="216" height="72"/><text class="t" x="742" y="59">Public API</text><text class="s" x="742" y="79">users’ own tools and bots</text><text class="s" x="742" y="95">REST, WebSocket and gRPC</text></g>
+  <g class="n new"><rect x="964" y="34" width="216" height="72"/><text class="t" x="978" y="59">Partner brokers</text><text class="s" x="978" y="79">white-label Linck</text><text class="s" x="978" y="95">embedded web + API</text></g>
+  <path class="e" d="M128 106V122" marker-end="url(#fa)"/>
+  <g class="pb"><circle cx="144" cy="114" r="8.5"/><text x="144" y="117.5" text-anchor="middle">A</text></g>
+  <path class="e" d="M364 106V122" marker-end="url(#fa)"/>
+  <g class="pb"><circle cx="380" cy="114" r="8.5"/><text x="380" y="117.5" text-anchor="middle">A</text></g>
+  <path class="e" d="M600 106V122" marker-end="url(#fa)"/>
+  <g class="pb"><circle cx="616" cy="114" r="8.5"/><text x="616" y="117.5" text-anchor="middle">B</text></g>
+  <path class="e" d="M836 106V122" marker-end="url(#fa)"/>
+  <g class="pb"><circle cx="852" cy="114" r="8.5"/><text x="852" y="117.5" text-anchor="middle">A</text></g>
+  <path class="e" d="M1072 106V122" marker-end="url(#fa)"/>
+  <g class="pb"><circle cx="1088" cy="114" r="8.5"/><text x="1088" y="117.5" text-anchor="middle">A</text></g>
+  <g class="pb"><circle cx="872" cy="114" r="8.5"/><text x="872" y="117.5" text-anchor="middle">B</text></g>
+  <g class="n chg"><rect class="bus" x="20" y="124" width="1160" height="40"/><text class="t" x="36" y="149">Edge gateway</text><text class="m" x="1164" y="148" text-anchor="end">Envoy (off the shelf) + auth plug-in in Go · TLS · sessions and API keys · limits per plan · port 443 only</text></g>
+  <path class="e" d="M170 164V194" marker-end="url(#fa)"/>
+  <g class="pb"><circle cx="186" cy="179" r="8.5"/><text x="186" y="182.5" text-anchor="middle">C</text></g>
+  <path class="e" d="M600 164V194" marker-end="url(#fa)"/>
+  <g class="pb"><circle cx="616" cy="179" r="8.5"/><text x="616" y="182.5" text-anchor="middle">E</text></g>
+  <path class="e" d="M1090 164V194" marker-end="url(#fa)"/>
+  <g class="pb"><circle cx="1106" cy="179" r="8.5"/><text x="1106" y="182.5" text-anchor="middle">D</text></g>
+  <g class="n same"><rect x="20" y="196" width="300" height="124"/><text class="t" x="34" y="221">Product API</text><text class="s" x="34" y="241">what the screens read and write</text><text class="m" x="306" y="220" text-anchor="end">Python</text><rect class="chip" x="36" y="250" width="128" height="26"/><text class="c" x="44" y="267.0">Book &amp; reports</text><rect class="chip" x="172" y="250" width="128" height="26"/><text class="c" x="180" y="267.0">Geek views</text><rect class="chip" x="36" y="284" width="128" height="26"/><text class="c" x="44" y="301.0">Journal · review</text><rect class="chip" x="172" y="284" width="128" height="26"/><text class="c" x="180" y="301.0">Repair · replay</text></g>
+  <g class="n chg"><rect x="336" y="196" width="648" height="124"/><text class="t" x="350" y="221">Control plane</text><text class="s" x="350" y="241">three services: identity · control (the strategy manager) · commerce</text><text class="m" x="970" y="220" text-anchor="end">Go</text><rect class="chip" x="352" y="250" width="148" height="26"/><text class="c" x="360" y="267.0">Identity · tenants · keys</text><rect class="chip" x="508" y="250" width="148" height="26"/><text class="c" x="516" y="267.0">Deployments · lifecycle</text><rect class="chip" x="664" y="250" width="148" height="26"/><text class="c" x="672" y="267.0">Strategy registry</text><rect class="chip" x="820" y="250" width="148" height="26"/><text class="c" x="828" y="267.0">Scheduler · placement</text><rect class="chip" x="352" y="284" width="148" height="26"/><text class="c" x="360" y="301.0">Risk limits · kill switch</text><rect class="chip" x="508" y="284" width="148" height="26"/><text class="c" x="516" y="301.0">Broker links · tokens</text><rect class="chip" x="664" y="284" width="148" height="26"/><text class="c" x="672" y="301.0">Billing · metering</text><rect class="chip" x="820" y="284" width="148" height="26"/><text class="c" x="828" y="301.0">Marketplace · licences</text></g>
+  <g class="n same"><rect x="1000" y="196" width="180" height="124"/><text class="t" x="1014" y="221">Live gateway</text><text class="s" x="1014" y="241">WebSocket fan-out:</text><text class="s" x="1014" y="257">live P&amp;L, positions,</text><text class="s" x="1014" y="273">alerts to screens</text><text class="m" x="1014" y="308">Go</text></g>
+  <text class="row" x="1072" y="187" text-anchor="end">PRODUCT AND CONTROL · REGIONAL · NEVER ON THE TICK PATH</text>
+  <path class="e" d="M320 300H334" marker-end="url(#fa)"/>
+  <path class="e" d="M170 320V340" marker-start="url(#fa)" marker-end="url(#fa)"/>
+  <path class="e" d="M600 320V340" marker-start="url(#fa)" marker-end="url(#fa)"/>
+  <path class="e" d="M1090 340V322" marker-end="url(#fa)"/>
+  <g class="n chg"><rect class="bus" x="20" y="342" width="1160" height="44"/><text class="t" x="60" y="369">Event backbone</text><text class="m" x="1164" y="368" text-anchor="end">Redpanda (durable): intents, orders, fills, journal, ticks, decisions  |  NATS: control, live updates</text></g>
+  <g class="pb"><circle cx="40" cy="364" r="8.5"/><text x="40" y="367.5" text-anchor="middle">F</text></g>
+  <path class="e" d="M600 386V406" marker-start="url(#fa)" marker-end="url(#fa)"/>
+  <rect class="cellf" x="20" y="408" width="1160" height="276"/>
+  <text class="row" x="36" y="428">CELL × N · ONE KUBERNETES CLUSTER EACH · TENANTS PINNED · OWN HOSTS, ORDER PARTITION, LEDGER SHARD</text>
+  <g class="n chg"><rect x="36" y="438" width="206" height="150"/><text class="t" x="50" y="463">Market data ingest</text><text class="s" x="50" y="483">the tick ingestor:</text><text class="s" x="50" y="499">a feed handler per source</text><text class="s" x="50" y="515">clean · sequence · archive</text><text class="s" x="50" y="531">fan out to every host</text><text class="m" x="50" y="576">Rust (was Go)</text></g>
+  <g class="n new"><rect x="266" y="438" width="206" height="150"/><text class="t" x="280" y="463">Computed streams</text><text class="s" x="280" y="483">bars · indicators</text><text class="s" x="280" y="499">IV &amp; greeks</text><text class="s" x="280" y="515">option-chain views</text><text class="s" x="280" y="531">computed once, shared</text><text class="m" x="280" y="576">Rust</text></g>
+  <g class="n chg"><rect x="496" y="438" width="206" height="150"/><text class="t" x="510" y="463">Strategy runtime</text><text class="s" x="510" y="483">the strategy engine:</text><text class="s" x="510" y="499">a supervisor per host,</text><text class="s" x="510" y="515">strategies in sandboxes,</text><text class="s" x="510" y="531">any SDK language</text><text class="m" x="510" y="576">Rust (was Python)</text><g class="pb"><circle cx="684" cy="456" r="8.5"/><text x="684" y="459.5" text-anchor="middle">J</text></g></g>
+  <g class="n same"><rect x="726" y="438" width="206" height="150"/><text class="t" x="740" y="463">Orders &amp; risk</text><text class="s" x="740" y="483">the OMS · risk checks</text><text class="s" x="740" y="499">baskets · kill switch</text><text class="s" x="740" y="515">owns the ledger shard</text><text class="s" x="740" y="531">the only writer of money</text><text class="m" x="740" y="576">Go</text></g>
+  <g class="n same"><rect x="956" y="438" width="206" height="150"/><text class="t" x="970" y="463">Broker gateway</text><text class="s" x="970" y="483">multi-broker connector,</text><text class="s" x="970" y="499">one deployment per broker:</text><text class="s" x="970" y="515">Kite · Upstox · Dhan ·</text><text class="s" x="970" y="531">Angel · Fyers · ICICI · FIX</text><text class="m" x="970" y="576">Go</text></g>
+  <path class="e md" d="M242 513H264" marker-end="url(#fab)"/>
+  <g class="pb"><circle cx="254" cy="498" r="8.5"/><text x="254" y="501.5" text-anchor="middle">H</text></g>
+  <path class="e md" d="M472 513H494" marker-end="url(#fab)"/>
+  <g class="pb"><circle cx="484" cy="498" r="8.5"/><text x="484" y="501.5" text-anchor="middle">H</text></g>
+  <path class="e ord" d="M702 513H724" marker-end="url(#fag)"/>
+  <g class="pb"><circle cx="714" cy="498" r="8.5"/><text x="714" y="501.5" text-anchor="middle">K</text></g>
+  <path class="e ord" d="M932 513H954" marker-end="url(#fag)"/>
+  <g class="pb"><circle cx="944" cy="498" r="8.5"/><text x="944" y="501.5" text-anchor="middle">E</text></g>
+  <g class="n new"><rect x="36" y="602" width="436" height="72"/><text class="t" x="50" y="627">Tick cache agent</text><text class="s" x="50" y="647">on every runtime host: takes the stream (H),</text><text class="s" x="50" y="663">writes it to shared memory for the supervisor (I)</text><text class="m" x="458" y="626" text-anchor="end">Rust</text></g>
+  <path class="e md" d="M472 622H484V566H494" marker-end="url(#fab)"/>
+  <g class="pb"><circle cx="484" cy="584" r="8.5"/><text x="484" y="587.5" text-anchor="middle">I</text></g>
+  <g class="n chg"><rect x="496" y="602" width="206" height="72"/><text class="t" x="510" y="627">State &amp; leases</text><text class="s" x="510" y="647">WAL on local NVMe → S3</text><text class="s" x="510" y="663">leases in etcd</text></g>
+  <g class="n chg"><rect x="726" y="602" width="206" height="72"/><text class="t" x="740" y="627">Ledger shard</text><text class="s" x="740" y="647">Postgres, one per cell</text><text class="s" x="740" y="663">written only by the OMS</text></g>
+  <g class="n chg"><rect x="956" y="602" width="206" height="72"/><text class="t" x="970" y="627">Sim venue</text><text class="s" x="970" y="647">paper and shadow fills</text><text class="m" x="970" y="662">Rust (was Python)</text></g>
+  <path class="e" d="M599 588V600" marker-end="url(#fa)"/>
+  <path class="e" d="M829 588V600" marker-end="url(#fa)"/>
+  <path class="e ord" d="M1059 588V600" marker-end="url(#fag)"/>
+  <text class="row" x="20" y="710">PLATFORM SERVICES · REGIONAL · SHARED BY ALL CELLS</text>
+  <g class="n chg"><rect x="20" y="718" width="180" height="94"/><text class="t" x="34" y="743">Reference data</text><text class="s" x="34" y="763">instrument master</text><text class="s" x="34" y="779">broker symbol maps</text><text class="m" x="34" y="800">Go (was Python)</text></g>
+  <g class="n chg"><rect x="216" y="718" width="180" height="94"/><text class="t" x="230" y="743">Integrity</text><text class="s" x="230" y="763">day check · repair · shadow</text><text class="s" x="230" y="779">reconcile with brokers</text><text class="m" x="230" y="800">Go (was Python)</text></g>
+  <g class="n new"><rect x="412" y="718" width="180" height="94"/><text class="t" x="426" y="743">Backtest farm</text><text class="s" x="426" y="763">the runtime + sim venue</text><text class="s" x="426" y="779">in batch, on spot nodes</text><text class="m" x="426" y="800">Rust</text></g>
+  <g class="n new"><rect x="608" y="718" width="180" height="94"/><text class="t" x="622" y="743">Read models</text><text class="s" x="622" y="763">events → ClickHouse</text><text class="s" x="622" y="779">Geek data · reports</text><text class="m" x="622" y="800">Go</text></g>
+  <g class="n chg"><rect x="804" y="718" width="180" height="94"/><text class="t" x="818" y="743">Notifications</text><text class="s" x="818" y="763">push · email · Telegram</text><text class="s" x="818" y="779">WhatsApp · webhooks</text><text class="m" x="818" y="800">Go (was Python)</text></g>
+  <g class="n new"><rect x="1000" y="718" width="180" height="94"/><text class="t" x="1014" y="743">Assistant</text><text class="s" x="1014" y="763">writes SDK code</text><text class="s" x="1014" y="779">explains a day</text><text class="m" x="1014" y="800">Python</text></g>
+  <text class="row" x="20" y="836">DATA AND INFRASTRUCTURE · OFF THE SHELF</text>
+  <g class="n same"><rect x="20" y="844" width="155" height="60"/><text class="t" x="34" y="869">Postgres</text><text class="s" x="34" y="889">control · product · ledger</text></g>
+  <g class="n same"><rect x="187" y="844" width="155" height="60"/><text class="t" x="201" y="869">ClickHouse</text><text class="s" x="201" y="889">analytics</text></g>
+  <g class="n chg"><rect x="354" y="844" width="155" height="60"/><text class="t" x="368" y="869">Lake</text><text class="s" x="368" y="889">Iceberg on S3</text></g>
+  <g class="n same"><rect x="521" y="844" width="155" height="60"/><text class="t" x="535" y="869">Redis</text><text class="s" x="535" y="889">sessions · limits</text></g>
+  <g class="n same"><rect x="688" y="844" width="155" height="60"/><text class="t" x="702" y="869">Temporal</text><text class="s" x="702" y="889">workflows</text></g>
+  <g class="n new"><rect x="855" y="844" width="155" height="60"/><text class="t" x="869" y="869">Vault &amp; KMS</text><text class="s" x="869" y="889">broker tokens · keys</text></g>
+  <g class="n new"><rect x="1022" y="844" width="155" height="60"/><text class="t" x="1036" y="869">Audit store</text><text class="s" x="1036" y="889">S3 Object Lock</text></g>
+  <text class="row" x="20" y="928">OUTSIDE OUR CONTROL</text>
+  <g class="n ext"><rect x="20" y="936" width="275" height="56"/><text class="t" x="34" y="961">Exchanges &amp; data vendors</text><text class="s" x="34" y="981">ticks into the ingest</text><g class="pb"><circle cx="275" cy="964" r="8.5"/><text x="275" y="967.5" text-anchor="middle">G</text></g></g>
+  <g class="n ext"><rect x="315" y="936" width="275" height="56"/><text class="t" x="329" y="961">Brokers</text><text class="s" x="329" y="981">orders from the broker gateway</text><g class="pb"><circle cx="570" cy="964" r="8.5"/><text x="570" y="967.5" text-anchor="middle">L</text></g></g>
+  <g class="n ext"><rect x="610" y="936" width="275" height="56"/><text class="t" x="624" y="961">Payments</text><text class="s" x="624" y="981">UPI · cards · mandates</text></g>
+  <g class="n ext"><rect x="905" y="936" width="275" height="56"/><text class="t" x="919" y="961">Messaging</text><text class="s" x="919" y="981">APNs · FCM · email · Telegram</text></g>
 </svg>
       </div>
-      <div class="legend"><span><i class="st same"></i>kept</span><span><i class="st chg"></i>changed</span><span><i class="st new"></i>new</span><span><i class="md"></i>market data</span><span><i class="ord"></i>orders and fills</span><span><i class="ext"></i>outside our control</span></div>
+      <div class="legend"><span><i class="st same"></i>kept</span><span><i class="st chg"></i>changed</span><span><i class="st new"></i>new</span><span><i class="md"></i>market data</span><span><i class="ord"></i>orders and fills</span><span><i class="ext"></i>outside our control</span><span><span class="pbx">A</span>protocol (section 07)</span></div>
     </figure>
     <div class="tbl"><table>
-      <thead><tr><th>Component</th><th>Owns (state)</th><th>Interfaces</th><th>Scales by</th><th>When it fails</th></tr></thead>
+      <thead><tr><th>Component</th><th>Owns</th><th>Scales by</th><th>When it fails</th></tr></thead>
       <tbody>
-        <tr><td>Product API</td><td>Journal, repair cases, preferences</td><td>REST/JSON in; reads ledger replicas and ClickHouse</td><td>Stateless replicas</td><td>Screens go dark; nothing trades differently</td></tr>
-        <tr><td>Control plane</td><td>Tenants, users, strategy versions, deployments, placement, policies, licences, audit</td><td>gRPC; publishes <span class="mono">ctl.*</span> on NATS</td><td>Stateless replicas over Postgres</td><td>No changes possible; running strategies keep running</td></tr>
-        <tr><td>Market data fabric</td><td>Subscription registry; tick log</td><td>Multicast/Aeron to cells; shared memory on hosts; gRPC for snapshots</td><td>Feed handler shards by instrument range</td><td>Second vendor takes the subscriptions; strategies hold and report</td></tr>
-        <tr><td>Computed streams</td><td>Catalogue of series (hash-keyed)</td><td>Writes synthetic instruments into the tick cache</td><td>Per cell; DAG evaluated per update batch</td><td>Series marked stale; dependants hold</td></tr>
-        <tr><td>Strategy runtime</td><td>Live strategy state; leases</td><td>Runtime protocol v1 to sandboxes; intents to Redpanda</td><td>Hosts per cell; ~3–5k strategies a host</td><td>Leases move; resume from snapshot + event replay</td></tr>
-        <tr><td>Orders &amp; risk</td><td>Orders, fills, positions, cash (ledger shard)</td><td>Consumes intents; gRPC to adapters; outbox to Redpanda</td><td>Partitions by account</td><td>Intents wait on the log; nothing lost or doubled</td></tr>
-        <tr><td>Sim venue</td><td>Fill-model versions; simulated books</td><td>Broker-adapter contract (it <i>is</i> a broker)</td><td>Per cell; library in backtests</td><td>Paper orders queue; live unaffected</td></tr>
-        <tr><td>Integrity</td><td>Checks, cases, repairs, issues</td><td>Consumes fills, decisions, ticks; Temporal workflows</td><td>Workers by queue depth</td><td>Findings late, never wrong</td></tr>
+        <tr><td>Product API</td><td>Journal, repair cases, preferences</td><td>Stateless copies</td><td>Screens go dark; nothing trades differently</td></tr>
+        <tr><td>Control plane</td><td>Tenants, strategy versions, deployments, placement, limits, licences</td><td>Stateless copies over Postgres</td><td>No changes possible; running strategies keep running</td></tr>
+        <tr><td>Market data ingest</td><td>Subscriptions; the tick log</td><td>One deployment per source; handlers by instrument range</td><td>The other source takes the instruments; strategies hold and report</td></tr>
+        <tr><td>Computed streams</td><td>The catalogue of series</td><td>Per cell</td><td>Series marked stale; strategies that use them hold</td></tr>
+        <tr><td>Strategy runtime</td><td>Live strategy state; leases</td><td>Hosts per cell; ~3–5k strategies a host</td><td>Leases move; resume from snapshot + replayed events</td></tr>
+        <tr><td>Orders &amp; risk</td><td>Orders, fills, positions, cash (the ledger shard)</td><td>Partitions by account</td><td>Intents wait on the log; nothing lost or doubled</td></tr>
+        <tr><td>Broker gateway</td><td>Sessions and tokens in memory</td><td>One deployment per broker</td><td>That broker’s accounts stop new entries and queue exits; other brokers carry on</td></tr>
+        <tr><td>Sim venue</td><td>Fill-model versions; simulated books</td><td>Per cell; a library in backtests</td><td>Paper orders queue; live unaffected</td></tr>
+        <tr><td>Integrity</td><td>Checks, cases, repairs, issues</td><td>Workers by queue depth</td><td>Findings late, never wrong</td></tr>
       </tbody></table></div>
   </div>
 </section>
 
 <section id="inter">
-  <div class="head"><span class="label">03</span><h2>Intermediate architecture</h2><p class="sub">What we build first: one region, one cell, today’s code carried over. The colour says what each piece becomes.</p></div>
+  <div class="head"><span class="label">04</span><h2>Intermediate architecture</h2><p class="sub">What we build first: one region, one cell, today’s code carried over. The colour says what each piece becomes.</p></div>
   <div class="body">
     <figure>
       <div class="diagram">
-<svg viewBox="0 0 1200 690" role="img" aria-labelledby="iat iad" xmlns="http://www.w3.org/2000/svg">
+<svg viewBox="0 0 1200 758" role="img" aria-labelledby="iat iad" xmlns="http://www.w3.org/2000/svg">
   <title id="iat">Intermediate architecture, coloured by what each piece becomes</title>
-  <desc id="iad">Clients: Linck web (kept), the phone app and SDK v0 (changed later). Edge (changed). Core API in Python (its control modules change, the rest is kept as the product API). Live gateway in Go (kept). Temporal workers in Python (kept, they become integrity and research jobs). NATS JetStream (changed: Redpanda added). Go market data (changed: Rust). Python runner workers (changed: Rust supervisor). Go orders and risk with Kite and sim adapters (kept; the sim adapter changes to Rust). Notifications (changed). Stores: Postgres, ClickHouse, Redis kept; S3 Parquet changed to Iceberg.</desc>
-  <defs>
-    <marker id="c3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
-    <marker id="c3b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah md" d="M0 0L10 5L0 10z"/></marker>
-    <marker id="c3g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah ord" d="M0 0L10 5L0 10z"/></marker>
-  </defs>
+  <desc id="iad">Three clients reach an edge load balancer. Inside one Kubernetes cluster: a Python Core API whose amber modules later move to Go services, a Go live gateway and Python Temporal workers; NATS JetStream; Go market data, Python runner workers, Go orders and risk, a Go broker gateway, a Python sim venue and Python notifications. Managed Postgres, ClickHouse, Redis, S3 and Temporal below; Kite and a data vendor outside.</desc>
+  <defs><marker id="ia" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker><marker id="iab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah md" d="M0 0L10 5L0 10z"/></marker><marker id="iag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah ord" d="M0 0L10 5L0 10z"/></marker></defs>
   <text class="row" x="20" y="24">CLIENTS</text>
-  <g class="n same"><rect x="20" y="34" width="280" height="64"/><text class="t" x="34" y="60">Linck web</text><text class="s" x="34" y="80">today’s app</text><text class="m" x="286" y="60" text-anchor="end">TypeScript</text></g>
-  <g class="n chg"><rect x="320" y="34" width="280" height="64"/><text class="t" x="334" y="60">Phone</text><text class="s" x="334" y="80">installed web app + Android → native</text></g>
-  <g class="n chg"><rect x="620" y="34" width="280" height="64"/><text class="t" x="634" y="60">SDK v0 &amp; CLI</text><text class="s" x="634" y="80">Python only → + WASM, remote</text><text class="m" x="886" y="60" text-anchor="end">Python</text></g>
-  <g class="n chg"><rect x="920" y="34" width="260" height="64"/><text class="t" x="934" y="60">Edge</text><text class="s" x="934" y="80">LB · TLS · sessions → Envoy</text></g>
-  <path class="e" d="M160 98V122" marker-end="url(#c3)"/><path class="e" d="M460 98V122" marker-end="url(#c3)"/><path class="e" d="M760 98V110H560V122" marker-end="url(#c3)"/>
-  <g class="n same"><rect class="box" x="20" y="124" width="560" height="150"/>
-    <text class="t" x="36" y="150">Core API · modular monolith</text><text class="m" x="564" y="149" text-anchor="end">Python · FastAPI</text>
-    <rect class="chip chgc" x="36" y="166" width="128" height="28"/><text class="c" x="44" y="184">Identity · tenants</text>
-    <rect class="chip chgc" x="172" y="166" width="128" height="28"/><text class="c" x="180" y="184">Deployments</text>
-    <rect class="chip chgc" x="308" y="166" width="128" height="28"/><text class="c" x="316" y="184">Strategy versions</text>
-    <rect class="chip" x="444" y="166" width="128" height="28"/><text class="c" x="452" y="184">Book &amp; reports</text>
-    <rect class="chip" x="36" y="202" width="128" height="28"/><text class="c" x="44" y="220">Geek · journal</text>
-    <rect class="chip" x="172" y="202" width="128" height="28"/><text class="c" x="180" y="220">Repair &amp; replay UI</text>
-    <rect class="chip" x="308" y="202" width="128" height="28"/><text class="c" x="316" y="220">Ops &amp; issues</text>
-    <rect class="chip chgc" x="444" y="202" width="128" height="28"/><text class="c" x="452" y="220">Admin · audit</text>
-    <text class="m" x="36" y="260">amber: moves to the Go control plane · rest: product API</text></g>
-  <g class="n same"><rect x="600" y="124" width="280" height="150"/><text class="t" x="614" y="150">Live gateway</text><text class="s" x="614" y="172">WebSocket fan-out, 250 ms</text><text class="m" x="614" y="260">Go</text></g>
-  <g class="n same"><rect x="900" y="124" width="280" height="150"/><text class="t" x="914" y="150">Workers · Temporal</text><text class="s" x="914" y="172">end-of-day chain, day check</text><text class="s" x="914" y="189">repair, replay, backtests</text><text class="s" x="914" y="206">→ become Integrity, Research</text><text class="m" x="914" y="260">Python</text></g>
-  <path class="e" d="M300 274V294" marker-start="url(#c3)" marker-end="url(#c3)"/><path class="e" d="M740 294V274" marker-end="url(#c3)"/><path class="e" d="M1040 274V294" marker-start="url(#c3)" marker-end="url(#c3)"/>
-  <g class="n chg"><rect class="bus" x="20" y="296" width="1160" height="42"/><text class="t" x="36" y="322">NATS JetStream</text><text class="m" x="1164" y="321" text-anchor="end">same subjects and protobuf as the final backbone · Redpanda added later for orders, fills, ticks</text></g>
-  <path class="e" d="M160 338V354" marker-start="url(#c3)" marker-end="url(#c3)"/><path class="e" d="M460 338V354" marker-start="url(#c3)" marker-end="url(#c3)"/><path class="e" d="M760 338V354" marker-start="url(#c3)" marker-end="url(#c3)"/><path class="e" d="M1050 338V354" marker-start="url(#c3)" marker-end="url(#c3)"/>
-  <g class="n chg"><rect x="20" y="356" width="280" height="150"/><text class="t" x="34" y="382">Market data</text><text class="s" x="34" y="404">Kite + one licensed vendor</text><text class="s" x="34" y="421">each instrument once</text><text class="s" x="34" y="438">bars and chain views inside</text><text class="m" x="34" y="492">Go → Rust fabric + streams</text></g>
-  <g class="n chg"><rect x="320" y="356" width="280" height="150"/><text class="t" x="334" y="382">Runner workers</text><text class="s" x="334" y="404">leases + epochs</text><text class="s" x="334" y="421">SDK v0 strategies</text><text class="s" x="334" y="438">invited code in gVisor</text><text class="m" x="334" y="492">Python → Rust supervisor</text></g>
-  <g class="n same"><rect class="box" x="620" y="356" width="280" height="150"/><text class="t" x="634" y="382">Orders &amp; risk</text><text class="s" x="634" y="404">the only writer of money</text><text class="s" x="634" y="421">risk pipeline · outbox</text><text class="s" x="634" y="438">adapters: Kite · Sim</text><text class="m" x="634" y="492">Go (Sim adapter: Python → Rust)</text></g>
-  <g class="n chg"><rect x="920" y="356" width="260" height="150"/><text class="t" x="934" y="382">Notifications</text><text class="s" x="934" y="404">push · email · Telegram</text><text class="m" x="934" y="492">Python → Go</text></g>
-  <path class="e md" d="M300 430H316" marker-end="url(#c3b)"/><path class="e ord" d="M600 430H616" marker-end="url(#c3g)"/>
-  <text class="row" x="20" y="532">DATA</text>
-  <g class="n same"><rect x="20" y="540" width="280" height="54"/><text class="t" x="34" y="563">Postgres</text><text class="s" x="34" y="582">ledger + control (shards per cell later)</text></g>
-  <g class="n same"><rect x="320" y="540" width="280" height="54"/><text class="t" x="334" y="563">ClickHouse</text><text class="s" x="334" y="582">bars · decisions · analytics</text></g>
-  <g class="n same"><rect x="620" y="540" width="280" height="54"/><text class="t" x="634" y="563">Redis</text><text class="s" x="634" y="582">latest prices · sessions</text></g>
-  <g class="n chg"><rect x="920" y="540" width="260" height="54"/><text class="t" x="934" y="563">S3</text><text class="s" x="934" y="582">Parquet → Iceberg tables</text></g>
-  <text class="row" x="20" y="620">OUTSIDE</text>
-  <g class="n ext"><rect x="20" y="628" width="580" height="44"/><text class="t" x="34" y="656">Kite Connect</text><text class="s" x="160" y="656">each user’s own key: their orders, their data</text></g>
-  <g class="n ext"><rect x="620" y="628" width="560" height="44"/><text class="t" x="634" y="656">Licensed data vendor</text><text class="s" x="820" y="656">one shared feed for paper and research</text></g>
+  <g class="n same"><rect x="20" y="34" width="374" height="72"/><text class="t" x="34" y="59">Linck web</text><text class="s" x="34" y="79">today’s web app</text><text class="m" x="380" y="58" text-anchor="end">TypeScript</text></g>
+  <g class="n chg"><rect x="413" y="34" width="374" height="72"/><text class="t" x="427" y="59">Phone</text><text class="s" x="427" y="79">installable web app; native apps later</text><text class="m" x="773" y="58" text-anchor="end">TypeScript</text></g>
+  <g class="n chg"><rect x="806" y="34" width="374" height="72"/><text class="t" x="820" y="59">SDK v0 &amp; CLI</text><text class="s" x="820" y="79">Python SDK over today’s StrategyBase</text><text class="s" x="820" y="95">CLI: push, deploy, logs</text><text class="m" x="1166" y="58" text-anchor="end">Python</text></g>
+  <path class="e" d="M207 106V122" marker-end="url(#ia)"/>
+  <g class="pb"><circle cx="223" cy="114" r="8.5"/><text x="223" y="117.5" text-anchor="middle">A</text></g>
+  <path class="e" d="M600 106V122" marker-end="url(#ia)"/>
+  <g class="pb"><circle cx="616" cy="114" r="8.5"/><text x="616" y="117.5" text-anchor="middle">A</text></g>
+  <path class="e" d="M993 106V122" marker-end="url(#ia)"/>
+  <g class="pb"><circle cx="1009" cy="114" r="8.5"/><text x="1009" y="117.5" text-anchor="middle">B</text></g>
+  <g class="n chg"><rect class="bus" x="20" y="124" width="1160" height="40"/><text class="t" x="36" y="149">Edge</text><text class="m" x="1164" y="148" text-anchor="end">AWS load balancer + ingress-nginx · TLS · cookie sessions · port 443 only</text></g>
+  <rect class="cellf" x="20" y="174" width="1160" height="392"/>
+  <text class="row" x="1164" y="192" text-anchor="end">ONE KUBERNETES CLUSTER · EKS, MUMBAI · 3 ZONES</text>
+  <path class="e" d="M300 164V200" marker-end="url(#ia)"/>
+  <g class="pb"><circle cx="316" cy="186" r="8.5"/><text x="316" y="189.5" text-anchor="middle">C</text></g>
+  <path class="e" d="M736 164V200" marker-end="url(#ia)"/>
+  <g class="pb"><circle cx="752" cy="186" r="8.5"/><text x="752" y="189.5" text-anchor="middle">D</text></g>
+  <g class="n same"><rect x="20" y="202" width="560" height="124"/><text class="t" x="34" y="227">Core API</text><text class="s" x="34" y="247">a modular monolith: today’s app, cut into modules along future service lines</text><text class="m" x="566" y="226" text-anchor="end">Python</text><rect class="chip chgc" x="36" y="254" width="126" height="26"/><text class="c" x="44" y="271.0">Identity · admin</text><rect class="chip chgc" x="170" y="254" width="126" height="26"/><text class="c" x="178" y="271.0">Deployments</text><rect class="chip chgc" x="304" y="254" width="126" height="26"/><text class="c" x="312" y="271.0">Strategy versions</text><rect class="chip chgc" x="438" y="254" width="126" height="26"/><text class="c" x="446" y="271.0">Instruments</text><rect class="chip" x="36" y="288" width="126" height="26"/><text class="c" x="44" y="305.0">Book &amp; reports</text><rect class="chip" x="170" y="288" width="126" height="26"/><text class="c" x="178" y="305.0">Geek · journal</text><rect class="chip" x="304" y="288" width="126" height="26"/><text class="c" x="312" y="305.0">Repair &amp; replay UI</text><rect class="chip chgc" x="438" y="288" width="126" height="26"/><text class="c" x="446" y="305.0">Ops · issues</text></g>
+  <g class="n same"><rect x="596" y="202" width="280" height="124"/><text class="t" x="610" y="227">Live gateway</text><text class="s" x="610" y="247">WebSocket fan-out, 250 ms</text><text class="m" x="610" y="314">Go</text></g>
+  <g class="n chg"><rect x="892" y="202" width="288" height="124"/><text class="t" x="906" y="227">Workers</text><text class="s" x="906" y="247">Temporal: end-of-day chain, day check,</text><text class="s" x="906" y="263">repair, replay, backtests</text><text class="s" x="906" y="279">→ Integrity (Go), backtest farm (Rust)</text><text class="m" x="906" y="314">Python</text></g>
+  <path class="e" d="M300 326V346" marker-start="url(#ia)" marker-end="url(#ia)"/>
+  <path class="e" d="M1036 326V346" marker-start="url(#ia)" marker-end="url(#ia)"/>
+  <path class="e" d="M736 346V328" marker-end="url(#ia)"/>
+  <g class="n chg"><rect class="bus" x="20" y="348" width="1160" height="42"/><text class="t" x="60" y="374">NATS JetStream</text><text class="m" x="1164" y="373" text-anchor="end">ticks · intents · orders · fills · control · live: the same subjects and protobuf as the final backbone</text></g>
+  <g class="pb"><circle cx="40" cy="369" r="8.5"/><text x="40" y="372.5" text-anchor="middle">F</text></g>
+  <path class="e" d="M106 390V412" marker-start="url(#ia)" marker-end="url(#ia)"/>
+  <g class="n chg"><rect x="20" y="414" width="172" height="140"/><text class="t" x="34" y="439">Market data</text><text class="s" x="34" y="459">tick ingestor: Kite</text><text class="s" x="34" y="475">+ one licensed vendor</text><text class="s" x="34" y="491">bars · chain views</text><text class="s" x="34" y="507">latest prices → Redis</text><text class="m" x="34" y="542">Go (→ Rust)</text></g>
+  <path class="e" d="M303 390V412" marker-start="url(#ia)" marker-end="url(#ia)"/>
+  <g class="n chg"><rect x="217" y="414" width="172" height="140"/><text class="t" x="231" y="439">Runner workers</text><text class="s" x="231" y="459">strategies, sharded</text><text class="s" x="231" y="475">leases in Postgres</text><text class="s" x="231" y="491">Python SDK v0 only</text><text class="s" x="231" y="507">invited code in gVisor</text><text class="m" x="231" y="542">Python (→ Rust)</text></g>
+  <path class="e" d="M500 390V412" marker-start="url(#ia)" marker-end="url(#ia)"/>
+  <g class="n same"><rect x="414" y="414" width="172" height="140"/><text class="t" x="428" y="439">Orders &amp; risk</text><text class="s" x="428" y="459">the OMS · risk checks</text><text class="s" x="428" y="475">only writer of money</text><text class="s" x="428" y="491">outbox → NATS</text><text class="m" x="428" y="542">Go</text></g>
+  <path class="e" d="M697 390V412" marker-start="url(#ia)" marker-end="url(#ia)"/>
+  <g class="n same"><rect x="611" y="414" width="172" height="140"/><text class="t" x="625" y="439">Broker gateway</text><text class="s" x="625" y="459">Kite adapter</text><text class="s" x="625" y="475">paper orders → Sim</text><text class="s" x="625" y="491">fixed egress IP</text><text class="m" x="625" y="542">Go</text></g>
+  <path class="e" d="M894 390V412" marker-start="url(#ia)" marker-end="url(#ia)"/>
+  <g class="n chg"><rect x="808" y="414" width="172" height="140"/><text class="t" x="822" y="439">Sim venue</text><text class="s" x="822" y="459">today’s fill model</text><text class="s" x="822" y="475">behind the broker-</text><text class="s" x="822" y="491">adapter contract</text><text class="m" x="822" y="542">Python (→ Rust)</text></g>
+  <path class="e" d="M1091 390V412" marker-start="url(#ia)" marker-end="url(#ia)"/>
+  <g class="n chg"><rect x="1005" y="414" width="172" height="140"/><text class="t" x="1019" y="439">Notifications</text><text class="s" x="1019" y="459">push · email · Telegram</text><text class="m" x="1019" y="542">Python (→ Go)</text></g>
+  <path class="e md" d="M192 500H215" marker-end="url(#iab)"/>
+  <g class="pb"><circle cx="204" cy="484" r="8.5"/><text x="204" y="487.5" text-anchor="middle">F</text></g>
+  <path class="e ord" d="M389 500H412" marker-end="url(#iag)"/>
+  <g class="pb"><circle cx="401" cy="484" r="8.5"/><text x="401" y="487.5" text-anchor="middle">K</text></g>
+  <path class="e ord" d="M586 500H609" marker-end="url(#iag)"/>
+  <g class="pb"><circle cx="598" cy="484" r="8.5"/><text x="598" y="487.5" text-anchor="middle">E</text></g>
+  <path class="e ord" d="M783 500H806" marker-end="url(#iag)"/>
+  <g class="pb"><circle cx="795" cy="484" r="8.5"/><text x="795" y="487.5" text-anchor="middle">E</text></g>
+  <text class="row" x="20" y="590">DATA · MANAGED OR OFF THE SHELF</text>
+  <g class="n same"><rect x="20" y="598" width="219" height="60"/><text class="t" x="34" y="623">Postgres (RDS)</text><text class="s" x="34" y="643">ledger · control · product</text></g>
+  <g class="n same"><rect x="255" y="598" width="219" height="60"/><text class="t" x="269" y="623">ClickHouse</text><text class="s" x="269" y="643">bars · decisions · analytics</text></g>
+  <g class="n same"><rect x="490" y="598" width="219" height="60"/><text class="t" x="504" y="623">Redis</text><text class="s" x="504" y="643">latest prices · sessions</text></g>
+  <g class="n chg"><rect x="725" y="598" width="219" height="60"/><text class="t" x="739" y="623">S3</text><text class="s" x="739" y="643">Parquet (→ Iceberg)</text></g>
+  <g class="n same"><rect x="960" y="598" width="219" height="60"/><text class="t" x="974" y="623">Temporal</text><text class="s" x="974" y="643">workflows</text></g>
+  <text class="row" x="20" y="682">OUTSIDE</text>
+  <g class="n ext"><rect x="20" y="690" width="570" height="56"/><text class="t" x="34" y="715">Kite Connect</text><text class="s" x="34" y="735">each user’s own key: their orders, their ticks</text><g class="pb"><circle cx="552" cy="718" r="8.5"/><text x="552" y="721.5" text-anchor="middle">G</text></g><g class="pb"><circle cx="572" cy="718" r="8.5"/><text x="572" y="721.5" text-anchor="middle">L</text></g></g>
+  <g class="n ext"><rect x="610" y="690" width="570" height="56"/><text class="t" x="624" y="715">Licensed data vendor</text><text class="s" x="624" y="735">one shared feed for paper and research</text><g class="pb"><circle cx="1162" cy="718" r="8.5"/><text x="1162" y="721.5" text-anchor="middle">G</text></g></g>
 </svg>
       </div>
-      <div class="legend"><span><i class="st same"></i>kept into the final architecture</span><span><i class="st chg"></i>a stand-in: changes later</span><span><i class="md"></i>market data</span><span><i class="ord"></i>orders and fills</span></div>
+      <div class="legend"><span><i class="st same"></i>kept into the final architecture</span><span><i class="st chg"></i>a stand-in: changes later</span><span><i class="st chgc"></i>a module that moves to its own Go service</span><span><i class="md"></i>market data</span><span><i class="ord"></i>orders and fills</span><span><span class="pbx">A</span>protocol (section 07)</span></div>
     </figure>
     <div class="cols">
       <div><h3>Why this cut</h3><ul class="plain">
@@ -411,7 +495,7 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
 </section>
 
 <section id="diff">
-  <div class="head"><span class="label">04</span><h2>What changes, component by component</h2><p class="sub">Each row: what it is in the intermediate architecture, what it becomes, why, the signal that says it’s time, and how we switch without stopping trading.</p></div>
+  <div class="head"><span class="label">05</span><h2>What changes, component by component</h2><p class="sub">Each row: what it is in the intermediate architecture, what it becomes, why, the signal that says it’s time, and how we switch without stopping trading.</p></div>
   <div class="body">
     <div class="tbl diff"><table>
       <thead><tr><th>Component</th><th>Intermediate</th><th>Final</th><th>Why change</th><th>Switch when</th><th>How we switch</th></tr></thead>
@@ -430,17 +514,191 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
         <tr class="r-chg"><td>SDK</td><td>v0: Python package over today’s StrategyBase</td><td>v1+: Python, WASM components, remote gRPC; certification; signed artifacts</td><td>Open to developers</td><td>Public SDK</td><td>v0 strategies run unchanged on v1 (an adapter in the SDK core)</td></tr>
         <tr class="r-chg"><td>Lake</td><td>Parquet files on S3</td><td>Iceberg tables (partitioned, versioned, schema evolution)</td><td>Point-in-time queries, compaction, many readers</td><td>Backtest farm</td><td>Register existing Parquet as Iceberg tables; no rewrite</td></tr>
         <tr class="r-chg"><td>Notifications</td><td>Python consumer</td><td>Go service with templates and channels per tenant</td><td>Partner branding, more channels</td><td>Partner brokers</td><td>Same subjects; swap the consumer</td></tr>
-        <tr class="r-new"><td>Vault &amp; KMS, audit store, research, assistant, public API, mobile</td><td>—</td><td>New</td><td>Platform scope</td><td>Stage 2–3 of the roadmap</td><td>Added beside, nothing replaced</td></tr>
+        <tr class="r-same"><td>Broker gateway</td><td>Go service with the Kite adapter; paper orders routed to the sim venue</td><td>Same service, one deployment per broker: Upstox, Dhan, Angel One, Fyers, ICICI, FIX</td><td>—</td><td>—</td><td>A broker is added by an adapter (section 11)</td></tr>
+        <tr class="r-same"><td>Live gateway</td><td>Go WebSocket fan-out</td><td>Same</td><td>—</td><td>—</td><td>Grows by copies</td></tr>
+        <tr class="r-chg"><td>Reference data</td><td>Instruments module in the Python Core API (today’s resolver)</td><td>Go service: instrument master and every broker’s symbol map</td><td>A second broker needs a symbol map per broker; every service reads it</td><td>The second broker</td><td>Service answers the module’s queries; the module becomes a client, then goes</td></tr>
+        <tr class="r-chg"><td>Integrity</td><td>Python Temporal workers: day check, repair, replay</td><td>Go service + Temporal; replays run as backtest-farm jobs on the Rust runtime</td><td>Replays on the same runtime as live are exact by construction</td><td>F3 (the Rust runtime) is in</td><td>Both run the day check for two weeks; findings compared</td></tr>
+        <tr class="r-new"><td>Backtest farm, read models, tick cache agent</td><td>Backtests in Python workers; reports query Postgres; no shared memory</td><td>Rust jobs on spot nodes; Go consumers filling ClickHouse; a Rust agent per runtime host</td><td>Scale and cost</td><td>With F3–F4</td><td>Added beside; old paths retired after equal results</td></tr>
+        <tr class="r-chg"><td>Hosting</td><td>One EKS cluster, three node pools</td><td>A platform cluster per region + a cluster per cell</td><td>Blast radius; partners</td><td>First partner, or &gt;5k strategies</td><td>A staff cell first, then tenants move cell by cell</td></tr>
+        <tr class="r-new"><td>Vault &amp; KMS, audit store, assistant, public API, mobile apps</td><td>—</td><td>New</td><td>Platform scope</td><td>Stage 2–3 of the roadmap</td><td>Added beside, nothing replaced</td></tr>
       </tbody></table></div>
     <div class="answer"><span class="label">What never changes</span>
       <p>The protobuf contracts (they only grow) · strategy code written against the SDK · the ledger’s meaning (an order, a fill, a position) · the web app · the decision log, issues and repair model. These are the things users and strategies depend on, so they are designed once, in the intermediate architecture.</p></div>
   </div>
 </section>
 
-<section id="contracts">
-  <div class="head"><span class="label">05</span><h2>Contracts</h2><p class="sub">One repository (<span class="mono">linck/contracts</span>), Buf for linting, breaking-change checks and code generation in every language.</p></div>
+<section id="services">
+  <div class="head"><span class="label">06</span><h2>What is a microservice, and what isn’t</h2><p class="sub">The rule, the list of deployables in each architecture, and the things we deliberately keep inside others.</p></div>
   <div class="body">
-<pre class="code"><span class="c">// md/v1/tick.proto: the record every component speaks (the wire form is the fixed 96-byte layout in 06)</span>
+    <div class="answer">
+      <p class="big">A part becomes its own service only if it must fail on its own, scale on its own axis, run a different language, or own data nobody else may write.</p>
+      <span class="rule">Otherwise it’s a module inside a service, or a library. A service owns its data: no other service reads its tables; others use its API or its events.</span>
+    </div>
+    <h3>Final: our deployables</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Deployable</th><th>Kind</th><th>Why it stands alone</th><th>Runs as (Kubernetes)</th><th>Copies</th><th>Owns</th></tr></thead>
+      <tbody>
+        <tr><td class="label" colspan="6">Platform cluster, one per region</td></tr>
+        <tr><td class="mono">edge-gateway</td><td>off the shelf</td><td>The only door in; scales with requests</td><td>Deployment</td><td>3+, by requests</td><td>—</td></tr>
+        <tr><td class="mono">product-api</td><td>microservice</td><td>Changes daily; must never touch trading</td><td>Deployment</td><td>3–20, by CPU</td><td>product schema</td></tr>
+        <tr><td class="mono">live-gateway</td><td>microservice</td><td>Holds 100k open sockets</td><td>Deployment</td><td>3–10, by connections</td><td>—</td></tr>
+        <tr><td class="mono">identity</td><td>microservice</td><td>Security boundary; audited separately</td><td>Deployment</td><td>3</td><td>identity DB</td></tr>
+        <tr><td class="mono">control</td><td>microservice</td><td>System of record for deployments; the scheduler inside it is leader-elected</td><td>Deployment</td><td>3</td><td>control DB</td></tr>
+        <tr><td class="mono">commerce</td><td>microservice</td><td>Money in; its own audit and its own team</td><td>Deployment</td><td>2</td><td>commerce DB</td></tr>
+        <tr><td class="mono">builder</td><td>microservice + jobs</td><td>Runs untrusted builds, isolated</td><td>Deployment; a Job per build, in gVisor</td><td>2 + jobs</td><td>artifact registry</td></tr>
+        <tr><td class="mono">refdata</td><td>microservice</td><td>Everyone reads it; one writer</td><td>Deployment</td><td>3</td><td>refdata DB</td></tr>
+        <tr><td class="mono">integrity</td><td>microservice</td><td>Heavy, after hours</td><td>Deployment + Temporal workers</td><td>2</td><td>integrity DB</td></tr>
+        <tr><td class="mono">read-models</td><td>consumer</td><td>Rebuildable from events at any time</td><td>Deployment</td><td>2–4</td><td>ClickHouse tables</td></tr>
+        <tr><td class="mono">notifications</td><td>consumer</td><td>Outside rate limits; mustn’t back up anything else</td><td>Deployment</td><td>2</td><td>templates</td></tr>
+        <tr><td class="mono">assistant</td><td>microservice</td><td>Model calls with their own cost limits</td><td>Deployment</td><td>2</td><td>—</td></tr>
+        <tr><td class="mono">backtest-farm</td><td>jobs</td><td>Bursty; cheap spot machines</td><td>A Job per backtest</td><td>0 → 500 vCPU</td><td>results</td></tr>
+        <tr><td class="label" colspan="6">Cell cluster, one per cell</td></tr>
+        <tr><td class="mono">md-ingest-&lt;source&gt;</td><td>microservice</td><td>One per feed: a vendor’s outage stays its own</td><td>StatefulSet, an A/B pair</td><td>2 per source</td><td>—</td></tr>
+        <tr><td class="mono">md-sequencer</td><td>microservice</td><td>One order per instrument, so exactly one active</td><td>StatefulSet, active + standby</td><td>2</td><td>tick log position</td></tr>
+        <tr><td class="mono">computed-streams</td><td>microservice</td><td>CPU-heavy and shared by every strategy</td><td>StatefulSet, A/B</td><td>2</td><td>series catalogue</td></tr>
+        <tr><td class="mono">cache-agent</td><td>node agent</td><td>Must be on every runtime host</td><td>DaemonSet</td><td>1 per node</td><td>shared memory</td></tr>
+        <tr><td class="mono">supervisor</td><td>node agent</td><td>Owns the sandboxes on its host</td><td>DaemonSet</td><td>1 per node</td><td>local WAL</td></tr>
+        <tr><td class="mono">oms</td><td>microservice</td><td>The only writer of money</td><td>StatefulSet, partitions by account</td><td>3</td><td>ledger shard</td></tr>
+        <tr><td class="mono">broker-gw-&lt;broker&gt;</td><td>microservice</td><td>A broker’s outage, limits or IP rules stay its own</td><td>Deployment per broker, same image</td><td>2 per broker</td><td>token cache</td></tr>
+        <tr><td class="mono">sim-venue</td><td>microservice</td><td>Paper load must never slow live orders</td><td>Deployment</td><td>2–6</td><td>simulated books</td></tr>
+      </tbody></table></div>
+    <div class="cols">
+      <div><h3>Deliberately not services</h3><ul class="plain">
+        <li><b>The ledger</b> is tables owned by the OMS. A ledger service would put a network hop and a second writer between an order and its money.</li>
+        <li><b>Risk checks</b> are a pipeline inside the OMS, in the same transaction as the order they approve.</li>
+        <li><b>The scheduler</b> is a module of control: it changes whenever deployments do.</li>
+        <li><b>Indicators, the fill model, the protocol codec</b> are linck-core, a library, so live, backtest and local runs compute the same numbers.</li>
+        <li><b>The decision log and strategy issues</b> are events written by the supervisor and stored by read models: no service of their own.</li>
+        <li><b>A strategy</b> is a sandbox under the supervisor, not a pod (08).</li>
+      </ul></div>
+      <div><h3>Intermediate: nine deployables</h3><ul class="plain">
+        <li><span class="mono">core-api</span> (Python): a modular monolith. One team, one database, modules that change together. Each module already owns its tables and never joins another’s, so splitting one out later is a move, not a rewrite.</li>
+        <li><span class="mono">live-gateway</span>, <span class="mono">md</span>, <span class="mono">oms</span>, <span class="mono">broker-gw-kite</span> (Go).</li>
+        <li><span class="mono">runner</span> (Python, a StatefulSet; each pod a shard of strategies), <span class="mono">sim</span>, <span class="mono">workers</span> (Temporal), <span class="mono">notifications</span> (Python).</li>
+        <li>Final: 21 deployables in the table, 20 of them our own code (the edge is Envoy with our plug-in), each with its reason.</li>
+      </ul></div>
+    </div>
+  </div>
+</section>
+
+
+<section id="proto">
+  <div class="head"><span class="label">07</span><h2>Protocols: where REST, where gRPC, where events</h2><p class="sub">The letters on both architecture diagrams. Every connection uses exactly one of these.</p></div>
+  <div class="body">
+    <div class="rules">
+      <div><b>Outside world: HTTPS on port 443</b><span>Screens and the public API use REST/JSON for requests and WebSocket for live updates. The SDK, the CLI and remote strategies use gRPC.</span></div>
+      <div><b>Between our services: gRPC</b><span>Protobuf, mutual TLS, a deadline on every call (2 s by default, 200 ms inside a cell), retries only on methods that are safe to repeat. Never REST between our own services.</span></div>
+      <div><b>Things that happened: events</b><span>Redpanda for intents, orders, fills, the journal, ticks and decisions (durable, ordered per key). NATS for commands and live updates.</span></div>
+      <div><b>The tick path: no RPC, no broker</b><span>Aeron from the ingest to every host, shared memory on the host, a Unix socket or a function call into the strategy. No JSON anywhere on it.</span></div>
+    </div>
+    <div class="tbl"><table>
+      <thead><tr><th></th><th>Between</th><th>Protocol</th><th>Why this one</th></tr></thead>
+      <tbody>
+        <tr><td><span class="pbx">A</span></td><td>Browser, mobile, public API → edge</td><td>HTTPS: REST/JSON for requests, WebSocket for live updates</td><td>What browsers and every language speak; cacheable; easy to debug with curl</td></tr>
+        <tr><td><span class="pbx">B</span></td><td>SDK, CLI, remote strategies → edge</td><td>gRPC over HTTP/2, TLS, port 443</td><td>Streams both ways (logs, a remote strategy’s events); typed clients generated per language. Envoy also exposes every method as REST</td></tr>
+        <tr><td><span class="pbx">C</span></td><td>Edge → product API</td><td>REST/JSON</td><td>Today’s API, kept; the web app already speaks it</td></tr>
+        <tr><td><span class="pbx">D</span></td><td>Edge → live gateway</td><td>WebSocket</td><td>One long connection per open screen</td></tr>
+        <tr><td><span class="pbx">E</span></td><td>Service → service, request and answer</td><td>gRPC + protobuf, mTLS, a deadline on every call</td><td>Typed contracts, deadlines, streaming. Examples: product API → control, OMS → broker gateway, broker gateway → sim venue, anyone → reference data</td></tr>
+        <tr><td><span class="pbx">F</span></td><td>Services ↔ event backbone</td><td>Redpanda (Kafka protocol) or NATS</td><td>Redpanda when losing a message costs money or history; NATS when only the latest matters or it’s a command</td></tr>
+        <tr><td><span class="pbx">G</span></td><td>Vendors and broker sockets → market data ingest</td><td>Each source’s own: Kite’s binary WebSocket, a vendor’s TCP or WebSocket</td><td>Not ours to choose; one feed handler per source turns it into our record</td></tr>
+        <tr><td><span class="pbx">H</span></td><td>Ingest and computed streams → every runtime host</td><td>Aeron over UDP: sequenced, with retransmit on a gap</td><td>Microseconds, one sender to many hosts, no broker in the way</td></tr>
+        <tr><td><span class="pbx">I</span></td><td>Tick cache → supervisor</td><td>Shared memory: one slot per instrument + a ring</td><td>No copy, no system call</td></tr>
+        <tr><td><span class="pbx">J</span></td><td>Supervisor ↔ strategy</td><td>Process sandbox: protobuf frames on a Unix socket · WASM: calls through its WIT interface · remote: gRPC (B)</td><td>The same EventBatch and Commands messages in all three</td></tr>
+        <tr><td><span class="pbx">K</span></td><td>Strategy runtime → OMS</td><td>The topic orders.intent.v1 (NATS JetStream in the intermediate, Redpanda in the final)</td><td>Every intent is durable before anything is sent; replayable; fenced by epoch</td></tr>
+        <tr><td><span class="pbx">L</span></td><td>Broker gateway → brokers</td><td>Each broker’s REST API for orders; its WebSocket or postback for updates; FIX 4.4 for institutions</td><td>The broker’s protocol, behind our one contract</td></tr>
+        <tr><td><span class="pbx">M</span></td><td>Services → stores</td><td>Postgres wire protocol, ClickHouse native, S3 API, etcd gRPC, Vault over HTTPS</td><td>Each store’s own; only the owning service connects</td></tr>
+      </tbody></table></div>
+    <div class="cols">
+      <div><h3>Why not one protocol everywhere</h3><ul class="plain">
+        <li><b>REST inside:</b> no schema the compiler checks, no streaming, and JSON parsing costs real CPU at our volumes.</li>
+        <li><b>gRPC to browsers:</b> needs gRPC-Web and a proxy, and is hard to debug. Screens stay on REST and WebSocket.</li>
+        <li><b>A message broker on the tick path:</b> every hop adds milliseconds and a queue that can back up. Ticks are latest-wins, so they don’t need a durable queue; the archive copy goes to Redpanda off the path.</li>
+        <li><b>GraphQL:</b> the screens are few and ours; it would add a resolver layer and caching problems for nothing.</li>
+      </ul></div>
+      <div><h3>In the intermediate architecture</h3><ul class="plain">
+        <li>A to E and L are the same from day one, so clients and services never change protocol later.</li>
+        <li>F and K run on NATS JetStream with the same subjects and messages; Redpanda arrives later.</li>
+        <li>H and I don’t exist yet: ticks travel on NATS to the runner workers, which is fast enough for ~2,000 strategies.</li>
+        <li>J is only the process sandbox, and only Python.</li>
+      </ul></div>
+    </div>
+  </div>
+</section>
+
+
+<section id="deploy">
+  <div class="head"><span class="label">08</span><h2>Deployment: containers and Kubernetes</h2><p class="sub">What gets packaged how, where it runs, and why strategies are the one exception.</p></div>
+  <div class="body">
+    <div class="answer">
+      <p class="big">Every service ships as a container image (Docker / OCI) and runs on Kubernetes (AWS EKS in Mumbai), deployed by Argo CD from Git.</p>
+      <span class="rule">Strategies are not containers and not pods. They are sandboxes the supervisor starts on its own host; Kubernetes only sees the supervisor.</span>
+    </div>
+    <div class="tbl"><table>
+      <thead><tr><th>Stage</th><th>Where it runs</th><th>How a release goes out</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Today</td><td>One machine; one Docker container running one Python process; Postgres beside it; Tailscale in front</td><td><span class="mono">./redeploy.sh</span>: git pull, docker build, restart</td><td>One user; the simplest thing that works</td></tr>
+        <tr><td>Intermediate</td><td>One EKS cluster in Mumbai across 3 zones, three node pools (services, runtime with gVisor, data); RDS Postgres</td><td>A Helm chart per service; Argo CD applies what’s in Git; Docker Compose on laptops</td><td>Several services, rolling deploys without a gap, machines that replace themselves</td></tr>
+        <tr><td>Final</td><td>A platform cluster per region, a cluster per cell, partner cells in their own AWS accounts</td><td>The same charts; Argo CD ApplicationSets roll out cell by cell; Terraform builds accounts, networks and clusters</td><td>A bad release or a bad day stays in one cell</td></tr>
+      </tbody></table></div>
+    <figure>
+      <div class="diagram">
+<svg viewBox="0 0 1200 652" role="img" aria-labelledby="wrt wrd" xmlns="http://www.w3.org/2000/svg">
+  <title id="wrt">Where everything runs</title>
+  <desc id="wrd">A platform cluster per region with service, data and job node pools, and a cell cluster per cell with market-data, runtime and service node pools. On runtime nodes Kubernetes runs only the supervisor and the cache agent; the strategy sandboxes are processes and WASM instances the supervisor starts. AWS-managed Postgres, Redis, S3, KMS, NAT with fixed IPs and load balancers sit outside the clusters.</desc>
+  <rect class="cellf" x="20" y="20" width="444" height="530"/>
+  <text class="row" x="36" y="42">PLATFORM CLUSTER · EKS · ONE PER REGION</text>
+  <g class="n "><rect x="32" y="54" width="420" height="240"/><text class="t" x="46" y="79">Service nodes</text><text class="s" x="46" y="99">general purpose · on-demand · 2 per zone</text><rect class="chip" x="44" y="108" width="196" height="24"/><text class="cm" x="52" y="124.0">edge-gateway</text><rect class="chip" x="248" y="108" width="196" height="24"/><text class="cm" x="256" y="124.0">product-api</text><rect class="chip" x="44" y="138" width="196" height="24"/><text class="cm" x="52" y="154.0">live-gateway</text><rect class="chip" x="248" y="138" width="196" height="24"/><text class="cm" x="256" y="154.0">identity</text><rect class="chip" x="44" y="168" width="196" height="24"/><text class="cm" x="52" y="184.0">control</text><rect class="chip" x="248" y="168" width="196" height="24"/><text class="cm" x="256" y="184.0">commerce</text><rect class="chip" x="44" y="198" width="196" height="24"/><text class="cm" x="52" y="214.0">refdata</text><rect class="chip" x="248" y="198" width="196" height="24"/><text class="cm" x="256" y="214.0">integrity</text><rect class="chip" x="44" y="228" width="196" height="24"/><text class="cm" x="52" y="244.0">read-models</text><rect class="chip" x="248" y="228" width="196" height="24"/><text class="cm" x="256" y="244.0">notifications</text><rect class="chip" x="44" y="258" width="196" height="24"/><text class="cm" x="52" y="274.0">assistant</text><rect class="chip" x="248" y="258" width="196" height="24"/><text class="cm" x="256" y="274.0">temporal</text></g>
+  <g class="n "><rect x="32" y="304" width="420" height="116"/><text class="t" x="46" y="329">Data nodes</text><text class="s" x="46" y="349">local NVMe · on-demand</text><rect class="chip" x="44" y="358" width="196" height="24"/><text class="cm" x="52" y="374.0">clickhouse ×6 (operator)</text><rect class="chip" x="248" y="358" width="196" height="24"/><text class="cm" x="256" y="374.0">nats ×3</text><rect class="chip" x="44" y="388" width="196" height="24"/><text class="cm" x="52" y="404.0">vault ×3</text><rect class="chip" x="248" y="388" width="196" height="24"/><text class="cm" x="256" y="404.0">temporal-history ×3</text></g>
+  <g class="n "><rect x="32" y="430" width="420" height="108"/><text class="t" x="46" y="455">Job nodes</text><text class="s" x="46" y="475">spot · Karpenter · from zero</text><rect class="chip" x="44" y="484" width="196" height="24"/><text class="cm" x="52" y="500.0">backtest jobs</text><rect class="chip" x="248" y="484" width="196" height="24"/><text class="cm" x="256" y="500.0">strategy builds (gVisor)</text></g>
+  <rect class="cellf" x="480" y="20" width="700" height="530"/>
+  <text class="row" x="496" y="42">CELL CLUSTER · EKS · ONE PER CELL, × N</text>
+  <g class="n "><rect x="492" y="54" width="218" height="484"/><text class="t" x="506" y="79">Market-data nodes</text><text class="s" x="506" y="99">compute · CPU-pinned</text><rect class="chip" x="504" y="108" width="194" height="24"/><text class="cm" x="512" y="124.0">md-ingest-vendor ×2</text><rect class="chip" x="504" y="138" width="194" height="24"/><text class="cm" x="512" y="154.0">md-ingest-kite ×2</text><rect class="chip" x="504" y="168" width="194" height="24"/><text class="cm" x="512" y="184.0">md-sequencer ×2</text><rect class="chip" x="504" y="198" width="194" height="24"/><text class="cm" x="512" y="214.0">computed-streams ×2</text></g>
+  <g class="n "><rect x="722" y="54" width="218" height="484"/><text class="t" x="736" y="79">Runtime nodes</text><text class="s" x="736" y="99">64 vCPU · NVMe · tainted</text><rect class="chip" x="734" y="108" width="194" height="24"/><text class="cm" x="742" y="124.0">supervisor (DaemonSet)</text><rect class="chip" x="734" y="138" width="194" height="24"/><text class="cm" x="742" y="154.0">cache-agent (DaemonSet)</text><rect class="chip" x="734" y="176" width="194" height="350"/><text class="c" x="746" y="198">Strategy sandboxes</text><text class="s" x="746" y="218">~3,000 on each node,</text><text class="s" x="746" y="234">started by the supervisor:</text><text class="s" x="746" y="250">processes in gVisor and</text><text class="s" x="746" y="266">WASM instances.</text><text class="s" x="746" y="292">Not pods: Kubernetes</text><text class="s" x="746" y="308">sees one supervisor</text><text class="s" x="746" y="324">per node.</text></g>
+  <g class="n "><rect x="952" y="54" width="218" height="484"/><text class="t" x="966" y="79">Service nodes</text><text class="s" x="966" y="99">general purpose · on-demand</text><rect class="chip" x="964" y="108" width="194" height="24"/><text class="cm" x="972" y="124.0">oms ×3</text><rect class="chip" x="964" y="138" width="194" height="24"/><text class="cm" x="972" y="154.0">broker-gw-kite ×2</text><rect class="chip" x="964" y="168" width="194" height="24"/><text class="cm" x="972" y="184.0">broker-gw-upstox ×2</text><rect class="chip" x="964" y="198" width="194" height="24"/><text class="cm" x="972" y="214.0">broker-gw-dhan ×2</text><rect class="chip" x="964" y="228" width="194" height="24"/><text class="cm" x="972" y="244.0">broker-gw-… per broker</text><rect class="chip" x="964" y="258" width="194" height="24"/><text class="cm" x="972" y="274.0">sim-venue ×2</text><rect class="chip" x="964" y="288" width="194" height="24"/><text class="cm" x="972" y="304.0">etcd ×3</text><rect class="chip" x="964" y="318" width="194" height="24"/><text class="cm" x="972" y="334.0">redpanda ×3 (operator)</text></g>
+  <text class="row" x="20" y="576">MANAGED BY AWS, OUTSIDE THE CLUSTERS</text>
+  <g class="n store"><rect x="20" y="584" width="183" height="58"/><text class="t" x="34" y="609">RDS Postgres</text><text class="s" x="34" y="629">control · product · ledger shards</text></g>
+  <g class="n store"><rect x="215" y="584" width="183" height="58"/><text class="t" x="229" y="609">ElastiCache</text><text class="s" x="229" y="629">Redis: sessions, limits</text></g>
+  <g class="n store"><rect x="410" y="584" width="183" height="58"/><text class="t" x="424" y="609">S3</text><text class="s" x="424" y="629">lake · WAL · audit (locked)</text></g>
+  <g class="n store"><rect x="605" y="584" width="183" height="58"/><text class="t" x="619" y="609">KMS</text><text class="s" x="619" y="629">keys behind Vault</text></g>
+  <g class="n store"><rect x="800" y="584" width="183" height="58"/><text class="t" x="814" y="609">NAT + fixed IPs</text><text class="s" x="814" y="629">registered with brokers</text></g>
+  <g class="n store"><rect x="995" y="584" width="183" height="58"/><text class="t" x="1009" y="609">Load balancer</text><text class="s" x="1009" y="629">NLB in front of Envoy</text></g>
+</svg>
+      </div>
+    </figure>
+    <div class="cols">
+      <div><h3>Why Kubernetes, and not…</h3><ul class="plain">
+        <li><b>Docker Compose:</b> one machine, no rolling deploys or recovery across machines. We keep it for laptops and for today.</li>
+        <li><b>ECS:</b> good for stateless services, but no operators for Redpanda, NATS and ClickHouse, no runtime classes for gVisor, and partner cells may one day run outside AWS.</li>
+        <li><b>Nomad:</b> lighter, but the operators, tools and people we need are on Kubernetes.</li>
+        <li><b>Serverless functions:</b> cold starts and time limits don’t fit strategies that run all day or sockets held for hours.</li>
+      </ul>
+      <h3>Why strategies aren’t pods</h3><ul class="plain">
+        <li>50,000 strategies would be 50,000 pods. Kubernetes allows 110 pods per node by default, and its scheduler isn’t built for that many small, long-lived workloads.</li>
+        <li>A pod takes seconds to start and carries its own network setup and IP; a gVisor sandbox starts in well under a second and a WASM instance in milliseconds.</li>
+        <li>Moving a strategy is a lease handoff between supervisors, not a pod reschedule, so it never loses a minute.</li>
+        <li>Kubernetes still manages the machines: draining a node tells its supervisor to hand its leases away first.</li>
+      </ul></div>
+      <div><h3>What we run, what AWS runs</h3><ul class="plain">
+        <li><b>AWS runs:</b> Postgres (RDS, multi-zone, a ledger shard per cell), Redis (ElastiCache), S3, KMS, load balancers, NAT gateways.</li>
+        <li><b>We run, with an operator:</b> Redpanda, ClickHouse, NATS, etcd, Vault, Temporal. They want our NVMe nodes or sit inside a cell, and at our size running them costs less than the managed versions. Revisited store by store; switching to a managed one changes a connection string, not code.</li>
+        <li><b>Egress:</b> brokers require registered fixed IPs for API orders, so each cell’s broker gateways leave through NAT gateways with fixed addresses.</li>
+        <li><b>Images:</b> distroless, built reproducibly, signed (cosign); the clusters run only signed images.</li>
+        <li><b>Secrets:</b> in Vault; synced into the cluster by External Secrets; broker tokens never leave Vault except into the broker gateway’s memory.</li>
+        <li><b>Mesh:</b> Linkerd for mutual TLS and retries between services; nothing in the tick path goes through it.</li>
+      </ul>
+      <h3>Node pools in a cell</h3><ul class="plain">
+        <li><b>Market data:</b> compute-optimised, CPUs pinned to the feed threads, on-demand only.</li>
+        <li><b>Runtime:</b> 64 vCPU with local NVMe for the WAL; gVisor installed; tainted so only supervisors and cache agents land there.</li>
+        <li><b>Services:</b> general purpose for the OMS, broker gateways, sim venue, etcd and Redpanda.</li>
+      </ul></div>
+    </div>
+  </div>
+</section>
+
+<section id="contracts">
+  <div class="head"><span class="label">09</span><h2>Contracts</h2><p class="sub">One repository (<span class="mono">linck/contracts</span>), Buf for linting, breaking-change checks and code generation in every language.</p></div>
+  <div class="body">
+<pre class="code"><span class="c">// md/v1/tick.proto: the record every component speaks (the wire form is the fixed 96-byte layout in 10)</span>
 <span class="k">message</span> Tick {
   <span class="k">uint32</span> instrument_id = 1;   <span class="c">// internal id from reference data, never a broker token</span>
   <span class="k">uint64</span> seq           = 2;   <span class="c">// per instrument, gap-free</span>
@@ -485,14 +743,14 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
       <div><h3>Why protobuf</h3><ul class="plain">
         <li>One definition generates Go, Rust, Python and TypeScript types, so the web, the SDK and the services can’t drift.</li>
         <li>Compact and fast on the backbone; gRPC for free.</li>
-        <li>The tick hot path uses a fixed binary layout instead (06): protobuf’s varints cost too much at 300k/s, and the layout is generated from the same definition.</li>
+        <li>The tick hot path uses a fixed binary layout instead (10): protobuf’s varints cost too much at 300k/s, and the layout is generated from the same definition.</li>
       </ul></div>
     </div>
   </div>
 </section>
 
 <section id="md">
-  <div class="head"><span class="label">06</span><h2>The market-data path</h2><p class="sub">From a vendor socket to a strategy’s event loop without a queue anywhere.</p></div>
+  <div class="head"><span class="label">10</span><h2>The market-data path</h2><p class="sub">From a vendor socket to a strategy’s event loop without a queue anywhere.</p></div>
   <div class="body">
     <div class="tbl"><table>
       <thead><tr><th>Offset</th><th>Field</th><th>Type</th><th>Note</th></tr></thead>
@@ -553,14 +811,54 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
   </div>
 </section>
 
+<section id="connect">
+  <div class="head"><span class="label">11</span><h2>Connectors: brokers and feeds</h2><p class="sub">The multi-broker connector and the tick ingestor. Both are ours, in one language each; users never write them.</p></div>
+  <div class="body">
+    <div class="cols">
+      <div>
+        <h3>Broker gateway (multi-broker connector)</h3>
+        <ul class="plain">
+          <li>One Go codebase. Each broker is an adapter package implementing the <span class="mono">BrokerAdapter</span> contract (09). The same image is deployed once per broker per cell (<span class="mono">--broker=kite</span>), so one broker’s outage, limits or IP rules never touch another.</li>
+          <li><b>Logins and tokens:</b> each broker’s login or OAuth flow and daily refresh; tokens sealed in Vault, opened only in this service’s memory.</li>
+          <li><b>Symbols:</b> our instrument id ↔ the broker’s token and trading symbol, from reference data, loaded before 08:30.</li>
+          <li><b>Orders:</b> our order and product types translated to the broker’s; quantities above the freeze limit sliced; our order id put in the broker’s tag field, so a retry finds the first attempt instead of placing twice.</li>
+          <li><b>Rate limits:</b> a token bucket per app key and per account, configured from each broker’s published limits, never hard-coded.</li>
+          <li><b>Updates:</b> the broker’s WebSocket or postback becomes one ordered <span class="mono">OrderUpdate</span> stream; positions are pulled for reconciliation.</li>
+          <li><b>Capabilities:</b> each adapter declares what its broker supports (basket margin, modify, market protection, tag length…), and the OMS plans around it, e.g. using our own margin estimate when a broker has no basket API.</li>
+          <li><b>Failure:</b> a broker down → its gateway reports it; the OMS stops new entries for those accounts, queues exits and alerts. Other brokers carry on.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Adding a broker</h3>
+        <ol class="steps">
+          <li><span>Write the adapter in Go against the contract.</span><span class="t">1–2 weeks</span></li>
+          <li><span>Add its symbol-map loader to reference data.</span><span class="t">days</span></li>
+          <li><span>Pass the adapter conformance suite: recorded order conversations, rejects, partial fills, reconnects.</span><span class="t">CI</span></li>
+          <li><span>A paper week through the real API with shadow orders, and a smoke test every morning before 09:00 from then on.</span><span class="t">1 week</span></li>
+          <li><span>Turn on per tenant with a feature flag.</span><span class="t">minutes</span></li>
+        </ol>
+        <p class="note">Order: Kite (today), Upstox, Dhan, Angel One, Fyers, ICICI Direct, then FIX for institutions. Nothing outside the gateway and reference data changes per broker.</p>
+        <h3>Market data ingest (tick ingestor)</h3>
+        <ul class="plain">
+          <li><b>Sources:</b> a licensed vendor feed shared by everyone (paper, research, computed streams), and each user’s own broker socket where their live trading needs it.</li>
+          <li><b>One feed handler per source</b> (Rust): connect, subscribe to what running strategies need (the union, from control), decode into our 96-byte record, map to our instrument id, apply the tick filter.</li>
+          <li><b>The sequencer</b> numbers each instrument’s updates, sends them to every host (Aeron, <span class="pbx">H</span>) and to the archive (Redpanda → lake).</li>
+          <li><b>Every morning</b> reference data loads the exchange contract files and each broker’s instrument list; new expiries appear and the ingest subscribes to them.</li>
+          <li><b>Adding a vendor</b> is one more feed handler; nothing downstream changes, because everything after it reads our record.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section id="runtime">
-  <div class="head"><span class="label">07</span><h2>The strategy runtime</h2><p class="sub">Where untrusted code runs next to money, so it’s built around isolation, recovery and determinism.</p></div>
+  <div class="head"><span class="label">12</span><h2>The strategy runtime</h2><p class="sub">Where untrusted code runs next to money, so it’s built around isolation, recovery and determinism.</p></div>
   <div class="body">
     <figure>
       <div class="diagram">
 <svg viewBox="0 0 1200 330" role="img" aria-labelledby="rtt rtd" xmlns="http://www.w3.org/2000/svg">
   <title id="rtt">A runtime host</title>
-  <desc id="rtd">On a runtime host, the tick cache and computed streams in shared memory feed a Rust supervisor. The supervisor sends event batches to sandboxes over Unix sockets: Python strategies in gVisor, WASM strategies in Wasmtime, and a gateway for remote strategies over gRPC. Sandboxes return commands. The supervisor writes state to a local write-ahead log shipped to S3, holds leases in etcd, and sends intents to the order log.</desc>
+  <desc id="rtd">On a runtime host, the tick cache and computed streams in shared memory feed a Rust supervisor. The supervisor sends event batches to sandboxes over Unix sockets: process sandboxes in gVisor (any SDK language), WASM strategies in Wasmtime, and a gateway for remote strategies over gRPC. Sandboxes return commands. The supervisor writes state to a local write-ahead log shipped to S3, holds leases in etcd, and sends intents to the order log.</desc>
   <defs><marker id="d4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker></defs>
   <rect class="cellf" x="20" y="20" width="1160" height="290"/>
   <text class="row" x="36" y="42">RUNTIME HOST · 64 vCPU · LOCAL NVMe</text>
@@ -570,7 +868,7 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
     <text class="s" x="314" y="151">one event batch in flight; deadline</text><text class="s" x="314" y="168">50 ms soft · 500 ms hard</text>
     <text class="s" x="314" y="192">state after each batch → WAL</text><text class="s" x="314" y="209">leases + epochs (etcd)</text>
     <text class="s" x="314" y="233">intents → orders.intent (Redpanda)</text><text class="s" x="314" y="250">decisions, reports → backbone</text></g>
-  <g class="n"><rect x="660" y="60" width="240" height="64"/><text class="t" x="674" y="86">Python sandbox × ~3,000</text><text class="s" x="674" y="106">gVisor · no network · RO fs</text></g>
+  <g class="n"><rect x="660" y="60" width="240" height="64"/><text class="t" x="674" y="86">Process sandboxes × ~3,000</text><text class="s" x="674" y="106">any SDK language · gVisor · no network</text></g>
   <g class="n"><rect x="660" y="140" width="240" height="64"/><text class="t" x="674" y="166">WASM sandbox</text><text class="s" x="674" y="186">Wasmtime · fuel-metered</text></g>
   <g class="n"><rect x="660" y="220" width="240" height="64"/><text class="t" x="674" y="246">Remote gateway</text><text class="s" x="674" y="266">user’s process over gRPC</text></g>
   <g class="n store"><rect x="940" y="60" width="220" height="64"/><text class="t" x="954" y="86">Local WAL</text><text class="s" x="954" y="106">snapshots, shipped to S3</text></g>
@@ -597,7 +895,7 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
         <h3>Determinism, enforced</h3>
         <ul class="plain">
           <li>The only clock is <span class="mono">ctx.now</span> (the batch’s time); the only randomness is <span class="mono">ctx.random</span>, seeded per deployment and day.</li>
-          <li>No network, no files, no threads inside a sandbox; <span class="mono">PYTHONHASHSEED</span> fixed; the runtime image is pinned per strategy version.</li>
+          <li>No network, no files, no threads inside a sandbox; the runtime image is pinned per strategy version. Per language: <span class="mono">PYTHONHASHSEED</span> fixed (Python); map ranging flagged by the SDK lint (Go); <span class="mono">Date</span> and <span class="mono">Math.random</span> replaced (TypeScript).</li>
           <li>Certification replays a day twice and compares the hash of every decision and intent; a mismatch fails the build.</li>
         </ul>
         <h3>Placement</h3>
@@ -610,8 +908,98 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
   </div>
 </section>
 
+<section id="langs">
+  <div class="head"><span class="label">13</span><h2>Many languages: from SDK to runtime</h2><p class="sub">How a strategy written in Python, Go, Rust or TypeScript runs on one platform, and which parts must exist once per language.</p></div>
+  <div class="body">
+    <div class="answer">
+      <p class="big">The runtime never runs “Python” or “Go”. It runs a sandbox that speaks one protocol: events in, commands out.</p>
+      <span class="rule">Each SDK is a thin library that speaks that protocol in its language. A new language is a new SDK plus a build image; nothing else in the platform changes.</span>
+    </div>
+    <figure>
+      <div class="diagram">
+<svg viewBox="0 0 1200 456" role="img" aria-labelledby="lat lad" xmlns="http://www.w3.org/2000/svg">
+  <title id="lat">From any SDK language to the runtime</title>
+  <desc id="lad">Python, Go, Rust, TypeScript and any other language each have an SDK that speaks one runtime protocol. A strategy reaches the supervisor in a process sandbox, a WASM sandbox or as a remote process over gRPC. Everything behind the supervisor is language-blind.</desc>
+  <defs><marker id="la" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker><marker id="lab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah md" d="M0 0L10 5L0 10z"/></marker><marker id="lag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah ord" d="M0 0L10 5L0 10z"/></marker></defs>
+  <text class="row" x="20" y="24">WHAT THE USER WRITES · ONE SDK PER LANGUAGE</text>
+  <g class="n "><rect x="20" y="34" width="220" height="72"/><text class="t" x="34" y="59">Python</text><text class="s" x="34" y="79">pip install linck</text><text class="m" x="34" y="94">runs as: process</text></g>
+  <path class="e" d="M130 106V128" marker-end="url(#la)"/>
+  <g class="n "><rect x="256" y="34" width="220" height="72"/><text class="t" x="270" y="59">Go</text><text class="s" x="270" y="79">go get linck.dev/sdk</text><text class="m" x="270" y="94">runs as: process or WASM</text></g>
+  <path class="e" d="M366 106V128" marker-end="url(#la)"/>
+  <g class="n "><rect x="492" y="34" width="220" height="72"/><text class="t" x="506" y="59">Rust</text><text class="s" x="506" y="79">cargo add linck</text><text class="m" x="506" y="94">runs as: process or WASM</text></g>
+  <path class="e" d="M602 106V128" marker-end="url(#la)"/>
+  <g class="n "><rect x="728" y="34" width="220" height="72"/><text class="t" x="742" y="59">TypeScript</text><text class="s" x="742" y="79">npm i @linck/sdk</text><text class="m" x="742" y="94">runs as: process or WASM</text></g>
+  <path class="e" d="M838 106V128" marker-end="url(#la)"/>
+  <g class="n "><rect x="964" y="34" width="220" height="72"/><text class="t" x="978" y="59">Any language</text><text class="s" x="978" y="79">your own process</text><text class="m" x="978" y="94">runs as: remote over gRPC</text></g>
+  <path class="e" d="M1074 106V128" marker-end="url(#la)"/>
+  <g class="n term"><rect x="20" y="130" width="1160" height="44"/><text class="t" x="36" y="157">Runtime protocol v1</text><text class="m" x="1164" y="156" text-anchor="end">EventBatch in → Commands out · the same protobuf messages for every language</text></g>
+  <g class="pb"><circle cx="214" cy="152" r="8.5"/><text x="214" y="155.5" text-anchor="middle">J</text></g>
+  <text class="row" x="20" y="200">HOW IT REACHES THE SUPERVISOR · THREE KINDS OF SANDBOX</text>
+  <g class="n "><rect x="20" y="210" width="376" height="104"/><text class="t" x="34" y="235">Process sandbox</text><text class="s" x="34" y="255">any language with a Linux build</text><text class="s" x="34" y="271">one process per strategy in gVisor</text><text class="s" x="34" y="287">frames on a Unix socket</text><text class="s" x="34" y="303">no network · read-only files</text></g>
+  <path class="e" d="M208 314V336" marker-end="url(#la)"/>
+  <g class="n "><rect x="412" y="210" width="376" height="104"/><text class="t" x="426" y="235">WASM sandbox</text><text class="s" x="426" y="255">Rust, Go, TS, C++ built to a</text><text class="s" x="426" y="271">WASM component; Wasmtime</text><text class="s" x="426" y="287">fuel-metered · a few MB each</text><text class="s" x="426" y="303">the densest, cheapest plan</text></g>
+  <path class="e" d="M600 314V336" marker-end="url(#la)"/>
+  <g class="n "><rect x="804" y="210" width="376" height="104"/><text class="t" x="818" y="235">Remote</text><text class="s" x="818" y="255">the user runs their own process</text><text class="s" x="818" y="271">gRPC bidirectional stream (B)</text><text class="s" x="818" y="287">we still own risk, orders, clock</text><text class="s" x="818" y="303">latency: theirs + the network</text></g>
+  <path class="e" d="M992 314V336" marker-end="url(#la)"/>
+  <g class="n same"><rect class="box" x="20" y="338" width="1160" height="46"/><text class="t" x="36" y="366">Supervisor</text><text class="m" x="1164" y="365" text-anchor="end">Rust · one per runtime host · never knows which language a strategy is written in</text></g>
+  <text class="row" x="20" y="410">LANGUAGE-BLIND · ONE IMPLEMENTATION FOR ALL</text>
+  <rect class="chip" x="20" y="420" width="136" height="26"/><text class="c" x="28" y="437.0">Control (manager)</text><rect class="chip" x="166" y="420" width="136" height="26"/><text class="c" x="174" y="437.0">Scheduler</text><rect class="chip" x="312" y="420" width="136" height="26"/><text class="c" x="320" y="437.0">Orders &amp; risk</text><rect class="chip" x="458" y="420" width="136" height="26"/><text class="c" x="466" y="437.0">Broker gateway</text><rect class="chip" x="604" y="420" width="136" height="26"/><text class="c" x="612" y="437.0">Market data</text><rect class="chip" x="750" y="420" width="136" height="26"/><text class="c" x="758" y="437.0">Computed streams</text><rect class="chip" x="896" y="420" width="136" height="26"/><text class="c" x="904" y="437.0">Sim venue</text><rect class="chip" x="1042" y="420" width="136" height="26"/><text class="c" x="1050" y="437.0">Integrity</text>
+</svg>
+      </div>
+    </figure>
+    <div class="tbl"><table>
+      <thead><tr><th>Language</th><th>SDK</th><th>In our cloud</th><th>On a laptop (<span class="mono">linck run</span>)</th><th>Watch out for</th></tr></thead>
+      <tbody>
+        <tr><td>Python</td><td class="mono">linck · PyPI</td><td>Process sandbox: CPython in gVisor, one process per strategy</td><td>The same process, started by the CLI</td><td>Speed: ~1 ms an event is fine for bars, tight for every tick</td></tr>
+        <tr><td>Go</td><td class="mono">linck.dev/sdk</td><td>Process sandbox (a static binary) or WASM for the dense plan</td><td>Same</td><td>Map order is random: the SDK’s lint flags ranging over maps in decisions</td></tr>
+        <tr><td>Rust</td><td class="mono">linck · crates.io</td><td>Process sandbox (native) or WASM component</td><td>Same</td><td>Nothing special; the fastest choice</td></tr>
+        <tr><td>TypeScript</td><td class="mono">@linck/sdk · npm</td><td>Process sandbox (Node) or WASM component</td><td>Same</td><td><span class="mono">Date</span> and <span class="mono">Math.random</span> are replaced by <span class="mono">ctx.now</span> and <span class="mono">ctx.random</span></td></tr>
+        <tr><td>C++ and others</td><td>WASM bindings, or remote</td><td>WASM component, or the user’s own process over gRPC</td><td>Same</td><td>Remote adds the network to every decision</td></tr>
+      </tbody></table></div>
+    <div class="cols">
+      <div><h3>Built once per language</h3><ul class="plain">
+        <li><b>The SDK:</b> the API (Strategy, params, state, handlers, ctx), the event loop, state save and load, a test harness.</li>
+        <li><b>Generated types:</b> every message from the same protobuf files (<span class="mono">buf generate</span>), so the four SDKs can’t drift apart.</li>
+        <li><b>A build image:</b> the toolchain and lockfile resolver (uv, go mod, cargo, npm) in a pinned image the builder runs.</li>
+        <li><b>A runtime image</b> for process sandboxes: the interpreter or system libraries, pinned per strategy version.</li>
+        <li><b>A pass of the conformance suite:</b> recorded days with expected decisions. No SDK release without it.</li>
+      </ul></div>
+      <div><h3>Built once for every language</h3><ul class="plain">
+        <li>Control (the strategy manager), the scheduler, the supervisor, orders and risk, the broker gateway, market data, computed streams, the sim venue, integrity, the CLI. They only see protocol messages, never a language.</li>
+        <li><b>Indicators</b> stay identical across languages two ways: subscribe to a computed stream (the platform computes it), or call linck-core inside the strategy. linck-core is Rust: used directly from Rust, through PyO3 from Python, napi-rs from Node, and from Go as a WASM module run by wazero, so Go needs no cgo.</li>
+        <li><b>Local equals cloud:</b> the CLI contains the supervisor, the sim venue and a lake reader, and starts the strategy process exactly as a host would.</li>
+      </ul></div>
+    </div>
+<pre class="code"><span class="c">// The same strategy as the Python example in 15, in Go. linck.toml says language = "go".</span>
+<span class="k">package</span> main
+
+<span class="k">import</span> <span class="s">"linck.dev/sdk/linck"</span>
+
+<span class="k">type</span> TrendSpread <span class="k">struct</span> {
+    Width <span class="k">int</span> <span class="s">`param:"200" min:"100" max:"500" label:"Hedge width, points"`</span>
+    Side  <span class="k">string</span> <span class="s">`state:""`</span>
+}
+
+<span class="k">func</span> (s *TrendSpread) Subscribe(ctx *linck.Ctx) []linck.Sub {
+    <span class="k">return</span> []linck.Sub{linck.Supertrend(ctx.Index(<span class="s">"NIFTY"</span>).Bars(<span class="s">"15m"</span>), <span class="s">10</span>, <span class="s">3</span>)}   <span class="c">// a computed stream</span>
+}
+
+<span class="k">func</span> (s *TrendSpread) OnBar(ctx *linck.Ctx, st linck.SupertrendValue) <span class="k">error</span> {
+    <span class="k">if</span> !st.Flipped || st.Trend == s.Side {
+        ctx.Decide(<span class="s">"entry"</span>, <span class="s">"no_action"</span>, <span class="s">"trend "</span>+st.Trend+<span class="s">", no flip"</span>)
+        <span class="k">return nil</span>
+    }
+    short := ctx.Chain(<span class="s">"NIFTY"</span>, linck.ThisWeek).ByPremium(linck.OptionAgainst(st.Trend), <span class="s">100</span>)
+    s.Side = st.Trend
+    <span class="k">return</span> ctx.Orders.Basket(linck.HedgeFirst, <span class="s">"entry"</span>, short.Further(s.Width).Buy(), short.Sell())
+}
+
+<span class="k">func</span> main() { linck.Run(&amp;TrendSpread{}) }   <span class="c">// speaks the runtime protocol on the socket the supervisor gives it</span></pre>
+  </div>
+</section>
+
 <section id="money">
-  <div class="head"><span class="label">08</span><h2>Orders, risk and the ledger</h2><p class="sub">The boring, audited core. Built in the intermediate architecture and kept.</p></div>
+  <div class="head"><span class="label">14</span><h2>Orders, risk and the ledger</h2><p class="sub">The boring, audited core. Built in the intermediate architecture and kept.</p></div>
   <div class="body">
     <figure>
       <div class="diagram">
@@ -682,14 +1070,14 @@ i.st.chgc { width: 18px; height: 12px; background: var(--chg-f); border-color: v
 </section>
 
 <section id="sdk">
-  <div class="head"><span class="label">09</span><h2>The SDK</h2><p class="sub">What a user writes, what it compiles to, how it reaches the runtime, and how we build the SDK itself.</p></div>
+  <div class="head"><span class="label">15</span><h2>The SDK</h2><p class="sub">What a user writes, what it compiles to, how it reaches the runtime, and how we build the SDK itself.</p></div>
   <div class="body">
     <figure>
       <div class="diagram">
 <svg viewBox="0 0 1200 300" role="img" aria-labelledby="skt skd" xmlns="http://www.w3.org/2000/svg">
   <title id="skt">SDK layers</title>
   <desc id="skd">Five layers from top to bottom: the user's strategy; the SDK API with Strategy, params, State, decorators and ctx; the SDK core with the event loop, state codec, determinism guards and the v0 adapter; the runtime protocol v1 as protobuf frames; and the host, either the cloud supervisor or the local simulator with a simulated clock, market and venue.</desc>
-  <g class="n term"><rect x="20" y="20" width="1160" height="46"/><text class="t" x="36" y="49">Your strategy</text><text class="m" x="1164" y="48" text-anchor="end">Python today · Rust, Go, TS, C++ via WASM · anything via remote</text></g>
+  <g class="n term"><rect x="20" y="20" width="1160" height="46"/><text class="t" x="36" y="49">Your strategy</text><text class="m" x="1164" y="48" text-anchor="end">Python · Go · Rust · TypeScript (process or WASM) · C++ via WASM · anything via remote</text></g>
   <g class="n"><rect x="20" y="74" width="1160" height="46"/><text class="t" x="36" y="103">SDK API</text><text class="m" x="1164" y="102" text-anchor="end">Strategy · param() · State · @on.bar / .tick / .fill / .time · ctx.orders · ctx.chain · ctx.decide · ctx.report</text></g>
   <g class="n"><rect x="20" y="128" width="1160" height="46"/><text class="t" x="36" y="157">SDK core</text><text class="m" x="1164" y="156" text-anchor="end">event loop · state codec · determinism guards · indicator library · v0 adapter for StrategyBase</text></g>
   <g class="n box"><rect class="box" x="20" y="182" width="1160" height="46"/><text class="t" x="36" y="211">Runtime protocol v1</text><text class="m" x="1164" y="210" text-anchor="end">EventBatch in · Commands out · protobuf frames over a Unix socket · negotiated version</text></g>
@@ -735,7 +1123,7 @@ segments    = [<span class="s">"NFO"</span>]</pre>
         <h3>From code to running</h3>
         <ol class="steps">
           <li><span><span class="mono">linck run --day 2026-10-14</span>: the local simulator replays a day from the lake through the same SDK core and sim-venue library.</span><span class="t">laptop</span></li>
-          <li><span><span class="mono">linck push</span>: source and lockfile go to our builder, which builds a hermetic artifact (uv-locked wheel + manifest) in the pinned runtime image. Users never upload binaries.</span><span class="t">builder</span></li>
+          <li><span><span class="mono">linck push</span>: source and lockfile go to our builder, which builds a hermetic artifact (source, lockfile, manifest) in the pinned build image for its language: uv, go mod, cargo or npm. Users never upload binaries.</span><span class="t">builder</span></li>
           <li><span>Certification runs the fault matrix, the determinism double-run and the resource budget; the artifact is signed (Sigstore) and stored as an OCI artifact in the registry.</span><span class="t">minutes</span></li>
           <li><span><span class="mono">linck deploy --paper</span> pins that exact version to a deployment; promotion to shadow and live is a state change, not a rebuild.</span><span class="t">seconds</span></li>
         </ol>
@@ -743,9 +1131,9 @@ segments    = [<span class="s">"NFO"</span>]</pre>
       <div>
         <h3>How we build the SDK itself</h3>
         <ul class="plain">
-          <li><b>Python package</b> <span class="mono">linck</span> (PyPI, semver): pure Python API over a small core. The protocol codec and the indicator library are Rust via PyO3, so local runs and the cloud compute indicators identically.</li>
+          <li><b>Four SDKs, one design:</b> Python (<span class="mono">linck</span> on PyPI), Go, Rust and TypeScript, each a thin API over generated protobuf types; indicators from linck-core through each language’s binding (section 13). Semver per SDK.</li>
           <li><b>One conformance suite</b> for every language binding: the same recorded days, the same expected decisions. A binding is done when it passes.</li>
-          <li><b>WASM</b>: the strategy interface is a WIT world (<span class="mono">linck:strategy@1</span>) exporting <span class="mono">on-batch</span> and importing <span class="mono">ctx</span> functions; bindings generated for Rust, Go (TinyGo), TypeScript and C++.</li>
+          <li><b>WASM</b> (the dense plan): the strategy interface is a WIT world (<span class="mono">linck:strategy@1</span>) exporting <span class="mono">on-batch</span> and importing <span class="mono">ctx</span> functions; bindings generated for Rust, Go (TinyGo), TypeScript and C++.</li>
           <li><b>Remote</b>: a gRPC bidirectional stream carrying the same EventBatch/Commands; the platform still owns risk, orders and the clock.</li>
           <li><b>v0 compatibility</b>: an adapter in the core runs today’s <span class="mono">StrategyBase</span> strategies unchanged, which is how our nine strategies move first.</li>
         </ul>
@@ -763,7 +1151,7 @@ segments    = [<span class="s">"NFO"</span>]</pre>
 </section>
 
 <section id="bus">
-  <div class="head"><span class="label">10</span><h2>Messaging</h2><p class="sub">Names, keys and guarantees, so ordering is never an accident.</p></div>
+  <div class="head"><span class="label">16</span><h2>Messaging</h2><p class="sub">Names, keys and guarantees, so ordering is never an accident.</p></div>
   <div class="body">
     <div class="tbl"><table>
       <thead><tr><th>Stream</th><th>On</th><th>Key (ordering)</th><th>Guarantee</th><th>Retention</th></tr></thead>
@@ -781,13 +1169,13 @@ segments    = [<span class="s">"NFO"</span>]</pre>
 </section>
 
 <section id="data">
-  <div class="head"><span class="label">11</span><h2>Data</h2><p class="sub">Each store does one job; tenancy is enforced in the database, not only in code.</p></div>
+  <div class="head"><span class="label">17</span><h2>Data</h2><p class="sub">Each store does one job; tenancy is enforced in the database, not only in code.</p></div>
   <div class="body">
     <div class="tbl"><table>
       <thead><tr><th>Store</th><th>Holds</th><th>Partitioning</th><th>Why this one</th></tr></thead>
       <tbody>
         <tr><td>Postgres · control</td><td>Tenants, users, versions, deployments, policies</td><td>None needed</td><td>Relational, transactional, small</td></tr>
-        <tr><td>Postgres · ledger shard</td><td>Orders, journal, projections, outbox</td><td>One shard per cell; journal by month</td><td>Money needs constraints and transactions; TigerBeetle considered (section 15)</td></tr>
+        <tr><td>Postgres · ledger shard</td><td>Orders, journal, projections, outbox</td><td>One shard per cell; journal by month</td><td>Money needs constraints and transactions; TigerBeetle considered (section 21)</td></tr>
         <tr><td>Postgres · product</td><td>Journal notes, repair cases, preferences</td><td>None needed</td><td>Today’s schema, kept</td></tr>
         <tr><td>ClickHouse</td><td>Bars, decisions, fills copy, read models</td><td>By month and tenant</td><td>Columnar scans for Geek mode and reports</td></tr>
         <tr><td>Lake · Iceberg on S3</td><td>Ticks, chains, reference data over time, fills</td><td>By date, then underlying</td><td>Point-in-time, cheap, read directly by the backtest farm</td></tr>
@@ -805,7 +1193,7 @@ segments    = [<span class="s">"NFO"</span>]</pre>
 </section>
 
 <section id="ship">
-  <div class="head"><span class="label">12</span><h2>Shipping</h2><p class="sub">How a change gets from a laptop to production without touching a trading day.</p></div>
+  <div class="head"><span class="label">18</span><h2>Shipping</h2><p class="sub">How a change gets from a laptop to production without touching a trading day.</p></div>
   <div class="body">
     <figure>
       <div class="diagram">
@@ -826,11 +1214,22 @@ segments    = [<span class="s">"NFO"</span>]</pre>
 </svg>
       </div>
     </figure>
+    <div class="tbl"><table>
+      <thead><tr><th>What</th><th>Packaged as</th><th>Goes to</th><th>How it reaches production</th></tr></thead>
+      <tbody>
+        <tr><td>Our services</td><td>Container images, signed</td><td>Our image registry (ECR)</td><td>Argo CD, cell by cell, after the gates below</td></tr>
+        <tr><td>Users’ strategies</td><td>Signed artifacts (source, lockfile, manifest), not images</td><td>The artifact registry</td><td>Pinned to a deployment; the supervisor fetches the exact version</td></tr>
+        <tr><td>Runtime images</td><td>One pinned image per language version, for process sandboxes</td><td>ECR, on every runtime node</td><td>Rolled out like a service; strategies keep the one they were certified on</td></tr>
+        <tr><td>SDKs</td><td>Packages</td><td>PyPI, the Go module proxy, crates.io, npm</td><td>Semver; release notes; the conformance suite must pass</td></tr>
+        <tr><td>CLI</td><td>One binary per OS</td><td>GitHub releases, Homebrew</td><td>Self-updates; refuses versions older than the platform supports</td></tr>
+        <tr><td>Web app</td><td>Static files</td><td>S3 + CDN</td><td>Atomic switch; the old version stays for instant rollback</td></tr>
+        <tr><td>Mobile apps</td><td>App bundles</td><td>Play Store, App Store</td><td>Staged rollout; features behind flags</td></tr>
+      </tbody></table></div>
     <div class="cols">
       <div>
         <h3>Repository and build</h3>
         <ul class="plain">
-          <li>One monorepo: <span class="mono">contracts/</span> (Buf), <span class="mono">services/</span> (Go modules), <span class="mono">fabric/</span> (Cargo workspace), <span class="mono">python/</span> (uv workspace: SDK, product API, integrity, research), <span class="mono">web/</span>, <span class="mono">deploy/</span> (Terraform, Helm, Argo CD apps).</li>
+          <li>One monorepo: <span class="mono">contracts/</span> (Buf), <span class="mono">services/</span> (Go: control, identity, commerce, refdata, oms, broker-gw, integrity, read-models, notifications, live-gateway), <span class="mono">engine/</span> (Cargo: ingest, computed streams, supervisor, sim venue, linck-core, CLI), <span class="mono">python/</span> (uv: product API, assistant), <span class="mono">sdks/</span> (python, go, rust, ts), <span class="mono">web/</span>, <span class="mono">deploy/</span> (Terraform, Helm, Argo CD).</li>
           <li>Native tools per language, one task runner on top (<span class="mono">just</span>), CI with path filters so a web change doesn’t rebuild Rust.</li>
           <li>Images are distroless, built reproducibly, with an SBOM (Syft) and a signature (cosign); the cluster admits only signed images.</li>
         </ul>
@@ -864,15 +1263,15 @@ segments    = [<span class="s">"NFO"</span>]</pre>
 </section>
 
 <section id="end">
-  <div class="head"><span class="label">13</span><h2>The end state</h2><p class="sub">What production looks like when the final architecture is fully in place. Sizes are estimates for planning, not quotes.</p></div>
+  <div class="head"><span class="label">19</span><h2>The end state</h2><p class="sub">What production looks like when the final architecture is fully in place. Sizes are estimates for planning, not quotes.</p></div>
   <div class="body">
     <div class="tbl"><table>
       <thead><tr><th>Piece</th><th>Shape</th><th>Size at 50k strategies</th></tr></thead>
       <tbody>
         <tr><td>Regions</td><td>AWS ap-south-1 (3 AZs) primary; ap-south-2 warm standby</td><td>RPO 0 for the ledger (synchronous replica in-region, async cross-region); RTO 30 min region-wide</td></tr>
         <tr><td>Accounts</td><td>AWS Organizations: one account per cell, one for control, one for data, one for security</td><td>~15 accounts</td></tr>
-        <tr><td>Control cluster</td><td>EKS: gateway, control plane, product API, notifications, Temporal</td><td>~12 nodes</td></tr>
-        <tr><td>Cells</td><td>Each its own EKS cluster: market fabric, runtime hosts, orders &amp; risk, sim venue, etcd, ledger shard (RDS), Redpanda (3 brokers)</td><td>10 cells × (2 fabric + 6 runtime hosts of 64 vCPU + 3 OMS + 3 Redpanda)</td></tr>
+        <tr><td>Control cluster</td><td>EKS: edge gateway, identity, control, commerce, builder, reference data, product API, live gateway, integrity, read models, notifications, assistant, Temporal, ClickHouse, NATS, Vault</td><td>~12 nodes</td></tr>
+        <tr><td>Cells</td><td>Each its own EKS cluster: market data ingest, sequencer, computed streams, runtime hosts (supervisor + cache agent), OMS, a broker gateway per broker, sim venue, etcd, Redpanda (3 brokers); its ledger shard on RDS</td><td>10 cells × (2 fabric + 6 runtime hosts of 64 vCPU + 3 OMS + 3 Redpanda)</td></tr>
         <tr><td>Partner cells</td><td>A broker partner gets dedicated cells, optionally in its own account</td><td>1–3 per partner</td></tr>
         <tr><td>Data</td><td>ClickHouse cluster (3 shards × 2 replicas), Iceberg on S3, Redis cluster</td><td>~2 TB ClickHouse/year; lake grows ~15–25 GB/day compressed</td></tr>
         <tr><td>Backtest farm</td><td>Spot instances via Karpenter, scaled from zero by queue depth</td><td>0 → 500 vCPU in minutes</td></tr>
@@ -900,14 +1299,15 @@ segments    = [<span class="s">"NFO"</span>]</pre>
 </section>
 
 <section id="path">
-  <div class="head"><span class="label">14</span><h2>Migration, step by step</h2><p class="sub">Every step ships alone, runs beside what it replaces until proven equal, and leaves trading untouched.</p></div>
+  <div class="head"><span class="label">20</span><h2>Migration, step by step</h2><p class="sub">Every step ships alone, runs beside what it replaces until proven equal, and leaves trading untouched.</p></div>
   <div class="body">
     <div class="tbl"><table>
       <thead><tr><th>#</th><th>Step</th><th>Proven equal by</th><th>Lands in</th></tr></thead>
       <tbody>
+        <tr><td class="mono">I0</td><td>An image per service, one EKS cluster, Helm + Argo CD; today’s app runs there unchanged as <span class="mono">core-api</span></td><td>A week of paper days on the cluster beside the current box</td><td>Intermediate</td></tr>
         <tr><td class="mono">I1</td><td>Contracts repo; SDK v0 as a facade over today’s StrategyBase; our strategies run through it</td><td>Fault matrix and crash-recovery suites unchanged</td><td>Intermediate</td></tr>
         <tr><td class="mono">I2</td><td>Strategies out of the API process into leased Python runner workers; NATS carries ticks and fills</td><td>A week of paper days: identical fills to the old path (dual run)</td><td>Intermediate</td></tr>
-        <tr><td class="mono">I3</td><td>Go orders &amp; risk: shadow-write beside today’s fill path, then cut over as the single writer</td><td>Journal and today’s tables equal every night for two weeks</td><td>Intermediate</td></tr>
+        <tr><td class="mono">I3</td><td>Go orders &amp; risk and the Kite broker gateway: shadow-write beside today’s fill path, then cut over as the single writer</td><td>Journal and today’s tables equal every night for two weeks</td><td>Intermediate</td></tr>
         <tr><td class="mono">I4</td><td>Go market data service; Redis latest prices; ClickHouse bars</td><td>Bars equal to Kite’s 1-minute candles (today’s day check)</td><td>Intermediate</td></tr>
         <tr><td class="mono">I5</td><td>Temporal for the end-of-day chain; tenants and row-level security; shadow mode</td><td>End-of-day outputs equal; tenancy tests</td><td>Intermediate</td></tr>
         <tr><td class="mono">F1</td><td>Rust feed handlers and tick cache beside the Go service</td><td>Every record and bar equal for two weeks</td><td>Final</td></tr>
@@ -917,24 +1317,30 @@ segments    = [<span class="s">"NFO"</span>]</pre>
         <tr><td class="mono">F5</td><td>Redpanda for orders, fills, journal and ticks</td><td>Outbox dual-writes; consumer offsets match</td><td>Final</td></tr>
         <tr><td class="mono">F6</td><td>Control plane to Go (strangler, module by module); Envoy gateway; public API</td><td>Contract tests on every endpoint moved</td><td>Final</td></tr>
         <tr><td class="mono">F7</td><td>Cells: ledger shards, per-cell clusters, tenant pinning</td><td>A staff cell, then a partner cell, then waves</td><td>Final</td></tr>
-        <tr><td class="mono">F8</td><td>WASM and remote SDKs; marketplace; native apps</td><td>Conformance suite per binding</td><td>Final</td></tr>
+        <tr><td class="mono">F8</td><td>Go, Rust and TypeScript SDKs; WASM and remote sandboxes; marketplace; native apps</td><td>Conformance suite per SDK</td><td>Final</td></tr>
+        <tr><td class="mono">F9</td><td>Reference data service; more brokers (Upstox, Dhan, Angel One, Fyers, ICICI, FIX)</td><td>Adapter conformance suite and a paper week per broker</td><td>Final</td></tr>
       </tbody></table></div>
   </div>
 </section>
 
 <section id="adr">
-  <div class="head"><span class="label">15</span><h2>Decisions, and what we turned down</h2><p class="sub">Short decision records. Each can be revisited when its reason stops being true.</p></div>
+  <div class="head"><span class="label">21</span><h2>Decisions, and what we turned down</h2><p class="sub">Short decision records. Each can be revisited when its reason stops being true.</p></div>
   <div class="body">
     <div class="tbl"><table>
       <thead><tr><th>Decision</th><th>Chosen</th><th>Turned down</th><th>Because</th></tr></thead>
       <tbody>
         <tr><td>Hot data path</td><td>Rust</td><td>C++ · Go · Java</td><td>C++ speed with memory safety next to untrusted code; Go’s GC and allocation are measurable at 300k msg/s; Java’s tuning cost. C++ only to wrap vendor SDKs.</td></tr>
         <tr><td>Control and money</td><td>Go</td><td>Rust · Java/Kotlin · Python</td><td>Readable, quick to build, great for network integrations; the OMS is I/O-bound, so Rust’s gains don’t pay for its build cost there.</td></tr>
-        <tr><td>Strategies</td><td>Python first</td><td>Our own DSL · JS only</td><td>Where quants are; a DSL limits them and becomes a product of its own.</td></tr>
+        <tr><td>Strategies</td><td>Python first; Go, Rust, TypeScript on the same protocol</td><td>Our own DSL · one language only</td><td>Where quants are; a DSL limits them and becomes a product of its own. One protocol makes each extra language an SDK, not a platform change.</td></tr>
+        <tr><td>Running many languages</td><td>One protocol, thin SDKs, three sandbox kinds</td><td>A runtime per language · one C core loaded into every language</td><td>A runtime per language multiplies the hardest code; a shared C core brings crashes and FFI into every SDK.</td></tr>
+        <tr><td>Hosting</td><td>Containers on Kubernetes (EKS)</td><td>Compose on VMs · ECS · Nomad · serverless</td><td>Operators for our stores, gVisor runtime classes, rolling deploys, the same setup per cell and per partner.</td></tr>
+        <tr><td>Strategy unit</td><td>A sandbox under the supervisor</td><td>A pod per strategy</td><td>50k pods is past what Kubernetes handles well; pods start in seconds, sandboxes in under one.</td></tr>
+        <tr><td>Protocols</td><td>REST + WebSocket outside, gRPC inside, events for facts</td><td>REST everywhere · GraphQL · gRPC-Web</td><td>Browsers want REST; services want typed contracts and streams; facts want a log.</td></tr>
+        <tr><td>Broker connectivity</td><td>One gateway codebase, a deployment per broker</td><td>One shared deployment · a service per broker codebase</td><td>Isolation without duplicating the common code (tokens, limits, retries).</td></tr>
         <tr><td>Durable log</td><td>Redpanda + NATS</td><td>Kafka only · NATS only · Pulsar</td><td>Kafka API without the JVM and ZooKeeper; NATS for cheap fan-out and control. Kafka itself remains a drop-in.</td></tr>
         <tr><td>Ledger</td><td>Postgres, double-entry journal</td><td>TigerBeetle · event store</td><td>Our write rate (thousands/s at peak) is well inside Postgres; TigerBeetle’s speed isn’t needed yet and SQL reporting would suffer.</td></tr>
         <tr><td>Analytics</td><td>ClickHouse</td><td>TimescaleDB · BigQuery</td><td>Fastest scans at this size, runs anywhere, already used; data stays in India.</td></tr>
-        <tr><td>Sandbox</td><td>gVisor (Python), Wasmtime (WASM)</td><td>Firecracker per strategy · plain containers</td><td>Thousands per host: microVMs cost too much memory each; plain containers share too much kernel.</td></tr>
+        <tr><td>Sandbox</td><td>gVisor (process sandboxes, any language), Wasmtime (WASM)</td><td>Firecracker per strategy · plain containers</td><td>Thousands per host: microVMs cost too much memory each; plain containers share too much kernel.</td></tr>
         <tr><td>Leases</td><td>etcd (final), Postgres (intermediate)</td><td>Redis locks · ZooKeeper</td><td>Linearizable with fencing tokens; Redis locks aren’t safe under partitions.</td></tr>
         <tr><td>Workflows</td><td>Temporal</td><td>Cron + queues · Airflow</td><td>The end-of-day chain must resume at the step it stopped; Airflow is for batch data, not business processes.</td></tr>
         <tr><td>Isolation unit</td><td>Cells</td><td>One big cluster · per-tenant stacks</td><td>Bounded blast radius at sane cost; partners get their own.</td></tr>
@@ -945,7 +1351,7 @@ segments    = [<span class="s">"NFO"</span>]</pre>
 </section>
 
 <section id="open">
-  <div class="head"><span class="label">16</span><h2>Open questions</h2><p class="sub">Technical calls we make with data, not now.</p></div>
+  <div class="head"><span class="label">22</span><h2>Open questions</h2><p class="sub">Technical calls we make with data, not now.</p></div>
   <div class="body">
     <ul class="plain">
       <li><b>Which data vendor</b>, and whether its feed is snapshot or tick-by-tick: decides when F1 (Rust fabric) is needed.</li>
@@ -958,6 +1364,6 @@ segments    = [<span class="s">"NFO"</span>]</pre>
 </section>
 
 </main>
-<footer class="wrap"><span>Linck · technical architecture v1 · 22 Oct 2026</span><span>Companion to “Linck, the platform” and “Linck at scale”. One self-contained file: fonts included, works offline.</span></footer>
+<footer class="wrap"><span>Linck · technical architecture v2 · 22 Oct 2026</span><span>Companion to “Linck, the platform” and “Linck at scale”. One self-contained file: fonts included, works offline.</span></footer>
 </body>
 </html>
