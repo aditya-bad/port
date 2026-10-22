@@ -2,8 +2,13 @@
 // a day flagged by the end-of-day check and not repaired yet is marked
 // "Flagged", a repaired one "Repaired", and each opens that day's case on
 // the Repair page — from inside a clickable row too. Seeded by
-// tests/e2e/serve.py: seed_day_checks (Nifty Strangle A flagged yesterday)
-// and seed_repair (a repair made by the script on BankNifty DTT Plain).
+// tests/e2e/serve.py: seed_day_checks (Nifty Strangle A flagged yesterday),
+// seed_repair (a repair made by the script on BankNifty DTT Plain),
+// seed_repair_cases (Bankex Strangle: repaired yesterday, its cycle still
+// open) and seed_old_repair (BankNifty DTT Advanced: three weeks back).
+// A repair marks the deployment only while its cycle is the current one;
+// the cycle keeps its mark wherever it's listed. A flagged day stays
+// marked until it's repaired or dismissed from its case.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BASE, IDS, browser, context, api } from './helper.mjs';
@@ -89,6 +94,76 @@ test('the Geek header and the week in review', async () => {
   const link = p.locator(`a.rv-flag[href="#/repair/${f.day}/${FLAGGED}"]`);
   assert.equal(await link.count(), 1);
   assert.match(await link.innerText(), /Flagged[\s\S]*Nifty Strangle A/i);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+const CURRENT = IDS['Bankex Strangle'], OLD = IDS['BankNifty DTT Advanced'];
+
+test('a deployment is marked Repaired only while the repaired cycle is its current one', async () => {
+  const cur = repairOf(CURRENT), old = repairOf(OLD);
+  assert.ok(cur && cur.cycle.current, 'Bankex: repaired yesterday, its cycle still open');
+  assert.equal(cur.cycle.to, null, 'an open positional cycle');
+  assert.ok(old && !old.cycle.current && old.cycle.from === old.day, 'three weeks back: a day, long over');
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  // (Bankex is in the Strategy Lab, which the list leaves out: its own page)
+  await p.goto(`${BASE}/linck/#/d/${CURRENT}/now`);
+  await p.waitForSelector('.dep-head');
+  const curTag = p.locator(`.dep-head a.fix-tag[href="#/repair/${cur.day}/${CURRENT}"]`);
+  await curTag.waitFor();
+  assert.match(await curTag.getAttribute('data-tip'), /current cycle \(.+ – now\) was repaired/, 'the current cycle: marked');
+  await p.goto(`${BASE}/linck/#/deployments`);
+  await p.waitForSelector('.dep-tbl .tr:not(.th)');
+  assert.ok(await p.locator('.dep-tbl .tr', { hasText: 'BankNifty DTT Advanced' }).count(), 'listed');
+  assert.equal(await p.locator(`.dep-tbl a[href^="#/repair/"][href$="/${OLD}"]`).count(), 0, 'an old cycle: the deployment isn’t marked');
+  // its cycle still is: the Performance line counts it, by cycle
+  await p.goto(`${BASE}/linck/#/d/${OLD}/performance`);
+  await p.waitForSelector('[data-repairs-line]');
+  assert.match(await p.locator('[data-repairs-line]').innerText(), /Includes a repaired cycle/);
+  assert.equal(await p.locator(`[data-repairs-line] a[href="#/repair/${old.day}/${OLD}"]`).count(), 1);
+  assert.equal(await p.locator('.dep-head .fix-tag').count(), 0, 'and not in its header');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('the leaderboard counts the repaired cycles in the period it ranks', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/leaderboard`);
+  await p.waitForSelector('.lb-tbl .tr:not(.th)');
+  await p.click('[data-act="period"][data-v="all"]');
+  await p.waitForTimeout(300);
+  const row = p.locator('.lb-tbl .tr', { hasText: 'BankNifty DTT Advanced' });
+  assert.match(await row.innerText(), /Repaired cycle/i, 'all time: its old repaired cycle');
+  await p.click('[data-act="period"][data-v="month"]');
+  await p.waitForTimeout(300);
+  const old = repairOf(OLD).day, month = new Date().toISOString().slice(0, 7);
+  if (old.slice(0, 7) !== month) assert.doesNotMatch(await row.innerText(), /Repaired cycle/i, 'this month: not repaired');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('a flagged day can be dismissed from its case, and brought back', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  const f = flagOf(FLAGGED);
+  await p.goto(`${BASE}/linck/#/repair/${f.day}/${FLAGGED}`);
+  await p.waitForSelector('.rc-found [data-act="dismiss"]');
+  await p.click('.rc-found [data-act="dismiss"]');
+  await p.waitForSelector('.rc-found [data-dismissed]');
+  let now = (await api(ctx, '/v2/book')).repairs;
+  assert.equal(now.filter(m => m.deployment_id === FLAGGED && m.day === f.day && m.state === 'flagged').length, 0, 'no longer flagged');
+  await p.goto(`${BASE}/linck/#/deployments`);
+  await p.waitForSelector('.dep-tbl .tr:not(.th)');
+  assert.equal(await p.locator(`.dep-tbl a.fix-flag[href="#/repair/${f.day}/${FLAGGED}"]`).count(), 0, 'nor marked in the list');
+  // the day check says so, and undo brings it back
+  await p.goto(`${BASE}/linck/#/repair/${f.day}/${FLAGGED}`);
+  await p.waitForSelector('.rc-found [data-act="undismiss"]');
+  await p.click('.rc-found [data-act="undismiss"]');
+  await p.waitForSelector('.rc-found [data-act="dismiss"]');
+  now = (await api(ctx, '/v2/book')).repairs;
+  assert.equal(now.filter(m => m.deployment_id === FLAGGED && m.day === f.day && m.state === 'flagged').length, 1, 'flagged again');
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });

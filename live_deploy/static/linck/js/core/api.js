@@ -52,6 +52,7 @@ export const api = {
   pushRepair: (day, dep) => post(`/v2/repair-cases/${enc(day)}/${enc(dep)}/push`),
   repairJob: id => req(`/v2/repair-jobs/${id}`),
   undoRepair: id => post(`/v2/repairs/${id}/undo`),
+  dismissDay: (day, dep, undo = false) => post(`/v2/repair-cases/${enc(day)}/${enc(dep)}/dismiss`, { undo }),
   me: () => req('/auth/me'),
   logout: () => post('/auth/logout'),
   logoutEverywhere: () => post('/auth/logout-everywhere'),

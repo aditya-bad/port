@@ -213,6 +213,7 @@ async def seed():
     await seed_day_checks(pool, ids)
     await seed_repair_cases(pool, ids)
     await seed_strategy_issues(pool, ids)
+    await seed_old_repair(pool, ids["BankNifty DTT Advanced"])
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -645,6 +646,19 @@ async def seed_ops(pool, ids):
         "INSERT INTO ops_issues (key, kind, severity, title, detail, opened_at, last_seen_at, resolved_at, resolved_by, alerts) "
         "VALUES ('kite:stall', 'kite_stall', 'critical', 'Kite prices stopped', 'No ticks since 12:15.', $1, $2, $2, 'cleared', 5)",
         now - timedelta(hours=3), now - timedelta(hours=2, minutes=55))
+
+
+async def seed_old_repair(pool, dep):
+    """A repair three weeks back on a deployment with nothing flagged: its
+    cycle is long over, so the deployment itself isn't marked; the cycle is,
+    wherever it's listed (ui/repairs.js)."""
+    day = datetime.now(IST).date() - timedelta(days=20)
+    while day.weekday() >= 5:
+        day -= timedelta(days=1)
+    await pool.execute(
+        "INSERT INTO stall_repairs (deployment_id, day, window_from, window_to, choices, summary, undo) "
+        "VALUES ($1, $2, $3, $4, '{}', $5, '{}')", dep, day, datetime.combine(day, time(12, 0), IST),
+        datetime.combine(day, time(15, 30), IST), {"fills": 0, "pnl": 0.0, "left": 0.0, "change": 0.0, "fills_detail": []})
 
 
 async def seed_strategy_issues(pool, ids):

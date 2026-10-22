@@ -109,11 +109,13 @@ test('it says what it can’t draw: an index level that can’t be these contrac
   const ctx = await context(b);
   const p = await ctx.newPage();
   // the fixture's BankNifty history sits near 25,000 while its strikes are 55,900
-  await p.goto(`${BASE}/linck/#/d/${IDS['BankNifty DTT Plain']}/geek/replay`);
+  // an earlier straddle, not the latest: flow.e2e may have closed the latest one just now
+  const bn = IDS['BankNifty DTT Plain'], n = (await api(ctx, `/v2/deployments/${bn}/geek/replay`)).episodes.length;
+  await p.goto(`${BASE}/linck/#/d/${bn}/geek/replay?from=${n - 1}&to=${n - 1}`);
   await ready(p);
   const why = await p.locator('[data-rp="stage"]').innerText();
   assert.match(why, /NIFTY BANK at [\d,.]+ can’t be the index of/);
-  assert.match(why, /PE 55900/); assert.match(why, /CE 55900/);
+  assert.match(why, /PE \d{5}/); assert.match(why, /CE \d{5}/);
   assert.equal(await p.locator('[data-rp="stage"] svg').count(), 0);
   assert.ok(await rows(p) >= 1, 'the positions are still there');
   // the same for Sensex (history near 25,000, strikes past 80,000). A leg with no known

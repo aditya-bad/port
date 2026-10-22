@@ -4,7 +4,7 @@
 // this month, this year or all-time. Young deployments are listed, never ranked.
 
 import { html, mount, actions } from '../core/dom.js';
-import { inr, inrS, pct, plural, tone } from '../core/format.js';
+import { inr, inrS, pct, plural, tone, dayKey } from '../core/format.js';
 import { pnlOf } from '../core/basis.js';
 import { ui, listen } from '../core/store.js';
 import { go, href } from '../core/router.js';
@@ -13,7 +13,7 @@ import { periodMetrics, verdictRdd, verdictPf, fmtRatio } from '../data/metrics.
 import { STREAK_ALERT } from '../data/config.js';
 import { seg, check, empty } from '../ui/components.js';
 import { say } from '../ui/toast.js';
-import { repairChip } from '../ui/repairs.js';
+import { cyclesMark } from '../ui/repairs.js';
 
 const st = ui('leaderboard', { p: 'year', sk: 'rdd', lab: false, board: 'overview' });
 
@@ -30,6 +30,9 @@ const K = {
 const BOARDS = [['overview', 'All boards'], ['ret', 'Returns'], ['rdd', 'Risk-adjusted'], ['dd', 'Lowest drawdown'], ['win', 'Win rate'], ['pf', 'Profit factor'], ['cons', 'Consistency'], ['pnl', 'Biggest P&L']];
 const PERIOD_WORD = { month: 'this month', year: 'this year to date', all: 'all-time' };
 const val = (k, m) => (k === 'dd' ? m.ddp : k === 'pf' && m.pf >= 99 ? 0 : k === 'n' ? m.n : m[k]);
+
+// The first day of the period ranked (month, year), for its repaired cycles.
+const since = p => { const k = dayKey(new Date()); return p === 'month' ? `${k.slice(0, 8)}01` : p === 'year' ? `${k.slice(0, 5)}01-01` : undefined; };
 
 export function rankRows(period, lab) {
   return book.deployments().filter(v => lab || !v.isLab).map(v => {
@@ -131,7 +134,7 @@ export default {
                 <span class="num" title="${verdictPf(x.m.pf)}">${K.pf[1](x.m)}</span>
                 <span class="num">${K.cons[1](x.m)}</span>
                 <span class="num mute">${x.m.n}</span>
-                <span class="row wrap" style="gap:4px;padding-left:16px">${repairChip(x.v)}${flags(x).map(([t, c]) => html`<span class="flag ${c}">${t}</span>`)}</span>
+                <span class="row wrap" style="gap:4px;padding-left:16px">${cyclesMark(x.v, since(s.p))}${flags(x).map(([t, c]) => html`<span class="flag ${c}">${t}</span>`)}</span>
               </div>`)}
           </div>
           <p class="tiny mute" style="margin:10px 0 0">Return/DD is return on capital divided by max drawdown in the period: above 3 excellent, 1.5–3 good, 0.8–1.5 fair, below that weak.</p>`

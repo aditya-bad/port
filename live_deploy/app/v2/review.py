@@ -253,7 +253,7 @@ async def build(pool: asyncpg.Pool, week: Optional[date] = None, now: Optional[d
         t["name"] = name(t["deployment_id"])
     for r in rules:
         r["name"] = name(r["deployment_id"])
-    repairs = await book.list_repairs(pool, today, between=(week, week + timedelta(days=7)))
+    repairs = await book.list_repairs(pool, between=(week, week + timedelta(days=7)))
     for r in repairs:
         r["name"] = name(r["deployment_id"])
     return {

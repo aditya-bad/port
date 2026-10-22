@@ -301,7 +301,10 @@ async def run_day(pool, day: date, book: MinuteBook, real_kite, run_id: Optional
             "INSERT INTO day_checks (run_id, day, deployment_id, status, headline, rules, diff, replay, checked_at) "
             "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now()) ON CONFLICT (day, deployment_id) DO UPDATE SET "
             "run_id = EXCLUDED.run_id, status = EXCLUDED.status, headline = EXCLUDED.headline, rules = EXCLUDED.rules, "
-            "diff = EXCLUDED.diff, replay = EXCLUDED.replay, checked_at = now()",
+            "diff = EXCLUDED.diff, replay = EXCLUDED.replay, checked_at = now(), "
+            # a dismissal stands while the finding is the same; a different one comes back
+            "dismissed_at = CASE WHEN day_checks.status = EXCLUDED.status AND day_checks.headline = EXCLUDED.headline "
+            "THEN day_checks.dismissed_at END",
             run_id, day, d["id"], r["status"], r["headline"], r["rules"], _json(r["diff"]), _json(r["replay"]))
         results.append({**r, "deployment_id": str(d["id"]), "name": d["deployment_name"]})
         say(f"    {r['status']}: {r['headline']}")

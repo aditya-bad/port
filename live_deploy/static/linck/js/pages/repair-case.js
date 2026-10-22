@@ -8,7 +8,8 @@
 
 import { api } from '../core/api.js';
 import { html, raw, mount, actions, $, on } from '../core/dom.js';
-import { inr, price, dDay, fromDay, hhmm, plural, tone } from '../core/format.js';
+import { inr, price, dDay, dStamp, fromDay, hhmm, plural, tone } from '../core/format.js';
+import * as book from '../data/book.js';
 import { href } from '../core/router.js';
 import { sect, empty, loading } from '../ui/components.js';
 import { line } from '../ui/charts.js';
@@ -183,6 +184,14 @@ export default {
         </div></div>`;
     }
 
+    // A flagged day left as it is: no longer marked anywhere (undo brings it back).
+    function dismissBit() {
+      if (c.applied || !['rule', 'mismatch', 'ambiguous'].includes(c.check.status)) return '';
+      return c.check.dismissed_at
+        ? html`<span class="grow"></span><span class="small mute" data-dismissed>Dismissed ${dStamp(c.check.dismissed_at)}: not marked as flagged</span><button type="button" class="btn btn-xs btn-quiet" data-act="undismiss">Undo</button>`
+        : html`<span class="grow"></span><button type="button" class="btn btn-sm btn-quiet" data-act="dismiss" data-tip="You’ve looked at it and its numbers stand: it stops being marked as flagged on every page. A repair stays possible.">Dismiss</button>`;
+    }
+
     function stateBar() {
       const pl = c.plan, ap = c.apply;
       if (!c.check && !c.applied) return '';   // only what the deployment reported: nothing planned
@@ -216,7 +225,7 @@ export default {
       const shown = c.applied ? null : pl;
       const p = c.check && PILL[c.check.status];
       mount(main, html`${head()}<div class="page" style="padding-top:4px">
-        ${c.check ? html`<div class="rc-found"><span class="dc-pill ${p[1]}">${p[0]}</span><span>${c.check.headline}</span></div>
+        ${c.check ? html`<div class="rc-found"><span class="dc-pill ${p[1]}">${p[0]}</span><span>${c.check.headline}</span>${dismissBit()}</div>
           ${(c.check.rules || []).map(r => html`<div class="dc-rule ${r.severity}"><b>${r.title}</b><span>${r.detail}</span></div>`)}`
         : html`<div class="rc-found"><span class="dc-pill t-mute">Not checked</span><span>${c.applied
           ? 'This day wasn’t checked after the close; the repair was made with the stall-repair script.'
@@ -266,6 +275,14 @@ export default {
       choose: x => { say(`${x.m}: ${ORDER_WORDS[x.k].toLowerCase()}. Planning on from there…`); plan({ ...c.draft.choices, [x.m]: x.k }); },
       unchoose: x => { const ch = { ...c.draft.choices }; Object.keys(ch).forEach(m => { if (m >= x.m) delete ch[m]; }); plan(ch); },
       reset: () => plan({}),
+      dismiss: async () => {
+        try { await api.dismissDay(day, dep); say('Dismissed. It’s no longer marked as flagged.'); await book.load(['book']); } catch (e) { fail(e, 'Couldn’t dismiss it'); }
+        load();
+      },
+      undismiss: async () => {
+        try { await api.dismissDay(day, dep, true); say('Flagged again.'); await book.load(['book']); } catch (e) { fail(e, 'Couldn’t undo it'); }
+        load();
+      },
       replan: () => plan(c.draft.choices),
       push: () => {
         const r = c.plan.result;

@@ -117,15 +117,16 @@ function dailyBy() {
     return m;
   });
 }
-// {done: [days repaired], open: [days flagged by the day check and not
-// repaired yet: {day, status, headline}]} by deployment, oldest first
+// {done: [{day repaired, cycle: {from, to, current}}], open: [days flagged
+// by the day check, not repaired or dismissed: {day, status, headline}]}
+// by deployment, oldest first
 function repairsBy() {
   return memo(`repairsBy:${version}`, () => {
     const m = new Map();
     for (const r of raw.repairs) {
       if (!m.has(r.deployment_id)) m.set(r.deployment_id, { done: [], open: [] });
       const e = m.get(r.deployment_id);
-      if (r.state === 'repaired') e.done.push(r.day); else e.open.push(r);
+      if (r.state === 'repaired') e.done.push({ day: r.day, cycle: r.cycle || null }); else e.open.push(r);
     }
     return m;
   });

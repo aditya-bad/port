@@ -158,7 +158,7 @@ function endState(end) {
 function checkRow(x, open, day) {
   const diff = x.diff || {}, rep = x.replay || {};
   return html`<details class="dc-row t-${CHECK[x.status][1]}" ${open ? 'open' : ''} data-dc="${x.deployment_id}">
-    <summary>${pill(x.status)}<b>${x.name}</b><span class="small mute">${x.strategy} · ${x.mode}</span><span class="dc-head">${x.headline}</span></summary>
+    <summary>${pill(x.status)}<b>${x.name}</b><span class="small mute">${x.strategy} · ${x.mode}</span>${x.dismissed_at ? html`<span class="tag" data-tip="Dismissed from its case: no longer marked as flagged">Dismissed</span>` : ''}<span class="dc-head">${x.headline}</span></summary>
     <div class="dc-body">
       ${(x.rules || []).map(r => html`<div class="dc-rule ${r.severity}"><b>${r.title}</b><span>${r.detail}</span></div>`)}
       ${diff.end ? html`${endState(diff.end)}${tradesTable(diff)}` : ''}

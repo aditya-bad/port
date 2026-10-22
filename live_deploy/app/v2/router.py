@@ -423,6 +423,7 @@ async def get_day_checks(request: Request, day: Optional[str] = None):
         "deployment_id": str(r["deployment_id"]), "name": r["deployment_name"], "strategy": r["strategy_name"],
         "mode": r["mode"], "status": r["status"], "headline": r["headline"], "rules": r["rules"] or [],
         "diff": r["diff"] or {}, "replay": r["replay"] or {}, "checked_at": r["checked_at"].isoformat(),
+        "dismissed_at": r["dismissed_at"].isoformat() if r["dismissed_at"] else None,
     } for r in rows), key=lambda x: (_CHECK_ORDER.get(x["status"], 9), x["name"]))
     counts: dict = {}
     for x in results:
@@ -478,6 +479,29 @@ def _day(s: str):
         raise HTTPException(422, "day must be a date, YYYY-MM-DD")
 
 
+class DismissIn(BaseModel):
+    undo: bool = False
+
+
+@router.post("/repair-cases/{day}/{deployment_id}/dismiss")
+async def dismiss_flagged_day(day: str, deployment_id: UUID, payload: DismissIn, request: Request):
+    """A flagged day you've looked at and are leaving as it is: no longer
+    marked as flagged anywhere (undo brings the mark back). A day that's
+    been repaired, or wasn't flagged, has nothing to dismiss."""
+    pool = request.app.state.db_pool
+    d = _day(day)
+    row = await pool.fetchrow(
+        "UPDATE day_checks SET dismissed_at = CASE WHEN $3 THEN NULL ELSE now() END "
+        "WHERE deployment_id = $1 AND day = $2 AND status IN ('rule', 'mismatch', 'ambiguous') "
+        "AND NOT EXISTS (SELECT 1 FROM stall_repairs r WHERE r.deployment_id = $1 AND r.day = $2 AND r.undone_at IS NULL) "
+        "RETURNING dismissed_at", deployment_id, d, payload.undo)
+    if row is None:
+        raise HTTPException(409, "Only a flagged day that hasn't been repaired can be dismissed")
+    request.app.state.v2_book = None   # the marks come from the book: not 15 seconds late
+    return {"day": d.isoformat(), "deployment_id": str(deployment_id),
+            "dismissed_at": row["dismissed_at"].isoformat() if row["dismissed_at"] else None}
+
+
 @router.get("/repair-cases/{day}/{deployment_id}")
 async def get_repair_case(day: str, deployment_id: UUID, request: Request):
     """A flagged day of one deployment: what the check found, the paths
@@ -508,7 +532,8 @@ async def get_repair_case(day: str, deployment_id: UUID, request: Request):
         "deployment": {"id": str(dep["id"]), "name": dep["deployment_name"], "strategy": dep["strategy_name"],
                        "mode": dep["mode"], "status": dep["status"], "capital": float(dep["initial_capital"])},
         "check": {"status": check["status"], "headline": check["headline"], "rules": check["rules"] or [],
-                  "diff": check["diff"] or {}, "replay": check["replay"] or {}, "checked_at": check["checked_at"].isoformat()} if check else None,
+                  "diff": check["diff"] or {}, "replay": check["replay"] or {}, "checked_at": check["checked_at"].isoformat(),
+                  "dismissed_at": check["dismissed_at"].isoformat() if check["dismissed_at"] else None} if check else None,
         "draft": {"choices": choices, "updated_at": draft["updated_at"].isoformat() if draft else None},
         "reported": [_strategy_issue_json(r) for r in reported],
         "plan": _job_json(plan),

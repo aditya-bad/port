@@ -10,6 +10,7 @@ import { inr, tone, toneVar, plural, fromDay, dDay, dStamp, MONTHS } from '../co
 import { pick, current as basisNow } from '../core/basis.js';
 import { go, href } from '../core/router.js';
 import { empty, loading, stat, fixTag } from '../ui/components.js';
+import { cycleName } from '../ui/repairs.js';
 
 const p = row => pick(row, 'pnl') || 0;
 // "leg_stop" -> "Leg stop" (a rule's key, as the strategies write it)
@@ -77,15 +78,16 @@ function repairsSection(w) {
   const R = w.repairs || [];
   if (!R.length) return '';
   const flagged = R.filter(r => r.state === 'flagged').length;
-  return html`<section><h3 class="t-h3">Repairs <span class="mute small">${flagged ? `${plural(flagged, 'day')} flagged and not repaired: their numbers aren’t what the strategy would have done` : 'days replayed from Kite’s 1-minute candles'}</span></h3>
+  return html`<section><h3 class="t-h3">Repairs <span class="mute small">${flagged ? `${plural(flagged, 'day')} flagged and not repaired: their numbers aren’t what the strategy would have done` : 'cycles replayed from Kite’s 1-minute candles'}</span></h3>
     <div class="col" style="gap:8px">${R.map(r => html`<a class="rv-flag" href="${href(`repair/${r.day}/${r.deployment_id}`)}">
-      <b>${r.state === 'flagged' ? html`<span class="fix-flag">Flagged</span>` : html`<span class="fix-tag">Repaired</span>`} ${r.name} · ${dDay(fromDay(r.day))}</b>
+      <b>${r.state === 'flagged' ? html`<span class="fix-flag">Flagged</span>` : html`<span class="fix-tag">Repaired</span>`} ${r.name} · ${r.cycle ? cycleName(r.cycle) : dDay(fromDay(r.day))}</b>
       <span class="small mute">${r.state === 'flagged' ? `${r.headline || r.status}. Review it ›` : 'Its trades from where it parted were replayed by its own strategy. Open the repair ›'}</span></a>`)}</div></section>`;
 }
 const depMark = (w, id) => {
   const R = (w.repairs || []).filter(r => r.deployment_id === id);
   if (R.some(r => r.state === 'flagged')) return html`<span class="fix-flag">Flagged</span>`;
-  return R.length ? fixTag(true, null, `Repaired this week: ${R.map(r => dDay(fromDay(r.day))).join(', ')}`) : '';
+  const C = [...new Map(R.map(r => [r.cycle ? r.cycle.from : r.day, r])).values()];
+  return C.length ? fixTag(true, null, `Repaired this week: ${plural(C.length, 'cycle')} — ${C.map(r => (r.cycle ? cycleName(r.cycle) : dDay(fromDay(r.day)))).join(', ')}`) : '';
 };
 
 function tradeLine(t) {

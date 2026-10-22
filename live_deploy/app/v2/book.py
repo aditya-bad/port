@@ -17,7 +17,7 @@ Both carry gross, after-charges and after-charges-and-slippage figures
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any, Optional
 
 import asyncpg
@@ -170,32 +170,78 @@ async def list_daily(pool: asyncpg.Pool, since: Optional[datetime] = None) -> li
     ]
 
 
-FLAG_DAYS = 7   # how long a flagged day that wasn't repaired is marked
+SESSION_OPEN = time(9, 15)
 
 
-async def list_repairs(pool: asyncpg.Pool, today: Optional[date] = None,
+def _next_session(day: date) -> datetime:
+    """When the trading session after `day` opens (the next weekday, 09:15 IST)."""
+    d = day + timedelta(days=1)
+    while d.weekday() >= 5:
+        d += timedelta(days=1)
+    return datetime.combine(d, SESSION_OPEN, IST)
+
+
+def cycle_of(mode: str, episodes: list, day: date, now: datetime) -> dict[str, Any]:
+    """The cycle a repaired day belongs to — intraday: that day; positional:
+    the episode (entry, adjustments, exit) it falls in — and whether it's
+    still the deployment's current cycle: until the next one begins (the
+    next session's open; a new entry). Pure, for the marks on every page."""
+    if mode != "positional":
+        return {"from": day.isoformat(), "to": day.isoformat(), "current": now < _next_session(day)}
+    today = now.astimezone(IST).date()
+    for k, ep in enumerate(episodes):
+        start = ep["start"].astimezone(IST).date()
+        end = ep["end"].astimezone(IST).date() if ep["end"] is not None else None
+        if start <= day <= (end or today):
+            return {"from": start.isoformat(), "to": end.isoformat() if end else None, "current": k == len(episodes) - 1}
+    later = any(ep["start"].astimezone(IST).date() > day for ep in episodes)
+    return {"from": day.isoformat(), "to": day.isoformat(), "current": not later}
+
+
+async def list_repairs(pool: asyncpg.Pool, now: Optional[datetime] = None,
                        between: Optional[tuple[date, date]] = None) -> list[dict[str, Any]]:
     """Each deployment's repairs, for the marks on every page: the days a
-    repair was applied to (app/repair), and the days of the last week the
-    end-of-day check flagged and nothing has been applied to yet
-    (app/repair/daycheck.py) — their numbers aren't what the strategy
-    would have done. `between` (from, to): only those days, flagged ones
-    however long ago (the weekly review)."""
-    today = today or datetime.now(IST).date()
+    repair was applied to (app/repair), each with the cycle it belongs to
+    and whether that's still the deployment's current cycle; and the days
+    the end-of-day check flagged that nothing has repaired and nobody has
+    dismissed (app/repair/daycheck.py) — their numbers aren't what the
+    strategy would have done. `between` (from, to): only those days (the
+    weekly review)."""
+    now = now or datetime.now(IST)
     lo, hi = between or (date.min, date.max)
     rows = await pool.fetch(
         """
-        SELECT deployment_id, day, 'repaired' AS state, NULL AS status, NULL AS headline
-        FROM stall_repairs WHERE undone_at IS NULL AND day >= $2 AND day < $3
+        SELECT r.deployment_id, r.day, 'repaired' AS state, NULL AS status, NULL AS headline, d.mode
+        FROM stall_repairs r JOIN deployments d ON d.id = r.deployment_id
+        WHERE r.undone_at IS NULL AND r.day >= $1 AND r.day < $2
         UNION ALL
-        SELECT c.deployment_id, c.day, 'flagged', c.status, c.headline
-        FROM day_checks c
-        WHERE c.status IN ('rule', 'mismatch', 'ambiguous') AND c.day >= $1 AND c.day >= $2 AND c.day < $3
+        SELECT c.deployment_id, c.day, 'flagged', c.status, c.headline, d.mode
+        FROM day_checks c JOIN deployments d ON d.id = c.deployment_id
+        WHERE c.status IN ('rule', 'mismatch', 'ambiguous') AND c.dismissed_at IS NULL AND c.day >= $1 AND c.day < $2
           AND NOT EXISTS (SELECT 1 FROM stall_repairs r
                           WHERE r.deployment_id = c.deployment_id AND r.day = c.day AND r.undone_at IS NULL)
         ORDER BY 2, 1
         """,
-        date.min if between else today - timedelta(days=FLAG_DAYS), lo, hi,
+        lo, hi,
     )
-    return [{"deployment_id": str(r["deployment_id"]), "day": r["day"].isoformat(), "state": r["state"],
-             "status": r["status"], "headline": r["headline"]} for r in rows]   # one live repair a day (one_live_stall_repair)
+    positional = sorted({r["deployment_id"] for r in rows if r["state"] == "repaired" and r["mode"] == "positional"})
+    episodes: dict = defaultdict(list)
+    if positional:
+        async with pool.acquire() as conn:
+            pos = await conn.fetch(
+                "SELECT id, deployment_id, opened_at, closed_at FROM positions WHERE deployment_id = ANY($1::uuid[]) "
+                "ORDER BY deployment_id, opened_at", positional)
+            reasons = await queries._fetch_closing_reasons(conn, [p["id"] for p in pos])
+        by_dep: dict = defaultdict(list)
+        for p in pos:
+            by_dep[p["deployment_id"]].append(p)
+        for dep, ps in by_dep.items():
+            episodes[dep] = queries._group_into_episodes(ps, reasons)
+    out = []
+    for r in rows:   # one live repair a day (one_live_stall_repair)
+        x = {"deployment_id": str(r["deployment_id"]), "day": r["day"].isoformat(), "state": r["state"],
+             "status": r["status"], "headline": r["headline"]}
+        if r["state"] == "repaired":
+            x["cycle"] = cycle_of(r["mode"], episodes.get(r["deployment_id"], []), r["day"], now)
+        out.append(x)
+    return out
