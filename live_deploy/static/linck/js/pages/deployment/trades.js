@@ -134,7 +134,7 @@ export default {
               ${R.slice(0, lim).map(r => html`
                 <div class="tr click trade-grid small ${sel && sel.i === r.i ? 'att' : ''}" data-act="pick" data-i="${r.i}" role="button" tabindex="0">
                   <span class="mono tiny mute">${r.i + 1}</span><span class="mono tiny">${dShort(r.o)}</span><span class="mono tiny">${dShort(r.c)}</span>
-                  <span class="num tiny">${r.held || 'same day'}</span><span style="padding-left:14px" class="ell">${fixTag(r.t.repaired)} ${r.t.exit_reason || '—'}</span>
+                  <span class="num tiny">${r.held || 'same day'}</span><span style="padding-left:14px" class="ell">${fixTag(r.t.repaired, v0.id)} ${r.t.exit_reason || '—'}</span>
                   <span class="num ${tone(r.p)}">${inr(r.p)}</span><span class="num tiny ${tone(r.p)}">${pct(r.ret)}</span></div>`)}`
               : empty('', 'No trades yet. The first one appears here when a cycle closes.')}
             <div class="row small" style="padding-top:12px"><span class="mute">${R.length ? `Showing ${Math.min(lim, R.length)} of ${R.length} trades` : ''}</span><span class="grow"></span>

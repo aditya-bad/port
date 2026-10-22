@@ -14,6 +14,7 @@ import { seg, utabs, empty } from '../ui/components.js';
 import { line, centreBar } from '../ui/charts.js';
 import { registerScrub } from '../ui/tooltip.js';
 import { perfStack, insightsList } from '../ui/perfstack.js';
+import { repairsLine } from '../ui/repairs.js';
 
 const st = ui('reports', { step: 'month', off: 0, group: 'dep', hm: 'abs', cal: 'last' });
 const SEG = ['var(--ink)', 'var(--b)', 'var(--wr)', 'var(--c4)', 'var(--c5)', 'var(--mute)'];
@@ -116,6 +117,7 @@ export default {
             <button type="button" class="btn btn-sm" data-act="next" aria-label="Next period" ${s.off > 0 ? '' : html`aria-disabled="true"`}>›</button>
           </div>
         </div>
+        ${(() => { const l = repairsLine(all, cur.a, cur.b); return l ? html`<div style="margin:0 var(--px) 12px">${l}</div>` : ''; })()}
         <div class="strip" style="grid-template-columns:var(--g-4);margin:0 var(--px)">
           <div class="stat"><span class="l">Realized P&L</span><span class="v ${tone(tot.c.p)}">${inr(tot.c.p)}</span><span class="s">${hasPrev ? `vs ${inr(tot.pr.p)} previous` : 'since the first deployment'}</span></div>
           <div class="stat"><span class="l">Change</span><span class="v ${hasPrev ? tone(tot.c.p - tot.pr.p) : ''}">${hasPrev ? inr(tot.c.p - tot.pr.p) : '—'}</span><span class="s">${hasPrev && tot.pr.p ? `${pct((tot.c.p - tot.pr.p) / Math.abs(tot.pr.p) * 100, 0)} on previous` : ''}</span></div>

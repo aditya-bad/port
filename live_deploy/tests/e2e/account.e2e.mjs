@@ -149,3 +149,22 @@ test('on a desktop the phone-only pieces stay hidden', async () => {
   assert.ok(await p.isVisible('.ov-card .ov-what') && await p.isVisible('.acct-nav'));
   await ctx.close();
 });
+
+test('a section whose data comes late doesn’t paint over the one opened since', async () => {
+  // found by this suite: each section's loads ended in a repaint, even after
+  // you'd moved on, so a slow one (here the audit log, held 1.5 s) drew
+  // itself over the next section (the service worker off, so the hold applies)
+  const ctx = await context(b, { blockSW: true });
+  const p = await ctx.newPage();
+  await p.route('**/auth/audit-log*', async r => { await new Promise(res => setTimeout(res, 1500)); await r.continue(); });
+  await p.goto(`${BASE}/linck/#/account?s=log`);
+  await p.waitForSelector('.acct-main[data-sec="log"]');
+  await p.goto(`${BASE}/linck/#/account?s=server`);
+  await p.waitForSelector('.acct-main[data-sec="server"] [data-act=redeploy]');
+  await p.waitForTimeout(2200);
+  assert.deepEqual(await p.$$eval('.acct-main', els => els.map(e => e.dataset.sec)), ['server']);
+  assert.equal(await p.locator('.acct-main .audit').count(), 0, 'the log didn’t come back');
+  assert.equal(await p.locator('.acct-main [data-act=redeploy]').count(), 1);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

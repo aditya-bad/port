@@ -321,15 +321,16 @@ def test_what_a_repair_touched_is_marked_everywhere_and_unmarked_on_undo(pool_ru
         planned = await engine.plan(pool, sim.dep_id, w, book, sim.kite, {})
         res = await engine.apply(pool, sim.dep_id, w, book, sim.kite, planned)
         trades, straddles, rp = await marks(pool, sim)
-        assert [t["repaired"] for t in trades] == [True]
-        assert [s["repaired"] for s in straddles] == [True]
-        assert rp["episodes"][-1]["repaired"] is True
+        day = sim.market.today.isoformat()      # each mark is the day it repaired: they link to it
+        assert [t["repaired"] for t in trades] == [day]
+        assert [s["repaired"] for s in straddles] == [day]
+        assert rp["episodes"][-1]["repaired"] == day
         ev = {e["kind"]: e["repaired"] for e in rp["events"]}
-        assert ev == {"entry": False, "exit": True}, "the live entry isn't marked, the repaired exit is"
-        assert all(l["repaired"] for l in rp["legs"])
+        assert ev == {"entry": None, "exit": day}, "the live entry isn't marked, the repaired exit is"
+        assert all(l["repaired"] == day for l in rp["legs"])
         await engine.undo(pool, res["id"])
         trades, straddles, rp = await marks(pool, sim)
-        assert trades == [] and [s["repaired"] for s in straddles] == [False]
+        assert trades == [] and [s["repaired"] for s in straddles] == [None]
         assert not rp["episodes"][-1]["repaired"] and not any(e["repaired"] for e in rp["events"])
     pool_run(go)
 

@@ -29,7 +29,7 @@ def trade(client, dep_id, sym, tok, entry, exit_, opened, minutes=30, side="sell
 # ── Book ──────────────────────────────────────────────────────────────
 
 def test_book_is_empty_without_trades(client):
-    assert client.get("/v2/book").json() == {"trades": [], "daily": []}
+    assert client.get("/v2/book").json() == {"trades": [], "daily": [], "repairs": []}
 
 
 def test_book_groups_legs_into_one_trade_and_days_into_daily_rows(client):

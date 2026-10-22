@@ -36,10 +36,17 @@ export const toggle = (on, act, attrs = {}, label = '') => html`<button type="bu
 
 export const stat = (l, v, s, { cls = '', vcls = '' } = {}) => html`<div class="stat ${cls}"><span class="l">${l}</span><span class="v ${vcls}">${v}</span>${s != null && s !== '' ? html`<span class="s">${s}</span>` : ''}</div>`;
 
-// Marks a trade, cycle or session a stall repair wrote into (app/repair):
-// its fills were replayed from 1-minute candles, not traded live.
-export const REPAIRED_TIP = 'Repaired\nThe app missed ticks here; these fills were replayed\nfrom 1-minute candles by the repair (custom_scripts/repair_stall.py)';
-export const fixTag = on => (on ? html`<span class="fix-tag" data-tip="${REPAIRED_TIP}">Repaired</span>` : '');
+// Marks a trade, cycle, session or day a repair wrote into (app/repair):
+// its fills were replayed from 1-minute candles, not traded live. `on` is
+// the day it repaired (the server's flag); with the deployment, the mark
+// links to that repair on the Repair page.
+export const REPAIRED_TIP = 'Repaired\nThese fills were replayed from Kite’s 1-minute candles\nby a repair, not traded live';
+export const fixTag = (on, dep, what) => {
+  if (!on) return '';
+  const day = typeof on === 'string' ? on : '';
+  if (day && dep) return html`<a class="fix-tag" href="#/repair/${day}/${dep}" data-tip="${`${REPAIRED_TIP}\n${what || `Repair of ${day}`} — open it ›`}">Repaired</a>`;
+  return html`<span class="fix-tag" data-tip="${what ? `${REPAIRED_TIP}\n${what}` : REPAIRED_TIP}">Repaired</span>`;
+};
 
 export const sect = (title, sub, right, ruled = true) => html`<div class="sect ${ruled ? 'ruled' : ''}"><h3 class="t-h3">${title}</h3>${sub ? html`<span class="mute small">${sub}</span>` : ''}${right ? html`<span class="grow"></span>${right}` : ''}</div>`;
 

@@ -11,6 +11,7 @@ import { line } from '../../ui/charts.js';
 import { registerScrub } from '../../ui/tooltip.js';
 import { perfStack, insightsList } from '../../ui/perfstack.js';
 import { empty } from '../../ui/components.js';
+import { repairsLine } from '../../ui/repairs.js';
 
 const st = ui('perf', { hm: {}, cal: {} });
 
@@ -52,6 +53,7 @@ export default {
       ];
       mount(el, html`
         <div class="pad-x tab-body stack" style="gap:30px">
+          ${repairsLine([v])}
           <div class="stats" style="grid-template-columns:var(--g-6)">${stats.map(([l, val, sub, c]) => html`
             <div class="stat top"><span class="l">${l}</span><span class="v ${c}">${val}</span><span class="s">${sub}</span></div>`)}</div>
           <div>

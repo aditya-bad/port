@@ -240,13 +240,13 @@ function strip(D, i) {
   </div>`;
 }
 
-function banner(D, i) {
+function banner(D, i, dep) {
   const e = eventAt(D.events, i);
   if (!e) return html`<div class="rp-banner mute small">Before the first event.</div>`;
   const [lab, c] = kindOf(e.kind), here = e.frame === i;
   return html`<div class="rp-banner ${here ? 'here' : ''}" style="--k:${c}">
     <span class="rp-chip" style="--k:${c}">${lab}${e.cycle != null && e.kind === 'new' ? ` ${e.cycle}` : ''}</span>
-    <b class="small">${e.rule}</b> ${fixTag(e.repaired)}
+    <b class="small">${e.rule}</b> ${fixTag(e.repaired, dep)}
     <span class="mono tiny">${dStamp(e.t)}${here ? '' : ` · ${i - e.frame} bar${i - e.frame === 1 ? '' : 's'} ago`}</span>
     ${e.booked != null ? html`<span class="small">booked <b class="${tone(e.booked)}">${inr(e.booked)}</b></span>` : ''}
     ${e.since ? html`<span class="tiny">since the last event: ${D.index_name} <b>${sgn(e.since.idx)}</b> · VIX <b>${sgn(e.since.vix, 2)}</b> · P&L <b class="${tone(e.since.pnl)}">${e.since.pnl == null ? '—' : inr(e.since.pnl)}</b></span>` : ''}
@@ -255,14 +255,14 @@ function banner(D, i) {
   </div>`;
 }
 
-function positions(D, i) {
+function positions(D, i, dep) {
   const P = positionsAt(D, i);
   if (!P.length) return html`<p class="small mute" style="margin:0">No position yet at this bar.</p>`;
   const open = P.filter(p => !p.closed), closed = P.filter(p => p.closed);
   const sum = xs => xs.reduce((t, p) => t + (p.pnl || 0), 0);
   const by = t => (t ? html`<span class="rp-chip sm" style="--k:${kindOf(t.kind)[1]}">${t.label || kindOf(t.kind)[0]}</span> <span class="tiny mute">${t.rule}</span>` : '—');
   const rows = P.map(p => [
-    html`<b class="mono small" style="color:${legColor(p.l)}">${legName(p.l)}</b> ${fixTag(p.l.repaired)}`,
+    html`<b class="mono small" style="color:${legColor(p.l)}">${legName(p.l)}</b> ${fixTag(p.l.repaired, dep)}`,
     html`<span class="small">${p.l.side === 'short' ? 'Sold' : 'Bought'} ${p.l.qty}</span>`,
     html`<span class="mono tiny">${dStamp(p.l.t0)}</span>`, by(p.l.opened_by),
     price(p.l.entry), p.l.s0 ? price(p.l.s0) : '—', ...(D.future ? [p.l.f0 ? price(p.l.f0) : '—'] : []),
@@ -308,7 +308,7 @@ export default {
     function episodes() {
       const E = [...D.episodes].reverse().slice(0, 40), [a, z] = D.selected;
       return table([['', 'minmax(110px,1fr)'], ['Opened', '110px'], ['Closed', '110px'], ['Moves', '64px', 'num'], ['Booked', '96px', 'num']],
-        E.map(e => [html`<b class="small">${e.label}</b> ${fixTag(e.repaired)}${e.n >= a && e.n <= z ? html` <span class="tiny mute">· replaying</span>` : ''}`, html`<span class="mono tiny">${dStamp(e.t0)}</span>`,
+        E.map(e => [html`<b class="small">${e.label}</b> ${fixTag(e.repaired, g.id)}${e.n >= a && e.n <= z ? html` <span class="tiny mute">· replaying</span>` : ''}`, html`<span class="mono tiny">${dStamp(e.t0)}</span>`,
           html`<span class="mono tiny">${e.open ? 'open' : dStamp(e.t1)}</span>`, String(e.adjustments), html`<span class="${tone(e.booked)}">${money(e.booked)}</span>`]),
         { minw: 0, rowAttrs: k => html`data-ep="${E[k].n}" role="button" tabindex="0" style="cursor:pointer"` });
     }
@@ -354,12 +354,12 @@ export default {
       if (!D || !D.frames || !D.frames.length) return;
       const set = (k, h) => { const t = el.querySelector(`[data-rp="${k}"]`); if (t) mount(t, h); };
       set('strip', strip(D, i));
-      set('banner', banner(D, i));
+      set('banner', banner(D, i, g.id));
       set('stage', stage(D, i, zoom, !playing));
       // on a narrow screen the chart scrolls: keep the newest bar in view
       const st = el.querySelector('.rp-stage');
       if (st && st.scrollWidth > st.clientWidth) st.scrollLeft = st.scrollWidth;
-      set('pos', positions(D, i));
+      set('pos', positions(D, i, g.id));
       set('list', eventList(D, i));
       const r = el.querySelector('[data-range]');
       if (r && +r.value !== i) r.value = i;

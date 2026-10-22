@@ -259,7 +259,7 @@ async def straddles_of(ctx: Ctx) -> list[dict]:
             "exit_t": exit_t, "reason": reason, "stop_leg": stop_leg, "exit_values": xv or None,
             "held_min": round((datetime.fromisoformat(exit_t) - t0).total_seconds() / 60, 1) if exit_t else None,
             "pnl": pnl, "open": is_open, "late_start": bool(tv.get("late_start_today")),
-            "repaired": any(p["id"] in fixed for p in g),
+            "repaired": common.repair_day(fixed, [p["id"] for p in g]),
             "switched_to_next_week": bool(tv.get("switched_to_next_week")),
             "price_source": xv.get("price_source"), "qty": first["qty"],
         })

@@ -67,6 +67,7 @@ export default {
     async function loadHist() {
       clearTimeout(histTimer);
       try { hist = await api.backfillStatus(); } catch (e) { hist = { error: e.message }; }
+      if (!alive) return;
       if (hist && hist.running) noticeBackfill(hist.running);   // the header strip too, not 20 s later
       paint();
       // every 2 s while a backfill runs; while its section is open every 4 s, so a
@@ -274,7 +275,9 @@ export default {
       </nav>`;
     }
 
+    let alive = true;   // a load finishing after you've left must not paint this section over the next
     function paint() {
+      if (!alive) return;
       const [k, title, gr, what] = sectionOf(key);
       mount(main, html`<div class="acct-page ${k === 'overview' ? 'is-ov' : 'is-sec'}">
         <div class="page-head"><h1 class="t-h1">Account</h1><span class="mute pretty" style="max-width:520px">Your Kite login, how Linck looks and talks to you, who can sign in, and the server.</span></div>
@@ -415,6 +418,6 @@ export default {
     // the header's status poll saw a backfill start or finish: refresh now
     const onStatus = () => { if (hist && !hist.error && !!backfill.running !== !!hist.running) loadHist(); else paint(); };
     const offs = [listen('data', paint), listen('status', onStatus), listen('install', paint)];
-    return () => { off(); offs.forEach(f => f()); clearTimeout(histTimer); };
+    return () => { alive = false; off(); offs.forEach(f => f()); clearTimeout(histTimer); };
   },
 };

@@ -253,6 +253,9 @@ async def build(pool: asyncpg.Pool, week: Optional[date] = None, now: Optional[d
         t["name"] = name(t["deployment_id"])
     for r in rules:
         r["name"] = name(r["deployment_id"])
+    repairs = await book.list_repairs(pool, today, between=(week, week + timedelta(days=7)))
+    for r in repairs:
+        r["name"] = name(r["deployment_id"])
     return {
         "week": week.isoformat(), "week_end": (week + timedelta(days=4)).isoformat(),
         "complete": today >= week + timedelta(days=5), "today": today.isoformat(),
@@ -260,7 +263,7 @@ async def build(pool: asyncpg.Pool, week: Optional[date] = None, now: Optional[d
         "next": (week + timedelta(days=7)).isoformat() if week + timedelta(days=7) <= monday(today) else None,
         "totals": s["totals"], "usual": s["usual"], "history": s["history"], "days": days,
         "deployments": sorted(rows, key=lambda r: -abs(r["pnl"])), "best": s["best"], "worst": s["worst"],
-        "rules": rules,
+        "rules": rules, "repairs": repairs,
         "vix": vix, "vix_error": vix_error, "by_side": by_side(rows, sides),
         "health": [f for fs in (health or {}).values() for f in fs],
         "notes": [{"id": str(n["id"]), "day": n["day"].isoformat(), "body": n["body"], "tags": list(n["tags"] or []),

@@ -54,6 +54,8 @@ export function actions(root, table) {
   return on(root, 'click', '[data-act]', (e, el) => {
     const fn = table[el.dataset.act];
     if (!fn) return;
+    const link = e.target.closest('a[href]');
+    if (link && link !== el && el.contains(link)) return;   // a link inside a clickable row goes where it says
     if (el.getAttribute('aria-disabled') === 'true' && !el.dataset.reason) return;
     e.preventDefault();
     fn(el.dataset, el, e);

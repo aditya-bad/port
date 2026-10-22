@@ -300,7 +300,7 @@ async def trade_rows(ctx: Ctx) -> list[dict]:
             "pnl": round(float(p["realized_pnl"]), 2) if t1 else None,
             "hold_min": round((t1 - t0).total_seconds() / 60, 1) if t1 else None,
             "kept_pct": round((entry_px - exit_px) / entry_px * 100, 1) if t1 and exit_px is not None and entry_px else None,
-            "open": p["status"] != "closed", "token": p["instrument_token"], "repaired": p["id"] in fixed,
+            "open": p["status"] != "closed", "token": p["instrument_token"], "repaired": fixed.get(p["id"]),
         })
     ctx._cache["trades"] = rows
     return rows

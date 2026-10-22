@@ -135,7 +135,9 @@ export function toClassic() {
 }
 
 // ── Pages ──────────────────────────────────────────────────────────
+let navs = 0;
 async function route() {
+  const nav = ++navs;
   const { route: r, params } = parse();
   const changed = !app.route || app.route.path !== r.path;
   app.route = r;
@@ -149,7 +151,7 @@ async function route() {
     bootDone();
     return;
   }
-  if (app.route !== r) return;   // navigated away while loading
+  if (nav !== navs) return;   // navigated away while loading (to another page, or the same one with other params)
   app.page = mod;
   document.title = `${mod.title ? `${typeof mod.title === 'function' ? mod.title(params) : mod.title} · ` : ''}Linck`;
   try {

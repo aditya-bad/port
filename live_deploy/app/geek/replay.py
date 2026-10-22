@@ -125,7 +125,7 @@ def episodes(b: dict, now: datetime, group_by: Optional[str] = None) -> list[dic
             "trigger": label(t["trigger"]), "legs": len(legs),
             "adjustments": sum(1 for k in kinds if k in ("adjustment", "roll", "added", "hedge", "leg_closed")),
             "booked": round(sum(float(p["realized_pnl"]) for p in legs if p["closed_at"] is not None), 2),
-            "repaired": any(p["id"] in fixed for p in legs),
+            "repaired": common.repair_day(fixed, [p["id"] for p in legs]),
         })
     return out
 
@@ -223,7 +223,7 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
     legs = [pos[i] for i in dict.fromkeys(ids) if i in pos]
     idset = set(p["id"] for p in legs)
     lots = [x for x in b["lots"] if x["position_id"] in idset]
-    fixed = {str(x) for x in common.repaired_ids(lots)}
+    fixed = {str(k): v for k, v in common.repaired_ids(lots).items()}
     acts = [a for a in b["actions"] if any(f["position_id"] in idset for f in a["fills"])]
     start = min(_ist(t["t"]) for t in sel)
     end = max([_ist(p["closed_at"]) for p in legs if p["closed_at"] is not None] + [start])
@@ -368,7 +368,8 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
                 "booked": round(sum(booked), 2) if booked and all(v is not None for v in booked) else None,
                 "idx": spot, "vix": vix_here, "pnl": f.get("pnl"), "cycle": cyc,
                 # written by a stall repair (app/repair), not traded live
-                "repaired": any("repair" in (x.get("metadata") or {}) for x in a["fills"]),
+                "repaired": next((((x.get("metadata") or {}).get("repair") or {}).get("day") or True
+                                  for x in a["fills"] if "repair" in (x.get("metadata") or {})), None),
             }
             # the same action also closed the episode before (a checkpoint exit and re-entry)
             if before:
@@ -402,7 +403,7 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
                   "f0": round(g["s0"], 2) if g["fwd"] else None,
                   "opened_by": by_leg.get(g["id"], {}).get("open"), "closed_by": by_leg.get(g["id"], {}).get("close"),
                   "iv": round(g["iv"] * 100, 2) if g["iv"] else None, "cycle": g["cycle"],
-                  "priced": bool(g["px"]), "repaired": g["id"] in fixed} for g in L],
+                  "priced": bool(g["px"]), "repaired": fixed.get(g["id"])} for g in L],
         "events": events,
         "start": _iso(start), "end": _iso(end),
         "split_legs": sum(1 for g in L if g["iv"]),

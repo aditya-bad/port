@@ -8,6 +8,7 @@ performance tab):
   merge the Detail page's cycles and positional digest already use, so
   a "trade" means the same thing everywhere.
 * daily — realized P&L per deployment per IST trading day.
+* repairs — the days each deployment was repaired, or flagged and not yet.
 
 Both carry gross, after-charges and after-charges-and-slippage figures
 (the UI's P&L basis switch picks one). Reads only; nothing is written.
@@ -16,11 +17,12 @@ Both carry gross, after-charges and after-charges-and-slippage figures
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
 import asyncpg
 
+from ..clock import IST
 from ..db import queries
 
 # Openings within this gap are one entry (the legs of a strangle go out
@@ -50,10 +52,10 @@ def _adjustments(rows: list) -> int:
     return count
 
 
-def episodes_to_trades(dep_id, rows: list, reasons: dict, repaired: frozenset = frozenset()) -> list[dict[str, Any]]:
+def episodes_to_trades(dep_id, rows: list, reasons: dict, repaired: Optional[dict] = None) -> list[dict[str, Any]]:
     """Pure: one deployment's positions (sorted by opened_at) -> its
     closed trades. Split out so it can be unit-tested without a DB.
-    `repaired`: ids of positions a stall repair touched (app/repair)."""
+    `repaired`: {position id: the day a repair wrote into it} (app/repair)."""
     out = []
     for ep in queries._group_into_episodes(rows, reasons):
         if ep["end"] is None:
@@ -74,7 +76,7 @@ def episodes_to_trades(dep_id, rows: list, reasons: dict, repaired: frozenset = 
             "adjustments": _adjustments(legs),
             "exit_reason": reasons.get(last["id"]) or "",
             "wins": sum(1 for r in legs if _f(r["realized_pnl"]) > 0),
-            "repaired": any(r["id"] in repaired for r in legs),
+            "repaired": next((repaired[r["id"]] for r in legs if r["id"] in (repaired or {})), None),
             "_start": ep["start"], "_end": ep["end"],
         })
     return out
@@ -123,8 +125,9 @@ async def list_trades(pool: asyncpg.Pool, since: Optional[datetime] = None) -> l
             """
         )
         reasons = await queries._fetch_closing_reasons(conn, [r["id"] for r in positions])
-        repaired = frozenset(r["position_id"] for r in await conn.fetch(
-            "SELECT DISTINCT position_id FROM position_lots WHERE metadata ? 'repair'"))
+        repaired = {r["position_id"]: r["day"] or True for r in await conn.fetch(
+            "SELECT DISTINCT ON (position_id) position_id, metadata->'repair'->>'day' AS day "
+            "FROM position_lots WHERE metadata ? 'repair' ORDER BY position_id, executed_at")}
         by_dep: dict = defaultdict(list)
         for r in positions:
             by_dep[r["deployment_id"]].append(r)
@@ -165,3 +168,34 @@ async def list_daily(pool: asyncpg.Pool, since: Optional[datetime] = None) -> li
         }
         for r in rows
     ]
+
+
+FLAG_DAYS = 7   # how long a flagged day that wasn't repaired is marked
+
+
+async def list_repairs(pool: asyncpg.Pool, today: Optional[date] = None,
+                       between: Optional[tuple[date, date]] = None) -> list[dict[str, Any]]:
+    """Each deployment's repairs, for the marks on every page: the days a
+    repair was applied to (app/repair), and the days of the last week the
+    end-of-day check flagged and nothing has been applied to yet
+    (app/repair/daycheck.py) — their numbers aren't what the strategy
+    would have done. `between` (from, to): only those days, flagged ones
+    however long ago (the weekly review)."""
+    today = today or datetime.now(IST).date()
+    lo, hi = between or (date.min, date.max)
+    rows = await pool.fetch(
+        """
+        SELECT deployment_id, day, 'repaired' AS state, NULL AS status, NULL AS headline
+        FROM stall_repairs WHERE undone_at IS NULL AND day >= $2 AND day < $3
+        UNION ALL
+        SELECT c.deployment_id, c.day, 'flagged', c.status, c.headline
+        FROM day_checks c
+        WHERE c.status IN ('rule', 'mismatch', 'ambiguous') AND c.day >= $1 AND c.day >= $2 AND c.day < $3
+          AND NOT EXISTS (SELECT 1 FROM stall_repairs r
+                          WHERE r.deployment_id = c.deployment_id AND r.day = c.day AND r.undone_at IS NULL)
+        ORDER BY 2, 1
+        """,
+        date.min if between else today - timedelta(days=FLAG_DAYS), lo, hi,
+    )
+    return [{"deployment_id": str(r["deployment_id"]), "day": r["day"].isoformat(), "state": r["state"],
+             "status": r["status"], "headline": r["headline"]} for r in rows]   # one live repair a day (one_live_stall_repair)

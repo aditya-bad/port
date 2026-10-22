@@ -31,13 +31,14 @@ async def _refresh_caches(request: Request) -> None:
 
 @router.get("/book")
 async def get_book(request: Request, since: Optional[datetime] = None):
-    """Closed trades and daily realized P&L for every deployment."""
+    """Closed trades, daily realized P&L and repaired or flagged days for every deployment."""
     cached = getattr(request.app.state, "v2_book", None)
     if since is None and cached and time.monotonic() - cached[0] < _BOOK_TTL:
         return cached[1]
     pool = request.app.state.db_pool
-    trades, daily = await asyncio.gather(book.list_trades(pool, since), book.list_daily(pool, since))
-    out = {"trades": trades, "daily": daily}
+    trades, daily, repairs = await asyncio.gather(
+        book.list_trades(pool, since), book.list_daily(pool, since), book.list_repairs(pool))
+    out = {"trades": trades, "daily": daily, "repairs": repairs}
     if since is None:
         request.app.state.v2_book = (time.monotonic(), out)
     return out
@@ -445,22 +446,22 @@ async def get_repair_case(day: str, deployment_id: UUID, request: Request):
     if dep is None:
         raise HTTPException(404, "No such deployment")
     check = await pool.fetchrow("SELECT * FROM day_checks WHERE deployment_id = $1 AND day = $2", deployment_id, d)
-    if check is None:
+    live = await pool.fetchrow(
+        "SELECT * FROM stall_repairs WHERE deployment_id = $1 AND day = $2 AND undone_at IS NULL", deployment_id, d)
+    if check is None and live is None:   # a repair made by the script, with no check of its day, still has a case
         raise HTTPException(404, "That day hasn't been checked for this deployment")
     draft = await pool.fetchrow("SELECT * FROM repair_drafts WHERE deployment_id = $1 AND day = $2", deployment_id, d)
     plan = await pool.fetchrow(
         "SELECT * FROM repair_jobs WHERE deployment_id = $1 AND day = $2 AND kind = 'plan' ORDER BY id DESC LIMIT 1", deployment_id, d)
     apply_ = await pool.fetchrow(
         "SELECT * FROM repair_jobs WHERE deployment_id = $1 AND day = $2 AND kind = 'apply' ORDER BY id DESC LIMIT 1", deployment_id, d)
-    live = await pool.fetchrow(
-        "SELECT * FROM stall_repairs WHERE deployment_id = $1 AND day = $2 AND undone_at IS NULL", deployment_id, d)
     choices = (draft["choices"] if draft else None) or {}
     return {
         "day": d.isoformat(),
         "deployment": {"id": str(dep["id"]), "name": dep["deployment_name"], "strategy": dep["strategy_name"],
                        "mode": dep["mode"], "status": dep["status"], "capital": float(dep["initial_capital"])},
         "check": {"status": check["status"], "headline": check["headline"], "rules": check["rules"] or [],
-                  "diff": check["diff"] or {}, "replay": check["replay"] or {}, "checked_at": check["checked_at"].isoformat()},
+                  "diff": check["diff"] or {}, "replay": check["replay"] or {}, "checked_at": check["checked_at"].isoformat()} if check else None,
         "draft": {"choices": choices, "updated_at": draft["updated_at"].isoformat() if draft else None},
         "plan": _job_json(plan),
         "plan_is_draft": bool(plan and plan["status"] == "done" and (plan["choices"] or {}) == choices),

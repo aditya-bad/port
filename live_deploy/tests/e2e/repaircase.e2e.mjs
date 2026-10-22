@@ -98,6 +98,9 @@ test('an applied repair is shown and can be undone', async () => {
   await p.waitForSelector('.rc-state.t-ok');
   assert.match(await p.locator('.rc-state').innerText(), /Repaired[\s\S]*Applied \d\d:\d\d from 14:02: 1 trade in place of the app’s 1/);
   assert.match(await p.locator('.rc-replaced').innerText(), /14:40 Bought 30 BANKEX26NOV66300CE/);
+  const did = await p.locator('.rc-steps').innerText();
+  assert.match(did, /14:02\s+Bought 30 BANKEX26NOV66300CE/);
+  assert.doesNotMatch(did, /(\d\d:\d\d)\s+\1/, 'each trade’s minute once');
   await p.click('[data-act="undo"]');
   await p.locator('.scrim [data-ok]').click();
   await until(async () => (await api(ctx, `/v2/repair-cases/${day}/${IDS['Bankex Strangle']}`)).applied === null);

@@ -9,7 +9,7 @@ import { html, raw, mount, actions } from '../core/dom.js';
 import { inr, tone, toneVar, plural, fromDay, dDay, dStamp, MONTHS } from '../core/format.js';
 import { pick, current as basisNow } from '../core/basis.js';
 import { go, href } from '../core/router.js';
-import { empty, loading, stat } from '../ui/components.js';
+import { empty, loading, stat, fixTag } from '../ui/components.js';
 
 const p = row => pick(row, 'pnl') || 0;
 // "leg_stop" -> "Leg stop" (a rule's key, as the strategies write it)
@@ -71,9 +71,26 @@ function vixSection(w) {
     </div></section>`;
 }
 
+// The week's repaired days, and the days the end-of-day check flagged and
+// nothing has been applied to: each opens its case on the Repair page.
+function repairsSection(w) {
+  const R = w.repairs || [];
+  if (!R.length) return '';
+  const flagged = R.filter(r => r.state === 'flagged').length;
+  return html`<section><h3 class="t-h3">Repairs <span class="mute small">${flagged ? `${plural(flagged, 'day')} flagged and not repaired: their numbers aren’t what the strategy would have done` : 'days replayed from Kite’s 1-minute candles'}</span></h3>
+    <div class="col" style="gap:8px">${R.map(r => html`<a class="rv-flag" href="${href(`repair/${r.day}/${r.deployment_id}`)}">
+      <b>${r.state === 'flagged' ? html`<span class="fix-flag">Flagged</span>` : html`<span class="fix-tag">Repaired</span>`} ${r.name} · ${dDay(fromDay(r.day))}</b>
+      <span class="small mute">${r.state === 'flagged' ? `${r.headline || r.status}. Review it ›` : 'Its trades from where it parted were replayed by its own strategy. Open the repair ›'}</span></a>`)}</div></section>`;
+}
+const depMark = (w, id) => {
+  const R = (w.repairs || []).filter(r => r.deployment_id === id);
+  if (R.some(r => r.state === 'flagged')) return html`<span class="fix-flag">Flagged</span>`;
+  return R.length ? fixTag(true, null, `Repaired this week: ${R.map(r => dDay(fromDay(r.day))).join(', ')}`) : '';
+};
+
 function tradeLine(t) {
   return html`<a class="rv-trade" href="${href(`d/${t.deployment_id}/trades`)}" data-tip="${`${t.name}\nOpened  ${dStamp(t.opened_at)}\nClosed  ${dStamp(t.closed_at)}\nP&L  ${inr(p(t))}${t.exit_reason ? `\nClosed by  ${ruleLabel(t.exit_reason)}` : ''}`}">
-    <b>${t.name}</b><span class="mono tiny mute">${dDay(t.closed_at)}</span><span class="grow"></span><span class="mono ${tone(p(t))}">${inr(p(t))}</span></a>`;
+    <b>${t.name}</b>${fixTag(t.repaired)}<span class="mono tiny mute">${dDay(t.closed_at)}</span><span class="grow"></span><span class="mono ${tone(p(t))}">${inr(p(t))}</span></a>`;
 }
 
 export default {
@@ -120,12 +137,13 @@ export default {
           <section><h3 class="t-h3">Rules that fired more than usual</h3>
             ${w.rules.length ? html`<div class="col" style="gap:8px">${w.rules.map(r => html`<a class="rv-flag" href="${href(`d/${r.deployment_id}/geek/decisions`)}"><b>${r.name}: ${ruleLabel(r.trigger)}</b><span class="small mute">${r.n} times this week, ${r.usual ? `usually about ${r.usual}` : 'never in the 8 weeks before'}</span></a>`)}</div>` : html`<p class="mute small">None. Every rule fired about as often as usual.</p>`}</section>
         </div>` : ''}
+        ${repairsSection(w)}
         <section><h3 class="t-h3">Deployment by deployment <span class="mute small">P&amp;L booked this week, every leg closed · trades counted when they finish</span></h3>
           ${w.deployments.length ? html`<div class="rv-tbl" role="table">
             <div class="tr th" role="row"><span>Deployment</span><span class="num">P&amp;L</span><span class="num">Usual<span class="hide-phone"> week</span></span><span class="num">Trades</span><span class="num hp">Won</span><span class="num hp">Best</span><span class="num hp">Worst</span></div>
             ${w.deployments.map(d => html`<a class="tr" role="row" href="${href(`d/${d.deployment_id}/performance`)}"
                 data-tip="${`${d.name}\nThis week  ${inr(p(d))}\nUsual week  ${d.usual ? inr(p(d.usual)) : '—'}${d.usual ? ` (${d.weeks_known} week${d.weeks_known === 1 ? '' : 's'})` : ''}\nTrades  ${d.trades}${d.usual ? ` (usually ${d.usual.trades})` : ''}${d.open_positions ? `\nOpen now  ${plural(d.open_positions, 'position')}` : ''}`}">
-              <span class="col" style="gap:1px"><b>${d.name}</b><span class="tiny mute">${d.strategy || ''}${d.side ? ` · ${d.side === 'sold' ? 'sells' : 'buys'} premium` : ''}${d.status === 'stopped' ? ' · stopped' : ''}</span></span>
+              <span class="col" style="gap:1px"><b>${d.name} ${depMark(w, d.deployment_id)}</b><span class="tiny mute">${d.strategy || ''}${d.side ? ` · ${d.side === 'sold' ? 'sells' : 'buys'} premium` : ''}${d.status === 'stopped' ? ' · stopped' : ''}</span></span>
               <span class="num mono ${tone(p(d))}">${inr(p(d))}</span>
               <span class="num mono mute">${d.usual ? inr(p(d.usual)) : '—'}</span>
               <span class="num mono">${d.trades}</span>

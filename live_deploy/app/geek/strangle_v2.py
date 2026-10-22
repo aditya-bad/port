@@ -766,7 +766,7 @@ async def cycles(ctx: Ctx) -> dict:
         thin = _thin(path, 80)
         rows.append({
             "cycle_id": cid, "start": _iso(start), "end": _iso(end), "status": "open" if is_open else "closed",
-            "repaired": any(p["id"] in fixed for p in prs),
+            "repaired": common.repair_day(fixed, [p["id"] for p in prs]),
             "contract_expiry": expiry, "days": round(((end or now) - start).total_seconds() / 86400, 1),
             "ended_by": ended_by, "rolls": len(rolls),
             "rolls_by_kind": {k: sum(1 for a in rolls if ROLL_KIND[a["reason"]] == k)

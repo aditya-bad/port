@@ -32,7 +32,8 @@ const kv = o => {
     .map(([k, v]) => `${k.replace(/_/g, ' ')} ${typeof v === 'number' ? (Math.abs(v) >= 100 ? v.toFixed(1) : +v.toFixed(3)) : v}`).join(' · ');
 };
 const why = f => kv((f.meta || {}).trigger) || kv(f.trigger) || '';
-const fillLine = f => html`<span class="mono">${f.minute || f.at}</span> ${f.action === 'buy' ? 'Bought' : 'Sold'} ${f.qty} <b class="mono">${f.symbol}</b> @ ${price(f.price)}`;
+const tradeText = f => html`${f.action === 'buy' ? 'Bought' : 'Sold'} ${f.qty} <b class="mono">${f.symbol}</b> @ ${price(f.price)}`;
+const fillLine = f => html`<span class="mono">${f.minute || f.at}</span> ${tradeText(f)}`;
 
 // ── the index, minute by minute, with both sides' trades ──────────────
 function indexChart(s, plan, app) {
@@ -161,7 +162,7 @@ export default {
       const waiting = c && ((c.plan && ['queued', 'running'].includes(c.plan.status)) || (c.apply && ['queued', 'running'].includes(c.apply.status)));
       if (waiting) timer = setTimeout(load, 1500);
       // nothing planned for the paths chosen so far: plan them (a dry run)
-      if (c && !c.applied && !waiting && !c.plan_is_draft && !requested && ['rule', 'mismatch', 'ambiguous'].includes(c.check.status)) {
+      if (c && !c.applied && !waiting && !c.plan_is_draft && !requested && c.check && ['rule', 'mismatch', 'ambiguous'].includes(c.check.status)) {
         requested = true;
         plan(c.draft.choices);
         return;
@@ -212,10 +213,11 @@ export default {
       if (!c) { mount(main, html`${head()}<div class="page">${loading(6)}</div>`); return; }
       const pl = c.plan && c.plan.status === 'done' ? c.plan.result : null;
       const shown = c.applied ? null : pl;
-      const p = PILL[c.check.status];
+      const p = c.check && PILL[c.check.status];
       mount(main, html`${head()}<div class="page" style="padding-top:4px">
-        <div class="rc-found"><span class="dc-pill ${p[1]}">${p[0]}</span><span>${c.check.headline}</span></div>
-        ${(c.check.rules || []).map(r => html`<div class="dc-rule ${r.severity}"><b>${r.title}</b><span>${r.detail}</span></div>`)}
+        ${c.check ? html`<div class="rc-found"><span class="dc-pill ${p[1]}">${p[0]}</span><span>${c.check.headline}</span></div>
+          ${(c.check.rules || []).map(r => html`<div class="dc-rule ${r.severity}"><b>${r.title}</b><span>${r.detail}</span></div>`)}`
+        : html`<div class="rc-found"><span class="dc-pill t-mute">Not checked</span><span>This day wasn’t checked after the close; the repair was made with the stall-repair script.</span></div>`}
         ${stateBar()}
         ${choicesBar()}
         ${shown ? html`
@@ -231,7 +233,7 @@ export default {
           ${shown.replaced.length ? html`${sect('The app’s trades this replaces', `Everything it did from ${shown.from} on`)}
             <div class="rc-replaced">${shown.replaced.map(f => html`<div class="small">${fillLine(f)} <span class="tiny mute">${f.reason}</span></div>`)}</div>` : ''}
           ${(shown.notes || []).length || (shown.estimated || []).length ? html`${sect('Notes')}<div class="dc-notes small mute">${(shown.notes || []).map(n => html`<span>${n}</span>`)}</div>` : ''}`
-        : c.applied ? html`${sect('What it did')}<div class="rc-steps">${c.applied.fills.map(f => html`<div class="trade"><span class="mono">${f.minute}</span><span>${fillLine(f)}</span><span><b>${f.reason}</b></span></div>`)}</div>
+        : c.applied ? html`${sect('What it did')}<div class="rc-steps">${c.applied.fills.map(f => html`<div class="trade"><span class="mono">${f.minute}</span><span>${tradeText(f)}</span><span><b>${f.reason}</b></span></div>`)}</div>
             ${c.applied.replaced.length ? html`${sect('In place of the app’s')}<div class="rc-replaced">${c.applied.replaced.map(f => html`<div class="small">${fillLine(f)}</div>`)}</div>` : ''}`
         : ''}
       </div>`);
@@ -282,6 +284,8 @@ export default {
         okLabel: 'Undo the repair',
         onOk: async () => {
           try { await api.undoRepair(c.applied.id); say('Repair undone. The app’s own trades are back.'); requested = true; } catch (e) { fail(e, 'Couldn’t undo it'); }
+          // with no check of the day there's nothing left to show here
+          if (!c.check && requested) { location.hash = href(`d/${dep}`); return true; }
           load();
           return true;
         },

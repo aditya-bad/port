@@ -8,7 +8,10 @@ let b;
 test.before(async () => { b = await browser(); });
 test.after(async () => { await b.close(); });
 
-const loaded = (p, sel) => p.$eval(sel, img => img.complete && img.naturalWidth > 0);
+// loads, within a few seconds: a bar that repaints on new data puts in a
+// fresh <img>, which may not have loaded at the instant it's looked at
+const loaded = (p, sel) => p.waitForFunction(s => { const img = document.querySelector(s); return !!img && img.complete && img.naturalWidth > 0; }, sel, { timeout: 5000 })
+  .then(() => true, () => false);
 
 test('boot screen shows the mark, then gets out of the way', async () => {
   const ctx = await context(b);

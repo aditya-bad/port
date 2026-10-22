@@ -6,7 +6,7 @@
 // strategy's deployments against the rest.
 
 import { html, raw, mount, $, actions, on } from '../core/dom.js';
-import { inr, inrS, pct, dShort, MONTHS, ist, fromDay, plural, tone } from '../core/format.js';
+import { inr, inrS, pct, dShort, MONTHS, ist, dayKey, fromDay, plural, tone } from '../core/format.js';
 import { pnlOf } from '../core/basis.js';
 import { ui, listen } from '../core/store.js';
 import { go, href } from '../core/router.js';
@@ -18,6 +18,7 @@ import { yOf } from '../ui/charts.js';
 import { say } from '../ui/toast.js';
 import { openDialog } from '../ui/dialog.js';
 import { resolve, decode, encode, keyOf } from '../data/groups.js';
+import { repairsLine } from '../ui/repairs.js';
 
 const st = ui('compare', { items: [], p: 'all', norm: false, comb: false, mode: 'all', q: '', view: false });
 if (!Array.isArray(st.get().items)) st.set({ items: (st.get().ids || []).map(id => ({ ids: [id] })) });   // saved before groups
@@ -227,6 +228,7 @@ export default {
             ${seg([['month', 'Month'], ['year', 'Year'], ['all', 'All-time']], s.p, 'period', 'lg')}
           </div>
           <div class="verdict">${verdict}</div>
+          ${repairsLine(deps.flatMap(x => (x.v.isGroup ? x.v.members : [x.v])), from ? dayKey(from) : undefined)}
           ${groups.length ? html`<div class="cmp-groups small">${groups.map(x => html`<p><span class="swatch" style="background:${x.c}"></span><b>${x.v.name}</b> is ${x.v.members.map(v => v.name).join(' + ')} as one: P&L added up day by day, trades pooled, on their ${inrS(x.v.cap, { sign: false })} of capital together.</p>`)}</div>` : ''}
           <div class="stats" style="grid-template-columns:var(--g-4);border-bottom:1px solid var(--line);padding-bottom:14px">${bestFor.map(([l, b]) => html`
             <div class="col" style="gap:3px"><span class="label">${l}</span><b class="row" style="gap:7px"><span class="swatch" style="background:${b.c}"></span>${b.name}</b><span class="mono tiny">${b.v}</span></div>`)}</div>

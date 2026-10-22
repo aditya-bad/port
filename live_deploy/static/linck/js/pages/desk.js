@@ -13,6 +13,7 @@ import { alerts, dismiss, attention } from '../data/alerts.js';
 import { DESK_LANES, STREAK_ALERT } from '../data/config.js';
 import { chips, utabs, marker, empty } from '../ui/components.js';
 import { legHead, legRow, liveTag, tickLegs } from '../ui/legs.js';
+import { repairChip } from '../ui/repairs.js';
 import { primary, resume, kiteDialog, restartDeployment } from '../actions.js';
 
 const st = ui('desk', { f: 'all', sort: 'attn', all: false, lab: false });
@@ -180,7 +181,7 @@ function lanesBlock(list, frac, quiet) {
           return html`
             <div class="lane ${v.issue ? 'att' : ''}">
               <a class="lane-name" href="${href(`d/${v.id}`)}">
-                <span class="row" style="gap:8px">${marker(v.status)}<b>${v.name}</b></span>
+                <span class="row" style="gap:8px">${marker(v.status)}<b>${v.name}</b>${repairChip(v, { link: false })}</span>
                 ${!compact || warn ? html`<span class="tiny ${warn ? 'warn' : 'mute'}">${note}</span>` : ''}
               </a>
               <div class="lane-plot">

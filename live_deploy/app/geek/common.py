@@ -126,11 +126,25 @@ async def book(ctx: Ctx) -> dict:
     return out
 
 
-def repaired_ids(lots: list) -> set:
-    """Positions a stall repair touched (app/repair): any of their fills
-    carries metadata.repair. An undone repair deletes those fills, so this
-    stays true to what's in the book."""
-    return {l["position_id"] for l in lots if "repair" in (l.get("metadata") or {})}
+def repaired_ids(lots: list) -> dict:
+    """Positions a repair touched (app/repair), with the day it repaired:
+    any of their fills carries metadata.repair. An undone repair deletes
+    those fills, so this stays true to what's in the book."""
+    out = {}
+    for l in lots:
+        r = (l.get("metadata") or {}).get("repair")
+        if r is not None:
+            out.setdefault(l["position_id"], r.get("day") or True)
+    return out
+
+
+def repair_day(fixed: dict, ids) -> Optional[str]:
+    """The day a repair wrote into any of `ids` (a position's id or ids),
+    else None: the marks link to that day's repair."""
+    for i in ids:
+        if i in fixed:
+            return fixed[i]
+    return None
 
 
 def opening(meta_action, position_side: str, action: str) -> bool:

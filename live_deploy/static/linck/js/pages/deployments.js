@@ -11,6 +11,7 @@ import { LAB_TAG } from '../data/config.js';
 import { status, check, chips, tagChip, empty, marker, STATUS } from '../ui/components.js';
 import { say } from '../ui/toast.js';
 import * as A from '../actions.js';
+import { repairChip } from '../ui/repairs.js';
 
 const st = ui('deployments', { q: '', st: 'all', mode: 'all', idx: 'all', tag: 'all', lab: false, sk: 'today', sd: -1, page: 0, dense: false });
 const COLS = [
@@ -126,7 +127,7 @@ export default {
                   <button type="button" class="box ${sel.has(v.id) ? 'on' : ''}" data-act="sel" data-id="${v.id}" aria-label="Select ${v.name}"></button>
                   ${status(v.status)}
                   <a class="cell-name" href="${href(`d/${v.id}`)}"><b>${v.name}</b><span class="${note ? 'warn' : ''}">${note || v.strategy}</span></a>
-                  <span class="row wrap" style="gap:4px">${v.tags.map(tagChip)}</span>
+                  <span class="row wrap" style="gap:4px">${repairChip(v)}${v.tags.map(tagChip)}</span>
                   <span class="small mute">${v.mode}</span>
                   <span class="mono tiny">${v.index}</span>
                   <span class="num tiny">${inrS(v.cap, { sign: false })}</span>

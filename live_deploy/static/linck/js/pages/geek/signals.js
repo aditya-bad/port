@@ -18,7 +18,7 @@ export function tradeTable(rows, g) {
   return table([['Sold', '128px'], ['Option', 'minmax(190px,1.4fr)'], ['Broke', '110px'], ['Past it', '76px', 'num'], ['From ST', '80px', 'num'],
     ['Premium', '156px', 'num'], ['Ended by', '124px'], ['Held', '72px', 'num'], ['P&L', '96px', 'num']],
   rows.map(t => [html`<a href="${g.href('trade')}?p=${t.id}" class="mono tiny">${dStamp(t.entry_t)}</a>`,
-    html`<b class="${t.opt === 'CE' ? 'leg-ce' : 'leg-pe'}">${t.symbol}</b> ${fixTag(t.repaired)}`,
+    html`<b class="${t.opt === 'CE' ? 'leg-ce' : 'leg-pe'}">${t.symbol}</b> ${fixTag(t.repaired, g.id)}`,
     t.level ? `${t.level} ${Math.round(t.level_px).toLocaleString('en-IN')}` : '—', pts(t.past_level), pts(t.from_st),
     html`<span class="mono small">${price(t.entry_px)} → ${t.exit_px == null ? 'open' : price(t.exit_px)}</span>`,
     t.open ? html`<span class="oc acted">Open</span>` : exitLabel(t.exit_reason), mins(t.hold_min),

@@ -16,6 +16,7 @@ import { indexByName } from '../../data/config.js';
 import { loadVix, vixNow, vixTip } from '../../data/vix.js';
 import { supports, takeEntry, exit } from '../../data/geek.js';
 import { empty } from '../../ui/components.js';
+import { repairChip } from '../../ui/repairs.js';
 
 import { BASICS, GROUPS, viewsFor, hasView } from './views.js';
 
@@ -44,7 +45,7 @@ export default {
       const cycle = engine && engine.state ? engine.state.cycle_id : null;
       return html`
         <img class="mark gk-mark" src="/icons/linck-mark.svg" alt="" width="24" height="24"><img class="mark gk-mark mark-paper" src="/icons/linck-mark-paper.svg" alt="" width="24" height="24"><span class="gk-badge">GEEK</span>
-        <a class="gk-name" href="${href(`d/${id}/now`)}" title="${v.name}">${v.name}</a>
+        <a class="gk-name" href="${href(`d/${id}/now`)}" title="${v.name}">${v.name}</a>${repairChip(v)}
         <span class="mono tiny mute hide-m">${v.strategy} · ${v.mode.toLowerCase()}</span>
         <span class="gk-live ${isLive() && v.rawStatus === 'active' ? 'on' : ''}"><i></i><span class="hide-m">${v.rawStatus === 'active' ? (isLive() ? 'Live' : 'Not streaming') : v.rawStatus === 'paused' ? 'Paused' : 'Stopped'}</span></span>
         <span class="grow"></span>

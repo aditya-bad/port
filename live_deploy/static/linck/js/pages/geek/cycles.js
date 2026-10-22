@@ -294,7 +294,7 @@ export default {
         <div class="gk-panel"><h3>What ends cycles <span class="s">${s.closed} closed</span></h3>${endings(s)}</div>
         ${table([['#', '44px'], ['Opened → closed', 'minmax(150px,1.2fr)'], ['Expiry', '96px'], ['Days', '56px', 'num'], ['Ended by', '130px'],
           ['Rolls', '60px', 'num'], ['EOD · no-op', '90px', 'num'], ['Worst dip', '96px', 'num'], ['Best peak', '96px', 'num'], ['P&L', '110px', 'num']],
-          data.rows.map(r => [html`<a class="mono b" href="${g.href(`cycle?c=${r.cycle_id}`)}">${r.cycle_id}</a> ${fixTag(r.repaired)}`, `${dShort(r.start)} → ${r.end ? dShort(r.end) : 'now'}`, r.contract_expiry || '—', r.days,
+          data.rows.map(r => [html`<a class="mono b" href="${g.href(`cycle?c=${r.cycle_id}`)}">${r.cycle_id}</a> ${fixTag(r.repaired, g.id)}`, `${dShort(r.start)} → ${r.end ? dShort(r.end) : 'now'}`, r.contract_expiry || '—', r.days,
             endTag(r), r.rolls, `${r.rolls_by_kind.eod + r.rolls_by_kind.rollout} · ${r.eod_checks_no_action}`,
             html`<span class="${tone(r.mae)}">${money(r.mae)}</span>`, html`<span class="${tone(r.mfe)}">${money(r.mfe)}</span>`,
             html`<span class="${tone(r.pnl)} b">${money(r.pnl)}</span>${r.status === 'open' ? html` <span class="tiny mute">open</span>` : ''}`]),

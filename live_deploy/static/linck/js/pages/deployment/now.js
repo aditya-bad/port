@@ -66,7 +66,7 @@ export default {
       mount(el, html`
         <div class="pad-x tab-body grid-side">
           <div class="stack" style="gap:28px">
-            ${repairsNote(fixes)}
+            ${repairsNote(fixes, v0.id)}
             <div class="scroll-x">
               ${sect('Holding now', v.legs.length ? plural(v.legs.length, 'leg') : 'no open legs', html`${liveTag(v.legs)} <span class="mono ${tone(x.unreal)}" data-unr>${inr(x.unreal)}</span>`)}
               ${v.legs.length ? html`${legHead()}${v.legs.map(legRow)}`
@@ -121,7 +121,7 @@ export default {
       if (box) box.outerHTML = String(underlyingPanel(und)); else paint();
     }).catch(e => { und = e instanceof Error ? e : new Error(String(e)); });
     loadUnd();
-    api.repairs(v0.id).then(r => { fixes = r.repairs; const box = $('[data-repairs]', el); if (box) box.outerHTML = String(repairsNote(fixes)); }).catch(() => {});
+    api.repairs(v0.id).then(r => { fixes = r.repairs; const box = $('[data-repairs]', el); if (box) box.outerHTML = String(repairsNote(fixes, v0.id)); }).catch(() => {});
     const ivU = setInterval(loadUnd, 15000);
     // the Live tag turns stale when ticks stop, even with nothing to repaint
     const iv2 = setInterval(() => { const v = book.find(v0.id); if (v) tickLegs(el, v.legs); }, 5000);

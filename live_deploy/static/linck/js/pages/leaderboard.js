@@ -13,6 +13,7 @@ import { periodMetrics, verdictRdd, verdictPf, fmtRatio } from '../data/metrics.
 import { STREAK_ALERT } from '../data/config.js';
 import { seg, check, empty } from '../ui/components.js';
 import { say } from '../ui/toast.js';
+import { repairChip } from '../ui/repairs.js';
 
 const st = ui('leaderboard', { p: 'year', sk: 'rdd', lab: false, board: 'overview' });
 
@@ -130,7 +131,7 @@ export default {
                 <span class="num" title="${verdictPf(x.m.pf)}">${K.pf[1](x.m)}</span>
                 <span class="num">${K.cons[1](x.m)}</span>
                 <span class="num mute">${x.m.n}</span>
-                <span class="row wrap" style="gap:4px;padding-left:16px">${flags(x).map(([t, c]) => html`<span class="flag ${c}">${t}</span>`)}</span>
+                <span class="row wrap" style="gap:4px;padding-left:16px">${repairChip(x.v)}${flags(x).map(([t, c]) => html`<span class="flag ${c}">${t}</span>`)}</span>
               </div>`)}
           </div>
           <p class="tiny mute" style="margin:10px 0 0">Return/DD is return on capital divided by max drawdown in the period: above 3 excellent, 1.5–3 good, 0.8–1.5 fair, below that weak.</p>`

@@ -12,7 +12,7 @@ import { prices, health } from './live.js';
 import { LAB_TAG, YOUNG_DAYS, QUIET_DAYS } from './config.js';
 import { tradeMetrics } from './metrics.js';
 
-const raw = { deployments: [], positions: [], trades: [], daily: [], session: null, strategies: [], tags: [], health: {}, spike: null, exposure: null };
+const raw = { deployments: [], positions: [], trades: [], daily: [], repairs: [], session: null, strategies: [], tags: [], health: {}, spike: null, exposure: null };
 const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false, health: false, spike: false, exposure: false };
 const errors = {};
 let version = 0;
@@ -20,7 +20,7 @@ let version = 0;
 const LOADERS = {
   deployments: async () => { raw.deployments = await api.deployments(); },
   positions: async () => { raw.positions = await api.openPositions(); },
-  book: async () => { const b = await api.book(); raw.trades = b.trades; raw.daily = b.daily; },
+  book: async () => { const b = await api.book(); raw.trades = b.trades; raw.daily = b.daily; raw.repairs = b.repairs || []; },
   session: async () => { raw.session = await api.session(); },
   strategies: async () => { raw.strategies = await api.strategies(); },
   tags: async () => { raw.tags = await api.tags(); },
@@ -117,6 +117,19 @@ function dailyBy() {
     return m;
   });
 }
+// {done: [days repaired], open: [days flagged by the day check and not
+// repaired yet: {day, status, headline}]} by deployment, oldest first
+function repairsBy() {
+  return memo(`repairsBy:${version}`, () => {
+    const m = new Map();
+    for (const r of raw.repairs) {
+      if (!m.has(r.deployment_id)) m.set(r.deployment_id, { done: [], open: [] });
+      const e = m.get(r.deployment_id);
+      if (r.state === 'repaired') e.done.push(r.day); else e.open.push(r);
+    }
+    return m;
+  });
+}
 function legsBy() {
   return memo(`legsBy:${version}`, () => {
     const m = new Map();
@@ -157,6 +170,7 @@ function base(d) {
     index: indexOf(d), created, ageDays, young: ageDays < YOUNG_DAYS,
     inReports: d.include_in_reports !== false,
     legs: legsBy().get(id) || [], trades, daily: dailyBy().get(id) || [],
+    repairs: repairsBy().get(id) || { done: [], open: [] },
     lastTradeAt: last, quietDays: last ? Math.floor((Date.now() - last) / 864e5) : ageDays,
     issue, statusFields: d.status_fields || [],
     equityOpen: raw.session && raw.session.lanes[id] ? raw.session.lanes[id].equity_open : null,

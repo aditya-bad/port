@@ -45,9 +45,9 @@ def test_repairs_listed_and_the_repaired_cycle_marked(client):
     assert len(r) == 1 and r[0]["fills"] == 1 and r[0]["choices"] == {"13:05": "up_first"} and r[0]["change"] == 1350
     assert r[0]["trades"][0]["symbol"] == "NIFTY24JUN23100PE" and "position_id" not in r[0]["trades"][0]
     cyc = {c["cycle_id"]: c["repaired"] for c in client.get(f"/v2/deployments/{d['id']}/geek/cycles").json()["rows"]}
-    assert cyc == {1: False, 2: True}
+    assert cyc == {1: None, 2: "2024-06-04"}
     trades = [t for t in client.get("/v2/book").json()["trades"] if t["deployment_id"] == d["id"]]
-    assert sorted(t["repaired"] for t in trades) == [False, True]
+    assert sorted(t["repaired"] or "" for t in trades) == ["", "2024-06-04"], "the day it repaired, to link to"
     # an undone repair isn't listed
     client.portal.call(lambda: pool.execute("UPDATE stall_repairs SET undone_at = now() WHERE deployment_id = $1", UUID(d["id"])))
     assert client.get(f"/v2/deployments/{d['id']}/repairs").json() == {"repairs": []}
@@ -63,4 +63,4 @@ def test_the_repaired_session_is_marked(client):
             add_fill(client, d["id"], sym, tok, "sell", 35, 200, at(day, 10, 0), "entry", m)
             add_fill(client, d["id"], sym, tok, "buy", 35, 180, at(day, 15, 0), "force_exit", close_meta)
     rows = client.get(f"/v2/deployments/{d['id']}/geek/sessions").json()["sessions"]
-    assert {r["day"]: r["repaired"] for r in rows} == {"2024-06-03": False, "2024-06-04": True}
+    assert {r["day"]: r["repaired"] for r in rows} == {"2024-06-03": None, "2024-06-04": "2024-06-04"}

@@ -1,7 +1,7 @@
 // Daily stats (intraday) or Cycles (positional).
 
 import { html, mount, actions, $, setText, setTone } from '../../core/dom.js';
-import { inr, pct, dShort, WEEKDAYS, ist, fromDay, plural, tone } from '../../core/format.js';
+import { inr, pct, dShort, WEEKDAYS, ist, dayKey, fromDay, plural, tone } from '../../core/format.js';
 import { pnlOf, pick } from '../../core/basis.js';
 import { api } from '../../core/api.js';
 import { openSession } from './session.js';
@@ -9,6 +9,7 @@ import { ui, listen } from '../../core/store.js';
 import * as book from '../../data/book.js';
 import { upDownBars, centreBar } from '../../ui/charts.js';
 import { chips, utabs, empty, loading } from '../../ui/components.js';
+import { spanMark } from '../../ui/repairs.js';
 
 const cyst = ui('cycles', { f: 'all', s: 'new' });
 
@@ -79,7 +80,7 @@ function intraday(v) {
       <div class="sect"><h3 class="t-h3">Every trading day</h3><span class="mute small">newest first · click a day for its chart, legs and orders</span></div>
       <div class="tr th day-grid"><span>Date</span><span>Day</span><span class="right">P&L</span><span class="right">Trades</span><span class="right">Return</span><span>How it ended</span></div>
       ${days.slice(0, 40).map(x => html`<div class="tr day-grid small click" data-act="sess" data-at="${+x.d}" role="button" tabindex="0" aria-label="Open ${fd(x.d)}"><span class="mono">${fd(x.d)}</span><span class="mute">${WEEKDAYS[ist(x.d).wd]}</span>
-        <span class="num ${tone(x.p)}">${inr(x.p)}</span><span class="num">${x.n}</span><span class="num ${tone(x.p)}">${pct(x.p / v.cap * 100)}</span><span class="mute">${[...x.rs].join(', ')}</span></div>`)}
+        <span class="num ${tone(x.p)}">${inr(x.p)}</span><span class="num">${x.n}</span><span class="num ${tone(x.p)}">${pct(x.p / v.cap * 100)}</span><span class="mute">${spanMark(v, dayKey(x.d))} ${[...x.rs].join(', ')}</span></div>`)}
       ${days.length > 40 ? html`<p class="small mute">Showing the latest 40 of ${days.length} days. Export the full list from Trades.</p>` : ''}
     </div>`;
 }
@@ -160,7 +161,7 @@ function positional(v, cycles) {
       ${CL.slice(0, 40).map(c => {
         const dl = ((c.worst ?? 0) - lo) / sp * 100, pw = Math.abs(c.p) / sp * 100;
         return html`<div class="tr hover click cyc-grid" data-act="sess" data-at="${+c.o}" role="button" tabindex="0" data-tip="Cycle ${c.i + 1}\nOpened  ${fd(c.o)}\nClosed  ${fd(c.c)}\nWorst point  ${c.worst == null ? '—' : inr(c.worst)}\nResult  ${inr(c.p)}\nAdjustments  ${c.adj}">
-          <span class="col" style="gap:0"><b class="mono small">#${c.i + 1}</b><span class="tiny mute nowrap">${fd(c.o)} → ${fd(c.c)}</span></span>
+          <span class="col" style="gap:0"><b class="mono small">#${c.i + 1} ${spanMark(v, dayKey(c.o), dayKey(c.c))}</b><span class="tiny mute nowrap">${fd(c.o)} → ${fd(c.c)}</span></span>
           <span class="col" style="gap:5px"><span class="mono small">${plural(c.held, 'day')}</span><span class="meter" style="height:3px"><i style="width:${c.held / hmx * 100}%;background:var(--mute)"></i></span></span>
           <span class="journey">
             ${c.worst != null ? html`<i style="left:${dl}%;width:${Math.max(0, z - dl)}%;background:var(--rs);top:0;bottom:0"></i>` : ''}

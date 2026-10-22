@@ -10,6 +10,7 @@ import { go, href } from '../../core/router.js';
 import * as book from '../../data/book.js';
 import { periodMetrics, verdictRdd, fmtRatio } from '../../data/metrics.js';
 import { status, tagChip, empty } from '../../ui/components.js';
+import { repairChip } from '../../ui/repairs.js';
 import { say } from '../../ui/toast.js';
 import * as A from '../../actions.js';
 import { supports as geekOk, enter as enterGeek } from '../../data/geek.js';
@@ -48,7 +49,7 @@ export default {
           <a class="small b mute back" href="${href('deployments')}">‹ All deployments</a>
           <div class="row end wrap" style="gap:20px">
             <div class="col" style="gap:8px;min-width:0">
-              <div class="row wrap" style="gap:14px"><h1 class="dep-title">${v.name}</h1>${status(v.status)}</div>
+              <div class="row wrap" style="gap:14px"><h1 class="dep-title">${v.name}</h1>${status(v.status)}${repairChip(v)}</div>
               <div class="row wrap mute" style="gap:8px 16px">
                 <a class="mono tiny" href="${href(`s/${v.strategy}`)}" title="${v.strategyLabel}: every deployment of it, combined">${v.strategy}</a><span>${v.mode}</span><span>${v.index}</span>
                 <span class="mono small">${inr(v.cap, { sign: false })} capital</span>

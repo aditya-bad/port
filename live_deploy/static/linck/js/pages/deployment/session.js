@@ -15,10 +15,11 @@
 
 import { api } from '../../core/api.js';
 import { html, raw, mount } from '../../core/dom.js';
-import { inr, inrS, pct, price, plural, tone, toneVar, hhmm, ist, dFull, WEEKDAYS, MONTHS } from '../../core/format.js';
+import { inr, inrS, pct, price, plural, tone, toneVar, hhmm, ist, dayKey, dFull, WEEKDAYS, MONTHS } from '../../core/format.js';
 import { pick, basis } from '../../core/basis.js';
 import { registerScrub } from '../../ui/tooltip.js';
 import { empty, loading } from '../../ui/components.js';
+import { spanMark } from '../../ui/repairs.js';
 
 // Event types: label and colour. 'rollout' is the strangle's EOD roll-out.
 const KINDS = { entry: ['Entry', 'var(--ink)'], adjustment: ['Adjustment', 'var(--b)'], rollout: ['EOD roll-out', 'var(--c5)'], exit: ['Exit', null] };
@@ -178,7 +179,7 @@ function body(v, row, ch, i, L, embed = false) {
 
   return html`
     ${embed ? '' : html`<div class="ss-head">
-      <div class="col grow" style="gap:6px;min-width:240px"><span class="ss-kick">${kicker}</span><h1 class="t-h1">${title}</h1><span class="mute">${sub}</span></div>
+      <div class="col grow" style="gap:6px;min-width:240px"><span class="ss-kick">${kicker}</span><h1 class="t-h1">${title} ${spanMark(v, dayKey(m.start), dayKey(row.status === 'open' ? new Date() : m.end))}</h1><span class="mute">${sub}</span></div>
       <div class="col" style="align-items:flex-end;gap:2px"><b class="mono ss-res ${tone(m.final)}">${inr(m.final)}</b>
         <span class="small mute">${pct(m.final / v.cap * 100)} of ${inrS(v.cap, { sign: false })} capital${row.status === 'open' ? ' · realized so far' : ''}</span></div>
     </div>`}
