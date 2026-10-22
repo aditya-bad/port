@@ -103,6 +103,22 @@ def test_a_cycle_replays_with_labelled_events_and_frames_that_add_up(pool_run, m
             if f["split"] is not None:
                 assert sum(f["split"]) == pytest.approx(f["pnl"], abs=0.5)
         assert out["split_legs"] == len(out["legs"]) and out["unpriced"] == []
+        # the payoff view's "today" curve: each open leg's volatility at each
+        # step prices it back to its price there, off that step's index
+        from datetime import date as _date
+        from app.geek.optionmath import fwd_price, price as bs, years_to
+        assert all(l["expiry"] and l["fwd"] is False for l in out["legs"]) and out["rate"] > 0
+        solved = 0
+        for f in out["frames"]:
+            asof = datetime.fromisoformat(f["t"]) + timedelta(minutes=1)
+            for j, mark, _pnl, stale, iv in f["legs"]:
+                if stale or iv is None:
+                    continue
+                l = out["legs"][j]
+                T = years_to(_date.fromisoformat(l["expiry"]), asof)
+                assert bs(l["kind"], f["idx"], l["strike"], T, iv / 100) == pytest.approx(mark, abs=0.02)
+                solved += 1
+        assert solved > 20
         # each step shows its own candle (not the next one): the fake candles are flat, so close == open
         moving = [f for f in out["frames"] if f["o"] is not None]
         assert moving and all(f["idx"] == f["o"] == f["h"] == f["l"] for f in moving)
@@ -233,4 +249,18 @@ def test_with_its_future_stored_each_leg_is_valued_off_it_and_the_split_still_ad
             if f["split"] is not None:
                 assert sum(f["split"]) == pytest.approx(f["pnl"], abs=0.5)
         assert out["split_legs"] == len(out["legs"])
+        # each step's volatility is off the future too (Black-76), and prices the leg back
+        from datetime import date as _date
+        from app.geek.optionmath import fwd_price, years_to
+        assert all(l["fwd"] for l in out["legs"])
+        solved = 0
+        for f in moving:
+            asof = datetime.fromisoformat(f["t"]) + timedelta(minutes=1)
+            for j, mark, _pnl, stale, iv in f["legs"]:
+                if not stale and iv is not None:
+                    l = out["legs"][j]
+                    T = years_to(_date.fromisoformat(l["expiry"]), asof)
+                    assert fwd_price(l["kind"], f["fut"], l["strike"], T, iv / 100) == pytest.approx(mark, abs=0.02)
+                    solved += 1
+        assert solved > 20
     pool_run(go)

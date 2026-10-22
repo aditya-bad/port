@@ -127,3 +127,28 @@ def fwd_greeks(kind: str, f: float, k: float, t: float, vol: float, r: float = R
     delta = disc * (_ncdf(d1) if kind == "CE" else _ncdf(d1) - 1)
     gamma = disc * math.exp(-d1 * d1 / 2) / math.sqrt(2 * math.pi) / (f * sq)
     return delta, gamma
+
+
+def quick_implied_vol(kind: str, premium: float, s: float, k: float, t: float, fwd: bool = False,
+                      r: float = RATE) -> Optional[float]:
+    """implied_vol (or fwd_implied_vol when `fwd`: s is then the future),
+    by Newton's method from 20% — a few steps instead of eighty halvings,
+    for solving every leg at every step of a replay. Falls back to the
+    bisection where Newton doesn't settle (deep in or out of the money)."""
+    if premium is None or premium <= 0 or s is None or s <= 0 or k <= 0:
+        return None
+    p, rr = (premium * math.exp(r * t), 0.0) if fwd else (premium, r)
+    if p < price(kind, s, k, t, 0.005, rr) - 1e-6 or p > price(kind, s, k, t, 5.0, rr):
+        return None
+    vol = 0.2
+    for _ in range(12):
+        diff = price(kind, s, k, t, vol, rr) - p
+        if abs(diff) < 1e-7:
+            return round(vol, 6)
+        v = vega(s, k, t, vol, rr)
+        if v < 1e-8:
+            break
+        vol -= diff / v
+        if not 0.005 <= vol <= 5.0:
+            break
+    return implied_vol(kind, p, s, k, t, rr)

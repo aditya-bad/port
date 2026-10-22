@@ -39,7 +39,7 @@ test('the Now tab shows the legs against the spot and their future', async () =>
   await ctx.close();
 });
 
-test('the replay draws the future, its basis, and measures strikes from it', async () => {
+test('the replay marks the future and its basis on the payoff, and the legs are priced off it', async () => {
   const ctx = await context(b);
   const p = await ctx.newPage();
   const d = await api(ctx, `/v2/deployments/${ID}/geek/replay`);
@@ -47,9 +47,13 @@ test('the replay draws the future, its basis, and measures strikes from it', asy
   await p.goto(`${BASE}/linck/#/d/${ID}/geek/replay`);
   await p.waitForSelector('[data-rp="strip"] .rp-cell');
   assert.match(await p.locator('[data-rp="strip"]').innerText(), /Future · .*\n[\s\S]*basis/);
+  // the future marked on the payoff, with its basis; the legs priced off it (the
+  // entry's future in the entry's details)
   await p.keyboard.press(']');
-  assert.match(await p.locator('[data-rp="stage"]').innerHTML(), /from fut/);
-  assert.match(await p.locator('[data-rp="pos"]').innerText(), /Future then/);
+  const f = d.frames[d.events.find(e => e.frame > 0).frame];
+  assert.match(await p.locator('[data-rp="stage"]').innerHTML(), new RegExp(`FUT [\\d,.]+ · \\+${Math.round(f.fut - f.idx)}<`), 'the future and its basis');
+  const tips = await p.locator('[data-rp="pos"] [data-tip]').evaluateAll(xs => xs.map(x => x.dataset.tip).join('\n'));
+  assert.match(tips, /Future  [\d,.]+/);
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });

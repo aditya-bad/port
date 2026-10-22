@@ -1,108 +1,194 @@
 import './setup.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { eventAt, nextEvent, prevEvent, advance, change, windowOf, frameOf, legPnl, positionsAt, stage, KIND } from '../../static/linck/js/pages/geek/replay.js';
+import {
+  eventAt, nextEvent, prevEvent, advance, change, frameOf, positionsAt, stepsFor, stepTo, asOf,
+  payoff, breakevens, extremes, rangeOf, mismatched, payoffChart, grid, KIND,
+} from '../../static/linck/js/pages/geek/replay.js';
+import { bs, black76, yearsTo } from '../../static/linck/js/data/options.js';
+
+const near = (a, b, tol, msg) => assert.ok(Math.abs(a - b) <= tol, `${msg || ''} ${a} vs ${b}`);
+
+test('option prices match the server’s (app/geek/optionmath.py)', () => {
+  // reference values from the Python functions
+  near(bs('CE', 25000, 25200, 7 / 365, 0.15, 0.065), 134.358095, 0.01);
+  near(bs('PE', 25000, 24800, 7 / 365, 0.15, 0.065), 111.006026, 0.01);
+  near(black76('CE', 25100, 25200, 7 / 365, 0.15, 0.065), 162.021651, 0.01);
+  assert.equal(bs('PE', 25000, 25200, 0, 0.15, 0.065), 200, 'at expiry: what it’s in the money');
+  near(yearsTo('2026-10-28', '2026-10-22T10:00:00+05:30'), 0.0170662100, 1e-9);
+});
 
 const EV = [{ frame: 0, kind: 'new' }, { frame: 5, kind: 'adjustment' }, { frame: 9, kind: 'exit' }];
 
-test('the event shown is the last one at or before the playhead', () => {
-  assert.equal(eventAt(EV, 0).kind, 'new');
+test('the trade shown is the last one at or before the step; next and previous jump over it', () => {
   assert.equal(eventAt(EV, 4).kind, 'new');
   assert.equal(eventAt(EV, 5).kind, 'adjustment');
-  assert.equal(eventAt(EV, 99).kind, 'exit');
   assert.equal(eventAt([{ frame: 3 }], 1), null);
-});
-
-test('next and previous event jump over the playhead', () => {
-  assert.equal(nextEvent(EV, 0).frame, 5);
   assert.equal(nextEvent(EV, 5).frame, 9);
   assert.equal(nextEvent(EV, 9), null);
-  assert.equal(prevEvent(EV, 9).frame, 5);
   assert.equal(prevEvent(EV, 5).frame, 0);
   assert.equal(prevEvent(EV, 0), null);
 });
 
-test('playing steps one frame, stopping at each event when asked and at the end', () => {
-  assert.deepEqual(advance(3, 12, EV, true), { i: 4, stop: false, event: null });
-  const s = advance(4, 12, EV, true);
-  assert.equal(s.i, 5); assert.equal(s.stop, true); assert.equal(s.event.kind, 'adjustment');
-  assert.deepEqual(advance(4, 12, EV, false), { i: 5, stop: false, event: null });
-  assert.deepEqual(advance(10, 12, EV, false), { i: 11, stop: true, event: null });
-  assert.deepEqual(advance(11, 12, EV, false), { i: 11, stop: true, event: null });
+test('step sizes are whole multiples of the stored prices, and a day', () => {
+  assert.deepEqual(stepsFor('minute').map(s => s[0]), ['1m', '5m', '15m', '30m', '1h', '1D']);
+  assert.deepEqual(stepsFor('5minute').map(s => s[0]), ['5m', '15m', '30m', '1h', '1D']);
+  assert.deepEqual(stepsFor('15minute').map(s => s[0]), ['15m', '30m', '1h', '1D']);
+  assert.deepEqual(stepsFor('60minute').map(s => s[0]), ['1h', '1D']);
 });
 
-test('changes between frames, unknown when either side is', () => {
+// two trading days of 1-minute steps: a Monday 09:15–15:29, the Tuesday 09:15–12:00
+const at = (d, h, m) => `2026-10-${d}T${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:00+05:30`;
+const DAYS = [];
+for (let m = 9 * 60 + 15; m < 15 * 60 + 30; m++) DAYS.push({ t: at(19, Math.floor(m / 60), m % 60) });
+for (let m = 9 * 60 + 15; m <= 12 * 60; m++) DAYS.push({ t: at(20, Math.floor(m / 60), m % 60) });
+const idx = t => DAYS.findIndex(f => f.t === t);
+
+test('a step moves by its minutes; nights don’t count; a day keeps the time of day', () => {
+  assert.equal(stepTo(DAYS, idx(at(19, 10, 0)), 5, 1), idx(at(19, 10, 5)));
+  assert.equal(stepTo(DAYS, idx(at(19, 10, 0)), 1, 1), idx(at(19, 10, 1)));
+  assert.equal(stepTo(DAYS, idx(at(19, 15, 20)), 30, 1), idx(at(20, 9, 15)), 'past the close: the next open');
+  assert.equal(stepTo(DAYS, idx(at(20, 9, 20)), 30, -1), idx(at(19, 15, 29)), 'back past the open: the close before');
+  assert.equal(stepTo(DAYS, idx(at(20, 11, 50)), 30, 1), DAYS.length - 1, 'never past the end');
+  assert.equal(stepTo(DAYS, 3, 60, -1), 0, 'never before the start');
+  assert.equal(stepTo(DAYS, idx(at(19, 10, 0)), 0, 1), idx(at(20, 10, 0)), 'a day on: the same time');
+  assert.equal(stepTo(DAYS, idx(at(19, 14, 0)), 0, 1), DAYS.length - 1, 'the next day ends sooner: its last step');
+  assert.equal(stepTo(DAYS, idx(at(20, 10, 0)), 0, -1), idx(at(19, 10, 0)));
+  assert.equal(stepTo(DAYS, idx(at(20, 10, 0)), 0, 1), DAYS.length - 1, 'no day after: the end');
+});
+
+test('play takes a step at a time, pausing on a trade it passes when asked', () => {
+  const ev = [{ frame: idx(at(19, 10, 3)), kind: 'adjustment' }];
+  const s = advance(DAYS, ev, idx(at(19, 10, 0)), 5, true);
+  assert.equal(s.i, idx(at(19, 10, 3))); assert.equal(s.stop, true); assert.equal(s.event.kind, 'adjustment');
+  assert.deepEqual(advance(DAYS, ev, idx(at(19, 10, 0)), 5, false), { i: idx(at(19, 10, 5)), stop: false, event: null });
+  assert.deepEqual(advance(DAYS, [], DAYS.length - 2, 5, false), { i: DAYS.length - 1, stop: true, event: null });
+});
+
+test('changes between steps, unknown when either side is', () => {
   const F = [{ idx: 100, vix: 13 }, { idx: 120, vix: null }, { idx: 90, vix: 14 }];
   assert.equal(change(F, 0, 2, 'idx'), -10);
   assert.equal(change(F, 0, 1, 'vix'), null);
-  assert.equal(change(F, 0, 9, 'idx'), null);
 });
 
-test('the screen shows the last bars up to the playhead', () => {
-  assert.deepEqual(windowOf(5, 300, 120), [0, 5]);
-  assert.deepEqual(windowOf(250, 300, 120), [131, 250]);
-  assert.deepEqual(windowOf(250, 300, 0), [0, 299]);
-});
-
-// three 5-minute bars; leg 0 open from the first, leg 1 opened in the second
-// and closed in the third
+// three 5-minute steps; leg 0 open throughout, leg 1 opened in the second and closed in the third
 const T = m => `2026-10-14T10:${String(m).padStart(2, '0')}:00+05:30`;
-const D = {
-  index_name: 'NIFTY 50',
+const SMALL = {
+  interval: '5minute', index_name: 'NIFTY 50',
   frames: [
-    { t: T(0), idx: 100, o: 99, h: 101, l: 98, vix: 13, pnl: 50, booked: 0, legs: [[0, 95, 50, false]] },
-    { t: T(5), idx: 102, o: 100, h: 103, l: 100, vix: 13.2, pnl: 30, booked: 0, legs: [[0, 97, 20, false], [1, 52, 10, false]] },
-    { t: T(10), idx: 101, o: 102, h: 102, l: 100, vix: 13.1, pnl: 60, booked: 25, legs: [[0, 94, 35, false]] },
+    { t: T(0), idx: 100, pnl: 50, booked: 0, legs: [[0, 95, 50, false, 14.2]] },
+    { t: T(5), idx: 102, pnl: 30, booked: 0, legs: [[0, 97, 20, false, 14.5], [1, 52, 10, false, null]] },
+    { t: T(10), idx: 101, pnl: 60, booked: 25, legs: [[0, 94, 35, false, 14.1]] },
   ],
   legs: [
-    { symbol: 'X CE', kind: 'CE', strike: 105, side: 'short', qty: 10, entry: 100, t0: T(0), t1: null, realized: null, exit: null, opened_by: { kind: 'new', label: 'New cycle', rule: 'Entry' } },
-    { symbol: 'X PE', kind: 'PE', strike: 95, side: 'short', qty: 10, entry: 53, t0: '2026-10-14T10:06:30+05:30', t1: '2026-10-14T10:12:00+05:30', realized: 25, exit: 50.5, opened_by: { kind: 'adjustment', label: 'Adjustment', rule: 'Continuous' }, closed_by: { kind: 'exit', label: 'Exit', rule: 'Stop' } },
+    { symbol: 'X CE', kind: 'CE', strike: 105, side: 'short', qty: 10, entry: 100, t0: T(0), t1: null, realized: null, exit: null },
+    { symbol: 'X PE', kind: 'PE', strike: 95, side: 'short', qty: 10, entry: 53, t0: '2026-10-14T10:06:30+05:30', t1: '2026-10-14T10:12:00+05:30', realized: 25, exit: 50.5 },
   ],
-  events: [{ frame: 0, kind: 'new', t: T(0), rule: 'Entry' }, { frame: 1, kind: 'adjustment', t: '2026-10-14T10:06:30+05:30', rule: 'Continuous' }],
+  events: [],
 };
 
-test('a time falls in the bar that started at or before it', () => {
-  assert.equal(frameOf(D.frames, T(0)), 0);
-  assert.equal(frameOf(D.frames, '2026-10-14T10:06:30+05:30'), 1);
-  assert.equal(frameOf(D.frames, T(30)), 2);
+test('a time falls in the step that started at or before it; prices are as of the step’s end', () => {
+  assert.equal(frameOf(SMALL.frames, '2026-10-14T10:06:30+05:30'), 1);
+  assert.equal(frameOf(SMALL.frames, T(30)), 2);
+  assert.equal(asOf(SMALL, 1).toISOString(), new Date(T(10)).toISOString());
 });
 
-test('each leg’s P&L: nothing before it opened, its open P&L, then what it booked', () => {
-  assert.deepEqual([0, 1, 2].map(i => legPnl(D, 1, i)), [null, 10, 25]);
-  assert.deepEqual([0, 1, 2].map(i => legPnl(D, 0, i)), [50, 20, 35]);
+test('positions: new ones join as they open, closed ones stay with what they booked', () => {
+  assert.deepEqual(positionsAt(SMALL, 0).map(p => p.l.symbol), ['X CE']);
+  assert.deepEqual(positionsAt(SMALL, 1).map(p => [p.l.symbol, p.fresh, p.closed, p.now, p.pnl, p.iv]),
+    [['X CE', false, false, 97, 20, 14.5], ['X PE', true, false, 52, 10, null]]);
+  assert.deepEqual(positionsAt(SMALL, 2).map(p => [p.closed, p.justClosed, p.now, p.pnl]), [[false, false, 94, 35], [true, true, 50.5, 25]]);
 });
 
-test('positions appear as they open, then show how they closed', () => {
-  assert.deepEqual(positionsAt(D, 0).map(p => p.l.symbol), ['X CE']);
-  const two = positionsAt(D, 1);
-  assert.deepEqual(two.map(p => [p.l.symbol, p.fresh, p.closed, p.now, p.pnl]), [['X CE', false, false, 97, 20], ['X PE', true, false, 52, 10]]);
-  const three = positionsAt(D, 2);
-  assert.deepEqual(three.map(p => [p.closed, p.justClosed, p.now, p.pnl]), [[false, false, 94, 35], [true, true, 50.5, 25]]);
+// a short strangle on NIFTY at 25,000: 25200 CE sold at 100, 24800 PE sold at 90, 75 each, ₹1,000 booked
+// before; each leg's price now is what its volatility gives, as the server's would
+const NOW = '2026-10-22T10:00:00+05:30', EXP = '2026-10-28', R = 0.065;
+const T1 = yearsTo(EXP, new Date(new Date(NOW).getTime() + 60000));
+function strangle({ fut = null, fwd = false, ivs = [15, 16], expiry = EXP, extra = [] } = {}) {
+  const s = 25000, u = fwd ? fut : s;
+  const price = (kind, k, iv) => (fwd ? black76(kind, u, k, T1, iv / 100, R) : bs(kind, u, k, T1, iv / 100, R));
+  const legs = [
+    { symbol: 'NIFTY26OCT25200CE', kind: 'CE', strike: 25200, side: 'short', qty: 75, entry: 100, t0: NOW, t1: null, expiry, fwd, iv: 14 },
+    { symbol: 'NIFTY26OCT24800PE', kind: 'PE', strike: 24800, side: 'short', qty: 75, entry: 90, t0: NOW, t1: null, expiry, fwd, iv: 15 },
+    ...extra.map(e => e.leg),
+  ];
+  const marks = [price('CE', 25200, ivs[0] ?? 14), price('PE', 24800, ivs[1] ?? 15)];
+  const held = [[0, marks[0], (100 - marks[0]) * 75, false, ivs[0]], [1, marks[1], (90 - marks[1]) * 75, ivs[1] == null, ivs[1]], ...extra.map((e, k) => [2 + k, ...e.held])];
+  const pnl = 1000 + held.reduce((a, h) => a + h[2], 0);
+  return { interval: 'minute', index_name: 'NIFTY 50', rate: R, legs, events: [], frames: [{ t: NOW, idx: s, fut, booked: 1000, pnl, legs: held }] };
+}
+
+test('the payoff at expiry: what each leg is worth in the money, plus what’s booked', () => {
+  const D = strangle(), xs = [24000, 24610, 25000, 25390, 25500];
+  const P = payoff(D, 0, xs);
+  assert.equal(P.target, EXP);
+  near(P.expiry[2], 1000 + (100 + 90) * 75, 1e-6, 'between the strikes: both premiums kept');
+  near(P.expiry[4], 1000 + (100 - 300) * 75 + 90 * 75, 1e-6, 'the call 300 in the money');
+  near(P.expiry[0], 1000 + 100 * 75 + (90 - 800) * 75, 1e-6);
+  // breakevens of the legs alone are the strikes ± 190 of premium; the ₹1,000 booked moves them out a little
+  const be = breakevens(grid(24000, 26000, 2001), payoff(D, 0, grid(24000, 26000, 2001)).expiry);
+  assert.equal(be.length, 2);
+  near(be[0], 24800 - 190 - 1000 / 75, 0.5); near(be[1], 25200 + 190 + 1000 / 75, 0.5);
+  const ex = extremes(payoff(D, 0, grid(24000, 26000, 401)).expiry);
+  near(ex.max, 1000 + 190 * 75, 1e-6);
+  assert.equal(ex.maxUnlimited, false); assert.equal(ex.minUnlimited, true, 'a short strangle’s loss runs on');
 });
 
-test('the stage draws only up to the playhead: candles, strikes with their distance, flags, a line per leg', () => {
-  const s1 = String(stage(D, 1, 120, true));
-  assert.equal((s1.match(/<rect x="[\d.-]+" y="[\d.-]+" width="[\d.]+" height="[\d.]+" fill="var\(--(paper|r)\)"/g) || []).length, 2, 'two candles so far');
-  assert.match(s1, /CE 105 sold · \+3 pts/);
-  assert.match(s1, />NEW</); assert.match(s1, />ADJ</);
-  assert.match(s1, /data-scrub=/, 'hover when paused');
-  assert.doesNotMatch(String(stage(D, 1, 120, false)), /data-scrub=/, 'no hover while playing');
-  const s0 = String(stage(D, 0, 120, true));
-  assert.doesNotMatch(s0, />ADJ</, 'a later event isn’t shown yet');
-  assert.doesNotMatch(s0, /PE 95/);
+test('the payoff today goes through the actual P&L at the index', () => {
+  const D = strangle();
+  const P = payoff(D, 0, [24900, 25000, 25100]);
+  near(P.now[1], D.frames[0].pnl, 0.5, 'today, at where the index is');
+  assert.ok(P.now[0] < P.expiry[0] && P.now[1] < P.expiry[1], 'a short strangle is worth less today than at expiry');
+  assert.deepEqual(P.approx, []); assert.deepEqual(P.notes, []);
+});
+
+test('priced off the future: the basis is held across the levels', () => {
+  const D = strangle({ fut: 25100, fwd: true });
+  const P = payoff(D, 0, [25000]);
+  near(P.now[0], D.frames[0].pnl, 0.5);
+  assert.equal(P.basis, 100);
+});
+
+test('a leg with no price now uses its volatility at entry, and says so; with no expiry there’s no line for today', () => {
+  const D = strangle({ ivs: [15, null] });
+  const P = payoff(D, 0, [25000]);
+  assert.deepEqual(P.approx, ['NIFTY26OCT24800PE']);
+  assert.ok(P.now);
+  const noExp = payoff(strangle({ expiry: null }), 0, [25000]);
+  assert.equal(noExp.now, null);
+  assert.match(noExp.notes.join(' '), /expiry isn’t known/);
+  near(noExp.expiry[0], 1000 + 190 * 75, 1e-6, 'the expiry payoff needs only the strikes');
+});
+
+test('a future in the position moves one for one with the index', () => {
+  const fut = { leg: { symbol: 'NIFTY26OCTFUT', kind: 'FUT', strike: null, side: 'long', qty: 75, entry: 25000, t0: NOW, t1: null, expiry: EXP }, held: [25000, 0, false, null] };
+  const D = strangle({ extra: [fut] });
+  const P = payoff(D, 0, [25000, 25100, 25300, 25400]);
+  near(P.expiry[1] - P.expiry[0], 100 * 75, 1e-6, 'between the strikes only the future moves');
+  near(P.expiry[3] - P.expiry[2], 0, 1e-6, 'past the call: the short call’s loss cancels the future’s gain');
+});
+
+test('the range covers every strike and breakeven; an index that can’t be these contracts’ is caught', () => {
+  const [lo, hi, spot] = rangeOf(strangle(), 0);
+  assert.equal(spot, 25000);
+  assert.ok(lo < 24800 - 190 && hi > 25200 + 190);
+  assert.deepEqual(mismatched(strangle(), 0), []);
+  const far = strangle(); far.frames[0].idx = 12000;
+  assert.deepEqual(mismatched(far, 0).map(l => l.strike), [25200, 24800]);
+});
+
+test('the chart: both curves, the index tagged, the breakevens, the P&L at the index', () => {
+  const D = strangle(), [lo, hi] = rangeOf(D, 0), xs = grid(lo, hi, 241);
+  const s = String(payoffChart(D, 0, payoff(D, 0, xs), xs));
+  assert.match(s, /data-curve="expiry"/); assert.match(s, /data-curve="now"/);
+  assert.match(s, /NIFTY 50 25,000/);
+  assert.match(s, /class="rp-be"/);
+  assert.match(s, /S CE 25200/); assert.match(s, /S PE 24800/);
+  assert.match(s, /data-scrub=/, 'hovering it reads the curves');
+  // narrow screens get a narrower drawing, not a shrunken one
+  assert.match(String(payoffChart(D, 0, payoff(D, 0, xs), xs, 360)), /viewBox="0 0 420 380"/);
 });
 
 test('every kind the backend sends has a label and a colour', () => {
-  for (const k of ['new', 'entry', 'adjustment', 'roll', 'hedge', 'added', 'leg_closed', 'exit']) assert.ok(KIND[k] && KIND[k][0] && KIND[k][1], k);
-});
-
-test('with a future: a dashed line, its tag, and strikes measured from it', () => {
-  const DF = { ...D, future: { symbol: 'NIFTYFUTX', expiry: '2026-11-24' }, frames: D.frames.map(f => ({ ...f, fut: f.idx + 2 })) };
-  const s = String(stage(DF, 1, 120, true));
-  assert.match(s, /stroke="var\(--b\)" stroke-width="1.4" stroke-dasharray="5 3"/, 'the future, dashed');
-  assert.match(s, /CE 105 sold · \+1 pts from fut/, 'distance from the future (104), not the spot (102)');
-  assert.match(s, /dashed: NIFTYFUTX/);
-  assert.match(s, />104\.00</, 'its price tag');
-  const plain = String(stage(D, 1, 120, true));
-  assert.doesNotMatch(plain, /from fut/);
+  for (const k of ['new', 'entry', 'adjustment', 'roll', 'hedge', 'added', 'leg_closed', 'exit']) assert.ok(KIND[k][0] && KIND[k][1], k);
 });

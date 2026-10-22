@@ -83,3 +83,28 @@ def test_black76_prices_off_the_future_and_inverts():
     h = 0.5
     assert dc == pytest.approx((fwd_price("CE", f + h, k, t, 0.15) - fwd_price("CE", f - h, k, t, 0.15)) / (2 * h), abs=1e-4)
     assert fwd_greeks("CE", 25100, 25000, 0, 0.15) == (1.0, 0.0)
+
+
+def test_the_quick_solver_reprices_every_option_to_its_premium():
+    """quick_implied_vol (the replay solves every leg at every step):
+    the volatility it finds prices the option back to its premium, spot or
+    future, across strikes, expiries and volatilities. Deep in the money
+    the volatility itself is barely defined, so the price is what's held."""
+    import random
+    from app.geek.optionmath import fwd_price, price, quick_implied_vol
+    rnd = random.Random(1)
+    n = 0
+    for _ in range(1500):
+        s, k = 25000.0, float(rnd.choice(range(22000, 28000, 50)))
+        t, vol, kind = rnd.uniform(1 / 365 / 24, 40 / 365), rnd.uniform(.06, .6), rnd.choice(["CE", "PE"])
+        for fwd, f in ((False, price), (True, fwd_price)):
+            p = f(kind, s, k, t, vol)
+            if p < .05:
+                continue
+            v = quick_implied_vol(kind, p, s, k, t, fwd)
+            assert v is not None
+            assert abs(f(kind, s, k, t, v) - p) < .01, (kind, k, t, vol)
+            n += 1
+    assert n > 2000
+    assert quick_implied_vol("CE", 0, 25000, 25200, .02) is None
+    assert quick_implied_vol("CE", 10, 25000, 24000, .02) is None, "below what it's worth in the money"

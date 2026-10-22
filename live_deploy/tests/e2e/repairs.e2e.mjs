@@ -1,6 +1,6 @@
 // Stall repairs in the UI (ui/repairs.js, the "Repaired" tag): the
 // deployment page notes each repair with its trades; the trade, the
-// straddle and the replay's episode, events and legs it wrote are tagged.
+// straddle and the replay's episode, trades and legs it wrote are tagged.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { BASE, IDS, browser, context, api } from './helper.mjs';
@@ -43,7 +43,7 @@ test('the deployment page notes the repair, and what it wrote is tagged everywhe
   assert.ok(await p.locator('.rp-li .fix-tag').count() >= 1, 'its exit, in the event list');
   await p.keyboard.press(']');
   assert.match(await p.locator('[data-rp="banner"]').innerText(), /repaired/i);
-  assert.match(await p.locator('[data-rp="stage"]').innerHTML(), /EXIT R</);
+  assert.match(await p.locator('[data-rp="banner"] .rp-chip').innerText(), /Exit/i, 'the repaired exit');
   assert.ok(await p.locator('[data-rp="pos"] .fix-tag').count() >= 1);
   // a deployment with no repair has no note
   await p.goto(`${BASE}/linck/#/d/${IDS['Nifty Strangle A']}/now`);

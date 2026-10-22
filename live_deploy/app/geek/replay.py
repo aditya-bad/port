@@ -33,7 +33,7 @@ from typing import Optional
 
 from . import common
 from .common import IST, Ctx, _ist, _iso, label, saw
-from .optionmath import fwd_implied_vol, fwd_price, implied_vol, price as bs_price, years_to
+from .optionmath import RATE, fwd_implied_vol, fwd_price, implied_vol, price as bs_price, quick_implied_vol, years_to
 from .volatility import expiry_of, spot_of
 
 INTERVAL_MIN = {"minute": 1, "5minute": 5, "15minute": 15, "60minute": 60}
@@ -282,6 +282,15 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
             leg["iv"] = (fwd_implied_vol if leg["fwd"] else implied_vol)(leg["kind"], leg["p0"], leg["s0"], leg["k"], T0)
         L.append(leg)
 
+    # each open leg's implied volatility at each step, off its own price
+    # there and the index (or its future) — what the payoff view's
+    # "today" curve is drawn with; percent, None without a price
+    def iv_now(g, px, at, u):
+        if px is None or u is None or g["kind"] not in ("CE", "PE") or not g["k"] or not g["expiry"]:
+            return None
+        v = quick_implied_vol(g["kind"], px, u, g["k"], years_to(g["expiry"], at), g["fwd"])
+        return round(v * 100, 4) if v is not None else None
+
     frames = []
     for T in times:
         asof = T + step                      # a candle's close is known at its end
@@ -303,7 +312,7 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
                 mark = px if px is not None else g["p0"]
                 pnl = (mark - g["p0"]) * g["qty"] * (-1 if g["sold"] else 1)
                 openp += pnl
-                held.append([j, round(mark, 2), round(pnl, 2), px is None])
+                held.append([j, round(mark, 2), round(pnl, 2), px is None, iv_now(g, px, asof, under(g))])
                 parts = split_leg(g, asof, under(g), px) if px is not None else None
             if parts is None:
                 split_ok = False
@@ -403,10 +412,12 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
                   "f0": round(g["s0"], 2) if g["fwd"] else None,
                   "opened_by": by_leg.get(g["id"], {}).get("open"), "closed_by": by_leg.get(g["id"], {}).get("close"),
                   "iv": round(g["iv"] * 100, 2) if g["iv"] else None, "cycle": g["cycle"],
-                  "priced": bool(g["px"]), "repaired": fixed.get(g["id"])} for g in L],
+                  "priced": bool(g["px"]), "repaired": fixed.get(g["id"]),
+                  "expiry": g["expiry"].isoformat() if g["expiry"] else None, "fwd": bool(g["fwd"])} for g in L],
         "events": events,
         "start": _iso(start), "end": _iso(end),
         "split_legs": sum(1 for g in L if g["iv"]),
+        "rate": RATE,   # what the legs are priced with (app/geek/optionmath.py), for the payoff view
         "unpriced": [g["symbol"] for g in L if not g["px"]],
     }
 
