@@ -1,7 +1,8 @@
 """The DeploymentManager inside the running app: startup resume that
 survives a broken deployment, snapshots, price marks, the not-running /
-Kite watchdog and its pushes, and recovery when a restart fails after
-flatten or remove-trades."""
+watchdog's recovery (its alerts are app/ops_health.py's: tests/api/
+test_ops_health.py), and recovery when a restart fails after flatten or
+remove-trades."""
 
 from datetime import datetime, time, timedelta
 from uuid import UUID
@@ -65,7 +66,7 @@ def test_watchdog_brings_a_dead_runner_back_by_itself(client, pushes, monkeypatc
     assert mgr(client).runners[d["id"]].open_positions, "picked its open leg back up"
 
 
-def test_watchdog_alerts_once_keeps_retrying_and_says_when_it_recovers(client, pushes, monkeypatch):
+def test_watchdog_records_it_once_keeps_retrying_and_says_when_it_recovers(client, pushes, monkeypatch):
     monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
     d = make_deployment(client, name="Broken", start="now")
     add_fill(client, d["id"], "CE", 1, "sell", 75, 100, at(WED, "10:00"))
@@ -76,9 +77,9 @@ def test_watchdog_alerts_once_keeps_retrying_and_says_when_it_recovers(client, p
     evening = at(WED, "18:00")
     call(client, mgr(client).check_health_once, evening)
     call(client, mgr(client).check_health_once, evening)
-    assert len(pushes) == 1 and "Broken isn't running" in pushes[0][0]
-    assert "1 open position" in pushes[0][1] and "automatically" in pushes[0][1]
+    assert pushes == [], "the health monitor alerts, not the watchdog"
     assert [x["id"] for x in mgr(client).health_issues] == [d["id"]]
+    assert mgr(client).health_issues[0]["open_positions"] == 1
     assert "instrument_tokens" in mgr(client).health_issues[0]["reason"]
     events = [e["event_type"] for e in client.get(f"/deployments/{d['id']}/events").json()]
     assert events.count("not_running") == 1
@@ -87,7 +88,8 @@ def test_watchdog_alerts_once_keeps_retrying_and_says_when_it_recovers(client, p
     mgr(client)._restart_tried[d["id"]] -= 120          # a minute and more has passed
     call(client, mgr(client).check_health_once, evening)
     assert mgr(client)._is_running(d["id"]) and mgr(client).health_issues == []
-    assert "Broken is running again" in pushes[-1][0]
+    events = [e["event_type"] for e in client.get(f"/deployments/{d['id']}/events").json()]
+    assert "running_again" in events and pushes == []
 
 
 def test_watchdog_retries_at_most_once_a_minute(client, monkeypatch):
@@ -107,35 +109,10 @@ def test_watchdog_retries_at_most_once_a_minute(client, monkeypatch):
     assert len(tries) == 1
 
 
-@pytest.mark.parametrize("when,expect", [
-    (at(WED, "09:04"), 0), (at(WED, "09:05"), 1), (at(WED, "15:29"), 1), (at(WED, "15:30"), 0),
-    (at(WED + timedelta(days=3), "10:00"), 0),     # Saturday
-])
-def test_kite_not_connected_push_only_in_market_hours(client, pushes, monkeypatch, when, expect):
+def test_watchdog_no_longer_pushes_about_kite(client, pushes, monkeypatch):
+    """Kite not connected in market hours is the health monitor's to alert
+    (every minute until it's back), not a once-a-day watchdog push."""
     monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
-    mgr(client)._kite_alerted_on = None
-    call(client, mgr(client).check_health_once, when)
-    assert len([p for p in pushes if "Kite" in p[0]]) == expect
-
-
-def test_kite_push_once_a_day_and_not_when_muted(client, pushes, monkeypatch):
-    monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
-    mgr(client)._kite_alerted_on = None
-    call(client, mgr(client).check_health_once, at(WED, "09:10"))
-    call(client, mgr(client).check_health_once, at(WED, "09:40"))
-    assert len(pushes) == 1
-    mgr(client)._kite_alerted_on = None
-    client.post("/notifications/mute-today")
-    call(client, mgr(client).check_health_once, at(WED, "10:00"))
-    assert len(pushes) == 1, "a day marked as a holiday is quiet"
-
-
-def test_kite_push_is_skipped_when_connected(client, pushes, monkeypatch):
-    monkeypatch.setattr(mgr(client), "push_config", {"vapid": "test"})
-    mgr(client)._kite_alerted_on = None
-    d = client.app.state.dispatcher
-    monkeypatch.setattr(d, "connected", True)
-    monkeypatch.setattr(d, "_kws", object())
     call(client, mgr(client).check_health_once, at(WED, "09:10"))
     assert pushes == []
 

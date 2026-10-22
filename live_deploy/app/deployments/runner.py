@@ -77,6 +77,11 @@ class DeploymentRunner:
         # while GET /deployments/{id} (not cached) would already show
         # it — a real, if brief, disagreement between the two views.
         self._on_fill = on_fill
+        # When this runner last processed a tick (wall clock, UTC), and when
+        # it was built: the health monitor (app/ops_health.py) flags one
+        # that's running but has stopped acting on prices that still flow.
+        self.created_at = datetime.now(timezone.utc)
+        self.last_tick_at: Optional[datetime] = None
 
         # Fixed for the deployment's lifetime, same as initial_capital —
         # used ONLY by _stale_tick_guard below, converted once here so
@@ -543,6 +548,7 @@ class DeploymentRunner:
     async def process_tick(self, t: dict) -> None:
         """One live tick: the intraday safety net, the strategy, then a
         state checkpoint. Nothing here may raise into the tick loop."""
+        self.last_tick_at = datetime.now(timezone.utc)
         try:
             self._note_session(t)
         except Exception:

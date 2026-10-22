@@ -54,19 +54,18 @@ def test_what_counts_as_a_stall():
     assert manager(Disp(None)).tick_stall(NOW) is None
 
 
-def test_the_watchdog_reconnects_pushes_once_and_says_when_prices_return():
+def test_the_watchdog_reconnects_and_leaves_the_alerts_to_the_health_monitor():
+    """Reconnecting is the watchdog's; the alert (every minute until prices
+    return, then "Fixed") is app/ops_health.py's kite:stall issue."""
     d = Disp(NOW - timedelta(minutes=5))
     m = manager(d)
     asyncio.run(m.check_tick_stall(NOW))
     assert d.reconnects == ["tok"], "reconnected with the same session"
-    assert [t for t, _ in m.pushes] == ["Kite prices stopped"] and "No ticks since 14:55" in m.pushes[0][1]
     asyncio.run(m.check_tick_stall(NOW + timedelta(seconds=30)))
-    assert d.reconnects == ["tok"] and len(m.pushes) == 1, "not again within 3 minutes, and pushed once"
+    assert d.reconnects == ["tok"], "not again within 3 minutes"
     m._stall_retry_at -= 200
     asyncio.run(m.check_tick_stall(NOW + timedelta(minutes=4)))
-    assert d.reconnects == ["tok", "tok"] and len(m.pushes) == 1, "retried, still one push"
+    assert d.reconnects == ["tok", "tok"], "retried"
     d.last_tick_at = NOW + timedelta(minutes=5)
     asyncio.run(m.check_tick_stall(NOW + timedelta(minutes=5, seconds=10)))
-    assert m.pushes[-1][0] == "Prices are flowing again" and m._stall_alerted is False
-    asyncio.run(m.check_tick_stall(NOW + timedelta(minutes=5, seconds=40)))
-    assert len(m.pushes) == 2, "nothing more while healthy"
+    assert m._stall_alerted is False and m.pushes == []

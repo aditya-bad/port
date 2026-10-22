@@ -45,14 +45,16 @@ svg { display: block; }
 
 /* Breakpoints (see the spec's Layout section):
  *  ≤1520  P&L basis and theme move into More
- *  ≤1320  Reports, Strategies, Tools move into More
+ *  ≤1640  Journal, Tools move into More (room for Repair and its count)
+ *  ≤1320  Reports, Review, Strategies move into More
  *  ≤1180  hero stacks, Close everything and Edit settings move into menus
  *  ≤900   phone: bottom bar, stacked grids, cards for wide tables */
 .only-mid, .only-phone { display: none !important; }
-@media (max-width: 1520px) {
-  .hide-1520 { display: none !important; }
+@media (max-width: 1640px) {
+  .hide-1640 { display: none !important; }
   .only-mid { display: inline-flex !important; }
 }
+@media (max-width: 1520px) { .hide-1520 { display: none !important; } }
 @media (max-width: 1320px) { .hide-1320 { display: none !important; } }
 @media (max-width: 1180px) {
   :root { --g-hero: minmax(0, 1fr); }

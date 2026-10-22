@@ -9,7 +9,7 @@ import { parse, go, href } from './core/router.js';
 import { listen } from './core/store.js';
 import * as book from './data/book.js';
 import { INDICES } from './data/config.js';
-import { prices, startTicks, startEvents, pollStatus, primeQuotes, kite, backfill } from './data/live.js';
+import { prices, startTicks, startEvents, pollStatus, primeQuotes, kite, backfill, health } from './data/live.js';
 import { alerts } from './data/alerts.js';
 import { installTooltip } from './ui/tooltip.js';
 import { startInstall } from './data/install.js';
@@ -18,11 +18,19 @@ import { say } from './ui/toast.js';
 import { closeEverything, kiteDialog } from './actions.js';
 
 const NAV = [
-  ['desk', 'Desk', ''], ['deployments', 'Deployments', ''], ['leaderboard', 'Leaderboard', ''], ['compare', 'Compare', ''],
-  ['reports', 'Reports', 'hide-1320'], ['review', 'Review', 'hide-1320'], ['strategies', 'Strategies', 'hide-1320'], ['journal', 'Journal', 'hide-1320'], ['tools', 'Tools', 'hide-1320'],
+  ['desk', 'Desk', ''], ['deployments', 'Deployments', ''], ['repair', 'Repair', ''], ['leaderboard', 'Leaderboard', ''], ['compare', 'Compare', ''],
+  ['reports', 'Reports', 'hide-1320'], ['review', 'Review', 'hide-1320'], ['strategies', 'Strategies', 'hide-1320'], ['journal', 'Journal', 'hide-1640'], ['tools', 'Tools', 'hide-1640'],
 ];
 const BNAV = [['desk', 'Desk'], ['deployments', 'Deploys'], ['leaderboard', 'Leaders'], ['compare', 'Compare']];
-const IN_MORE = ['reports', 'review', 'strategies', 'journal', 'tools', 'account'];
+const IN_MORE = ['repair', 'reports', 'review', 'strategies', 'journal', 'tools', 'account'];
+// Open health issues (app/ops_health.py): a count on the Repair link, red
+// when any is critical and not snoozed.
+function issueBadge() {
+  const live = health.issues.filter(x => !x.snoozed_until || new Date(x.snoozed_until) <= new Date());
+  if (!health.issues.length) return '';
+  const hot = live.some(x => x.severity === 'critical');
+  return html`<i class="nav-badge ${hot ? 'hot' : ''}" aria-label="${health.issues.length} open health issue${health.issues.length === 1 ? '' : 's'}">${health.issues.length}</i>`;
+}
 
 const app = { route: null, page: null, cleanup: null, me: null };
 
@@ -66,7 +74,7 @@ function renderHeader() {
     <header class="hdr">
       <a class="wordmark" href="${href('desk')}" aria-label="Linck, go to the Desk">Linck</a>
       <nav class="nav hide-phone" aria-label="Main">${NAV.map(([k, l, c]) => html`
-        <a href="${href(k)}" class="${k === cur ? 'on' : ''} ${c}" ${k === cur ? html`aria-current="page"` : ''}>${l}</a>`)}</nav>
+        <a href="${href(k)}" class="${k === cur ? 'on' : ''} ${c}" ${k === cur ? html`aria-current="page"` : ''}>${l}${k === 'repair' ? issueBadge() : ''}</a>`)}</nav>
       <span class="spacer"></span>
       ${basisControl()}
       ${kiteChip()}
@@ -99,7 +107,7 @@ function renderBnav() {
   const n = alerts().length;
   mount($('#bnav'), html`${BNAV.map(([k, l]) => html`
     <a href="${href(k)}" class="${k === cur ? 'on' : ''}"><span class="n">${k === 'desk' && n ? n : ''}</span>${l}</a>`)}
-    <button type="button" class="${IN_MORE.includes(cur) ? 'on' : ''}" data-act="more"><span class="n"></span>More</button>`);
+    <button type="button" class="${IN_MORE.includes(cur) ? 'on' : ''}" data-act="more"><span class="n">${health.issues.length || ''}</span>More</button>`);
 }
 
 export function openMore() {
@@ -107,6 +115,7 @@ export function openMore() {
   openDialog({
     kicker: 'MENU', title: 'More', cancelLabel: 'Close',
     menu: [
+      { l: `Repair & health${health.issues.length ? ` · ${health.issues.length} open` : ''}`, h: 'Kite, the export, every deployment: what needs fixing', run: () => go('repair') },
       { l: 'Reports', h: 'Statements, account equity, exposure', run: () => go('reports') },
       { l: 'Week in review', h: 'The week against the usual: deployments, trades, rules, notes', run: () => go('review') },
       { l: 'Strategies', h: 'Catalogue and new deployments', run: () => go('strategies') },
@@ -198,6 +207,10 @@ async function boot() {
   onBasis(() => { renderHeader(); route(); });
   prefs.subscribe(() => renderHeader());
   listen('status', () => { renderHeader(); });
+  // a health alert (every minute while an issue is open, once when it clears)
+  listen('event', ev => {
+    if (ev.event_type === 'health_issue' || ev.event_type === 'health_resolved') say(ev.message, null, 8000);
+  });
   listen('data', () => renderHeader());
   listen('ticks', () => renderStrip());
   setInterval(renderStrip, 1000);

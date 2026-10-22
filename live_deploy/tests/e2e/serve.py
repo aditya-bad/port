@@ -20,7 +20,7 @@ import os
 import random
 import sys
 import time as _time
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
@@ -209,6 +209,7 @@ async def seed():
     ids[GEEK_NAME] = await seed_geek(pool, prices, GEEK_LIVE)
     await seed_futures(pool)
     await seed_repair(pool, ids["BankNifty DTT Plain"])
+    await seed_ops(pool, ids)
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
@@ -620,6 +621,29 @@ async def seed_repair(pool, dep):
          "reasons": {"force_exit": len(trades)}, "fills_detail": trades}, {})
 
 
+async def seed_ops(pool, ids):
+    """The health monitor's issues (app/ops_health.py): Kite not connected
+    (critical), a strangle's legs with no trade today (a warning), and one
+    already cleared. The monitor's own loop is stopped in this server."""
+    now = datetime.now(timezone.utc)
+    dep = ids[GEEK_NAME]
+    await pool.execute(
+        "INSERT INTO ops_issues (key, kind, severity, title, detail, opened_at, last_seen_at, last_alert_at, alerts) "
+        "VALUES ('kite:login', 'kite_login', 'critical', 'Kite isn''t connected', "
+        "'6 running deployment(s) can''t trade until you log in to Kite.', $1, $2, $2, 14)",
+        now - timedelta(minutes=14), now)
+    await pool.execute(
+        "INSERT INTO ops_issues (key, kind, severity, deployment_id, title, detail, data, opened_at, last_seen_at, last_alert_at, alerts) "
+        "VALUES ($1, 'stale_legs', 'warning', $2, $3, $4, $5, $6, $7, $7, 3)",
+        f"dep:{dep}:stale-legs", dep, f"{GEEK_NAME}: 1 leg(s) haven't traded today",
+        "NIFTY26NOV27000CE — no trade on the exchange since the open.", {"legs": ["NIFTY26NOV27000CE"]},
+        now - timedelta(minutes=3), now)
+    await pool.execute(
+        "INSERT INTO ops_issues (key, kind, severity, title, detail, opened_at, last_seen_at, resolved_at, resolved_by, alerts) "
+        "VALUES ('kite:stall', 'kite_stall', 'critical', 'Kite prices stopped', 'No ticks since 12:15.', $1, $2, $2, 'cleared', 5)",
+        now - timedelta(hours=3), now - timedelta(hours=2, minutes=55))
+
+
 GEEK_NAME = "Nifty Monthly Strangle"
 GEEK_CAP = 600_000
 
@@ -826,6 +850,13 @@ def main():
             t += timedelta(minutes=step)
         return out
     OptionsResolver.get_historical_candles = index_history
+    # The health monitor checks the real clock: here its issues are seeded
+    # (seed_ops) and its every-minute loop does nothing.
+    from app.ops_health import OpsMonitor
+
+    async def no_loop(self, every_s=60.0):
+        return None
+    OpsMonitor.loop = no_loop
     # Kite isn't logged in to look INDIA VIX up by name: it's known here
     from app import vix as _vix
     _vix.state["token"] = VIX_TOKEN
@@ -836,6 +867,8 @@ def main():
             k = 0
             while True:
                 k += 1
+                if k == 1 and getattr(app.state, "ops", None) is not None:
+                    await app.state.ops.refresh_open()   # the seeded issues, for /health
                 d = app.state.dispatcher
                 for ix, tok in TOKEN.items():
                     d.last_prices[tok] = SPOT[ix] + (k % 11 - 5) * 3.1

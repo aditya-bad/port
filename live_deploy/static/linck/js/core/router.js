@@ -14,6 +14,7 @@ export const ROUTES = [
   { path: 'tools/:tab?', nav: 'tools', load: () => import('../pages/tools.js') },
   { path: 'journal', nav: 'journal', load: () => import('../pages/journal.js') },
   { path: 'review', nav: 'review', load: () => import('../pages/review.js') },
+  { path: 'repair', nav: 'repair', load: () => import('../pages/repair.js') },
   { path: 'account', nav: 'account', load: () => import('../pages/account.js') },
 ];
 export const DEFAULT = 'desk';

@@ -784,10 +784,9 @@ class DeploymentManager:
 
     async def watchdog_loop(self, interval_seconds: float = 30.0) -> None:
         """Every 30s: refresh health_issues (shown by GET /health and the
-        UI) and push once for each new problem:
-          - a deployment that's active but not running;
-          - on a market day, Kite still not connected at 09:05 (skipped
-            on days marked as a market holiday)."""
+        UI), restart a deployment that's active but not running, and
+        reconnect a feed that stalled. The alerts for both (every minute
+        until fixed) are app/ops_health.py's."""
         while True:
             try:
                 await self.check_health_once(datetime.now(_IST))
@@ -821,21 +820,20 @@ class DeploymentManager:
             logger.info("Auto-restarted %s", x["name"])
             self._restart_tried.pop(did, None)
             if was_alerted:
-                await self._push(f"{x['name']} is running again", "Restarted automatically. It picked up its open positions from where it left off.")
+                await self._record_event(UUID(did), x["name"], x["strategy"], "running_again",
+                                         message="Restarted automatically; it picked up its open positions.")
         return still
 
     async def check_health_once(self, now: datetime) -> None:
         issues = await self._auto_restart(await self.find_not_running())
         self.health_issues = issues
         current = {x["id"] for x in issues}
+        # The alerts (every minute until it's fixed) are app/ops_health.py's;
+        # this records it once in the deployment's Activity.
         for x in issues:
             if x["id"] in self._alerted:
                 continue
             self._alerted.add(x["id"])
-            legs = f" It holds {x['open_positions']} open position(s) that nothing will exit." if x["open_positions"] else ""
-            await self._push(f"{x['name']} isn't running",
-                             f"Marked active but its strategy isn't running ({x['reason']}).{legs} "
-                             "Retrying automatically every minute — or open it and press Restart.")
             await self._record_event(UUID(x["id"]), x["name"], x["strategy"], "not_running", message=x["reason"])
         self._alerted &= current
         for did in list(self._restart_tried):
@@ -843,27 +841,7 @@ class DeploymentManager:
                 self._restart_tried.pop(did, None)
 
         await self.check_tick_stall(now)
-
-        connected = bool(getattr(self.dispatcher, "connected", False)) and not self.dispatcher.status.get("needs_login")
-        market_day = now.weekday() < 5
-        if connected or not market_day or not (time(9, 5) <= now.time() < time(15, 30)):
-            return
-        if self._kite_alerted_on == now.date():
-            return
-        muted = None
-        if self.cache is not None:
-            try:
-                muted = await self.cache.get("notification_mute_until")
-            except Exception:
-                muted = None
-        if muted is not None and datetime.now(timezone.utc) < muted:
-            return
-        self._kite_alerted_on = now.date()
-        n = len(self.runners)
-        await self._push(
-            "Kite isn't connected",
-            f"It's {now:%H:%M} and Kite isn't logged in — {n} running deployment(s) can't trade until you connect.",
-        )
+        # Kite not connected in market hours: alerted by app/ops_health.py.
 
     # ── A silent tick stall ──────────────────────────────────────────
     #
@@ -898,9 +876,7 @@ class DeploymentManager:
         if not hasattr(self, "_stall_alerted"):   # a manager built without __init__ (tests)
             self._stall_alerted, self._stall_retry_at = False, None
         if stalled is None:
-            if self._stall_alerted:
-                self._stall_alerted = False
-                await self._push("Prices are flowing again", f"Kite ticks resumed at {now.astimezone(_IST):%H:%M}.")
+            self._stall_alerted = False
             return
         mono = _time.monotonic()
         if self._stall_retry_at is not None and mono - self._stall_retry_at < self.STALL_RETRY_S:
@@ -914,11 +890,7 @@ class DeploymentManager:
                 self.dispatcher.reconnect(token)
             except Exception:
                 logger.exception("Reconnecting after a tick stall failed")
-        if not self._stall_alerted:
-            self._stall_alerted = True
-            await self._push("Kite prices stopped",
-                             f"No ticks since {last:%H:%M} though the connection looked open. Reconnecting automatically; "
-                             f"{len(self.runners)} running deployment(s) can't act until prices return.")
+        self._stall_alerted = True   # the alert itself is app/ops_health.py's
 
     # ── Post-market state checkpoint (once a day, not on shutdown) ──────
 

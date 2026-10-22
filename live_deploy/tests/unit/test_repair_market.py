@@ -199,15 +199,17 @@ class FakeGate:
         return self.masters.get(exchange, [])
 
 
-def test_an_empty_answer_with_oi_is_asked_again_without_it():
+def test_the_day_is_one_request_and_only_an_error_retries_without_oi():
+    """An empty answer is the same with or without OI: asking twice doubled
+    the requests for every untraded strike (the BANKEX scan crawled)."""
     rows = [{"date": at("12:00"), "open": 1, "high": 1, "low": 1, "close": 1}]
     gate = FakeGate({(5, True): [], (5, False): rows, (6, True): Exception("no oi"), (6, False): rows,
                      (7, True): rows})
     fetch = M.kite_minute_source(gate)
-    assert fetch(5, at("09:15"), at("15:30")) == rows
+    assert fetch(5, at("09:15"), at("15:30")) == []
     assert fetch(6, at("09:15"), at("15:30")) == rows
     assert fetch(7, at("09:15"), at("15:30")) == rows
-    assert gate.calls == [(5, True), (5, False), (6, True), (6, False), (7, True)]
+    assert gate.calls == [(5, True), (6, True), (6, False), (7, True)]
     assert M.kite_minute_source(FakeGate({}))(8, at("09:15"), at("15:30")) == []
 
 
@@ -356,7 +358,18 @@ def bankex_future_book(fut_today, fut_before, ltp=None, fut_after=None):
             return [{"instrument_token": FUT, "tradingsymbol": "BANKEX26NOVFUT", "exchange": "BFO", "name": "BANKEX",
                      "instrument_type": "FUT", "strike": 0.0, "expiry": date(2026, 11, 26)}] if exchange == "BFO" else []
 
-    b = M.MinuteBook(DAY, source, lookup=M.kite_lookup(Real()), ltp=ltp)
+    def history(token, start, end, interval):
+        """Kite's daily candles: each day's last close."""
+        assert interval == "day"
+        if token != FUT:
+            return []
+        days = {}
+        for (d, k), c in sorted({**fut_before, **(fut_after or {})}.items()):
+            if start <= d <= end:
+                days[d] = c
+        return [{"date": datetime.combine(d, time(0)), "open": c, "high": c, "low": c, "close": c} for d, c in days.items()]
+
+    b = M.MinuteBook(DAY, source, lookup=M.kite_lookup(Real()), ltp=ltp, history=history)
     clock = M.ReplayClock(DAY)
     clock.set(at("12:00"), M.UP_FIRST, 3)
     return b, M.ReplayKite(Real(), b, clock), FUT
@@ -367,8 +380,8 @@ def bankex_future_book(fut_today, fut_before, ltp=None, fut_after=None):
     ({}, {(date(2026, 10, 20), "15:20"): 61800}, 61800, datetime(2026, 10, 20, 15, 20, 59)),
     # first trade today only at 13:00, after the replay's 12:00: still yesterday's
     ({"13:00": 62000}, {(date(2026, 10, 20), "15:20"): 61800}, 61800, datetime(2026, 10, 20, 15, 20, 59)),
-    # nothing in the week before: Kite's 60 days are asked
-    ({}, {(date(2026, 9, 25), "11:05"): 60100}, 60100, datetime(2026, 9, 25, 11, 5, 59)),
+    # nothing in the week before: Kite's daily candles for 60 days (one light request), its close that day
+    ({}, {(date(2026, 9, 25), "11:05"): 60100}, 60100, datetime(2026, 9, 25, 15, 29, 59)),
 ])
 def test_kite_ltp_answers_a_bfo_future_with_its_last_trade_on_kite(today, before, want, at_):
     """The scan's crash: the strangle asks ltp('BFO:BANKEX26NOVFUT') for
@@ -449,3 +462,62 @@ def test_the_resolvers_own_get_ltp_no_longer_raises_for_it_inside_the_replay():
     with M.replaying(k, k.clock):
         px = asyncio.run(OptionsResolver(Disp()).get_ltp("BFO:BANKEX26NOVFUT"))
     assert px == 62150.0
+
+
+
+# ── Kite's quote first: a contract whose last trade was before the day ──
+
+def quoted_book(quotes, day_rows=None):
+    """A book whose source counts its history requests; quote() answers
+    from `quotes` {"EXCH:SYM": (last_price, last_trade_time)}."""
+    calls, asked = [], []
+
+    def source(token, start, end):
+        calls.append(token)
+        return (day_rows or {}).get(token, []) if start.date() == DAY else []
+
+    def quote(keys):
+        asked.append(list(keys))
+        return {k: {"last_price": quotes[k][0], "last_trade_time": quotes[k][1]} for k in keys if k in quotes}
+
+    class Real:
+        def instruments(self, exchange=None):
+            return [{"instrument_token": 900 + i, "tradingsymbol": k.split(":")[1], "exchange": "BFO"}
+                    for i, k in enumerate(sorted(quotes))] if exchange == "BFO" else []
+
+    b = M.MinuteBook(DAY, source, quote=quote)
+    clock = M.ReplayClock(DAY)
+    clock.set(at("12:00"), M.UP_FIRST, 3)
+    return b, M.ReplayKite(Real(), b, clock), calls, asked
+
+
+def test_a_strike_ladder_is_one_quote_and_no_history_for_contracts_that_didnt_trade_that_day():
+    epoch = datetime(1970, 1, 1, 5, 30)    # Kite's "never traded"
+    quotes = {f"BFO:BANKEX26NOV6{k}00CE": (100.0 + k, epoch) for k in range(10, 20)}
+    quotes["BFO:BANKEX26NOV61300CE"] = (88.0, datetime(2026, 10, 20, 14, 2))   # last traded the day before
+    b, k, calls, asked = quoted_book(quotes)
+    got = k.ltp(sorted(quotes))
+    assert len(asked) == 1 and len(asked[0]) == 10, "one quote for the whole ladder"
+    assert calls == [], "no history request for any of them"
+    assert got["BFO:BANKEX26NOV61300CE"]["last_price"] == 88.0
+    assert got["BFO:BANKEX26NOV61000CE"]["last_price"] == 110.0
+    tok = got["BFO:BANKEX26NOV61000CE"]["instrument_token"]
+    assert b.origin[tok] == "quote" and tok in b.never_traded
+    t13 = got["BFO:BANKEX26NOV61300CE"]["instrument_token"]
+    assert t13 not in b.never_traded and b.price(t13, at("12:00"), "close", at("12:00")) == (88.0, datetime(2026, 10, 20, 14, 2))
+    k.ltp(sorted(quotes))
+    assert len(asked) == 1, "quoted once per run"
+
+
+def test_a_contract_that_traded_on_the_day_gets_its_real_candles():
+    rows = {900: [{"date": at("11:00"), "open": 50, "high": 55, "low": 48, "close": 52}]}
+    b, k, calls, asked = quoted_book({"BFO:SENSEX26NOV77700CE": (60.0, datetime(2026, 10, 21, 15, 20))}, rows)
+    got = k.ltp("BFO:SENSEX26NOV77700CE")
+    assert got["BFO:SENSEX26NOV77700CE"]["last_price"] == 52, "the day's candle, not today's quote"
+    assert calls == [900] and b.origin[900] == "kite"
+
+
+def test_a_quote_of_zero_falls_through_to_history():
+    b, k, calls, asked = quoted_book({"BFO:SENSEX26NOV99900CE": (0.0, None)})
+    assert k.ltp("BFO:SENSEX26NOV99900CE") == {}
+    assert calls, "asked Kite's history instead"

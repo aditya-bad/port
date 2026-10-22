@@ -255,3 +255,90 @@ async def restart_deployment(deployment_id: UUID, request: Request):
         raise HTTPException(409, str(e))
     await _refresh_caches(request)
     return {"ok": True, "running": True}
+
+
+# ── Health monitor (app/ops_health.py) ───────────────────────────────
+
+class SnoozeIn(BaseModel):
+    period: str = Field("30m", alias="for", description="30m, 2h (any number of m or h), today — or clear")
+
+    model_config = {"populate_by_name": True}
+
+
+def _ops(request: Request):
+    ops = getattr(request.app.state, "ops", None)
+    if ops is None:
+        raise HTTPException(503, "The health monitor isn't running")
+    return ops
+
+
+@router.get("/ops")
+async def get_ops(request: Request):
+    """What the health monitor sees: open issues, the last 50 cleared
+    ones, and the option-history export (last result, or running)."""
+    from .. import ops_health
+    pool = request.app.state.db_pool
+    ops = getattr(request.app.state, "ops", None)
+    open_rows = await pool.fetch("SELECT * FROM ops_issues WHERE resolved_at IS NULL ORDER BY severity, opened_at")
+    recent = await pool.fetch(
+        "SELECT * FROM ops_issues WHERE resolved_at IS NOT NULL ORDER BY resolved_at DESC LIMIT 50")
+    candles = getattr(request.app.state, "candles", None)
+    d = request.app.state.dispatcher
+    return {
+        "checked_at": ops.checked_at.isoformat() if ops and ops.checked_at else None,
+        "open": [ops_health.issue(r) for r in open_rows],
+        "recent": [ops_health.issue(r) for r in recent],
+        "export": {"last": await queries.get_app_scratch(pool, "candle_backfill_last"),
+                   "running": getattr(candles, "progress", None)},
+        "kite": {"connected": bool(d.connected) and not d.status.get("needs_login"),
+                 "last_tick_at": d.last_tick_at.isoformat() if d.last_tick_at else None,
+                 "ticks_stalled_s": request.app.state.deployment_manager.tick_stall(datetime.now().astimezone())},
+        "running": len(request.app.state.deployment_manager.runners),
+    }
+
+
+@router.post("/ops/check")
+async def run_ops_check(request: Request):
+    """Run the health check now instead of waiting for the next minute."""
+    await _ops(request).check_once()
+    return await get_ops(request)
+
+
+@router.post("/ops/issues/{issue_id}/snooze")
+async def snooze_issue(issue_id: int, payload: SnoozeIn, request: Request):
+    """Stop an open issue alerting for a while (it stays open and shown)."""
+    from datetime import timezone
+
+    from .. import ops_health
+    pool = request.app.state.db_pool
+    if payload.period == "clear":
+        until = None
+    else:
+        try:
+            until = ops_health.snooze_until(payload.period, datetime.now(timezone.utc))
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+    row = await pool.fetchrow(
+        "UPDATE ops_issues SET snoozed_until = $2 WHERE id = $1 AND resolved_at IS NULL RETURNING *", issue_id, until)
+    if row is None:
+        raise HTTPException(404, "No such open issue")
+    if getattr(request.app.state, "ops", None) is not None:
+        await request.app.state.ops.refresh_open()
+    return ops_health.issue(row)
+
+
+@router.post("/ops/issues/{issue_id}/dismiss")
+async def dismiss_issue(issue_id: int, request: Request):
+    """Close an issue by hand (a one-off you've dealt with). If the check
+    still finds the problem, it opens again as a new issue."""
+    from datetime import timezone
+
+    from .. import ops_health
+    row = await request.app.state.db_pool.fetchrow(
+        "UPDATE ops_issues SET resolved_at = $2, resolved_by = 'dismissed' WHERE id = $1 AND resolved_at IS NULL RETURNING *",
+        issue_id, datetime.now(timezone.utc))
+    if row is None:
+        raise HTTPException(404, "No such open issue")
+    if getattr(request.app.state, "ops", None) is not None:
+        await request.app.state.ops.refresh_open()
+    return ops_health.issue(row)

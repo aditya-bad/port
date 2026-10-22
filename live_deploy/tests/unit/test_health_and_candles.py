@@ -91,14 +91,14 @@ def _fake_list_deployments(monkeypatch):
 ROW = {"id": "00000000-0000-0000-0000-000000000001", "deployment_name": "DTT A", "strategy_name": "intraday_dtt_adjusted"}
 
 
-def test_watchdog_flags_active_without_runner_and_pushes_once():
+def test_watchdog_flags_active_without_runner_and_records_it_once():
     mgr = manager([ROW])
     mgr.start_errors[ROW["id"]] = "NoKiteSession: no session"
     asyncio.run(mgr.check_health_once(m(10, 0)))
     asyncio.run(mgr.check_health_once(m(10, 1)))
     assert [x["name"] for x in mgr.health_issues] == ["DTT A"]
     assert mgr.health_issues[0]["open_positions"] == 2 and "NoKiteSession" in mgr.health_issues[0]["reason"]
-    assert mgr.pushes == ["DTT A isn't running"] and mgr.events == ["not_running"]
+    assert mgr.pushes == [] and mgr.events == ["not_running"], "the alert is app/ops_health.py's"
     assert mgr.restarts == [ROW["id"]], "tried to restart it by itself, once within the minute"
 
 
@@ -108,13 +108,9 @@ def test_watchdog_quiet_when_running():
     assert mgr.health_issues == [] and mgr.pushes == []
 
 
-def test_kite_alert_once_on_market_days_after_0905_only():
+def test_the_watchdog_leaves_kite_alerts_to_the_health_monitor():
+    """Kite not connected in market hours: app/ops_health.py alerts every
+    minute (tests/api/test_ops_health.py); the watchdog stays quiet."""
     mgr = manager([], connected=False, needs_login=True)
-    asyncio.run(mgr.check_health_once(m(9, 0)))
-    assert mgr.pushes == []
-    asyncio.run(mgr.check_health_once(m(9, 6)))
     asyncio.run(mgr.check_health_once(m(9, 30)))
-    assert mgr.pushes == ["Kite isn't connected"]
-    sat = manager([], connected=False, needs_login=True)
-    asyncio.run(sat.check_health_once(m(10, 0, d=17)))
-    assert sat.pushes == []
+    assert mgr.pushes == []

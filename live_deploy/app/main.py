@@ -57,7 +57,7 @@ from .db.migrate import run_migrations
 from .db.pool import close_pool, create_pool
 from .deployments.manager import DeploymentManager
 from .dispatcher import LiveDataDispatcher
-from .notifications import is_push_configured, send_push_for_all
+from .notifications import is_push_configured
 from .routers import admin as admin_router
 from .routers import aggregate as aggregate_router
 from .routers import auth as auth_router
@@ -247,9 +247,9 @@ async def startup() -> None:
             "metadata": {},
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        if is_push_configured(config):
-            title = "⚠️ Kite disconnected" if event_type == "kite_disconnected" else "✅ Kite reconnected"
-            await send_push_for_all(db_pool, config, title, message)
+        # The phone push is the health monitor's now (app/ops_health.py: in
+        # market hours, every minute until Kite is back, then "Fixed") —
+        # pushing here too doubled every alert. The in-app toast stays.
 
     broadcaster = Broadcaster()
     dispatcher = LiveDataDispatcher(
@@ -401,6 +401,13 @@ async def startup() -> None:
     app.state.candle_backfill_task = asyncio.create_task(
         manager.candle_backfill_loop(app.state.candles), name="candle-backfill-loop",
     )
+    # ── Health monitor: Kite, the database, the 15:45 export and every
+    # deployment, checked every minute; each problem alerts every minute
+    # until it clears — see app/ops_health.py.
+    from .ops_health import OpsMonitor
+    app.state.ops = OpsMonitor(db_pool, manager, dispatcher, cache=cache, event_broadcaster=event_broadcaster,
+                               candles=app.state.candles)
+    app.state.ops_task = asyncio.create_task(app.state.ops.loop(), name="ops-health-loop")
     # ── India VIX for Geek mode: looked up and subscribed once Kite logs in
     # (its live value goes on every fill); history comes from Kite when a
     # view asks, kept in memory, never stored — see app/vix.py.
@@ -461,7 +468,7 @@ async def shutdown() -> None:
     except asyncio.CancelledError:
         pass
 
-    for name in ("index_candles_task", "candle_backfill_task", "watchdog_task", "strategy_health_task", "vix_task", "vix_spike_task"):
+    for name in ("index_candles_task", "candle_backfill_task", "ops_task", "watchdog_task", "strategy_health_task", "vix_task", "vix_spike_task"):
         task = getattr(app.state, name, None)
         if task is None:
             continue

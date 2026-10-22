@@ -28,7 +28,7 @@
 @keyframes print { from { transform: scaleY(0); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .boot-mark .cursor, .boot-mark .candle { animation: none; } }
 .wordmark:hover { color: inherit; }
-.nav { display: flex; gap: clamp(14px, 1.2vw, 20px); flex: none; font-weight: 600; white-space: nowrap; }
+.nav { display: flex; gap: clamp(14px, 1.15vw, 20px); flex: none; font-weight: 600; white-space: nowrap; }
 .nav > a { padding: 20px 0 17px; border-bottom: 3px solid transparent; color: var(--mute); text-decoration: none; }
 .nav > a.on { color: var(--ink); border-bottom-color: var(--ink); }
 .nav > a:hover { color: var(--ink); }

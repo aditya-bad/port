@@ -52,7 +52,7 @@ export function startEvents() {
     let ev;
     try { ev = JSON.parse(msg.data); } catch (e) { return; }
     if (!ev || !ev.event_type) return;
-    if (/^kite_/.test(ev.event_type)) pollStatus();
+    if (/^kite_|^health_/.test(ev.event_type)) pollStatus();
     emit('event', ev);
   };
 }
@@ -61,8 +61,9 @@ export function startEvents() {
 // state: 'connected' | 'stalled' (connected, but no ticks for a while in
 // market hours: reconnecting by itself) | 'connecting' | 'expired'
 export const kite = { state: 'expired', lastTickAt: null, error: null };
-// Deployments active in the database with nothing running them (/health).
-export const health = { notRunning: [], sig: '' };
+// Deployments active in the database with nothing running them, and the
+// health monitor's open issues (/health; app/ops_health.py).
+export const health = { notRunning: [], issues: [], sig: '' };
 // The daily option-history backfill while it runs (/health), else null.
 export const backfill = { running: null };
 let fastPoll = null;
@@ -75,8 +76,10 @@ export async function pollStatus() {
     kite.lastTickAt = h.last_tick_at || null;
     kite.error = h.last_error || null;
     const nr = h.not_running || [];
-    const sig = nr.map(x => `${x.id}:${x.open_positions}`).join(',');
+    const iss = h.open_issues || [];
+    const sig = `${nr.map(x => `${x.id}:${x.open_positions}`).join(',')}|${iss.map(x => `${x.id}:${x.snoozed_until || ''}`).join(',')}`;
     health.notRunning = nr;
+    health.issues = iss;
     if (sig !== health.sig) { health.sig = sig; emit('data'); }
     backfill.running = h.candle_backfill || null;
     // follow a running backfill every few seconds, then back to the normal pace

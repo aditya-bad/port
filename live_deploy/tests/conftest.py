@@ -146,6 +146,14 @@ def pool_run(db):
 _app_state = {"client": None, "pushes": None}
 
 
+async def _cancel(task):
+    task.cancel()
+    try:
+        await task
+    except BaseException:
+        pass
+
+
 def _start_app():
     from fastapi.testclient import TestClient
     import app.notifications as notifications
@@ -160,6 +168,10 @@ def _start_app():
     app.state.test_pushes = pushes
     client = TestClient(app, base_url="http://localhost")
     client.__enter__()   # runs startup once for the whole session
+    # the health monitor runs on the real clock: tests drive check_once themselves
+    task = getattr(app.state, "ops_task", None)
+    if task is not None:
+        client.portal.call(lambda: _cancel(task))
     _app_state["client"] = client
     _app_state["pushes"] = pushes
     return client
@@ -199,6 +211,8 @@ def app_client(db):
         mgr.start_errors.clear()
         mgr.health_issues = []
         mgr._alerted.clear()
+        if getattr(app.state, "ops", None) is not None:
+            app.state.ops.open, app.state.ops._db_down_alert = [], None
         app.state.v2_book = None
         app.state.dispatcher.last_prices.clear()
         app.state.candles._no_data.clear()

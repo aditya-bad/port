@@ -36,6 +36,11 @@ const postPw = (path, body) => req(path, { method: 'POST', body, passwordCheck: 
 export const api = {
   // session
   health: () => req('/health'),
+  // the health monitor (app/ops_health.py): open issues, cleared ones, the export
+  ops: () => req('/v2/ops'),
+  opsCheck: () => post('/v2/ops/check'),
+  snoozeIssue: (id, period) => post(`/v2/ops/issues/${id}/snooze`, { for: period }),
+  dismissIssue: id => post(`/v2/ops/issues/${id}/dismiss`),
   me: () => req('/auth/me'),
   logout: () => post('/auth/logout'),
   logoutEverywhere: () => post('/auth/logout-everywhere'),
