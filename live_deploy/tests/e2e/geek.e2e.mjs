@@ -490,7 +490,9 @@ for (const [name, rolls] of [['BankNifty DTT Adjusted', false], ['BankNifty DTT 
       for (const v of OWN.concat(['session'])) {
         await p.goto(`${BASE}/linck/#/d/${ID}/geek/${v}`);
         await p.waitForSelector(`.gk-rail a.on[href$="/geek/${v === 'session' ? 'sessions' : v}"]`);
-        await p.waitForFunction(() => { const el = document.querySelector('#gkView'); return el && el.children.length && !el.querySelector('.skel'); }, null, { timeout: 20000 });
+        const t0 = Date.now();
+        await p.waitForFunction(() => { const el = document.querySelector('#gkView'); return el && el.children.length && !el.querySelector('.skel'); }, null, { timeout: 20000 })
+          .catch(e => { throw new Error(`${label} ${v}: still loading after ${Date.now() - t0} ms (${e.message})`); });
         const text = await p.locator('#gkView').innerText();
         assert.doesNotMatch(text, /undefined|NaN|\[object|Infinity/, `${label} ${v}: no broken values`);
         const sw = await p.evaluate(() => document.documentElement.scrollWidth);

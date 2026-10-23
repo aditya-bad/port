@@ -115,7 +115,7 @@ export function openMore() {
   openDialog({
     kicker: 'MENU', title: 'More', cancelLabel: 'Close',
     menu: [
-      { l: `Repair & health${health.issues.length ? ` · ${health.issues.length} open` : ''}`, h: 'Kite, the export, every deployment: what needs fixing', run: () => go('repair') },
+      { l: `Repair${health.issues.length ? ` · ${health.issues.length} open ${health.issues.length === 1 ? 'alert' : 'alerts'}` : ''}`, h: 'The day check and what the deployments reported: what needs fixing', run: () => go('repair') },
       { l: 'Reports', h: 'Statements, account equity, exposure', run: () => go('reports') },
       { l: 'Week in review', h: 'The week against the usual: deployments, trades, rules, notes', run: () => go('review') },
       { l: 'Strategies', h: 'Catalogue and new deployments', run: () => go('strategies') },
