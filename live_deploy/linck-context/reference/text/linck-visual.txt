@@ -1,97 +1,151 @@
-LINCK IN MOTION (linck-visual.html): what each animation shows
+LINCK IN MOTION (linck-visual.html): the narration, scene by scene
 
-Sixteen scenes on a 1600×900 SVG stage, each 12–22 s. Numbers marked
-"measured" come from tests/bench; the others are design or estimates.
+Sixteen narrated animations on a 1600x900 SVG stage. Each scene is told in
+steps; a step's voice and caption play while that part animates, the
+animation runs at most 0.6x the speed it was drawn at, and each step waits
+until its narration ends. Narration: 12.3 minutes, voice Kokoro af_heart,
+generated offline and embedded as MP3. Numbers said to be measured come from
+tests/bench; capacity figures are the estimates in 07-brokers-latency-load.md.
 
-1. Linck in one picture. Phone, laptop and your code reach an edge, then
-   the live gateway, product API and control. A cell holds the supervisor
-   (Python, Go, Rust, TypeScript), market data, tick cache, orders & risk
-   (the only writer of money) and a broker gateway; the exchange and brokers
-   sit outside; the ledger and journal sit below. Animated: ticks flow in, an
-   order goes out, a fill comes back, +₹1,240 reaches the phone, "deploy v7"
-   reaches the supervisor.
+1. Linck in one picture
+   [   0] This is Linck on one screen. On the left are the ways in: your phone, your laptop, and your own strategy code.
+   [ 1.5] In the middle are the front doors. The live gateway sends prices and P&L, the product API serves pages and reports, and control deploys and schedules.
+   [ 2.4] On the right is a cell. It holds everything that trades: the supervisor that runs strategies in any language, market data, the tick cache, orders and risk, and the broker gateway.
+   [ 4.2] Prices flow in from the exchange, through market data and the tick cache, to the supervisor.
+   [ 6.0] A strategy decides to sell. The order goes to orders and risk, the only part allowed to touch money, then through the broker gateway to the broker.
+   [ 8.2] The fill comes back the same way, and is written to the ledger.
+   [ 9.4] Your profit goes out through the live gateway and lands on your phone.
+   [11.5] From your laptop, you read pages and reports through the product API.
+   [12.6] When you ship new code, control deploys it to the supervisor, which starts it next to the others. Every batch a strategy receives is kept in the journal.
 
-2. Why it is split up. Today: one Python process (website, Kite feed, money,
-   8 strategies); a deploy restarts everything. First build: Core API,
-   runner workers, market data, orders & risk; a deploy restarts only the
-   Core API while the runners keep trading. Final: a platform band over 10
-   cells; one cell goes bad, the rest carry on.
+2. Why it is split up
+   [   0] Today, everything runs in one Python process: the website, the Kite price feed, the code that writes money, and every strategy.
+   [ 2.0] So any deploy, even a small change to a web page, restarts all of it.
+   [ 3.0] Every strategy stops, and has to start again.
+   [ 5.7] The first build splits it up. The website moves to a core API. Strategies run in their own worker processes. Market data, and orders and risk, become separate services.
+   [ 7.6] Now a deploy restarts only the core API.
+   [ 8.6] The strategies don't notice. They keep getting prices, and keep trading.
+   [11.1] The final design repeats this in cells. A shared platform sits on top. Each cell is a complete copy of the trading parts, holding its own share of the users.
+   [14.2] If one cell has a problem, only that cell is affected. The others carry on.
 
-3. A price, from exchange to strategy. Exchange → feed handler → sequencer
-   → tick cache (one slot per instrument) → supervisor → strategy, with the
-   hop labels (WebSocket, in process, gRPC latest, shared memory, socket
-   ~50 µs). While the strategy is busy, new prices overwrite the slot; the
-   next batch says "skipped 2".
+3. A price, from exchange to strategy
+   [   0] Let's follow one price on its way to a strategy.
+   [ 2.0] It arrives from the exchange over a WebSocket. The feed handler decodes and cleans it, and the sequencer gives it a number.
+   [ 4.2] The tick cache has one slot per instrument. The new NIFTY price overwrites the old one.
+   [ 4.9] The supervisor puts the latest prices into batch 812, and hands it to the strategy over a local socket. That hop takes about 50 µs.
+   [ 6.0] Now the strategy is busy thinking.
+   [ 6.6] Meanwhile, three more NIFTY prices arrive. Each one overwrites the slot. Nothing queues up behind it.
+   [10.2] When the strategy is ready, batch 813 carries only the newest price, and says that two were skipped. The strategy never acts on an old price.
 
-4. A slow strategy: queue vs latest. Top: a queue fills up and the strategy
-   decides on older and older prices. Bottom: one slot, always the newest.
-   Test-run results: 3.5 s old through a queue vs 44 ms through latest-only
-   (measured, tests/bench/runtime/promises.py).
+4. A slow strategy: queue vs latest
+   [   0] What if a strategy is slow? Here, prices arrive four times a second, but the strategy takes a whole second to decide.
+   [ 1.5] On top is today's app. Prices wait in a queue, and the strategy takes the oldest first. The line keeps growing, so every decision uses an older price than the one before.
+   [ 6.0] Below is the new design. One slot keeps only the latest price. Older prices are overwritten and counted as skipped. Every decision uses a price that is a fraction of a second old.
+   [12.6] We measured this in a test run. Through a queue, decisions used prices up to 3.5 seconds old. With latest only, about 44 milliseconds.
 
-5. Your code becomes something we can run. strategy.py, main.go, lib.rs and
-   index.ts go through a builder with a pinned image per language (uv, go
-   build, cargo, npm) into a package layer, static binary, native binary and
-   JS bundle; certification (fault matrix, same twice, budgets); a signed
-   registry.
+5. Your code becomes something we can run
+   [   0] You write a strategy in the language you like: Python, Go, Rust or TypeScript.
+   [ 1.8] You run linck push. Your code goes to the builder, which has one fixed toolchain per language, so the same code always builds the same way.
+   [ 3.2] Python's packages are locked into a layer. Go and Rust compile into a single program. TypeScript is bundled into one file.
+   [ 6.2] Then every build is certified.
+   [ 7.2] We hit it with faults, like crashes and missing data. We run it twice, to check it decides the same both times. And we check it stays within its time and memory budgets.
+   [ 9.4] Only builds that pass are signed and stored in the registry. Only signed builds can ever run.
 
-6. Every language, one runtime host. A tick cache in shared memory and one
-   supervisor for all languages. A Python parent with the SDK loaded once
-   forks each strategy (~2 MB each, measured); main.go and lib.rs become
-   binaries run as processes (4 MB, 2 MB); index.ts becomes a bundle run by
-   Node (42 MB). Each runs in a sandbox and talks to the supervisor over a
-   Unix socket: Hello, Ready, then Batch/Done in a loop. WASM runs inside
-   the supervisor; a strategy on your own machine gets the same messages
-   over a gRPC stream. Round trip ≈ 40–60 µs in every language (measured).
+6. Every language, one runtime host
+   [   0] This is one runtime host, the machine that runs strategies. Prices sit in a tick cache in shared memory. One supervisor manages every strategy, whatever language it is written in.
+   [ 1.6] For Python, a parent process loads Python and our SDK, once.
+   [ 2.6] Each Python strategy is a copy, forked from that parent. The copies share everything already loaded, so each one costs only about 2 MB.
+   [ 5.0] A Go strategy was built into a single program. The supervisor starts it as its own process, using about 4 MB.
+   [ 6.4] Rust is the same: one native program, about 2 MB.
+   [ 7.8] A TypeScript strategy is a bundle, run by Node. That is heavier, about 42 MB.
+   [ 9.6] Every strategy runs in its own sandbox, with no network and no files. Its only line to the outside is a Unix socket to the supervisor.
+   [10.8] At the start, the supervisor says hello, with the strategy's settings and saved state. The strategy answers ready, and says what it wants to watch.
+   [12.8] Then the same loop runs, over and over. The supervisor sends a batch of the latest prices. The strategy answers done, with any orders. One round trip takes 40 to 60 µs in every language. We measured that.
+   [14.0] Small strategies can later run as WebAssembly, inside the supervisor itself.
+   [15.0] And a strategy can even run on your own machine. It gets exactly the same messages, over a gRPC stream.
 
-7. One batch, message by message. Lifelines for journal, supervisor and
-   strategy: Batch 812 (kept in the journal first), Request option chain,
-   Reply from host cache, Done sell CE + PE (sent on to orders & risk),
-   Batch 813 with the fill, Done nothing to do, Snapshot?, state at 813.
+7. One batch, message by message
+   [   0] Here is one batch, message by message, between the journal, the supervisor and a strategy.
+   [ 0.5] Before anything is sent, batch 812 is written to the journal. Then it goes to the strategy, with the latest NIFTY price.
+   [ 2.5] The strategy asks for the option chain.
+   [ 4.0] The supervisor answers from the host's own cache. A strategy never calls the internet itself.
+   [ 5.5] The strategy replies done: sell a call and a put. The supervisor passes the order on to orders and risk.
+   [ 7.0] Batch 813 brings the fill. It is written to the journal first, too.
+   [ 8.5] Done. Nothing more to do this time.
+   [10.0] Every so often, the supervisor asks for a snapshot, and the strategy hands over its state as of batch 813. With the journal and the snapshots, we can rebuild a strategy at any point in its life.
 
-8. An order, from decision to fill. Strategy (epoch 4) → intent log written
-   first (ids dep7:812:0, dep7:812:1) → orders & risk gates (epoch current?
-   id new? risk ok?) → ledger (order + outbox in one transaction) → broker
-   gateway → Kite. A shadow copy goes to the sim venue: "would fill ₹22
-   worse". The fill comes back; P&L goes to the phone; batch 813 to the
-   strategy.
+8. An order, from decision to fill
+   [   0] Now, one order, from the decision to the fill.
+   [ 3.0] The strategy, in epoch 4, decides to sell. First, the intent is written to a log, with an id made of the deployment, the batch number and a count.
+   [ 4.0] The order reaches orders and risk. It must pass three gates.
+   [ 5.0] Is epoch 4 still the current one? Is this id new? And is it within risk: lot size, margin, freeze limits, order rate and market hours?
+   [ 7.4] It passes. The order, and a note to send it, are saved in the ledger in one transaction, so it can never be half done.
+   [ 7.6] The broker gateway sends it to Kite. At the same moment, a copy goes to our simulated exchange, which says what would have happened. This one would have filled ₹22 worse.
+   [ 9.6] Kite fills the order, and the fill is recorded in the ledger.
+   [11.0] Your profit, ₹1,240, shows on your phone, and the fill reaches the strategy in batch 813.
 
-9. A crash costs milliseconds. Process A (epoch 1) runs to batch 458 and
-   crashes; B (epoch 2) restores the snapshot at 400 and catches up 57
-   batches; an order made again is refused as already placed. 14 ms (Go),
-   38 ms (Python), orders identical (measured).
+9. A crash costs milliseconds
+   [   0] What happens when a strategy crashes?
+   [ 0.5] Process A runs, batch after batch. Every hundred batches it saves a snapshot, the purple diamonds. The green dots are its orders.
+   [ 6.0] At batch 458, it crashes.
+   [ 6.8] A new process, B, starts from the last snapshot, at batch 400. It gets the next epoch number: 2.
+   [ 7.4] It replays the journal from 400 to 457, very fast, checking at every step that it ends up in exactly the same state.
+   [ 8.0] While replaying, it makes an order that A had already placed. The order has the same id, so it is refused. Nothing is sent twice.
+   [ 8.4] Then B carries on, live.
+   [12.4] In our test, catching up those 57 batches took 14 milliseconds in Go, and 38 in Python. The orders were identical.
 
-10. The same bug twice: stop, don't loop. Two tries crash on batch 250 with
-    the same error → quarantined: no new entries, no restart loop;
-    square-off, stops and kill switch still work. `linck replay --from 200
-    --to 250` reproduces it on a laptop.
+10. The same bug twice: stop, don’t loop
+   [   0] Sometimes the crash is a bug in the strategy itself.
+   [ 0.4] It crashes at batch 250.
+   [ 3.4] We restart it from the snapshot at 200. It crashes again, on the same batch, with the same error.
+   [ 5.2] Restarting a third time would just loop forever. So the same error, on the same batch, twice, means stop.
+   [ 6.0] The strategy is quarantined: no new trades, and no more restarts. But the platform's safety nets keep working: square-off, stop losses, and the kill switch.
+   [ 8.4] You can replay exactly those fifty batches on your laptop, find the bug, and fix it.
 
-11. Two copies, only one may trade. A zombie A (epoch 1, feed 3 min late)
-    and the real B (epoch 2). With epochs: A placed 0 of 134, B 133 of 133.
-    With ids only: A placed 134 of 134 at wrong prices, B 5 of 133 (measured).
+11. Two copies, only one may trade
+   [   0] Sometimes the old process isn't dead. It has lost contact, but it is still running. Process A, in epoch 1, is a zombie, and its prices are three minutes late. Process B, in epoch 2, has taken over.
+   [ 2.4] Both send orders. Orders and risk checks the epoch first, and refuses anything from epoch 1. A places nothing. B places all of its orders.
+   [10.0] Now, the same thing without epochs, checking only order ids. A is ahead, so its orders arrive first and get placed, at stale prices. When B sends the same ids, they look like duplicates, and are refused.
+   [15.0] We measured this. With epochs, the zombie placed none of its 134 orders. With ids alone, it placed all 134, and the real process was blocked on 128 of its 133.
 
-12. Replay any day, repair a bad one. The live run and its journal; a replay
-    from the snapshot at 300 matches all 300 batches; an ambiguous candle at
-    311 branches into "up first" and "down first"; the owner picks one,
-    presses Push (checked again, then applied), and can undo.
+12. Replay any day, repair a bad one
+   [   0] Every live run leaves a journal: every batch, exactly as it was given, with snapshots along the way.
+   [ 4.4] To check a day, we start a fresh copy from a snapshot, here at batch 300, and feed it the journal.
+   [ 4.8] At every batch, its state must match what happened live. All 300 match.
+   [ 9.0] Sometimes we missed a stretch of prices, and only have one-minute candles. A candle doesn't say whether the price went up first, or down first.
+   [ 9.8] So we run both. Two copies start from the same snapshot, one for each reading. Right after batch 311, they part ways.
+   [13.0] You see both paths, and pick the one that matches what really happened.
+   [14.6] Push checks the repair once more, then applies it. And it can be undone.
 
-13. Would Kite really have taken it? A paper fill SELL 75 walks the bids
-    (25 @ 120.40, 30 @ 120.20, 20 @ 120.00; average 120.21) above a 119.90
-    limit; six checks pass; "would fill ₹22 worse". A SELL 70 fails lot
-    size ("would be rejected"). The ready-for-live card: 20 sessions,
-    nothing refused (fails here), within 1%, no repair open.
+13. Would Kite really have taken it?
+   [   0] A paper trade always fills. But would the real broker have filled it, and at that price? Shadow mode checks every paper fill.
+   [ 2.6] This paper order sells 75. Against the real order book at that moment, it takes 25 at 120.40, 30 at 120.20, and 20 at 120.00. That's an average of 120.21.
+   [ 5.6] Then come the checks the broker itself would make: lot size, freeze limit, price band, order book, margin and order rate.
+   [ 7.6] The verdict: it would have filled, but ₹22 worse than on paper.
+   [10.8] This other order sells 70, but one lot is 75. A real broker would reject it.
+   [13.2] Before a strategy goes live, it needs a clean record: twenty sessions, nothing refused, results within one percent, and no repairs open. This one isn't ready yet.
 
-14. Any broker, whatever its SDK language. A broker gateway pod: a Go core
-    (never twice, rate limits, order state, reconcile); Kite, Angel One and
-    Upstox adapters in process in Go; Dhan in a Python sidecar using its
-    official SDK over gRPC on a Unix socket. The sidecar dies: Dhan pauses
-    new entries, the others carry on; it restarts and reconciles.
+14. Any broker, whatever its SDK language
+   [   0] Every broker connects through a broker gateway. Its core is written in Go, and does the hard parts for all of them: never send an order twice, respect rate limits, track every order's state, and reconcile with the broker.
+   [ 1.6] Kite, Angel One and Upstox have Go libraries, so their adapters run inside the gateway.
+   [ 2.4] Dhan's official library is Python only. So its adapter runs next door, in a small Python sidecar, and talks to the core over a local socket.
+   [ 4.4] Orders flow out the same way, whichever broker they're for.
+   [ 9.6] If the sidecar crashes, only Dhan pauses new trades. The other brokers carry on.
+   [11.6] When it restarts, the core asks Dhan for every order we tagged, and reconciles them before trading resumes.
 
-15. Room for thousands. One host (16 vCPU, 64 GB, keep 40% free) ≈ 3,500
-    strategies, ≈ 14 GB; a cell of 3 hosts ≈ 10,000; 2 cells ≈ 20,000; more
-    cells added when needed. Estimates from 07-brokers-latency-load.md
-    (20,000 strategies ≈ 4–6 hosts in 2 cells).
+15. Room for thousands
+   [   0] How far does this go? One host has 16 cores and 64 gigabytes, and keeps 40 percent free for the market open and for failures.
+   [ 1.0] It fits about 3,500 strategies. That's an estimate, from 2 to 4 MB per strategy and the round trip we measured.
+   [ 6.0] Three hosts make a cell: about 10,000 strategies.
+   [ 9.8] Two cells hold 20,000. Beyond that, we add cells as we need them.
+   [13.6] And because cells are separate, a problem in one cell stays in that cell.
 
-16. From a laptop to live money. Write (laptop) → run a past day (seconds)
-    → backtest (minutes) → certify (faults, same twice, budgets) → paper
-    (days) → shadow (weeks) → live with 1 lot → watched every day (day
-    check, issues, repair).
+16. From a laptop to live money
+   [   0] Finally, the road from a laptop to live money.
+   [ 2.2] You write a strategy on your laptop.
+   [ 3.4] You run it on a past day in seconds, then backtest it over months, in minutes.
+   [ 5.8] It is certified: faults, the same result twice, and budgets.
+   [ 8.0] It paper trades for days. Then it runs in shadow mode for weeks, checked against the real order book.
+   [ 9.8] When its record is clean, it's ready for live.
+   [11.6] It goes live with one lot.
+   [13.6] And from then on, it is watched every day: a daily check, issues raised, and repairs when needed.
