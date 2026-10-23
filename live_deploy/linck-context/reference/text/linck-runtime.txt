@@ -1,0 +1,196 @@
+Linck · The strategy runtime23 Oct 2026
+
+# Strategies in any language: run, walk, recover
+
+How the runtime runs a strategy written in Go, Python, Rust or TypeScript, walks it through any stretch of a day to repair or explain it, restarts it after a crash without placing an order twice, and makes sure the next tick it gets is always the latest. With a working prototype for each.
+ The ideaThe piecesWhat an SDK must doWalking a dayCrashesLatest ticksJournal costFrom today
+
+00
+
+## The one idea
+
+Why the strategy’s language never matters to running, walking, repairing or recovering it.
+
+The runtime owns time, state and inputs. A strategy, in any language, is a function behind a protocol: given its state and a batch, it returns orders, decisions and its new state.
+Walking a day, branching on an ambiguous minute, restarting after a crash, backtesting and running on a laptop are all the runtime feeding numbered batches to that function. None of them is written per language.
+
+So the answer to “how do I walk a Go strategy” and “how do I restart a Go strategy” is the same as for Python: you don’t, the runtime does. It starts a fresh process from a saved state and feeds it batches from the journal. What each SDK must guarantee is small and testable (section 02). A prototype in the repository does all of it with the same supervisor for a Go and a Python strategy (tests/bench/runtime), and its results are quoted throughout. prototype
+
+[Diagram: One runtime, every mode. The supervisor reads the tick cache live, or recorded inputs when walking, and talks to strategy processes in Python, Go, Rust or TypeScript over one protocol. It writes every batch to the journal before sending it, saves and restores snapshots of each strategy's declared state, sends intents to orders and risk when live and to the sim venue when walking, branching or backtesting. Modes: live, walk (repair, day check), branch, recover after a crash, backtest, your laptop.]
+
+01
+
+## The pieces that make it work
+
+Four things the runtime keeps, so any strategy can be stopped, moved, walked or restarted at any batch.
+
+| Piece | What it is | Why it’s needed | 
+| Sequence numbers | Every batch a deployment receives has the next number: 1, 2, 3 … for its whole life. | The address of every moment: “restore at 400, walk to 458” means the same thing in every language. | 
+| The journal | Every batch exactly as it was given to the strategy (the latest ticks it saw, fills, order updates, timers, now), written before it’s sent. | A walk replays what the strategy actually saw, including the ticks it skipped while busy, so it reproduces live exactly. | 
+| Snapshots | The strategy’s declared state as bytes the SDK writes, tagged with the batch number; every 100 batches, every 30 s, and before a move. | Restore any process, in any language, at a known point, without copying the process. | 
+| Intent ids and epochs | An order’s id is deployment:batch:n, the same every time that batch is replayed. Every (re)start gets the next epoch. | Orders & risk refuses an id it has seen and an intent from an old epoch, so a replay or a zombie process never trades twice. | 
+
+02
+
+## What every SDK must do
+
+Small, and the same in every language. A conformance suite checks it before any SDK release.
+
+| Duty | How the SDK does it | Python | Go | 
+| Speak the protocol and own main() | Hello → build the strategy with params and state → Ready → loop Batch → Done | the SDK’s entrypoint | linck.Run(&S{}) | 
+| Save and restore declared state | Only fields the user marks as state go in a snapshot, serialised the same way every time | self.S / @state | struct fields tagged state:"" | 
+| Make decisions deterministic | The only clock is ctx.now, the only randomness ctx.random; no network, files or threads in a handler | PYTHONHASHSEED fixed | lint: no ranging over maps, no goroutines in handlers | 
+| Name orders the same on every replay | ctx.order() makes deployment:batch:n; the user never names an order | built in | built in | 
+| Report a crash with where and why | Catch the exception or panic, send Error{batch, error, stack}, exit | except around handlers | recover() in main | 
+| Never send null for an empty list | Found in the prototype: Go encodes an empty slice as null; the SDK always sends [] | — | fixed in the SDK | 
+
+### The conformance suite, run on every SDK and every user build
+
+| Test | What it proves | Prototype | 
+| Walk equivalence | Restore from snapshot k, replay k+1…n: orders, decisions and state hash identical to the straight run | 300 batches identical, Go and Python prototype | 
+| Crash and catch-up | Kill mid-batch, restore, catch up: every caught-up state hash matches; orders identical; no duplicate placed | identical, 1 duplicate refused prototype | 
+| Determinism | The same day run twice gives the same hash of every decision and intent | (the walk test above) | 
+| Cross-SDK | Reference strategies written in each SDK make the same decisions on the same journal | Go = Python on all 600 batches prototype | 
+
+Floating point is deterministic across languages for the same operations in the same order on the same CPU (the prototype’s EMAs match bit for bit). Two known traps, closed by policy: runtime hosts and replay workers are one CPU architecture (Go may fuse multiply-add on arm64), and strategy versions are pinned in the journal header, so a walk always uses the code that ran live.
+
+03
+
+## Walking a day, in any language
+
+Repair, the end-of-day check and “what happened at 10:42?” are all a walk: a fresh process, a snapshot, the journal.
+
+[Diagram: Walking from a snapshot, and branching. Live runs batches 1 to 600 with snapshots every 100. A walk starts a fresh process from the snapshot at 300 and feeds batches 301 to 600 from the journal; it matches live exactly. A branch starts two processes from the same snapshot: one reads batches 308 to 311 the usual way, the other the opposite way; they part at batch 311.]
+
+- Find the place. The journal is indexed by batch number and time, so “10:30 to 11:15” becomes batches 1,840–2,110. Each batch’s decisions in the decision log carry the same number.index
+ 
+- Start from the snapshot just before it. A new process of the same strategy version (Go binary, Python package…), Hello with that snapshot’s state.restore
+ 
+- Feed the journal’s batches in order, with the sim venue standing in for the broker. If the run went as it should, every state hash matches the recorded one.walk
+ 
+- Where live and the walk part is the first batch whose decisions differ: that’s the answer to “what went wrong”, and the Repair page shows it.compare
+
+### Where the app missed ticks (a stall): building the batches
+
+For a stretch the strategy never saw, there are no journal batches to replay. The repair worker builds them from 1-minute candles, four ticks a minute, as today’s repair engine does. Where a minute can be read two ways (the index up first or down first), it branches: two processes from the same snapshot, each fed one reading. If they trade the same, the usual reading is kept. If they part, you choose, as on today’s Repair page. Nothing copies a process, so this works the same for a Go binary as for Python. Today’s Python-only engine copies the strategy object in memory, which can’t work across languages; the protocol’s snapshot and restore replace it. In the prototype, reading batches 308–311 the other way made the paths part at batch 311 prototype.
+
+| | Today (Python only) | The design (any language) | 
+| Start of a walk | the database’s positions and the saved state, then on_start | a snapshot by batch number, then Hello | 
+| What’s replayed | candles turned into ticks | the journal (exactly what was seen); candles only for a gap | 
+| Branching | a database savepoint and a deep copy of the strategy object | two processes from one snapshot | 
+| Knowing it’s right | the plan must match the apply | every state hash matches, batch by batch | 
+
+04
+
+## Crashes and restarts, in any language
+
+Detected by the supervisor from outside the process, recovered by restore and catch-up. The language doesn’t matter, because none of it happens inside the strategy.
+
+[Diagram: A crash, and the restart. Process 1 runs with epoch 1 and is killed as batch 458 goes out. Process 2 starts with epoch 2 from the snapshot at 400, catches up on batches 401 to 457 from the journal checking every state hash, then gets batch 458 and carries on. An order made again during catch-up has the same intent id and is refused, so nothing is placed twice.]
+
+| What goes wrong | How it’s seen (any language) | What happens | 
+| An exception or panic in a handler | the SDK sends Error{batch, error, stack} and exits | restart from the last snapshot and catch up; the same error on the same batch twice → quarantined | 
+| The process dies: segfault, out of memory, killed | the socket closes or the exit code is non-zero | restart from the last snapshot and catch up | 
+| It hangs (an infinite loop, a deadlock) | no Done within the budget (50 ms soft, 1 s hard) | killed (a Go goroutine can’t be interrupted; a process can), then restart | 
+| The host dies | its leases expire (~5 s) | the scheduler starts it on another host, epoch + 1, from the shipped snapshot and journal | 
+| It lost track of a leg | its legs checked against the book after every failure, and every 5 minutes | restart clean from the book (on_start with today’s positions), as today | 
+
+### The restart, step by step
+
+- A new process of the same build, epoch + 1. Intents still in flight from the old one carry the old epoch and are refused.fence
+ 
+- Hello with the last snapshot (batch 400 in the diagram).restore
+ 
+- Catch up on the journal’s batches since (401–457). Each state hash is checked against the one recorded live. Orders made again have the same intent ids, so the order service finds them and doesn’t place them twice.catch up
+ 
+- Send the batch that was in flight (458) and carry on live. Prices aren’t replayed beyond that: they’re latest-wins.live
+
+### A crash that comes back
+
+- The same error on the same batch twice: it’s a bug, not bad luck. The deployment is quarantined: no new entries, no restart loop. In the prototype, a bug on batch 250 crashed, restarted, crashed again at 250 and was quarantined prototype.
+ 
+- Different errors: restarts back off 1, 2, 4, 8 and then every 15 minutes, today’s breaker, applied from outside the process.
+ 
+- While quarantined, the platform’s own protections keep running: the intraday square-off, stops held by orders and risk, the kill switch.
+
+### Fixing it
+
+- You get the error, its stack and the batch number.
+ 
+- linck replay --deployment D --from 200 --to 250 on your laptop reproduces it exactly: same build, same snapshot, same batches.
+ 
+- Fix it, push a new version, restart. The new version starts from the last good snapshot, or clean from the book.
+
+| Prototype, kill -9 mid-run | Go | Python | 
+| Restarted from | snapshot 400 | snapshot 400 | 
+| Caught up | 57 batches in 14 ms | 57 batches in 38 ms | 
+| Replayed orders refused as already placed | 1 | 1 | 
+| Orders vs the run with no crash | identical | identical | 
+
+05
+
+## The latest tick, at every hop
+
+If ticks are delayed or lost on the way, how the next thing a strategy gets is still the latest value.
+
+[Diagram: The latest-tick chain, hop by hop. Six hops: the broker or vendor feed, the feed handler, the sequencer, the host tick cache, the supervisor and the strategy. Every hop keeps one slot per instrument: when the next hop can't keep up, the slot is overwritten; when a link drops, the receiver gets a snapshot of the latest values first. Fills, order updates and timers travel in a separate lane that is never conflated.]
+
+### The four rules, at every hop
+
+- One slot per instrument per receiver. A new value overwrites the old one; nothing queues behind a slow receiver.
+ 
+- One batch in flight. A busy receiver isn’t sent more. When it’s ready, it gets the slots that changed, which are by definition the latest, with how many updates it skipped.
+ 
+- Sequence numbers per instrument. A receiver drops anything at or below the last number it saw, so an older value can’t overtake a newer one, even across a reconnect.
+ 
+- A dropped link resumes from a snapshot, never a backlog. On reconnect the receiver gets the current value of everything it follows, then live updates.
+
+### What it means for the strategy
+
+- Its next batch always holds the newest price of each instrument that changed, however late it is.
+ 
+- It knows when it skipped (skipped n) and how old a price is (exchange time and age), so it can tell “quiet” from “stale”.
+ 
+- If the feed itself stops, the latest value is old: stall detection raises “prices stopped”, as the app already does today.
+ 
+- The journal records the batches it actually got, so a walk reproduces its decisions exactly, including the skips.
+
+Measured: the slot-and-changed-set core does 3–19 million updates a second on one core (tests/bench/ipc, conflate). Today’s app doesn’t keep this promise yet: each runner has a queue of up to 1,000 batches that drops the oldest only when full. Step P0 below fixes that first.
+
+06
+
+## What the journal costs
+
+The journal doesn’t copy ticks; the tick archive already keeps every one. A batch in the journal is the batch number, now, a reference (instrument, sequence number) to each latest value given, and any fills, order updates and timers in full.
+
+| | Per batch | 2,000 strategies, a day | Notes | 
+| Tick references | ~8 bytes × instruments that changed (often 2–10) | | | 
+| Fills, order updates, timers | rare; ~100 bytes each | | | 
+| Total | ~60–120 bytes estimate | ~10 batches/s × 6.25 h × 2,000 × ~90 B ≈ 40 GB raw, ~8 GB compressed estimate | bar strategies send far fewer batches | 
+| Snapshots | a few KB each, every 100 batches / 30 s | ~1–2 GB estimate | kept 30 days; the journal 1 year | 
+
+07
+
+## From today’s app
+
+In an order that pays off early: each step is useful on its own.
+
+- P0: latest-value slots in today’s Python runner, with ticks routed by instrument. Removes the backlog today.days
+ 
+- Journal, batch numbers and snapshots in today’s runner. Today’s repair and day check can then walk exactly what was seen instead of rebuilding it from candles, and a restart catches up instead of starting cold.1–2 weeks
+ 
+- Deterministic intent ids and epochs in orders and risk. A replayed order is refused, never placed twice.days
+ 
+- Protocol v1 and process mode for Python strategies (today’s StrategyBase through a shim), then the Go, Rust and TypeScript SDKs with the conformance suite. Walk, branch and recovery then work for them unchanged.I2
+ 
+- The Rust supervisor behind the same protocol.F
+
+### Open
+
+- Snapshot cadence vs catch-up time for heavy strategies: every 100 batches is ~15–40 ms of catch-up here. A strategy with a big state may want time-based snapshots instead.
+ 
+- Whether to quarantine on the first identical crash at the open (09:15–09:20), when a restart costs the most.
+ 
+- gVisor’s cost on the socket round trip, not measured yet.
+
+Linck · the strategy runtime · 23 Oct 2026Companion to “Linck architecture” v2 and “Brokers, languages and load”. Prototype: tests/bench/runtime.

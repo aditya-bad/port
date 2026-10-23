@@ -1,0 +1,317 @@
+Linck · Brokers, languages and load23 Oct 2026
+
+# Brokers, languages and load
+
+Three gaps in the architecture, answered with designs and measured numbers: brokers whose SDK isn’t in Go, how one runner runs strategies in any language while it moves from Python to Rust, and how fast the tick path is and how much it carries.
+ The answersBrokersLanguagesLatencyLoadKeeping it honestDecisions
+
+00
+
+## The three answers
+
+Your three concerns, answered in a line each; the sections after show the design, the costs and the numbers.
+
+Brokers without a Go SDK
+We don’t need a broker’s SDK to be in Go. We need its API.
+ An adapter only translates. It runs in process when it’s Go, or as a sidecar in the broker’s own SDK language, behind one gRPC contract. The core that handles money is written once.
+ 
+Many languages, one runner
+The runner never runs strategy code. It runs processes that speak one protocol.
+ Each SDK speaks the protocol; the runner only starts, feeds and restarts processes. That’s why Python → Rust for the runner changes nothing for any strategy.
+ 
+Latency and load
+Our own code is microseconds. Today’s real delay is seconds, and it comes from Kite calls in the decision path.
+ Measured: a strategy decision is 7–47 µs; a cross-language round trip 39–200 µs. A trade waits on 2–11 Kite calls spaced ≥ 0.35 s apart. Removing those is the big win.
+
+Every figure is marked measured (with the program that measured it, in tests/bench) or estimate (not measured yet, with how we’ll measure it). Measured on 23 Oct 2026 on a 4 vCPU Xeon 2.8 GHz cloud VM with 16 GB; it runs inside a sandboxed container, where a context switch costs more than on bare metal, so the round-trip figures are on the slow side.
+
+01
+
+## Brokers whose SDK isn’t in Go
+
+Dhan’s official client is Python; Upstox has no Go SDK; Fyers recommends Python or Node for its sockets. The gateway is Go. Here’s how both are true.
+
+A broker SDK is a convenience wrapper. Underneath, every broker here is HTTPS for orders and a WebSocket for prices and order updates. The money-critical work isn’t in the SDK at all, and we write it once, in the gateway core. That work is the idempotency tag, rate limits, the order state machine, reconnect and reconciliation. An adapter only translates our order into the broker’s request and its replies back. So the question isn’t “is there a Go SDK”, it’s “where does the translation run”.
+
+[Diagram: The broker gateway: one core, adapters in any language. Orders and risk calls the broker gateway over gRPC. Inside the gateway pod, a Go core does idempotency, rate limits, order state, reconnects and reconciliation for every broker. Adapters only translate: Kite, Angel One and Upstox are Go, in process; Dhan and Fyers are Python sidecars in the same pod, called by the core over gRPC on a Unix socket with the same BrokerAdapter contract. Each adapter talks to its broker over HTTPS and WebSocket.]
+
+### Three ways to build an adapter, in order of preference
+
+| | How | When | Cost | 
+| A · Go, in process | Call the broker’s REST and WebSocket directly from Go. Where the broker publishes an OpenAPI spec (Upstox’s SDKs are generated from one), generate the Go client from it. | The default. Any broker with a documented HTTP API. | 1–2 weeks. Nothing extra to run. | 
+| B · A sidecar in the SDK’s language | Run the broker’s official SDK (Python, say) in a small process in the same pod. It implements BrokerAdapter v1 over gRPC on a Unix socket; the Go core calls it exactly as it calls a Go adapter. | Login or signing only the SDK does (TOTP flows, encryption), a binary socket format that isn’t documented, the broker asks us to use its SDK, or we need the broker in days. | One more container in the pod. A round trip of ~60 µs measured, against 20–200 ms for the broker’s own API estimate. | 
+| C · Mixed | Orders in Go (plain REST); only the price socket or the daily login in a sidecar. | The orders API is simple but the market-data socket is the hard part (Fyers recommends its Python or Node SDKs for sockets). | As B, only for that part. | 
+
+### Broker by broker
+
+| Broker | Official SDKs we found | Plan | 
+| Zerodha (Kite) | Python, Go and more; today’s app uses the Python one | A: Go, in process (its own Go client) | 
+| Angel One | Python, Java, Node, Go, R and others; the Go client is angel-one/smartapigo | A: Go, in process | 
+| Upstox | Python, Node, PHP, .NET, Java; no Go; generated from an OpenAPI spec (PyPI) | A: generate the Go client from the same spec | 
+| Dhan | Python official (dhanhq); Dhan says a developer kit wraps the REST API in 13+ languages (Dhan), not verified | B first (Python sidecar), then A once the API is mapped | 
+| Fyers | Python, Node, C#; recommends Python or Node for sockets (Fyers docs) | C: orders in Go, the data socket in a Python sidecar | 
+
+Found on 23 Oct 2026; brokers change their SDK lists, so each adapter starts by checking the broker’s docs again.
+
+### The contract every adapter implements
+
+service BrokerAdapter { // linck.broker.v1 — the same for Go adapters and sidecars
+ rpc Capabilities(Empty) returns (Caps); // basket margin? modify? tag length? max legs?
+ rpc Login(LoginRequest) returns (Session); // the broker’s daily login / token refresh
+ rpc Place(PlaceRequest) returns (PlaceResult); // our order id goes in the broker’s tag
+ rpc Modify(ModifyRequest) returns (PlaceResult);
+ rpc Cancel(CancelRequest) returns (PlaceResult);
+ rpc OrdersByTag(Day) returns (OrderList); // reconcile after a reconnect: find, never place twice
+ rpc Positions(Account) returns (PositionList);
+ rpc BasketMargin(Basket) returns (Margin);
+ rpc OrderUpdates(Account) returns (stream OrderUpdate); // the broker’s socket or postbacks, in order
+ rpc Ticks(Subscription) returns (stream TickBatch); // only where the user’s own broker feed is used
+}
+
+### What a sidecar never does
+
+- Decide whether to retry, or how many times. The core does, with the tag, so a retry finds the first attempt.
+ 
+- Hold limits or counters. A token bucket per key and account lives in the core.
+ 
+- Talk to anything but its broker and the core: no database, no bus.
+
+### When a sidecar dies
+
+- The core marks the broker down, stops new entries, queues exits and alerts, as for a broker outage.
+ 
+- Kubernetes restarts the container in seconds; the core calls OrdersByTag and reconciles before sending anything new.
+ 
+- The sidecar’s SDK version is pinned in its image; upgrades go through the same conformance suite as a Go adapter.
+
+### Tested the same way, whatever the language
+
+One conformance suite runs against the gRPC contract, not the code: recorded order conversations (accepted, rejected, partly filled, cancelled), reconnects mid-order, duplicate submits, rate-limit replies. Go adapters and sidecars pass the same suite before they see a paper order. Then come a paper week with shadow orders and a smoke test every morning before 09:00.
+
+### Prices from a Python-only socket
+
+The same pattern on the market-data side: a feed sidecar decodes the broker’s socket with its SDK and streams our 32-byte record to the feed handler over the same kind of Unix socket. Python decodes a record in about 1 µs measured, so one core decodes on the order of a million updates a second. One broker connection carries a few thousand instruments (Kite allows 3,000 a connection and 3 connections a key, per its forum, kite.trade). Python is not the bottleneck there.
+
+02
+
+## Many languages on a runner written in one
+
+If strategies come in Python, Go, Rust and TypeScript, how does a Python runner, and later a Rust one, run them all?
+
+The runner is a process manager and a message router. It never imports, links or interprets strategy code.
+A strategy is a process that speaks the runtime protocol. Its language only matters inside its own process.
+
+[Diagram: One runner, strategies in any language. On each runtime host the supervisor reads the latest ticks from the tick cache over shared memory and talks to each strategy process with one protocol: protobuf frames on a Unix socket. Python strategies are forked from a preloaded SDK; Go and Rust strategies are native binaries; TypeScript runs on Node. Intents go to orders and risk over gRPC; fills come back the same way. The supervisor is Python today and Rust next; nothing on the strategy side changes when it does.]
+
+### The runtime protocol, v1
+
+Length-prefixed protobuf frames on a Unix socket the supervisor opens for each strategy. Generated types in every SDK from one set of .proto files, so no SDK can drift.
+
+| Direction | Message | What it carries | 
+| supervisor → strategy | Hello | protocol version, deployment, parameters, the last saved state, its instruments | 
+| strategy → supervisor | Ready | SDK name and version, what it subscribes to (instruments, bars, computed streams, timers) | 
+| supervisor → strategy | Batch | sequence number, now, the latest value of each changed instrument, bars, fills, order updates, timers | 
+| strategy → supervisor | Request | chain, quote, history, instrument lookup: answered from the host’s caches, never the network | 
+| supervisor → strategy | Reply | the answer, within the same batch | 
+| strategy → supervisor | Done | the batch’s sequence, commands (orders, baskets, cancels, timers), decisions for the log, a state delta | 
+| both | Snapshot · Stop · Log · Heartbeat | state saved with its sequence; a clean stop; logs; liveness | 
+
+[Diagram: One batch, message by message. The supervisor sends batch 812 with the latest prices. The strategy asks for the option chain; the supervisor answers from its cache. The strategy replies Done with a hedge-first basket, its decision and a state delta. Batch 813 carries the hedge fill; the strategy replies with no commands. Every 30 seconds, or before a move, the supervisor asks for a snapshot.]
+
+### The rules that make it work in any language
+
+- One batch in flight. A slow strategy gets the latest values when it’s ready, never a backlog (the latest-value rule from the architecture doc).
+ 
+- Fills, order updates and timers are never conflated, and arrive in order.
+ 
+- No network inside a strategy. Everything it may ask for, it asks the supervisor, which answers from local caches.
+ 
+- One clock: now in the batch. That makes a strategy replay identically in a backtest, on a laptop and in the cloud.
+ 
+- Budgets: a strategy that doesn’t answer within its budget (50 ms by default) is marked slow; past 1 s it’s restarted from its last state.
+
+### What lives where
+
+- Once per language, in the SDK: the API (on_tick, ctx, params, state), the event loop that speaks the protocol, state save and load, a test harness.
+ 
+- Once for every language, in the platform: the supervisor, scheduling, leases, the tick cache, orders and risk, the broker gateway, logs, the backtest engine.
+ 
+- A new language is a new SDK, a build image and a pass of the conformance suite: recorded days with the expected decisions. Nothing in the platform changes.
+
+### Measured: the language barely matters to the runner
+
+A Rust supervisor sent batches of 32-byte tick records over a Unix socket to a strategy process in each language. The strategy decoded every record, updated an EMA per instrument and replied. Each case ran 20,000 round trips (5,000 at 256 ticks a batch), twice. measured
+
+| Strategy in | Round trip, 1 tick | 16 ticks a batch | 256 ticks a batch | Per tick at 256 | Memory, idle process | 
+| Rust | p50 39–42 µs · p99 113–123 | p50 37–39 µs · p99 101–109 | p50 49–53 µs · p99 135 | 0.21 µs | 2.0 MB | 
+| Go | p50 44–46 µs · p99 119–125 | p50 48–49 µs · p99 130 | p50 55–59 µs · p99 153–169 | 0.24–0.26 µs | 4.1 MB | 
+| TypeScript (Node) | p50 57–58 µs · p99 159–162 | p50 62–63 µs · p99 147–180 | p50 74–82 µs · p99 194–202 | 0.33–0.36 µs | 42 MB | 
+| Python | p50 56–62 µs · p99 137–141 | p50 74–78 µs · p99 151–157 | p50 196–224 µs · p99 483–497 | 0.87–1.06 µs | 9.3 MB · 2 MB forked | 
+
+At a few ticks a batch the round trip is the same everywhere, ~40–60 µs, because the cost is the operating system passing the message, not the language. Only with hundreds of ticks a batch does Python’s per-record decoding show, at about 1 µs a tick. For scale, today’s own Python strategy code takes 7–11 µs per tick at p50 measured, and today’s runner spends 60–150 µs around it measured.
+
+### Memory decides how Python strategies are started
+
+A Python process that imports today’s strategy code is 52 MB measured. One process per strategy, started from scratch, would be ~100 GB for 2,000 strategies. So Python strategies are forked from a preloaded parent (a “zygote”): the SDK and libraries load once, every strategy is a fork, and they share those pages. Measured with 20 forked strategies, each holds ~2 MB of its own (3.6–4.5 MB counting its share of the parent) measured. Go and Rust need no trick (2–4 MB). Node is 42 MB a process, so TypeScript strategies are counted against a tenant’s budget until a WASM build of the TypeScript SDK replaces Node for dense hosting estimate.
+
+### From today’s Python runner to Rust, without touching a strategy
+
+- Protocol v1 and the Python SDK. Today’s StrategyBase keeps working through a shim. runner.buy() becomes a command, resolver.get_leg_by_premium() a request answered from the cache. The existing Python runner gains a “process mode”: it forks each strategy from the zygote and talks protocol to it. Both modes run side by side in paper, and the decision logs must match for a week.runner: Python
+ 
+- Go, Rust and TypeScript SDKs. They run against the same Python runner. That proves the runner is language-free before any Rust exists.runner: Python
+ 
+- The Rust supervisor replaces the Python runner behind the same protocol, deployment by deployment, by lease handoff at a minute boundary outside 09:10–09:20 and 15:10–15:25.runner: Rust
+ 
+- Dense hosting. WASM components for Rust, Go and TypeScript strategies on plans that need thousands a host. Python stays a forked process until Python-on-WASM is fast enough.later
+
+### Considered, and why not
+
+| Option | Why not as the default | 
+| Embed Python in the Rust supervisor (PyO3) | Saves the ~60 µs round trip, but one strategy’s crash, leak or blocking call takes the supervisor and every other strategy on the host down with it. | 
+| One process per language running many strategies | Fewer processes, but strategies share a heap, a GIL and a crash; isolation and per-strategy budgets are what let us run other people’s code. | 
+| gRPC over TCP to each strategy | Same idea with more overhead; a Unix socket (or shared memory later) is enough on one host. TCP is kept for “bring your own process” users. | 
+| Every SDK rewritten as a thin client of a Rust core library | Kept for indicators (linck-core through PyO3, napi-rs and WASM), but the protocol, not a shared library, is what makes a language work. | 
+
+03
+
+## Latency: where the time goes
+
+From a price at the exchange to an order at the broker, hop by hop: what we measured, what we estimated, and what today’s app really does.
+
+[Diagram: Where the time goes, on a log scale. Bars on a log scale from 10 nanoseconds to 10 seconds. Measured: the conflation core at 0.05–0.33 µs per update, decoding a tick 0.2–1.1 µs, today’s strategy decisions 7–47 µs, the runner-to-strategy round trip 39–200 µs, today’s runner per tick 60–261 µs, today’s trade tick without Kite 29–76 ms. Estimated: a host stream hop 0.2–1 ms, risk checks under 1 ms, the broker API 20–200 ms. Today’s trade tick with its Kite calls: 0.7–4 seconds.]
+
+[Diagram: . ]
+ measured
+[Diagram: . ]
+ estimate
+[Diagram: . ]
+ today’s app, derived from measured call counts
+
+### The finding that matters most
+
+Our own code is microseconds. What makes a trade slow today is Kite REST calls inside the decision. Before its fills, an entry makes 2–11 of them measured: quotes to pick strikes by premium, an LTP to check, quotes for liquidity. The resolver spaces every Kite call at least 0.35 s apart, across the whole process, to stay under Kite’s rate limit. So one entry waits ~0.7–4 s plus Kite’s own response times. When several deployments enter at 09:20, they queue behind each other on that same throttle.
+
+| Today, per trade | Kite calls before the fills | Our own work (fake Kite, instant) | At ≥ 0.35 s a call | 
+| DTT straddle, entry | 5 | 28.7 ms | ≥ 1.75 s | 
+| Strangle v2, entry | 11 | 76.2 ms | ≥ 3.85 s | 
+| SuperTrend options, entries and exits | 2–4 | — | ≥ 0.7–1.4 s | 
+| Trend credit spread, entry and adjustments | 3–8 | — | ≥ 1.05–2.8 s | 
+
+The fix is the design already in the architecture doc. The option chain and its prices are streams in the tick cache: subscribed when the strategy starts, kept fresh by the feed. A strategy’s “pick the strike nearest ₹100” becomes a Request answered from memory in microseconds. The decision path then has no network in it, and the only remote call left is the order itself.
+
+### The budget we hold the platform to
+
+| Hop | Target p99 | Today | How we know | 
+| Feed handler: decode, map, filter | Python dispatcher, in the same process | conflation core 0.05–0.33 µs an update measured | 
+| Market data → runtime host (in the cell) | in process | gRPC stream hop 0.2–1 ms estimate; measured on I2 | 
+| Host cache → strategy (batch out, reply back) | an asyncio queue | 39–200 µs, any language measured | 
+| Strategy decision | the strategy’s own; budget 50 ms | 7–47 µs (today’s code) | measured | 
+| Intent → risk checks → gateway | in process | estimate; measured on I2 | 
+| Gateway → broker ack | outside our control | Kite REST | 20–200 ms estimate; logged per order from day one | 
+| Tick to order sent, inside the platform | | 0.7–4 s on a trade (Kite calls) | the sum; a load test checks it every release | 
+
+The freshest a price can ever be is set by the feed, not by us. A broker’s socket sends snapshots, not every trade. How often per instrument is a number we’ll log from the live dispatcher before choosing a vendor feed.
+
+### What keeps it fast
+
+- Latest value only. Conflation means a busy moment costs one batch, not a queue, so latency doesn’t grow with load.
+ 
+- Route by instrument. Today every runner looks at every tick, so the cost is deployments × ticks. The new path indexes subscribers per instrument, so each tick touches only its subscribers.
+ 
+- Batching. At 16 ticks a batch the per-tick round-trip cost drops from ~50 µs to ~3–5 µs measured.
+
+- Binary records, fixed layout: decoding is under a microsecond in Rust and Go, ~1 µs in Python measured.
+ 
+- Shared memory between the feed and the supervisor on a host; a socket only to each strategy.
+ 
+- No network in a decision. Chains, quotes and history come from host caches.
+ 
+- No garbage collector on the hot path in the Rust parts; strategies pay only for their own.
+
+04
+
+## Load: what it handles
+
+Measured unit costs, the formula that turns them into hosts, and the ceiling of today’s app.
+
+### Measured unit costs
+
+| Piece | Measured | So, on one core | 
+| Conflation core (slot write + per-subscriber changed-set + flush) | 64 subscribers × 500 instruments: 18.8 M updates/s; 256 × 500: 4.8 M/s; 64 × 5,000: 3.1 M/s | ≥ 3 million price updates a second | 
+| Supervisor → strategies, all at once (16-tick batches) | 8 / 32 / 128 Python processes: a round in 0.21 / 0.70 / 3.44 ms (p99 0.40 / 1.72 / 5.93); Go and Rust the same within 10% | 35–45 thousand strategy batches a second on the whole 4 vCPU host | 
+| Today’s broadcaster, every runner sees every tick | 10 / 50 / 200 runners: 2.1–2.3 M / 0.42–0.46 M / 94–107 k ticks/s | falls as deployments × ticks | 
+| Today’s runner, a tick that doesn’t trade | p50 0.06–0.15 ms, of which the strategy 0.007–0.011 ms | ~7–16 thousand relevant ticks a second | 
+| A Python strategy process | 52 MB alone; 2 MB of its own when forked from the preloaded parent | memory, not CPU, is the limit | 
+
+### The formula
+
+ingest updates/s = instruments × updates per instrument per second × open-burst factor
+batches/s per host = strategies on the host × batches each per second
+ (≤ flush rate: 10 a second for tick strategies, ~1 a second for bar strategies watching their legs)
+CPU per host = batches/s × (round trip ~60 µs + the strategy’s own time)
+memory per host = strategies × (2–4 MB for Python, Go, Rust; 42 MB for Node) + caches
+hosts = max(CPU, memory) ÷ 60 % // keep 40 % for the 09:15 open, a failed host, and moves
+
+### Sized for three points
+
+| | Today | 2,000 strategies | 20,000 strategies | 
+| Instruments followed | a few hundred | 5,000 | 20,000 | 
+| Price updates, steady → open estimate | hundreds/s | 10 k/s → 100 k/s | 40 k/s → 400 k/s | 
+| Ingest cores needed | part of one Python core | 1 (30× headroom) | 1 (7× headroom) | 
+| Strategy batches at the open | every tick to every runner | 2,000 × 10 = 20 k/s | 20,000 × 10 = 200 k/s | 
+| CPU for those | one Python process | ~1.5 cores | ~15 cores | 
+| Memory for the strategies | one process | ~6–10 GB | ~60–100 GB | 
+| Runtime hosts (16 vCPU / 64 GB), with headroom | 1 machine | 2 (one spare) | 4–6 in 2 cells | 
+
+Strategy counts are deployments running at once. These sizes assume strategies as light as today’s (a decision in 7–47 µs). A heavy one, say a model scoring every tick, brings its own CPU, and the scheduler places it by its measured CPU history. The open-burst factor of 10× is an assumption until we log the real one.
+
+### Today’s ceiling, and the first fix
+
+Today’s app is one Python process. Ticks go Kite → dispatcher → a broadcaster that hands every batch to every runner, and each runner filters for its own instruments. With 200 deployments that path tops out near 100 k ticks a second on one core before any strategy work measured, and a strategy that falls behind works through a queue of up to 1,000 old batches. Neither bites at today’s size: a few hundred instruments, well under 100 deployments. Both are fixed by step P0 in the architecture doc. P0 routes ticks per instrument and keeps a latest-value slot per runner instead of a queue. That’s a small change in today’s Python, and it removes the backlog risk now, long before Rust.
+
+Correction to the architecture doc: its cell sizing assumed ~1 ms per strategy event (“3–5k strategies a host”). Measured, today’s strategies take 7–47 µs per tick and the runner ~0.1 ms around them, so host size is set by memory and the open burst, not per-event CPU.
+
+05
+
+## Keeping the numbers honest
+
+Estimates become measurements, and measurements become gates.
+
+### In the repository now
+
+- tests/bench/bench_runner.py: today’s runner per tick, a trade tick, Kite calls per trade, the broadcaster fan-out, forked-strategy memory.
+ 
+- tests/bench/ipc: the Rust supervisor, a strategy in each of Rust, Go, Node and Python, the fan-out and the conflation core. Standard libraries only.
+ 
+- Not in the deploy gate. They are run by name, and the results are pasted into this doc.
+
+### Next
+
+- Log the real feed: updates per instrument per second, the open burst, from today’s dispatcher. That turns the two biggest estimates into measurements.
+ 
+- Log every order’s broker round trip (sent → ack → fill) per broker, on the Repair page. That is the 20–200 ms estimate.
+ 
+- A replay load test: a recorded day at 1×, 10× and 50× through the whole path, with the tick-to-order p99 checked against the budget in section 03. It runs on every release from I2.
+
+06
+
+## Decisions, and what’s still open
+
+| Decision | Instead of | Because | 
+| Broker adapters behind a gRPC contract; Go in process or a sidecar in the SDK’s language | Requiring a Go SDK; rewriting every SDK; the whole gateway in Python | The money logic is written once; a broker joins at the speed of its own SDK; ~60 µs is nothing next to the broker’s 20–200 ms | 
+| Strategies are processes speaking runtime protocol v1 | Embedding interpreters; one process per language | Isolation and budgets per strategy; the runner’s language never matters to a strategy; measured cost ~40–60 µs a batch | 
+| Python strategies forked from a preloaded parent | A fresh interpreter each | 2 MB of its own instead of 52 MB | 
+| Chains and quotes as cached streams; no network in a decision | Kite REST calls inside the decision | That’s where today’s seconds are; it also makes decisions replay exactly | 
+| P0 now, in Python: route by instrument, latest-value slot per runner | Waiting for the Rust path | It removes today’s backlog and fan-out cost in days | 
+
+### Open
+
+- Real feed rates per instrument and at the open. These set the ingest and host sizes above.
+ 
+- gVisor’s cost per round trip for sandboxed strategies. Not measured here. If it’s large, shared-memory rings replace the socket inside the sandbox.
+ 
+- Dhan and Fyers APIs, mapped field by field. That decides when their sidecars can become Go adapters.
+ 
+- WASM for TypeScript and Go strategies. Benchmark it against the process numbers above before offering a dense plan.
+
+Linck · brokers, languages and load · 23 Oct 2026Companion to “Linck architecture” v2. One self-contained file: fonts included, works offline.

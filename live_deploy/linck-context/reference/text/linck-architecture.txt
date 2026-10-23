@@ -1,0 +1,1302 @@
+Linck · Technical architecture · v222 Oct 2026
+
+# Linck architecture
+
+The engineering design behind the platform plan: the final architecture and the intermediate one, with every component marked as kept, changed or new, and why. What each component is and what it’s called elsewhere, which ones are services, where REST, gRPC and events are used, how it all runs on Kubernetes, the broker and feed connectors, how strategies in Python, Go, Rust and TypeScript run on one runtime, the contracts, the tick path, the strategy runtime, orders and the ledger, the SDK and how it’s built, how we ship, what production looks like at the end, the order we build it in, and the decisions with the alternatives we turned down.
+ 
+ How to read itDesign driversComponentsFinalIntermediateWhat changesServicesProtocolsDeploymentContractsMarket dataLatest ticksConnectorsStrategy runtimeLanguagesOrders, risk, ledgerThe SDKMessagingDataShippingEnd stateMigrationDecisionsOpen questions
+
+00
+
+## How to read it
+
+Companion to “Linck, the platform” (what and why as a company) and “Linck at scale”. This one is the how.
+
+ Kept built in the intermediate architecture and carried into the final one unchanged, or only extended
+ Changed exists in the intermediate architecture as a stand-in; rebuilt or replaced behind the same contract in the final one
+ New only in the final architecture
+
+The colours are the same in both diagrams and in the change table (section 05). The one rule that makes the change cheap: every boundary speaks its final contract from the intermediate architecture onward. Swapping a Go market-data service for a Rust one, or Python runner workers for a Rust supervisor, changes what’s behind a protobuf interface, never the interface. Strategies, the web app and the ledger never notice.
+ 
+Two more conventions. Every box names one language. Where a box names two (“Kotlin · Swift”), they are two separate things, each named in the box; “Go (was Python)” means it’s Go, and was Python in the intermediate architecture. Every line is labelled with how the two sides talk (REST, gRPC, an event log, shared memory) and what travels on it, and the dots show it moving. Above each architecture diagram, pick a journey (a tick, an order, opening a screen, deploying a strategy) to follow it step by step; the steps are listed underneath.
+
+01
+
+## Design drivers
+
+The numbers and the rules every decision below is checked against.
+
+| Driver | Target | What it forces | 
+
+| Running strategies | 50k (final) · 2k (intermediate) | Sharded runtime; placement by instrument overlap; cells | 
+ 
+| Instruments watched | ~60k | One subscription per instrument across all users; reference data with internal ids | 
+ 
+| Market updates in | 100–300k/s peak | Binary records, no JSON, no per-message allocation on the hot path | 
+ 
+| Tick → order intent | p99 < 50 ms in a cell | Shared-memory fan-out on the host; conflation; no network hop between price and strategy | 
+ 
+| Intent → broker | p99 < 30 ms (our side) | In-process risk checks; persistent broker connections; no synchronous DB round trip before routing except the order insert | 
+ 
+| 15:15 exits | ~150k orders in minutes | Orders partitioned by account; token buckets per broker key; priority (risk-reducing first) | 
+ 
+| Correctness | 0 lost, 0 doubled orders | Idempotency keys, fencing epochs, transactional outbox, reconciliation | 
+ 
+| Recovery | a host lost → trading again < 10 s | Leases, per-event state snapshots, replay of the event log since the snapshot | 
+ 
+| Determinism | same ticks → same decisions | Runtime-owned clock, randomness and I/O; pinned runtime images per strategy version | 
+ 
+| Isolation | untrusted code next to money | Sandboxes with no network; secrets never inside a strategy; budgets | 
+
+One writer of moneyOnly Orders & risk writes orders, fills, positions and cash. Everything else proposes.
+ 
+Contracts before codeProtobuf in one repository, checked for breaking changes in CI; a contract only grows.
+ 
+Same engine everywhereBacktest, replay, repair, paper, shadow and live run identical strategy code through the identical runtime; only clock, market and venue differ.
+ 
+Latest wins on prices, exactly-once on moneyMarket data may drop and conflate; orders and fills may never.
+ 
+Nothing silentEvery handled failure is an issue with a day attached (today’s strategy_issues), every unhandled one an alert.
+ 
+Cells bound the blast radiusA tenant lives in one cell; a cell fails alone.
+
+02
+
+## The components
+
+Every part of the platform by what it does. If you know it by another name, the second column is for you. Sections 06 to 14 go into how each is built, deployed and spoken to.
+
+| Component | Also called | What it does | Built as | Language | 
+
+| Clients and the way in | 
+ 
+| Linck web | frontend | The web app: Desk, deployments, Geek mode, repair, reports | Static files on a CDN | TypeScript | 
+ 
+| Mobile apps | — | Alerts first, then the Desk and controls | Two native apps | Kotlin (Android) and Swift (iOS) | 
+ 
+| SDKs | client libraries | What a user writes a strategy against | One library per language | Python, Go, Rust, TypeScript: four libraries | 
+ 
+| CLI | linck | Push, deploy, logs; runs a strategy locally against recorded days | One binary | Rust | 
+ 
+| Edge gateway | API gateway, load balancer | TLS, who you are, rate limits per plan, routing REST, SSE and gRPC | Off the shelf (Envoy) + an auth plug-in | Envoy config; plug-in in Go | 
+ 
+| Product and control | 
+ 
+| Product API | backend, BFF | Everything the screens read and write: book, reports, Geek data, journal, repair cases | Microservice | Python | 
+ 
+| Live gateway | push server | Live P&L, positions and alerts to open screens | Microservice | Go | 
+ 
+| Identity | auth service | Users, tenants, sessions, API keys, roles | Microservice | Go | 
+ 
+| Control | strategy manager, deployment manager, orchestrator | Deployments and their lifecycle (paper → shadow → live, start, stop, pause), the strategy registry, the scheduler that places strategies on hosts, risk limits, broker links | Microservice | Go | 
+ 
+| Commerce | billing | Plans, metering, invoices, marketplace licences and revenue share | Microservice | Go | 
+ 
+| Builder | strategy CI | Builds a user’s source into a signed strategy artifact and certifies it | Microservice that starts build jobs | Go; one build image per SDK language | 
+ 
+| Reference data | instrument master, symbol master | Every instrument with our id, lot size, expiry, strike, freeze quantity, and its symbol or token at each broker | Microservice | Go | 
+ 
+| Inside each cell: the trading path | 
+ 
+| Market data ingest | tick data ingestor, feed handler, market data service | Connects to vendors and broker sockets, decodes, cleans, numbers and fans out every tick; archives them | Microservice: one per feed source, plus a sequencer | Rust | 
+ 
+| Tick cache agent | — | On every runtime host, writes the tick stream into shared memory | Node agent | Rust | 
+ 
+| Computed streams | indicator engine, bar builder | Bars, indicators, IV and greeks, option-chain views: computed once, read by every strategy that asks | Microservice | Rust | 
+ 
+| Strategy runtime | strategy engine, executor, runner | Runs strategies: hands each its events, enforces its budget, keeps its state, recovers it on another host | A supervisor on every runtime host + a sandbox per strategy | Rust (the supervisor); strategies in any SDK language | 
+ 
+| Orders & risk | OMS, execution engine, risk engine | Turns intents into orders after risk checks; the only writer of orders, fills, positions and the ledger | Microservice | Go | 
+ 
+| Broker gateway | multi-broker connector, broker adapter, EMS | Speaks each broker’s API: place, modify, cancel, order updates, positions, margins, logins and tokens, rate limits | Microservice, deployed once per broker | Go | 
+ 
+| Sim venue | paper broker, fill simulator | Fills paper and shadow orders from market depth, with queue and latency models | Microservice + the same code as a library for backtests | Rust | 
+ 
+| Platform services | 
+ 
+| Integrity | reconciliation, audit, repair | Day check, repair cases, shadow comparison, reconciliation with brokers, strategy issues | Microservice + Temporal workflows | Go | 
+ 
+| Backtest farm | backtester, research engine | The strategy runtime and the sim venue in batch over the lake: backtests, sweeps, replays | Batch jobs | Rust | 
+ 
+| Read models | analytics, projector | Turns events into ClickHouse tables for Geek mode, reports and leaderboards | Event consumer | Go | 
+ 
+| Notifications | alerts | Push, email, Telegram, WhatsApp, webhooks; templates per tenant | Event consumer | Go | 
+ 
+| Assistant | AI copilot | Writes SDK code, explains a day; read-only tools | Microservice | Python | 
+ 
+| Shared code, not services | 
+ 
+| Contracts | protos, schemas | Every message and API, generated into each language | Protobuf repository | Generated for Go, Rust, Python, TypeScript | 
+ 
+| linck-core | engine core | Indicators, the fill model, the protocol codec, determinism helpers: one implementation used by the runtime, the sim venue, the backtest farm and every SDK | Library | Rust, with a binding per SDK language | 
+
+Rule used everywhere in this document: a component is written in one language. Where a row names two, they are two separate things (two apps, four SDKs), each named.
+
+03
+
+## Final architecture
+
+Coloured by what happens to each component between the intermediate architecture and this one.
+
+FollowEverythingA tickAn orderOpening a screenDeploying a strategyPause
+
+[Diagram: Final architecture, coloured by change. Five kinds of client reach one edge gateway over HTTPS. Behind it the Python product API, the Go control plane and the Go live gateway; a regional backbone of NATS and Redpanda; and cells. In each cell, ticks flow from market data ingest to computed streams and to a cache agent on every runtime host over gRPC streams that always deliver the latest value, which writes shared memory read by the strategy runtime. Intents go through the cell log to orders and risk, then over gRPC to the broker gateway and the brokers or the sim venue. Platform services, data stores and outside parties below.]
+
+keptchangednewmarket dataorders and fillsscreens and requestscommands that start and move strategiesoutside our control
+
+The labels on each line say how the two sides talk and what travels between them. The dots show it moving. Pick a journey above to follow one step by step; everything not on it fades.
+
+- An exchange feed (through a licensed vendor) sends the tick over its own WebSocket or TCP connection. For a user’s live trading, their broker’s socket does the same.outside
+- Market data ingest decodes it into our 96-byte record, maps it to our instrument id, drops bad prints and gives it the next sequence number.ingest · Rust
+- It goes out on a gRPC stream to computed streams and to every runtime host, and a copy goes to the cell log for the archive. If a host has fallen behind, it gets only the newest value of each instrument when it catches up, never a backlog (section 11).< 1 ms
+- Computed streams update the bars, indicators and greeks that depend on it and send those out the same way.computed streams
+- The tick cache agent on each host writes both into shared memory: one slot per instrument, overwritten, so the latest value always wins.cache agent
+- When a strategy is ready for more, the supervisor builds its next batch from those latest values and hands it over. A strategy that was busy skips the ticks it missed and sees the newest price.runtime
+
+- The strategy answers its batch with an intent, for example a hedged two-leg basket.strategy
+- The supervisor writes the intent to the cell log (Redpanda) before anything else happens, so it can’t be lost.runtime
+- Orders & risk reads it, checks limits, margin and the kill switch, and records the order in the ledger shard in one transaction.OMS · Go
+- It calls the broker gateway over gRPC. The gateway places it through that broker’s API; for paper, the sim venue fills it.broker gateway
+- The broker’s updates come back over its WebSocket. The OMS records the fill and writes it to the cell log.OMS
+- The cell log is copied to the region; the live gateway pushes the fill over SSE to your screen.live gateway
+
+- The browser asks the edge over HTTPS with REST/JSON, and keeps an SSE stream open for live updates (as today’s app does).browser
+- The edge checks the session and the plan’s limits and passes the request to the product API.edge
+- The product API reads ClickHouse (Geek data, reports) and the ledger replicas, and asks control over gRPC for deployment details.product API
+- From then on, live P&L, positions and alerts arrive over that SSE stream from the live gateway, latest values only.live gateway
+
+- You press Deploy in the web app (REST) or run linck deploy (gRPC). Both reach control through the edge.you
+- Control checks the strategy version is certified and within your limits; its scheduler picks a host with room and the right instruments.control · Go
+- Control sends the start command over NATS to that cell.backbone
+- The supervisor on the chosen host fetches the signed artifact, starts a sandbox, takes the lease in etcd and subscribes to the instruments.runtime
+- The first batch arrives; from here on it’s the tick journey.runtime
+
+| Component | Owns | Scales by | When it fails | 
+
+| Product API | Journal, repair cases, preferences | Stateless copies | Screens go dark; nothing trades differently | 
+ 
+| Control plane | Tenants, strategy versions, deployments, placement, limits, licences | Stateless copies over Postgres | No changes possible; running strategies keep running | 
+ 
+| Market data ingest | Subscriptions; the tick log | One deployment per source; handlers by instrument range | The other source takes the instruments; strategies hold and report | 
+ 
+| Computed streams | The catalogue of series | Per cell | Series marked stale; strategies that use them hold | 
+ 
+| Strategy runtime | Live strategy state; leases | Hosts per cell; ~3–5k strategies a host | Leases move; resume from snapshot + replayed events | 
+ 
+| Orders & risk | Orders, fills, positions, cash (the ledger shard) | Partitions by account | Intents wait on the log; nothing lost or doubled | 
+ 
+| Broker gateway | Sessions and tokens in memory | One deployment per broker | That broker’s accounts stop new entries and queue exits; other brokers carry on | 
+ 
+| Sim venue | Fill-model versions; simulated books | Per cell; a library in backtests | Paper orders queue; live unaffected | 
+ 
+| Integrity | Checks, cases, repairs, issues | Workers by queue depth | Findings late, never wrong | 
+
+04
+
+## Intermediate architecture
+
+What we build first: one region, one cell, today’s code carried over. The colour says what each piece becomes.
+
+FollowEverythingA tickAn orderOpening a screenDeploying a strategyPause
+
+[Diagram: Intermediate architecture, coloured by what each piece becomes. Three clients reach an edge load balancer over HTTPS. Inside one Kubernetes cluster: the Python Core API, whose amber modules later become Go services; a Go live gateway; NATS JetStream; Go market data streaming the latest ticks over gRPC to Python runner workers; intents over NATS JetStream to Go orders and risk, which writes the ledger tables and calls the Go broker gateway over gRPC for Kite or the Python sim venue. Workers and notifications below, then managed data stores.]
+
+keptchangednewa module that becomes its own Go servicemarket dataorders and fillsscreens and requestscommands that start and move strategiesoutside our control
+
+The labels on each line say how the two sides talk and what travels between them. The dots show it moving. Pick a journey above to follow one step by step; everything not on it fades.
+
+- Kite’s WebSocket and the licensed vendor send ticks to the market-data service.outside
+- It cleans them and builds bars and chain views, then streams ticks over gRPC to each runner worker that holds a strategy following them. A worker that has fallen behind gets only the newest value of each instrument.market data · Go
+- The worker keeps one latest slot per instrument; each strategy, when ready, gets a batch built from those slots.runner · Python
+- The strategy computes its own indicators inside the worker. (In the final architecture they’re computed once and shared.)runner · Python
+
+- The strategy returns an intent; its runner worker publishes it on NATS JetStream.runner
+- Orders & risk checks it and records the order in the ledger tables in one transaction.OMS · Go
+- It calls the broker gateway over gRPC: Kite for live, the Python sim venue for paper.broker gateway
+- Kite’s updates come back; the OMS records the fill and publishes it on NATS.OMS
+- The live gateway pushes it to your screen over SSE.live gateway
+
+- The browser asks the edge over HTTPS (REST/JSON) and keeps an SSE stream open.browser
+- The edge passes it to the Core API, which reads Postgres and ClickHouse.Core API
+- Live updates arrive over that SSE stream from the live gateway.live gateway
+
+- You press Deploy or run linck deploy; the CLI speaks gRPC, the web app REST.you
+- The Core API’s deployments module checks the version and publishes a start command on NATS.Core API
+- A runner worker takes the lease in Postgres and starts the strategy (invited code in gVisor).runner
+
+### Why this cut
+
+- It fixes today’s two structural risks first: the website and the strategies share a process, and several places write money.
+ 
+- Everything a user sees keeps working: the web app, the Product API and the Temporal jobs are today’s code, moved, not rewritten.
+ 
+- Each stand-in is the simplest thing that speaks the final contract, so it can be replaced alone.
+
+### Size it handles
+
+- ~2,000 running strategies, ~5,000 instruments, ~20k updates/s at the open.
+ 
+- One Postgres (primary + replica), one ClickHouse, three NATS nodes.
+ 
+- Roughly 6–10 nodes; Docker Compose for development, Kubernetes (one cluster) in production.
+
+05
+
+## What changes, component by component
+
+Each row: what it is in the intermediate architecture, what it becomes, why, the signal that says it’s time, and how we switch without stopping trading.
+
+| Component | Intermediate | Final | Why change | Switch when | How we switch | 
+
+| Market data | Go service: Kite + one vendor, bars and chain views inside, latest prices in Redis | Rust feed handlers + sequencer + shared-memory tick cache; computed streams split out | Per-message cost × volume; no GC pauses; one binary record shared with the backtest core | >10k instruments, a second vendor, or tick-by-tick feeds | Run both on the same feed; compare every record and bar for two weeks; cut cells over one at a time | 
+ 
+| Computed streams | Bars and chains in market data; indicators inside each strategy | Rust DAG per cell: bars, indicators, IV & greeks, chain views as synthetic instruments | The same EMA(20) computed thousands of times | Duplicate-compute metric > 30% of runtime CPU | SDK indicators gain a “subscribe” form; old in-strategy form keeps working | 
+ 
+| Strategy runtime | Python runner workers, one process per shard, leases in Postgres | Rust supervisor per host; each strategy its own sandbox (gVisor / Wasmtime); leases in etcd | Isolation per strategy, budgets, many languages, faster recovery | The SDK opens to the public | Supervisor speaks the same runtime protocol v1; move deployments by lease handoff at minute boundaries | 
+ 
+| Orders & risk | Go: single writer, risk pipeline, outbox, Kite + Sim adapters | Same service, more adapters, partitioned per cell | — | — | Built once; grows by adding adapters and partitions | 
+ 
+| Sim venue | Python fill model behind the broker-adapter contract | Rust library + service: depth, queue position, latency; same library in backtests | Throughput for the backtest farm; bit-identical fills across modes | Backtest farm demand, or queue-model fills | Replay recorded days through both; fills must match to the paisa before switching | 
+ 
+| Event backbone | NATS JetStream for everything | Redpanda for orders, fills, journal, tick archive; NATS for control and live fan-out | Long, replayable, partitioned logs for money and ticks | Retention needs beyond JetStream, or >5 consumers of fills | Outbox relay writes both for a while; consumers move topic by topic | 
+ 
+| Control plane | Modules inside the Python Core API | Go services: identity, registry, scheduler, billing, marketplace, policies | Correctness and team ownership as these grow; one language with the OMS | Marketplace and billing work begins, or two backend teams | Strangler: the gateway routes one module’s endpoints at a time to the Go service; shared tables become owned by one side | 
+ 
+| Product API | The rest of the Core API | Same | — | — | Keeps serving the web app | 
+ 
+| Ledger | One Postgres, positions + lots tables | One Postgres shard per cell; double-entry journal with positions as projections | Blast radius; write volume | First partner cell, or >5k strategies | Journal written alongside today’s tables first; projections verified equal nightly; then tables become views | 
+ 
+| State snapshots | deployment_state row in Postgres | Local NVMe WAL + async S3; event-log replay since the snapshot | Per-event snapshots at 50k strategies would flood Postgres | >200 snapshot writes/s | Dual write, read from new, drop old | 
+ 
+| Edge | Load balancer, TLS, cookie sessions | Envoy gateway: OIDC, API keys, scopes, per-plan limits, gRPC transcoding | Public API and partners | Public API launch | Gateway in front of the same backends; sessions migrate on next login | 
+ 
+| SDK | v0: Python package over today’s StrategyBase | v1+: Python, WASM components, remote gRPC; certification; signed artifacts | Open to developers | Public SDK | v0 strategies run unchanged on v1 (an adapter in the SDK core) | 
+ 
+| Lake | Parquet files on S3 | Iceberg tables (partitioned, versioned, schema evolution) | Point-in-time queries, compaction, many readers | Backtest farm | Register existing Parquet as Iceberg tables; no rewrite | 
+ 
+| Notifications | Python consumer | Go service with templates and channels per tenant | Partner branding, more channels | Partner brokers | Same subjects; swap the consumer | 
+ 
+| Broker gateway | Go service with the Kite adapter; paper orders routed to the sim venue | Same service, one deployment per broker: Upstox, Dhan, Angel One, Fyers, ICICI, FIX | — | — | A broker is added by an adapter (section 12) | 
+ 
+| Live gateway | Go SSE fan-out, latest values only | Same | — | — | Grows by copies | 
+ 
+| Reference data | Instruments module in the Python Core API (today’s resolver) | Go service: instrument master and every broker’s symbol map | A second broker needs a symbol map per broker; every service reads it | The second broker | Service answers the module’s queries; the module becomes a client, then goes | 
+ 
+| Integrity | Python Temporal workers: day check, repair, replay | Go service + Temporal; replays run as backtest-farm jobs on the Rust runtime | Replays on the same runtime as live are exact by construction | F3 (the Rust runtime) is in | Both run the day check for two weeks; findings compared | 
+ 
+| Backtest farm, read models, tick cache agent | Backtests in Python workers; reports query Postgres; no shared memory | Rust jobs on spot nodes; Go consumers filling ClickHouse; a Rust agent per runtime host | Scale and cost | With F3–F4 | Added beside; old paths retired after equal results | 
+ 
+| Hosting | One EKS cluster, three node pools | A platform cluster per region + a cluster per cell | Blast radius; partners | First partner, or >5k strategies | A staff cell first, then tenants move cell by cell | 
+ 
+| Vault & KMS, audit store, assistant, public API, mobile apps | — | New | Platform scope | Stage 2–3 of the roadmap | Added beside, nothing replaced | 
+
+What never changes
+ 
+The protobuf contracts (they only grow) · strategy code written against the SDK · the ledger’s meaning (an order, a fill, a position) · the web app · the decision log, issues and repair model. These are the things users and strategies depend on, so they are designed once, in the intermediate architecture.
+
+06
+
+## What is a microservice, and what isn’t
+
+The rule, the list of deployables in each architecture, and the things we deliberately keep inside others.
+
+A part becomes its own service only if it must fail on its own, scale on its own axis, run a different language, or own data nobody else may write.
+ Otherwise it’s a module inside a service, or a library. A service owns its data: no other service reads its tables; others use its API or its events.
+
+### Final: our deployables
+
+| Deployable | Kind | Why it stands alone | Runs as (Kubernetes) | Copies | Owns | 
+
+| Platform cluster, one per region | 
+ 
+| edge-gateway | off the shelf | The only door in; scales with requests | Deployment | 3+, by requests | — | 
+ 
+| product-api | microservice | Changes daily; must never touch trading | Deployment | 3–20, by CPU | product schema | 
+ 
+| live-gateway | microservice | Holds 100k open SSE streams | Deployment | 3–10, by connections | — | 
+ 
+| identity | microservice | Security boundary; audited separately | Deployment | 3 | identity DB | 
+ 
+| control | microservice | System of record for deployments; the scheduler inside it is leader-elected | Deployment | 3 | control DB | 
+ 
+| commerce | microservice | Money in; its own audit and its own team | Deployment | 2 | commerce DB | 
+ 
+| builder | microservice + jobs | Runs untrusted builds, isolated | Deployment; a Job per build, in gVisor | 2 + jobs | artifact registry | 
+ 
+| refdata | microservice | Everyone reads it; one writer | Deployment | 3 | refdata DB | 
+ 
+| integrity | microservice | Heavy, after hours | Deployment + Temporal workers | 2 | integrity DB | 
+ 
+| read-models | consumer | Rebuildable from events at any time | Deployment | 2–4 | ClickHouse tables | 
+ 
+| notifications | consumer | Outside rate limits; mustn’t back up anything else | Deployment | 2 | templates | 
+ 
+| assistant | microservice | Model calls with their own cost limits | Deployment | 2 | — | 
+ 
+| backtest-farm | jobs | Bursty; cheap spot machines | A Job per backtest | 0 → 500 vCPU | results | 
+ 
+| Cell cluster, one per cell | 
+ 
+| md-ingest-<source> | microservice | One per feed: a vendor’s outage stays its own | StatefulSet, an A/B pair | 2 per source | — | 
+ 
+| md-sequencer | microservice | One order per instrument, so exactly one active | StatefulSet, active + standby | 2 | tick log position | 
+ 
+| computed-streams | microservice | CPU-heavy and shared by every strategy | StatefulSet, A/B | 2 | series catalogue | 
+ 
+| cache-agent | node agent | Must be on every runtime host | DaemonSet | 1 per node | shared memory | 
+ 
+| supervisor | node agent | Owns the sandboxes on its host | DaemonSet | 1 per node | local WAL | 
+ 
+| oms | microservice | The only writer of money | StatefulSet, partitions by account | 3 | ledger shard | 
+ 
+| broker-gw-<broker> | microservice | A broker’s outage, limits or IP rules stay its own | Deployment per broker, same image | 2 per broker | token cache | 
+ 
+| sim-venue | microservice | Paper load must never slow live orders | Deployment | 2–6 | simulated books | 
+
+### Deliberately not services
+
+- The ledger is tables owned by the OMS. A ledger service would put a network hop and a second writer between an order and its money.
+ 
+- Risk checks are a pipeline inside the OMS, in the same transaction as the order they approve.
+ 
+- The scheduler is a module of control: it changes whenever deployments do.
+ 
+- Indicators, the fill model, the protocol codec are linck-core, a library, so live, backtest and local runs compute the same numbers.
+ 
+- The decision log and strategy issues are events written by the supervisor and stored by read models: no service of their own.
+ 
+- A strategy is a sandbox under the supervisor, not a pod (08).
+
+### Intermediate: nine deployables
+
+- core-api (Python): a modular monolith. One team, one database, modules that change together. Each module already owns its tables and never joins another’s, so splitting one out later is a move, not a rewrite.
+ 
+- live-gateway, md, oms, broker-gw-kite (Go).
+ 
+- runner (Python, a StatefulSet; each pod a shard of strategies), sim, workers (Temporal), notifications (Python).
+ 
+- Final: 21 deployables in the table, 20 of them our own code (the edge is Envoy with our plug-in), each with its reason.
+
+07
+
+## Protocols: where REST, where gRPC, where events
+
+Every connection on the diagrams is labelled with one of these. Here’s each one and why it was chosen.
+
+Outside world: HTTPS on port 443Screens and the public API use REST/JSON for requests and SSE for live updates. The SDK, the CLI and remote strategies use gRPC.
+ 
+Between our services: gRPCProtobuf, mutual TLS, a deadline on every call (2 s by default, 200 ms inside a cell), retries only on methods that are safe to repeat. Never REST between our own services.
+ 
+Things that happened: eventsRedpanda for intents, orders, fills, the journal, ticks and decisions (durable, ordered per key). NATS for commands and live updates.
+ 
+The tick path: latest value, never a backloggRPC streams from the ingest to every host, shared memory on the host, a Unix socket or a function call into the strategy. Every hop keeps only the newest value for a consumer that’s behind (section 11). No JSON anywhere on it.
+
+| Between | Protocol | Why this one | 
+
+| Browser, mobile, public API → edge | HTTPS: REST/JSON for requests, SSE for live updates | What browsers and every language speak; SSE is plain HTTP, reconnects by itself, and is what today’s app already uses (it moved off WebSocket because screens only listen) | 
+ 
+| SDK, CLI, remote strategies → edge | gRPC over HTTP/2, TLS, port 443 | Streams both ways (logs, a remote strategy’s events); typed clients generated per language. Envoy also exposes every method as REST | 
+ 
+| Edge → product API | REST/JSON | Today’s API, kept; the web app already speaks it | 
+ 
+| Edge → live gateway | SSE, latest values only | One long response per open screen; conflated so a slow phone never gets a backlog | 
+ 
+| Service → service, request and answer | gRPC + protobuf, mTLS, a deadline on every call | Typed contracts, deadlines, streaming. Examples: product API → control, OMS → broker gateway, broker gateway → sim venue, anyone → reference data | 
+ 
+| Services ↔ event backbone | Redpanda (Kafka protocol) or NATS | Redpanda when losing a message costs money or history; NATS when only the latest matters or it’s a command | 
+ 
+| Vendors and broker sockets → market data ingest | Each source’s own: Kite’s binary WebSocket, a vendor’s TCP or WebSocket | Not ours to choose; one feed handler per source turns it into our record | 
+ 
+| Ingest and computed streams → every runtime host (intermediate: market data → runner workers) | gRPC server streams, conflated: latest value per instrument, one batch in flight | Gives the latest-value guarantee; typed; every language; no extra system to run (section 11 has why not Aeron or NATS) | 
+ 
+| Tick cache → supervisor | Shared memory: one slot per instrument, overwritten | No copy, no system call; the slot is the latest value by construction | 
+ 
+| Supervisor ↔ strategy | Process sandbox: protobuf frames on a Unix socket · WASM: calls through its WIT interface · remote: a gRPC stream | The same EventBatch and Commands messages in all three | 
+ 
+| Strategy runtime → OMS | The topic orders.intent.v1 (NATS JetStream in the intermediate, Redpanda in the final) | Every intent is durable before anything is sent; replayable; fenced by epoch | 
+ 
+| Broker gateway → brokers | Each broker’s REST API for orders; its WebSocket or postback for updates; FIX 4.4 for institutions | The broker’s protocol, behind our one contract | 
+ 
+| Services → stores | Postgres wire protocol, ClickHouse native, S3 API, etcd gRPC, Vault over HTTPS | Each store’s own; only the owning service connects | 
+
+### Why not one protocol everywhere
+
+- REST inside: no schema the compiler checks, no streaming, and JSON parsing costs real CPU at our volumes.
+ 
+- gRPC to browsers: needs gRPC-Web and a proxy, and is hard to debug. Screens stay on REST and SSE.
+ 
+- A message broker on the tick path: a queue in the middle is exactly where old ticks pile up. Ticks are latest-wins, so they go point to point over conflated gRPC streams; the archive copy goes to Redpanda off the path.
+ 
+- GraphQL: the screens are few and ours; it would add a resolver layer and caching problems for nothing.
+
+### In the intermediate architecture
+
+- Clients, the edge, gRPC between services and the broker connections are the same from day one, so nothing changes protocol later.
+ 
+- Events and intents run on NATS JetStream with the same subjects and messages; Redpanda arrives later.
+ 
+- Ticks already travel on conflated gRPC streams, straight from market data to the runner workers; shared memory comes with the Rust runtime.
+ 
+- Strategies run only in the process sandbox, and only in Python.
+
+08
+
+## Deployment: containers and Kubernetes
+
+What gets packaged how, where it runs, and why strategies are the one exception.
+
+Every service ships as a container image (Docker / OCI) and runs on Kubernetes (AWS EKS in Mumbai), deployed by Argo CD from Git.
+ Strategies are not containers and not pods. They are sandboxes the supervisor starts on its own host; Kubernetes only sees the supervisor.
+
+| Stage | Where it runs | How a release goes out | Why | 
+
+| Today | One machine; one Docker container running one Python process; Postgres beside it; Tailscale in front | ./redeploy.sh: git pull, docker build, restart | One user; the simplest thing that works | 
+ 
+| Intermediate | One EKS cluster in Mumbai across 3 zones, three node pools (services, runtime with gVisor, data); RDS Postgres | A Helm chart per service; Argo CD applies what’s in Git; Docker Compose on laptops | Several services, rolling deploys without a gap, machines that replace themselves | 
+ 
+| Final | A platform cluster per region, a cluster per cell, partner cells in their own AWS accounts | The same charts; Argo CD ApplicationSets roll out cell by cell; Terraform builds accounts, networks and clusters | A bad release or a bad day stays in one cell | 
+
+[Diagram: Where everything runs. A platform cluster per region with service, data and job node pools, and a cell cluster per cell with market-data, runtime and service node pools. On runtime nodes Kubernetes runs only the supervisor and the cache agent; the strategy sandboxes are processes and WASM instances the supervisor starts. AWS-managed Postgres, Redis, S3, KMS, NAT with fixed IPs and load balancers sit outside the clusters.]
+
+### Why Kubernetes, and not…
+
+- Docker Compose: one machine, no rolling deploys or recovery across machines. We keep it for laptops and for today.
+ 
+- ECS: good for stateless services, but no operators for Redpanda, NATS and ClickHouse, no runtime classes for gVisor, and partner cells may one day run outside AWS.
+ 
+- Nomad: lighter, but the operators, tools and people we need are on Kubernetes.
+ 
+- Serverless functions: cold starts and time limits don’t fit strategies that run all day or sockets held for hours.
+
+### Why strategies aren’t pods
+
+- 50,000 strategies would be 50,000 pods. Kubernetes allows 110 pods per node by default, and its scheduler isn’t built for that many small, long-lived workloads.
+ 
+- A pod takes seconds to start and carries its own network setup and IP; a gVisor sandbox starts in well under a second and a WASM instance in milliseconds.
+ 
+- Moving a strategy is a lease handoff between supervisors, not a pod reschedule, so it never loses a minute.
+ 
+- Kubernetes still manages the machines: draining a node tells its supervisor to hand its leases away first.
+
+### What we run, what AWS runs
+
+- AWS runs: Postgres (RDS, multi-zone, a ledger shard per cell), Redis (ElastiCache), S3, KMS, load balancers, NAT gateways.
+ 
+- We run, with an operator: Redpanda, ClickHouse, NATS, etcd, Vault, Temporal. They want our NVMe nodes or sit inside a cell, and at our size running them costs less than the managed versions. Revisited store by store; switching to a managed one changes a connection string, not code.
+ 
+- Egress: brokers require registered fixed IPs for API orders, so each cell’s broker gateways leave through NAT gateways with fixed addresses.
+ 
+- Images: distroless, built reproducibly, signed (cosign); the clusters run only signed images.
+ 
+- Secrets: in Vault; synced into the cluster by External Secrets; broker tokens never leave Vault except into the broker gateway’s memory.
+ 
+- Mesh: Linkerd for mutual TLS and retries between services; nothing in the tick path goes through it.
+
+### Node pools in a cell
+
+- Market data: compute-optimised, CPUs pinned to the feed threads, on-demand only.
+ 
+- Runtime: 64 vCPU with local NVMe for the WAL; gVisor installed; tainted so only supervisors and cache agents land there.
+ 
+- Services: general purpose for the OMS, broker gateways, sim venue, etcd and Redpanda.
+
+09
+
+## Contracts
+
+One repository (linck/contracts), Buf for linting, breaking-change checks and code generation in every language.
+
+// md/v1/tick.proto: the record every component speaks (the wire form is the fixed 96-byte layout in 10)
+message Tick {
+ uint32 instrument_id = 1; // internal id from reference data, never a broker token
+ uint64 seq = 2; // per instrument, gap-free
+ int64 exch_ts_ns = 3;
+ int64 ltp = 4; // fixed point, 1e-4 rupee: no floats for money
+ int64 bid = 5; int64 ask = 6; uint32 bid_qty = 7; uint32 ask_qty = 8;
+ uint64 volume = 9; uint64 oi = 10; uint32 flags = 11; // STALE, SPIKE_HELD, SYNTHETIC…
+}
+
+// orders/v1/intent.proto: what a strategy proposes; only Orders & risk turns it into money
+message Intent {
+ string intent_id = 1; // = hash(deployment_id, epoch, decision_seq, leg): the idempotency key
+ string deployment_id = 2; uint64 epoch = 3; uint64 decision_seq = 4;
+ repeated Leg legs = 5; // one basket: all or nothing, by policy
+ BasketPolicy policy = 6; // HEDGE_FIRST, SIMULTANEOUS, SEQUENTIAL; leg timeout
+ string reason = 7; map<string, string> trigger = 8;
+}
+message Leg { uint32 instrument_id = 1; Side side = 2; int64 qty = 3; PriceSpec price = 4; Role role = 5; }
+
+// broker/v1/adapter.proto: every broker, and the sim venue, implements this
+service BrokerAdapter {
+ rpc Place(PlaceRequest) returns (PlaceAck);
+ rpc Modify(ModifyRequest) returns (PlaceAck);
+ rpc Cancel(CancelRequest) returns (CancelAck);
+ rpc Updates(UpdatesRequest) returns (stream OrderUpdate); // acks, fills, rejects
+ rpc Positions(Account) returns (PositionSet);
+ rpc BasketMargin(Basket) returns (Margin);
+ rpc Limits(Account) returns (BrokerLimits); // order rate, freeze qty, price bands
+}
+
+// runtime/v1/runtime.proto: supervisor ⇄ strategy sandbox, framed over a Unix socket
+message EventBatch { uint64 seq = 1; int64 now_ns = 2; repeated Event events = 3; }
+message Event { oneof e { Tick tick = 1; Bar bar = 2; Timer timer = 3; Fill fill = 4; OrderUpdate order = 5; Control ctl = 6; } }
+message Commands { uint64 for_seq = 1; repeated Intent intents = 2; repeated Decision decisions = 3;
+ repeated Report reports = 4; repeated Subscription subscribe = 5; bytes state = 6; }
+
+### Versioning rules
+
+- Packages are versioned (v1, v2); inside a version, fields are only added. Buf’s breaking check runs on every pull request.
+ 
+- The runtime protocol is negotiated at sandbox start (the SDK declares the versions it speaks), so old strategies keep running on new supervisors.
+ 
+- Events on the backbone carry a schema id from the registry; consumers reject unknown major versions loudly, never silently.
+
+### Why protobuf
+
+- One definition generates Go, Rust, Python and TypeScript types, so the web, the SDK and the services can’t drift.
+ 
+- Compact and fast on the backbone; gRPC for free.
+ 
+- The tick hot path uses a fixed binary layout instead (10): protobuf’s varints cost too much at 300k/s, and the layout is generated from the same definition.
+
+10
+
+## The market-data path
+
+From a vendor socket to a strategy’s event loop without a queue anywhere.
+
+| Offset | Field | Type | Note | 
+
+| 0 | instrument_id | u32 | Internal id; options, futures, indices and synthetic series share one space | 
+ 
+| 4 | flags | u16 | stale, spike held, synthetic, end of session | 
+ 
+| 6 | venue | u16 | NSE, BSE, MCX, synthetic | 
+ 
+| 8 | seq | u64 | Per instrument, gap-free from the sequencer | 
+ 
+| 16 | exch_ts_ns · recv_ts_ns | i64 × 2 | Exchange time is the truth; receive time measures our lag | 
+ 
+| 32 | ltp · bid · ask · avg | i64 × 4 | Fixed point, 1e-4 rupee | 
+ 
+| 64 | bid_qty · ask_qty · last_qty · _pad | u32 × 4 | Depth beyond level 1 is a separate record, on request | 
+ 
+| 80 | volume · oi | u64 × 2 | 96 bytes total: one and a half cache lines | 
+
+### Feed handler and sequencer
+
+- One handler per vendor connection, decoding into the record with no allocation; a sanity filter (today’s TickFilter rules: non-positive, out of order, duplicate, spike held for confirmation).
+ 
+- The sequencer numbers each instrument’s updates and writes them to the tick log (Redpanda, keyed by instrument) and streams them to the cells over gRPC, keeping only the latest value for any host that’s behind (section 11).
+ 
+- Sequence numbers let every consumer tell a skipped update (conflated, and counted) from a missing one; anything that needs every tick reads the tick log.
+ 
+- Two vendors can feed one instrument; the sequencer takes the first and records the other’s lag, so failover is instant.
+
+### Tick cache on each host
+
+// one slot per instrument, 128-byte aligned; one writer, many readers
+struct Slot { version: AtomicU64, rec: TickRec } // seqlock
+fn read(s: &Slot) -> TickRec {
+ loop {
+ let v1 = s.version.load(Acquire);
+ if v1 & 1 == 1 { continue } // writer mid-update
+ let r = s.rec; // copy out
+ if s.version.load(Acquire) == v1 { return r }
+ }
+}
+ 
+Beside the slots, a ring of the last 2²⁰ updates (single producer, many consumers, each with its own cursor). A consumer that falls a full lap behind doesn’t block anyone: it jumps to the slots (latest values) and is told it skipped.
+
+### Computed streams
+
+- A series is a node: function, parameters and inputs, hashed into its id, so two strategies asking for EMA(20) on NIFTY 1-hour bars get the same node.
+ 
+- Each update batch evaluates the dirty part of the DAG in topological order; outputs are written to the tick cache as synthetic instruments, so a strategy subscribes to a computed series the same way as to a price.
+ 
+- Bars close on exchange time; IV uses Jäckel’s “Let’s Be Rational” on the future (Black-76), greeks from the same; chain views answer “ATM by future”, “strike by premium” and “liquid strikes” in memory.
+ 
+- Warm-up comes from the lake at cell start, so an indicator is ready at 09:15, not 20 bars later.
+
+### Conflation and back-pressure
+
+- A strategy declares its cadence per subscription: tick, every 250ms, bar close, timer.
+ 
+- The supervisor builds each strategy’s next batch from the latest values at the moment the strategy is ready, never from a queue: a slow strategy sees fewer, fresher events.
+ 
+- Fills, order updates and timers are never conflated: they queue, in order, per strategy.
+
+11
+
+## Ticks: always the latest, never a backlog
+
+The one promise the tick path makes, how every hop keeps it, and why ticks travel on gRPC streams rather than Aeron, NATS, WebSocket or SSE. Decided 22 Oct 2026; this section is the record of why.
+
+A consumer that falls behind may skip ticks, but the next thing it receives is always the latest value of every instrument it follows.
+ It never works through a backlog of old prices. Fills, order updates and timers are the opposite: never skipped, always in order.
+
+[Diagram: Three ticks while the client is busy. NIFTY ticks t0 to t3 arrive over one second. Each overwrites the client’s latest slot. The client gets t0 at once, then is busy for about a second. When it’s ready again it receives only t3, with a note that two ticks were skipped; t1 and t2 were overwritten and never sent.]
+
+- 09:20:00.0: t0 arrives, goes into this client’s NIFTY slot and is sent at once.sent
+ 
+- The client gets busy (a slow strategy, a bad phone network) and hasn’t taken that batch yet, so nothing more is sent to it.waiting
+ 
+- t1, t2 and t3 arrive. Each overwrites the slot; nothing queues up behind the client.overwritten
+ 
+- The client is ready again. It gets one message: t3, the latest, with “skipped 2”, so it knows it missed ticks rather than that nothing happened.latest
+
+### Why no transport gives this on its own
+
+| Transport | When the consumer is slow | Latest guaranteed? | 
+
+| gRPC stream · WebSocket · SSE | All run on TCP, which never drops: old ticks queue up and the consumer reads stale prices first | No | 
+ 
+| NATS (core) | The client’s buffer fills, then incoming messages are dropped or the slow consumer is disconnected. It can drop the newest tick | No | 
+ 
+| NATS JetStream · Redpanda | Replay everything from where the consumer stopped: a backlog by design | No, the opposite | 
+ 
+| Aeron | Slows the sender, or the slow receiver loses its stream and must rejoin | No | 
+
+So the guarantee comes from our own logic, conflation, at every place a consumer can fall behind. With it in place the transport underneath matters much less, and we pick the simplest one.
+
+### How it’s kept: conflation
+
+# one of these per subscriber (a runtime host, a runner worker, a screen, a remote strategy)
+latest = {} # instrument → newest tick; overwritten on every update
+skipped = {} # instrument → updates overwritten since the last send
+dirty = set() # instruments changed since the last send
+
+def on_tick(t):
+ if t.instrument in dirty: skipped[t.instrument] = skipped.get(t.instrument, 0) + 1
+ latest[t.instrument] = t
+ dirty.add(t.instrument)
+ wake(writer)
+
+async def writer():
+ while True:
+ await dirty_not_empty()
+ batch = [(latest[i], skipped.pop(i, 0)) for i in dirty]
+ dirty.clear()
+ await send(batch) # returns only when the consumer has taken it: one batch in flight
+
+### The rules that make it a guarantee
+
+- One batch in flight. Anything already handed to a socket can’t be taken back, so the next batch goes only once the consumer has taken the last one: gRPC flow control between our services, an acknowledgement per batch for remote consumers, the browser reading the SSE stream for screens. Old ticks never sit in buffers.
+ 
+- Skipped is counted, not hidden. Every value carries its exchange time and sequence number, and the batch says how many updates were skipped per instrument.
+ 
+- A snapshot on connect. A new or reconnected consumer first gets the latest value of everything it follows, then updates.
+ 
+- Stale isn’t unchanged. An instrument with no update for too long in market hours is marked stale, never silently repeated.
+ 
+- Memory is bounded. One slot per instrument followed, so a stuck consumer costs no more than a fast one.
+
+### What is never conflated
+
+- Fills, order updates, rejects, timers, commands: every one matters, so they queue in order per strategy and are never skipped.
+ 
+- Bars and indicators are built upstream from every tick (market data, computed streams), so a strategy skipping ticks can’t corrupt its bars.
+ 
+- The archive (Redpanda, then the lake) keeps every tick, for replays, the day check and backtests.
+
+### What it costs
+
+- Inside a cell, waiting for the consumer to take a batch costs a fraction of a millisecond. Over the internet it’s one round trip: nothing at a few ticks a second.
+ 
+- gRPC handles this volume when ticks are batched every few milliseconds rather than sent one by one; we measure it in the intermediate stage before relying on it.
+
+### Where it applies
+
+| Hop | Who can be slow | How the latest wins | 
+
+| Market data → runner workers (intermediate) | A worker running a slow strategy | gRPC stream, conflated per worker; inside the worker, one latest slot per instrument shared by its strategies | 
+ 
+| Ingest and computed streams → runtime hosts (final) | A host under load | gRPC stream, conflated per host | 
+ 
+| Tick cache → strategy (final) | The strategy | Shared-memory slot per instrument, overwritten; the supervisor builds the next batch from the latest values when the strategy is ready | 
+ 
+| Live gateway → screens | A browser or phone on a bad network | SSE, conflated per screen, at most every 250 ms | 
+ 
+| Platform → remote strategies | The user’s process or network | gRPC stream, conflated, acknowledged per batch | 
+
+### Why gRPC streams
+
+- Typed: the same protobuf tick as everywhere else; the compiler checks both ends.
+ 
+- Every language: Go, Rust, Python and TypeScript all have first-class gRPC; nothing to bind or wrap.
+ 
+- It tells the sender when the receiver is behind: HTTP/2 flow control is the signal the one-batch-in-flight rule needs.
+ 
+- Nothing extra to run: no message server, no media driver; TLS, Envoy, Kubernetes and tracing already understand it.
+
+### What we dropped, and when we’d look again
+
+| Option | Was planned for | Why we dropped it | We’d look again if | 
+
+| Aeron | Final: ingest → every runtime host | It doesn’t give latest-wins by itself, so conflation is needed anyway. Its gain is microseconds, which a strategy that takes milliseconds to decide can’t use. No official Rust client (the C client through community bindings), a media driver to run and tune, and no native multicast in an AWS VPC. | The ingest → host hop measures above 5 ms at the 99th percentile at peak, or fan-out costs more than a core per cell, with conflation already in place | 
+ 
+| NATS for ticks | Intermediate: market data → runner workers | A slow consumer makes NATS drop incoming messages, possibly the newest, or disconnect it; the extra server hop buys nothing for point-to-point streams. JetStream is a replay log: a backlog by design. | Not for ticks. NATS stays for commands and live-update signals, where it fits. | 
+ 
+| WebSocket or SSE between services | Not planned; considered here | No typed contract, and we’d rebuild flow control, deadlines and retries that gRPC already has. | — | 
+ 
+| WebSocket for screens | Earlier drafts of this document | Screens only listen. Today’s app already moved from WebSocket to SSE: plain HTTP, reconnects by itself, works through every proxy. | If screens ever need to send on the same connection | 
+ 
+| Our own UDP fan-out | Considered | We’d be rebuilding retransmission and flow control. | Only if gRPC proves too slow and Aeron too heavy | 
+
+### Today’s app doesn’t keep this promise yet
+
+Each subscriber to today’s tick broadcaster (every deployment runner, every open screen) has a queue of up to 1,000 tick batches, and only the oldest is dropped when it’s full (app/broadcaster.py). A runner whose strategy is slow works through those older batches first, and ticks up to 5 minutes old are still processed (_STALE_TICK_MAX_AGE in app/deployments/runner.py). The fix is this same conflation inside the broadcaster for tick subscribers; it’s step P0 in the migration (section 21).
+
+12
+
+## Connectors: brokers and feeds
+
+The multi-broker connector and the tick ingestor. Both are ours, in one language each; users never write them.
+
+### Broker gateway (multi-broker connector)
+
+- One Go codebase. Each broker is an adapter package implementing the BrokerAdapter contract (09). The same image is deployed once per broker per cell (--broker=kite), so one broker’s outage, limits or IP rules never touch another.
+ 
+- Logins and tokens: each broker’s login or OAuth flow and daily refresh; tokens sealed in Vault, opened only in this service’s memory.
+ 
+- Symbols: our instrument id ↔ the broker’s token and trading symbol, from reference data, loaded before 08:30.
+ 
+- Orders: our order and product types translated to the broker’s; quantities above the freeze limit sliced; our order id put in the broker’s tag field, so a retry finds the first attempt instead of placing twice.
+ 
+- Rate limits: a token bucket per app key and per account, configured from each broker’s published limits, never hard-coded.
+ 
+- Updates: the broker’s WebSocket or postback becomes one ordered OrderUpdate stream; positions are pulled for reconciliation.
+ 
+- Capabilities: each adapter declares what its broker supports (basket margin, modify, market protection, tag length…), and the OMS plans around it, e.g. using our own margin estimate when a broker has no basket API.
+ 
+- Failure: a broker down → its gateway reports it; the OMS stops new entries for those accounts, queues exits and alerts. Other brokers carry on.
+
+### Adding a broker
+
+- Write the adapter in Go against the contract.1–2 weeks
+ 
+- Add its symbol-map loader to reference data.days
+ 
+- Pass the adapter conformance suite: recorded order conversations, rejects, partial fills, reconnects.CI
+ 
+- A paper week through the real API with shadow orders, and a smoke test every morning before 09:00 from then on.1 week
+ 
+- Turn on per tenant with a feature flag.minutes
+
+Order: Kite (today), Upstox, Dhan, Angel One, Fyers, ICICI Direct, then FIX for institutions. Nothing outside the gateway and reference data changes per broker.
+
+### Market data ingest (tick ingestor)
+
+- Sources: a licensed vendor feed shared by everyone (paper, research, computed streams), and each user’s own broker socket where their live trading needs it.
+ 
+- One feed handler per source (Rust): connect, subscribe to what running strategies need (the union, from control), decode into our 96-byte record, map to our instrument id, apply the tick filter.
+ 
+- The sequencer numbers each instrument’s updates, streams them to every host (latest value only for a host that’s behind) and to the archive (Redpanda → lake).
+ 
+- Every morning reference data loads the exchange contract files and each broker’s instrument list; new expiries appear and the ingest subscribes to them.
+ 
+- Adding a vendor is one more feed handler; nothing downstream changes, because everything after it reads our record.
+
+13
+
+## The strategy runtime
+
+Where untrusted code runs next to money, so it’s built around isolation, recovery and determinism.
+
+[Diagram: A runtime host. On a runtime host, the tick cache and computed streams in shared memory feed a Rust supervisor. The supervisor sends event batches to sandboxes over Unix sockets: process sandboxes in gVisor (any SDK language), WASM strategies in Wasmtime, and a gateway for remote strategies over gRPC. Sandboxes return commands. The supervisor writes state to a local write-ahead log shipped to S3, holds leases in etcd, and sends intents to the order log.]
+
+### Recovery, exactly
+
+- Every event batch has a sequence number; after the strategy answers, its state is written to the local WAL with that number.each batch
+ 
+- The WAL ships to S3 every second; fills and timers are also on the durable log.1 s
+ 
+- A host dies: its leases expire, the scheduler grants them elsewhere with epoch + 1.~5 s
+ 
+- The new host loads the last snapshot, replays fills, order updates and timers since its sequence, and catches prices up from the cache (prices are latest-wins, so no replay needed).< 2 s
+ 
+- An intent from the old host still in flight carries the old epoch, and Orders & risk rejects it: two hosts can never trade one deployment.always
+
+### Determinism, enforced
+
+- The only clock is ctx.now (the batch’s time); the only randomness is ctx.random, seeded per deployment and day.
+ 
+- No network, no files, no threads inside a sandbox; the runtime image is pinned per strategy version. Per language: PYTHONHASHSEED fixed (Python); map ranging flagged by the SDK lint (Go); Date and Math.random replaced (TypeScript).
+ 
+- Certification replays a day twice and compares the hash of every decision and intent; a mismatch fails the build.
+
+### Placement
+
+- The scheduler bin-packs deployments by expected CPU (from their history) with an affinity for hosts already holding their instruments, so most hosts need only a slice of the market.
+ 
+- Moves happen only outside 09:10–09:20 and 15:10–15:25, at minute boundaries, by lease handoff.
+
+14
+
+## Many languages: from SDK to runtime
+
+How a strategy written in Python, Go, Rust or TypeScript runs on one platform, and which parts must exist once per language.
+
+The runtime never runs “Python” or “Go”. It runs a sandbox that speaks one protocol: events in, commands out.
+ Each SDK is a thin library that speaks that protocol in its language. A new language is a new SDK plus a build image; nothing else in the platform changes.
+
+[Diagram: From any SDK language to the runtime. Python, Go, Rust, TypeScript and any other language each have an SDK that speaks one runtime protocol. A strategy reaches the supervisor in a process sandbox, a WASM sandbox or as a remote process over gRPC. Everything behind the supervisor is language-blind.]
+
+| Language | SDK | In our cloud | On a laptop (linck run) | Watch out for | 
+
+| Python | linck · PyPI | Process sandbox: CPython in gVisor, one process per strategy | The same process, started by the CLI | Speed: ~1 ms an event is fine for bars, tight for every tick | 
+ 
+| Go | linck.dev/sdk | Process sandbox (a static binary) or WASM for the dense plan | Same | Map order is random: the SDK’s lint flags ranging over maps in decisions | 
+ 
+| Rust | linck · crates.io | Process sandbox (native) or WASM component | Same | Nothing special; the fastest choice | 
+ 
+| TypeScript | @linck/sdk · npm | Process sandbox (Node) or WASM component | Same | Date and Math.random are replaced by ctx.now and ctx.random | 
+ 
+| C++ and others | WASM bindings, or remote | WASM component, or the user’s own process over gRPC | Same | Remote adds the network to every decision | 
+
+### Built once per language
+
+- The SDK: the API (Strategy, params, state, handlers, ctx), the event loop, state save and load, a test harness.
+ 
+- Generated types: every message from the same protobuf files (buf generate), so the four SDKs can’t drift apart.
+ 
+- A build image: the toolchain and lockfile resolver (uv, go mod, cargo, npm) in a pinned image the builder runs.
+ 
+- A runtime image for process sandboxes: the interpreter or system libraries, pinned per strategy version.
+ 
+- A pass of the conformance suite: recorded days with expected decisions. No SDK release without it.
+
+### Built once for every language
+
+- Control (the strategy manager), the scheduler, the supervisor, orders and risk, the broker gateway, market data, computed streams, the sim venue, integrity, the CLI. They only see protocol messages, never a language.
+ 
+- Indicators stay identical across languages two ways: subscribe to a computed stream (the platform computes it), or call linck-core inside the strategy. linck-core is Rust: used directly from Rust, through PyO3 from Python, napi-rs from Node, and from Go as a WASM module run by wazero, so Go needs no cgo.
+ 
+- Local equals cloud: the CLI contains the supervisor, the sim venue and a lake reader, and starts the strategy process exactly as a host would.
+
+// The same strategy as the Python example in 16, in Go. linck.toml says language = "go".
+package main
+
+import "linck.dev/sdk/linck"
+
+type TrendSpread struct {
+ Width int `param:"200" min:"100" max:"500" label:"Hedge width, points"`
+ Side string `state:""`
+}
+
+func (s *TrendSpread) Subscribe(ctx *linck.Ctx) []linck.Sub {
+ return []linck.Sub{linck.Supertrend(ctx.Index("NIFTY").Bars("15m"), 10, 3)} // a computed stream
+}
+
+func (s *TrendSpread) OnBar(ctx *linck.Ctx, st linck.SupertrendValue) error {
+ if !st.Flipped || st.Trend == s.Side {
+ ctx.Decide("entry", "no_action", "trend "+st.Trend+", no flip")
+ return nil
+ }
+ short := ctx.Chain("NIFTY", linck.ThisWeek).ByPremium(linck.OptionAgainst(st.Trend), 100)
+ s.Side = st.Trend
+ return ctx.Orders.Basket(linck.HedgeFirst, "entry", short.Further(s.Width).Buy(), short.Sell())
+}
+
+func main() { linck.Run(&TrendSpread{}) } // speaks the runtime protocol on the socket the supervisor gives it
+
+15
+
+## Orders, risk and the ledger
+
+The boring, audited core. Built in the intermediate architecture and kept.
+
+[Diagram: The order state machine. An order moves from New to Risk checked to Routed to Open, then Partially filled and Filled. Risk can reject it; the broker can reject it after routing; an open or partially filled order can be cancelled or expire.]
+
+### Exactly-once money
+
+- Idempotency: orders.intent_id is unique; a redelivered intent finds its order and returns it.
+ 
+- Fencing: an intent whose epoch is below the deployment’s current lease epoch is rejected and reported.
+ 
+- Outbox: every state change writes the order row and an outbox row in one transaction; a relay publishes the outbox to Redpanda, so nothing is published unsaved or saved unpublished.
+ 
+- Broker ids: our order id travels as the broker tag; on reconnect we ask the broker for every tagged order of the day and reconcile before routing anything new.
+ 
+- Reconciliation: every few minutes, positions are compared with the broker’s; the broker wins and any difference is an issue.
+
+### The risk pipeline (in process, < 1 ms)
+
+- Static: lot multiple, tick size, price band, quantity freeze (split into child orders), market hours.order
+ 
+- Deployment: max lots, max open legs, max entries a day, its own kill switch.deployment
+ 
+- Account: margin (the broker’s basket-margin answer, cached per basket shape), daily loss limit, order rate below the exchange threshold (token bucket).account
+ 
+- Global: tenant and platform kill switches; user rules written in CEL, precompiled.tenant
+ 
+- Exits are never blocked by cash or margin rules (today’s rule), only by the static ones.always
+
+### Baskets (multi-leg)
+
+- HEDGE_FIRST (default for spreads and hedged shorts): buy legs are placed and must fill before the sell legs go; a buy leg that doesn’t fill in its timeout cancels the basket and reports it.
+ 
+- SIMULTANEOUS: all at once, for exits that must happen; partial results are reported with what’s left open.
+ 
+- Each leg is a limit order with price protection (last price ± a band from broker limits); market orders are converted.
+
+### The ledger
+
+journal(entry_id, tenant_id, account_id, deployment_id,
+ kind, instrument_id, qty, price, amount, fill_id,
+ at) -- append-only, monthly partitions
+positions = projection of journal by (deployment, instrument)
+cash = projection of journal amounts by account
+CHECK: sum(amount) per fill = 0 -- double entry: cash ↔ position value ↔ charges
+ 
+Today’s positions and position_lots tables become projections of the journal. Charges and slippage are journal lines of their own, which is how the three P&L bases (gross, after charges, after slippage) stay exact.
+
+### Shadow mode
+
+Every order a deployment sends is mirrored to the sim venue with the same timestamp and the book at that moment. For live deployments the comparison is real fill against simulated fill; for paper ones, the sim venue’s strict fill (depth, queue, rejects) against the optimistic last-price fill. Both land in shadow_fills and roll up to a per-deployment gap: ₹ per trade, fill rate, rejects by reason. The same contract means shadow costs one extra adapter call, not a separate system.
+
+16
+
+## The SDK
+
+What a user writes, what it compiles to, how it reaches the runtime, and how we build the SDK itself.
+
+[Diagram: SDK layers. Five layers from top to bottom: the user's strategy; the SDK API with Strategy, params, State, decorators and ctx; the SDK core with the event loop, state codec, determinism guards and the v0 adapter; the runtime protocol v1 as protobuf frames; and the host, either the cloud supervisor or the local simulator with a simulated clock, market and venue.]
+
+# linck.toml: the manifest; versioned with the code
+[strategy]
+name = "short-straddle"
+entry = "straddle:ShortStraddle"
+sdk = ">=1.4,<2"
+runtime = "python3.12-r7" # pinned image: determinism
+[resources]
+cpu_ms_per_event = 50
+memory_mb = 256
+[markets]
+underlyings = ["NIFTY", "BANKNIFTY"]
+segments = ["NFO"]
+
+from linck import Strategy, State, on, param
+from linck.ind import supertrend
+
+class TrendSpread(Strategy):
+ width = param(200, min=100, max=500, label="Hedge width, points")
+ state = State(side=None)
+
+ def subscribe(self, ctx):
+ return [supertrend(ctx.index("NIFTY").bars("15m"), 10, 3)] # a computed stream: shared, not recomputed
+
+ @on.bar
+ async def on_bar(self, ctx, st):
+ if st.flipped and st.trend != ctx.state.side:
+ chain = ctx.chain("NIFTY", expiry="this_week")
+ short = chain.by_premium("PE" if st.trend == "up" else "CE", 100)
+ hedge = short.further(self.width)
+ await ctx.orders.basket([hedge.buy(), short.sell()], policy="hedge_first", tag="entry")
+ ctx.state.side = st.trend
+ else:
+ ctx.decide("entry", "no_action", f"trend {st.trend}, no flip")
+
+### From code to running
+
+- linck run --day 2026-10-14: the local simulator replays a day from the lake through the same SDK core and sim-venue library.laptop
+ 
+- linck push: source and lockfile go to our builder, which builds a hermetic artifact (source, lockfile, manifest) in the pinned build image for its language: uv, go mod, cargo or npm. Users never upload binaries.builder
+ 
+- Certification runs the fault matrix, the determinism double-run and the resource budget; the artifact is signed (Sigstore) and stored as an OCI artifact in the registry.minutes
+ 
+- linck deploy --paper pins that exact version to a deployment; promotion to shadow and live is a state change, not a rebuild.seconds
+
+### How we build the SDK itself
+
+- Four SDKs, one design: Python (linck on PyPI), Go, Rust and TypeScript, each a thin API over generated protobuf types; indicators from linck-core through each language’s binding (section 14). Semver per SDK.
+ 
+- One conformance suite for every language binding: the same recorded days, the same expected decisions. A binding is done when it passes.
+ 
+- WASM (the dense plan): the strategy interface is a WIT world (linck:strategy@1) exporting on-batch and importing ctx functions; bindings generated for Rust, Go (TinyGo), TypeScript and C++.
+ 
+- Remote: a gRPC bidirectional stream carrying the same EventBatch/Commands; the platform still owns risk, orders and the clock.
+ 
+- v0 compatibility: an adapter in the core runs today’s StrategyBase strategies unchanged, which is how our nine strategies move first.
+
+// wit/strategy.wit: what a WASM strategy implements
+package linck:strategy@1.0.0;
+world strategy {
+ import ctx: interface { now: func() -> s64; chain: func(u: string, expiry: string) -> chain-view;
+ decide: func(rule: string, outcome: string, summary: string); }
+ export on-start: func(config: list<u8>, state: option<list<u8>>);
+ export on-batch: func(batch: list<u8>) -> list<u8>; // EventBatch → Commands (protobuf)
+}
+
+17
+
+## Messaging
+
+Names, keys and guarantees, so ordering is never an accident.
+
+| Stream | On | Key (ordering) | Guarantee | Retention | 
+
+| orders.intent.v1 | Redpanda | account_id | At least once + idempotency key + epoch | 7 days | 
+ 
+| orders.event.v1 | Redpanda (outbox) | account_id | At least once, ordered per account | 30 days → lake | 
+ 
+| ledger.journal.v1 | Redpanda (outbox) | account_id | At least once; consumers dedupe on entry_id | 30 days → lake | 
+ 
+| md.archive.v1 | Redpanda | instrument_id | Sequenced; every tick, for replays, the day check and backtests | 3 days → lake | 
+ 
+| strategy.decision.v1 · .report.v1 | Redpanda | deployment_id | At least once | 7 days → ClickHouse | 
+ 
+| ctl.cell.<id>.* | NATS | — | At least once, acked | JetStream, 1 day | 
+ 
+| live.<tenant>.<deployment> | NATS | — | Latest value | none | 
+
+Synchronous calls are gRPC with deadlines on every call (default 2 s, 200 ms inside a cell), retries only on idempotent methods, and mTLS between services. Long work is a Temporal workflow, never a chain of retries in a request.
+
+18
+
+## Data
+
+Each store does one job; tenancy is enforced in the database, not only in code.
+
+| Store | Holds | Partitioning | Why this one | 
+
+| Postgres · control | Tenants, users, versions, deployments, policies | None needed | Relational, transactional, small | 
+ 
+| Postgres · ledger shard | Orders, journal, projections, outbox | One shard per cell; journal by month | Money needs constraints and transactions; TigerBeetle considered (section 22) | 
+ 
+| Postgres · product | Journal notes, repair cases, preferences | None needed | Today’s schema, kept | 
+ 
+| ClickHouse | Bars, decisions, fills copy, read models | By month and tenant | Columnar scans for Geek mode and reports | 
+ 
+| Lake · Iceberg on S3 | Ticks, chains, reference data over time, fills | By date, then underlying | Point-in-time, cheap, read directly by the backtest farm | 
+ 
+| Redis | Sessions, rate limits, small caches | Cluster mode | Expiry built in | 
+ 
+| etcd | Leases, epochs | Per cell | Linearizable leases are what it’s for | 
+ 
+| Vault + KMS | Broker tokens, signing keys | Per tenant keys | Only the adapters can decrypt a token | 
+
+-- every tenant-owned table, in every Postgres
+ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
+CREATE POLICY tenant_isolation ON orders
+ USING (tenant_id = current_setting('linck.tenant_id')::uuid);
+-- services set linck.tenant_id per transaction from the authenticated call; a query that forgets
+-- its WHERE clause still can't see another tenant's rows
+
+19
+
+## Shipping
+
+How a change gets from a laptop to production without touching a trading day.
+
+[Diagram: The release pipeline. Commit, then CI with lint, unit, contract, fault-matrix and determinism checks, then build with images, an SBOM and signatures, then staging with a replayed market, then a replay-yesterday diff, then a canary cell, then waves of cells, then all cells. Releases go out after 15:45 IST only.]
+
+| What | Packaged as | Goes to | How it reaches production | 
+
+| Our services | Container images, signed | Our image registry (ECR) | Argo CD, cell by cell, after the gates below | 
+ 
+| Users’ strategies | Signed artifacts (source, lockfile, manifest), not images | The artifact registry | Pinned to a deployment; the supervisor fetches the exact version | 
+ 
+| Runtime images | One pinned image per language version, for process sandboxes | ECR, on every runtime node | Rolled out like a service; strategies keep the one they were certified on | 
+ 
+| SDKs | Packages | PyPI, the Go module proxy, crates.io, npm | Semver; release notes; the conformance suite must pass | 
+ 
+| CLI | One binary per OS | GitHub releases, Homebrew | Self-updates; refuses versions older than the platform supports | 
+ 
+| Web app | Static files | S3 + CDN | Atomic switch; the old version stays for instant rollback | 
+ 
+| Mobile apps | App bundles | Play Store, App Store | Staged rollout; features behind flags | 
+
+### Repository and build
+
+- One monorepo: contracts/ (Buf), services/ (Go: control, identity, commerce, refdata, oms, broker-gw, integrity, read-models, notifications, live-gateway), engine/ (Cargo: ingest, computed streams, supervisor, sim venue, linck-core, CLI), python/ (uv: product API, assistant), sdks/ (python, go, rust, ts), web/, deploy/ (Terraform, Helm, Argo CD).
+ 
+- Native tools per language, one task runner on top (just), CI with path filters so a web change doesn’t rebuild Rust.
+ 
+- Images are distroless, built reproducibly, with an SBOM (Syft) and a signature (cosign); the cluster admits only signed images.
+
+### The gates, and why each exists
+
+- Contract check: no breaking proto change on v1.
+ 
+- Fault matrix: today’s 108 cases, grown with every incident.
+ 
+- Determinism: a day replayed twice, decision hashes equal.
+ 
+- Yesterday diff: production’s previous day replayed through the new build; any different decision blocks the release until a person marks it intended.
+
+### Rolling out without touching trading
+
+- Market-hours freeze: 09:00–15:35 IST no production deploys except an approved hotfix.
+ 
+- Runtime upgrades move deployments by lease handoff at minute boundaries; a strategy never sees a restart, only its next batch on a new host.
+ 
+- Database changes are expand → migrate → contract over at least two releases, so every release runs against the old and new schema.
+ 
+- Feature flags (OpenFeature) per tenant and per cell; a new behaviour reaches staff first, then a cell, then everyone.
+ 
+- Strategy versions are never upgraded under a running deployment; a new version is a new pin, chosen by the user.
+ 
+- SDK releases follow semver; the runtime keeps every protocol version it ever shipped for at least 12 months.
+
+### Environments
+
+- Dev: per pull request, a namespace with seeded data (today’s e2e server, grown up).
+ 
+- Staging: a full cell fed by a recorded market at real speed, all day, every day, so 09:15 and 15:15 are rehearsed hourly.
+ 
+- Production: cells in Mumbai; disaster recovery in Hyderabad.
+
+20
+
+## The end state
+
+What production looks like when the final architecture is fully in place. Sizes are estimates for planning, not quotes.
+
+| Piece | Shape | Size at 50k strategies | 
+
+| Regions | AWS ap-south-1 (3 AZs) primary; ap-south-2 warm standby | RPO 0 for the ledger (synchronous replica in-region, async cross-region); RTO 30 min region-wide | 
+ 
+| Accounts | AWS Organizations: one account per cell, one for control, one for data, one for security | ~15 accounts | 
+ 
+| Control cluster | EKS: edge gateway, identity, control, commerce, builder, reference data, product API, live gateway, integrity, read models, notifications, assistant, Temporal, ClickHouse, NATS, Vault | ~12 nodes | 
+ 
+| Cells | Each its own EKS cluster: market data ingest, sequencer, computed streams, runtime hosts (supervisor + cache agent), OMS, a broker gateway per broker, sim venue, etcd, Redpanda (3 brokers); its ledger shard on RDS | 10 cells × (2 fabric + 6 runtime hosts of 64 vCPU + 3 OMS + 3 Redpanda) | 
+ 
+| Partner cells | A broker partner gets dedicated cells, optionally in its own account | 1–3 per partner | 
+ 
+| Data | ClickHouse cluster (3 shards × 2 replicas), Iceberg on S3, Redis cluster | ~2 TB ClickHouse/year; lake grows ~15–25 GB/day compressed | 
+ 
+| Backtest farm | Spot instances via Karpenter, scaled from zero by queue depth | 0 → 500 vCPU in minutes | 
+ 
+| Egress | NAT gateways with fixed IPs per cell, registered with brokers | 2 IPs per cell | 
+ 
+| Observability | OpenTelemetry → Tempo, Prometheus/Mimir, Loki, Grafana; one trace from tick to fill | SLO dashboards per cell and per tenant | 
+
+### SLOs
+
+- Tick → intent p99 < 50 ms in a cell; intent → broker p99 < 30 ms.
+ 
+- No running deployment silent > 60 s in market hours.
+ 
+- 15:15 exits drained by 15:20; zero unreconciled positions at 15:35.
+ 
+- End-of-day checks and repair cases by 16:30.
+ 
+- Platform availability in market hours 99.95%.
+
+### Teams that own it
+
+- Market data: fabric, computed streams, reference data, vendors.
+ 
+- Runtime: supervisor, sandboxes, scheduler, SDK.
+ 
+- Money: orders & risk, adapters, ledger, sim venue.
+ 
+- Integrity: day check, repair, shadow, reconciliation.
+ 
+- Product: web, mobile, product API, analytics.
+ 
+- Platform: clusters, CI/CD, observability, security.
+
+21
+
+## Migration, step by step
+
+Every step ships alone, runs beside what it replaces until proven equal, and leaves trading untouched.
+
+| # | Step | Proven equal by | Lands in | 
+
+| P0 | Latest-value delivery in today’s app: the tick broadcaster conflates per subscriber (one slot per instrument, one batch in flight), so a slow runner or screen gets the newest tick, never a backlog | A slow-strategy test: after a stall, the next tick processed is the newest; fills and events still arrive in order | Today’s app | 
+ 
+| I0 | An image per service, one EKS cluster, Helm + Argo CD; today’s app runs there unchanged as core-api | A week of paper days on the cluster beside the current box | Intermediate | 
+ 
+| I1 | Contracts repo; SDK v0 as a facade over today’s StrategyBase; our strategies run through it | Fault matrix and crash-recovery suites unchanged | Intermediate | 
+ 
+| I2 | Strategies out of the API process into leased Python runner workers; a conflated gRPC stream carries ticks, NATS carries intents and fills | A week of paper days: identical fills to the old path (dual run) | Intermediate | 
+ 
+| I3 | Go orders & risk and the Kite broker gateway: shadow-write beside today’s fill path, then cut over as the single writer | Journal and today’s tables equal every night for two weeks | Intermediate | 
+ 
+| I4 | Go market data service; Redis latest prices; ClickHouse bars | Bars equal to Kite’s 1-minute candles (today’s day check) | Intermediate | 
+ 
+| I5 | Temporal for the end-of-day chain; tenants and row-level security; shadow mode | End-of-day outputs equal; tenancy tests | Intermediate | 
+ 
+| F1 | Rust feed handlers and tick cache beside the Go service | Every record and bar equal for two weeks | Final | 
+ 
+| F2 | Computed streams; SDK subscribe form for indicators | Series equal to in-strategy values over a recorded month | Final | 
+ 
+| F3 | Rust supervisor and sandboxes; leases to etcd | Decision hashes equal to the Python workers on recorded days | Final | 
+ 
+| F4 | Rust sim venue; backtest farm on it | Fills equal to the Python model to the paisa on recorded days | Final | 
+ 
+| F5 | Redpanda for orders, fills, journal and ticks | Outbox dual-writes; consumer offsets match | Final | 
+ 
+| F6 | Control plane to Go (strangler, module by module); Envoy gateway; public API | Contract tests on every endpoint moved | Final | 
+ 
+| F7 | Cells: ledger shards, per-cell clusters, tenant pinning | A staff cell, then a partner cell, then waves | Final | 
+ 
+| F8 | Go, Rust and TypeScript SDKs; WASM and remote sandboxes; marketplace; native apps | Conformance suite per SDK | Final | 
+ 
+| F9 | Reference data service; more brokers (Upstox, Dhan, Angel One, Fyers, ICICI, FIX) | Adapter conformance suite and a paper week per broker | Final | 
+
+22
+
+## Decisions, and what we turned down
+
+Short decision records. Each can be revisited when its reason stops being true.
+
+| Decision | Chosen | Turned down | Because | 
+
+| Hot data path | Rust | C++ · Go · Java | C++ speed with memory safety next to untrusted code; Go’s GC and allocation are measurable at 300k msg/s; Java’s tuning cost. C++ only to wrap vendor SDKs. | 
+ 
+| Control and money | Go | Rust · Java/Kotlin · Python | Readable, quick to build, great for network integrations; the OMS is I/O-bound, so Rust’s gains don’t pay for its build cost there. | 
+ 
+| Strategies | Python first; Go, Rust, TypeScript on the same protocol | Our own DSL · one language only | Where quants are; a DSL limits them and becomes a product of its own. One protocol makes each extra language an SDK, not a platform change. | 
+ 
+| Running many languages | One protocol, thin SDKs, three sandbox kinds | A runtime per language · one C core loaded into every language | A runtime per language multiplies the hardest code; a shared C core brings crashes and FFI into every SDK. | 
+ 
+| Hosting | Containers on Kubernetes (EKS) | Compose on VMs · ECS · Nomad · serverless | Operators for our stores, gVisor runtime classes, rolling deploys, the same setup per cell and per partner. | 
+ 
+| Strategy unit | A sandbox under the supervisor | A pod per strategy | 50k pods is past what Kubernetes handles well; pods start in seconds, sandboxes in under one. | 
+ 
+| Protocols | REST + SSE outside, gRPC inside, events for facts | REST everywhere · GraphQL · gRPC-Web · WebSocket for screens | Browsers want REST and screens only listen; services want typed contracts and streams; facts want a log. | 
+ 
+| Tick delivery | Conflated gRPC streams; shared memory on the host | Aeron · NATS · WebSocket or SSE between services · our own UDP | The guarantee (latest value, never a backlog) comes from conflation, not the transport; gRPC is the simplest typed transport that signals a slow receiver. Full record in section 11. | 
+ 
+| Broker connectivity | One gateway codebase, a deployment per broker | One shared deployment · a service per broker codebase | Isolation without duplicating the common code (tokens, limits, retries). | 
+ 
+| Durable log | Redpanda + NATS | Kafka only · NATS only · Pulsar | Kafka API without the JVM and ZooKeeper; NATS for cheap fan-out and control. Kafka itself remains a drop-in. | 
+ 
+| Ledger | Postgres, double-entry journal | TigerBeetle · event store | Our write rate (thousands/s at peak) is well inside Postgres; TigerBeetle’s speed isn’t needed yet and SQL reporting would suffer. | 
+ 
+| Analytics | ClickHouse | TimescaleDB · BigQuery | Fastest scans at this size, runs anywhere, already used; data stays in India. | 
+ 
+| Sandbox | gVisor (process sandboxes, any language), Wasmtime (WASM) | Firecracker per strategy · plain containers | Thousands per host: microVMs cost too much memory each; plain containers share too much kernel. | 
+ 
+| Leases | etcd (final), Postgres (intermediate) | Redis locks · ZooKeeper | Linearizable with fencing tokens; Redis locks aren’t safe under partitions. | 
+ 
+| Workflows | Temporal | Cron + queues · Airflow | The end-of-day chain must resume at the step it stopped; Airflow is for batch data, not business processes. | 
+ 
+| Isolation unit | Cells | One big cluster · per-tenant stacks | Bounded blast radius at sane cost; partners get their own. | 
+ 
+| Contracts | Protobuf + Buf | JSON Schema · Avro | Codegen for every language, gRPC, breaking-change checks built in. | 
+ 
+| Repository | Monorepo, native tools + just | Polyrepo · Bazel | One change across contract and code in one pull request; Bazel’s cost outweighs its gains at our size. | 
+
+23
+
+## Open questions
+
+Technical calls we make with data, not now.
+
+- Which data vendor, and whether its feed is snapshot or tick-by-tick: decides when F1 (Rust fabric) is needed.
+ 
+- Margin model: the broker’s basket-margin API per order is accurate but rate-limited; we may need our own SPAN calculation from exchange files for pre-trade checks at scale.
+ 
+- Python in WASM: if it becomes fast enough, one sandbox type could replace gVisor.
+ 
+- Cell size: 3–5k strategies a host is an estimate from today’s per-event cost (~1 ms); measured on I2 before cells are sized.
+ 
+- Where the scheduler lives once cells span accounts: a global placement service vs. per-cell schedulers with a global index.
+
+Linck · technical architecture v2 · 22 Oct 2026Companion to “Linck, the platform” and “Linck at scale”. One self-contained file: fonts included, works offline.

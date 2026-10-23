@@ -1,0 +1,382 @@
+Linck · Architecture proposal22 Oct 2026
+
+# Linck at scale
+
+How I’d build Linck again for thousands of people running tens of thousands of strategies: what runs where, who owns what, how the pieces talk, which language each piece is written in, and the order to get there from today’s code.
+ 
+ Monolith or microservicesWhat thousands meansThe pictureServicesHow they talkThree flowsDataRules for moneyLanguagesRunning itOutside the codeGetting thereWhat I wouldn’t do
+
+01
+
+## Monolith or microservices
+
+ The short answer
+ 
+Neither extreme. A modular monolith for everything people click, with four services split out for the parts of a trading system that behave differently: market data, strategy runners, order & risk, and the live feed to browsers.
+ 
+Everything else is one codebase, one deploy and one database. A small team can run it, and nothing about it stops it from growing.
+ 
+Split a piece out only when it scales on a different axis, must fail on its own, guards a secret, or needs another language. Otherwise it’s a module.
+
+### Why not microservices everywhere
+
+- The book (orders, fills, positions, lots, cash) has to change in one transaction. Split it across services and every fill becomes a distributed transaction.
+ 
+- Every service costs a small team deploys, versioned contracts, dashboards and on-call. Ten services is ten things that can break at 09:15.
+ 
+- Most of Linck (deployments, reports, journal, review, the Repair page) is ordinary data and analytics. It scales fine as one stateless app behind a load balancer.
+
+### Why not one monolith either
+
+- Today, deploying the website restarts the strategies. At scale, shipping a report fix must never touch a running strategy.
+ 
+- Market data, strategy evaluation and the web API scale on different axes (sockets, CPU, requests) and fail in different ways.
+ 
+- Placing orders needs broker credentials and must be the one boring, audited writer of money. That’s a security boundary as well as a correctness one.
+
+| Concern | One monolith | Microservices everywhere | This proposal | 
+
+| The book stays consistent | Easy: one transaction | Hard: sagas for every fill | Easy: one writer (the order service) owns it | 
+ 
+| A strategy bug can’t take the site down | No | Yes | Yes: runners are separate processes | 
+ 
+| Shipping a page doesn’t restart trading | No | Yes | Yes | 
+ 
+| Scale ticks, CPU and requests separately | No | Yes | Yes, for the three that need it | 
+ 
+| Things to run and watch | 1 | 15–25 | 6 plus managed stores | 
+ 
+| Following one trade end to end | One log | Distributed tracing required | One trace through four hops | 
+
+02
+
+## What “thousands” means
+
+Rough numbers so the design is sized to something real. Each one forces a decision.
+
+| | Assumption | What it forces | 
+
+| Users on a trading day | 2,000 of 5,000 | A stateless API with many copies; every row tagged with its owner | 
+ 
+| Running deployments | 10,000 (≈5 each) | Strategy runners in shards; no single process hosts everyone | 
+ 
+| Instruments watched | 5,000–8,000 | One shared feed with each instrument subscribed once, not one feed per deployment (options cluster near the money, so the overlap is large) | 
+ 
+| Ticks at the open | 10–20k / second | Fan-out through a bus; consumers keep only the latest price per instrument | 
+ 
+| Strategy evaluations | ~10k / second | ≈20 CPU cores of Python at ~2 ms each, so ~16 runner processes with headroom | 
+ 
+| Orders at 15:15 | ~20k in one minute | Every intraday deployment exits in the same minute (≈330 orders a second). The order service queues them and enforces per-broker-key limits; strategies never do. | 
+ 
+| Fills | ~100k / day · 25M / year | Still small for Postgres with monthly partitions | 
+ 
+| One-minute candles | ~3M rows / day | 8,000 instruments × 375 minutes. A columnar store, not the ledger database. | 
+ 
+| Browsers open | 2,000 × ~50 prices | One batched message every 250 ms per browser, not one message per tick | 
+
+This isn’t high-frequency trading. A tick-to-paper-fill budget of ~200 ms is plenty, and the broker’s own round trip is tens of milliseconds. That rules out C++ and kernel-bypass networking, and rules in plain Go and Python.
+
+03
+
+## The picture
+
+Six things we run, four managed stores, three things outside our control. Blue is the market-data path, green is the money path.
+
+[Diagram: Linck at scale: services and how they connect. The browser talks to an edge layer and a core API (a modular monolith), and receives live prices from a live gateway over WebSocket. An event bus (NATS JetStream) connects the core API, market data, strategy runners, the order and risk service, workers and notifications. Market data comes from a vendor feed or Kite; the order service is the only writer to Postgres and sends live orders to Kite. Workers write candles and analytics to ClickHouse; market data keeps the latest prices in Redis; S3 holds archives; notifications go to push, email and Telegram.]
+
+ requests and eventsmarket dataorders and fillsoutside our control
+
+04
+
+## Services and what each one owns
+
+Boxes with a dark border are split out on purpose. The rest live inside the Core API as modules, or are managed for us.
+
+### Linck web
+TypeScript
+ 
+Today’s app: the pages, charts, Geek mode and the Repair page. It holds no state the server doesn’t have.
+ Scales byA CDN; it’s static filesTalksREST to the Core API, WebSocket to the Live gatewayIf it failsNothing trades differently
+
+### Edge
+managed
+ 
+CDN for the app, load balancer, TLS, sign-in (sessions and 2FA), API keys and per-user request limits.
+ OwnsNothing; sessions live in RedisScales byThe providerIf it failsScreens go dark; strategies keep trading and exits still fire
+
+### Core API
+Python · FastAPI
+ 
+The modular monolith: identity and tenants, deployments and their settings, the strategy catalog and versions, book and reports, journal and review, the Repair and replay screens, ops issues, admin and audit.
+ OwnsUsers, tenants, deployments, strategy versions, journal, repair cases, ops issues, audit logReadsThe ledger from a read replica; analytics from ClickHouseScales byStateless copies behind the load balancerTalksREST to browsers; gRPC to the OMS for close-all and kill switches; publishes deployment commands; turns events into read modelsIf it failsYou lose the screens, not the positions
+
+### Market data
+split · Go
+ 
+Holds the broker or vendor sockets. Subscriptions are counted across every deployment, so each instrument is subscribed once. It normalises ticks, builds 1-minute candles and keeps the latest price in Redis.
+ OwnsThe subscription registry; candles via the analytics sinkScales byInstrument shards, a few thousand per socketWhy splitThousands of sockets and messages a second; a different language and failure modeIf it failsRunners stop seeing ticks and hold (the stale-price guard). A health alert fires within a minute and a standby takes over the sockets.
+
+### Strategy runners
+split · Python
+ 
+Run the strategies: each deployment’s code and state, fed the latest prices, timers and its own fills. They emit order intents, the decision log and state snapshots. They never write the ledger.
+ OwnsLive deployment state (snapshotted after every event)Scales byShards of ~600 deployments; a lease table assigns themWhy splitCPU-bound, and a strategy bug must not take anything else downIf it failsIts leases expire in ~5 s and another shard resumes from the last snapshot. It won’t act on stale prices while catching up, and anything it missed lands on the Repair page.
+
+### Order & risk (OMS)
+split · Go
+ 
+The only writer of orders, fills, positions and cash. It runs pre-trade risk (max loss, size, margin, market hours, kill switches), then routes to the paper matcher (fills from order-book depth with our slippage model) or to Kite (per-user token, per-key rate limit, retries under the same tag).
+ OwnsThe ledger: orders, fills, positions, lots, cashScales byPartitions by deployment, each processed in orderWhy splitMoney correctness, broker secrets, burst control at 15:15If it failsIntents wait durably on the bus. Nothing is lost or doubled.
+
+### Live gateway
+split · Go
+ 
+One WebSocket per browser, subscribed only to that user’s deployments and watched prices. It sends the latest values in one batch every 250 ms, with an SSE fallback.
+ OwnsNothing (stateless)Scales byConnections, ~20k per copyIf it failsBrowsers reconnect and fetch a fresh snapshot
+
+### Workers
+Python · Temporal
+ 
+Durable jobs: the end-of-day chain (capture → 15:45 export → day check → alert → repair cases), repair plans and applies, replays, backtests, backfills, and the analytics sink from the bus into ClickHouse.
+ Scales byQueue depth; heavy replays never share CPU with live runnersIf it failsWorkflows resume at the step they stopped on
+
+### Notifications
+Python
+ 
+Turns ops and deployment events into push, email or Telegram, deduped by issue key and repeated every minute until fixed. Respects quiet hours and holiday mutes.
+ Scales byOne small consumer groupIf it failsAlerts queue on the bus and arrive late, not never
+
+If users ever upload their own strategy code, that code runs in a separate runner pool: gVisor or Firecracker sandboxes, CPU and memory limits, and no network except the bus.
+
+05
+
+## How they talk
+
+Synchronous only where a person is waiting for a yes or no. Everything else is an event, with the delivery guarantee its job needs.
+
+| Path | Mechanism | Guarantee | Why | 
+
+| Browser → Core API | HTTPS, REST/JSON (OpenAPI) | Request / response | Pages, settings, reports | 
+ 
+| Browser ↔ Live gateway | WebSocket, SSE fallback | Latest value, batched | Prices and P&L without polling | 
+ 
+| Core API → OMS | gRPC | Synchronous answer | Close everything, kill switch, manual order: the person waits for the result | 
+ 
+| Market data → runners, gateway | NATS subjects md.tick.<exch>.<token> | At most once; latest wins | A missed tick is replaced by the next one. Queues must never build up. | 
+ 
+| Runners → OMS | JetStream oms.intent | At least once + idempotency key | An order intent can never be lost or doubled | 
+ 
+| OMS → everyone | JetStream oms.fill.<dep> via an outbox | At least once, ordered per deployment | Runners, the gateway, analytics and notifications all learn of each fill | 
+ 
+| Runners → Core API | JetStream dep.state.*, dep.decision.* | At least once | Read models for the Now and Geek pages | 
+ 
+| Anyone → Notifications | JetStream ops.* | At least once, deduped by key | Alerts | 
+ 
+| End-of-day chain | Temporal workflow | Each step completes once | The chain must finish, or say exactly where it stopped | 
+
+### The outbox
+
+The OMS writes a fill and an outbox row in one Postgres transaction, and a relay publishes the outbox to the bus. A fill is never published without being saved, or saved without being published.
+
+### Why NATS, not Kafka
+
+One small cluster does both cheap, high-fan-out ticks and durable order streams. Kafka is the stronger long-term log but heavier to run. Switch only if retention or replay needs outgrow JetStream.
+
+06
+
+## Three flows
+
+### A tick becomes a paper trade
+
+- A tick reaches Market data from the feed.t = 0
+ 
+- It’s published on md.tick.NFO.<token>.+2 ms
+ 
+- The runner hosting the deployment folds it into the latest price and runs the strategy.+5–20 ms
+ 
+- The strategy decides. The runner logs the decision and publishes an intent with its lease epoch and decision id.+3 ms
+ 
+- The OMS checks the epoch and risk, fills against the paper book, and commits the fill plus outbox row in one transaction.+10–30 ms
+ 
+- The fill goes out on the bus. The runner updates its state, and the browser sees it in the next 250 ms batch.< 300 ms
+
+### The close of the day
+
+- Intraday exits land together. The OMS queue absorbs the burst, within each broker key’s limits.15:15
+ 
+- Each deployment’s end-of-day state is captured.15:30
+ 
+- Workers export the day’s option candles into ClickHouse.15:45
+ 
+- The day check replays every deployment from its open state, in parallel workers.~16:00
+ 
+- Each difference becomes a repair case. One notification says how many to review.~16:15
+
+### A repair, replay or backtest
+
+- A worker loads candles for the day from ClickHouse.job
+ 
+- It runs the deployment’s pinned strategy version with a simulated clock, market and broker: the same runtime as live.sandbox
+ 
+- It plans in a rolled-back transaction and shows the proof on the Repair page.draft
+ 
+- When you push, it applies through the OMS, so the ledger still has one writer.commit
+
+07
+
+## Where the data lives
+
+Each store does one job. The ledger is the only one that holds money.
+
+| Store | Holds | Why this one | 
+
+| Postgres | Users, tenants, deployments, strategy versions, orders, fills, positions, lots, cash, journal, repair cases, audit | Money needs transactions and constraints. 25M fills a year is small with monthly partitions. RDS Multi-AZ, PgBouncer, plus a read replica for reports. | 
+ 
+| ClickHouse | 1-minute candles, optional ticks, decision logs, analytics tables (leaderboards, cycles, Geek views) | Columnar scans over billions of rows in milliseconds. Candles alone would outgrow the ledger database within a year. | 
+ 
+| Redis | Latest price per instrument, sessions, rate-limit buckets | Microsecond reads and expiry built in | 
+ 
+| S3 (Parquet) | Raw tick archive, exports, backups | Cheap, and replayable years later | 
+ 
+| NATS JetStream | The last day of events | Catch-up after a restart. It isn’t a database. | 
+
+### Tenancy
+
+Every row carries its tenant. Postgres row-level security enforces it, so a bug in one query can’t show one user another user’s book. Quotas per plan cap deployments, instruments and backtest minutes.
+
+### Strategy versions
+
+A deployment pins the exact version (code hash) of its strategy. Replay, repair and backtests run that version, so an old day reads the way it actually traded.
+
+08
+
+## Rules that keep money right
+
+The non-negotiables. Most of them already exist in Linck in some form.
+
+One writer of moneyOnly the OMS writes orders, fills, positions and cash. Repairs and manual closes go through it too.
+ 
+One runner per deployment, enforcedA lease with an epoch. The OMS rejects intents carrying an old epoch, so two runners can never trade the same deployment, even in a split brain.
+ 
+Idempotent intentsEvery intent carries (deployment, decision id). A retry can’t double an order.
+ 
+Strategies touch nothing directlyThey get a clock, a market and a broker object. Live, paper, replay, repair and backtest are just different objects; Linck’s replay and repair already work this way.
+ 
+Kill switches in the OMSEverything, one user, one deployment. Enforced where orders are placed, not in the UI.
+ 
+Reconcile with the brokerLive positions are compared with Kite every few minutes, and any difference opens an issue.
+ 
+One market calendarSessions, holidays, expiries and special sessions come from one service. No strategy works them out itself.
+ 
+Stale data stops tradingNo decision on a price older than its limit. The day check catches the gap afterwards.
+
+09
+
+## Languages, and why
+
+| Language | Where | Why | Why not the alternatives | 
+
+| Python 3.12 | Core API, strategy runners, workers, notifications | Strategies and the quant tooling (numpy, scipy for implied volatility and greeks) are Python. All of today’s code is Python, and one language for strategy code means live and replay can never drift apart. | The GIL limits a process to one core, so scale with processes. Sharding does that anyway. | 
+ 
+| Go | Market data, OMS, live gateway | Thousands of sockets with steady low latency, small static binaries, simple concurrency. It stays boring and readable where money moves. | Rust is safer but slower to build and hire for, and the gain doesn’t matter at this latency. Java or Kotlin would work but are heavier to run. | 
+ 
+| TypeScript | Linck web | Keep today’s framework-free app and add types via JSDoc and a type check in CI. No rewrite. | Moving to a framework adds risk with no gain users can see | 
+ 
+| SQL | Postgres, ClickHouse | Reports and analytics are queries, not code | — | 
+
+10
+
+## Running it
+
+- Region: AWS Mumbai (ap-south-1) across three availability zones, next to the brokers and exchanges. One region is enough for an Indian-market product.
+ 
+- Start small: Docker Compose on two VMs is fine for the first few hundred users. Move to Kubernetes (EKS) once there are five or more services to roll out safely.
+ 
+- Managed stores: RDS Postgres, ClickHouse Cloud (or three nodes), ElastiCache Redis, a three-node NATS cluster, S3.
+ 
+- Static egress IP: every broker call goes out through a NAT gateway with a fixed address, as the exchanges’ API rules require.
+ 
+- Secrets: broker tokens are encrypted with KMS. Only the login flow and the OMS can decrypt them.
+
+- Tracing: OpenTelemetry follows one trace from tick → decision → intent → fill. Prometheus and Grafana for metrics, Loki for logs.
+ 
+- SLOs that matter: tick-to-decision p99 under 300 ms; no running deployment silent for more than 60 s during market hours; the end-of-day chain done by 16:30; zero unreconciled positions.
+ 
+- Release windows: no deploys between 09:00 and 15:35 IST except hotfixes. Runners hand off leases at minute boundaries.
+ 
+- Shadow day: before rollout, every change replays yesterday’s market through the new runners and diffs their decisions against production.
+ 
+- The gate stays: today’s one-command test gate grows contract tests between services and the shadow-day diff.
+
+11
+
+## Outside the code: decide early
+
+These shape the architecture more than any technology choice. This isn’t legal advice; check each one before offering Linck to others.
+
+### Market data rights
+
+Kite Connect is licensed to each user for their own use, so feeding one user’s data to thousands of others is very likely outside its terms. There are two ways out. Each user’s own Kite session can supply their own deployments’ data: simple licensing, but every user must log in daily and their own limits apply. Or license an exchange-authorised vendor for the shared feed and use Kite only for each user’s orders. Paper trading for many users points to the vendor; the Market data service is built to take either.
+
+### Broker limits
+
+Kite caps WebSocket connections and instruments per API key, and orders per second. Those limits live in exactly two places: the Market data service and the OMS.
+
+### SEBI’s retail-algo rules
+
+The 2025 framework, phased in by the exchanges, covers API orders from registered static IPs, algos tagged and approved through the broker, and obligations for anyone providing strategies to others. Running strategies for thousands of people with real money likely needs exchange empanelment through a broker. Paper trading is unaffected.
+
+12
+
+## Getting there from today’s Linck
+
+No rewrite. Four phases, each one shipped through the deploy gate and useful on its own.
+
+PHASE 1
+
+### Separate trading from the website
+
+Runners move out of the API process into runner workers, with a lease table and epochs. NATS carries ticks and fills; market data can stay in Python for now.
+Payoff: shipping a page no longer restarts strategies.
+ 
+PHASE 2
+
+### One market data service
+
+The Go service owns the feed, each instrument subscribed once. Candles go to ClickHouse and the latest prices to Redis.
+Payoff: analytics stop loading the ledger database.
+ 
+PHASE 3
+
+### One writer of money
+
+The OMS in Go: outbox, pre-trade risk, kill switches, broker reconciliation. Plus the live gateway.
+Payoff: live trading becomes safe to offer.
+ 
+PHASE 4
+
+### Many users
+
+Tenants, row-level security, quotas and plans; Temporal for the end-of-day chain; shadow-day releases.
+Payoff: thousands of users on one platform.
+
+What carries over unchanged: the strategy classes and their decision logging; the replay and repair engine (it already runs strategies against a simulated clock and market); the Linck web app; the ledger schema (positions and lots); and the health monitor’s issues and minute alerts.
+
+13
+
+## What I wouldn’t do
+
+- A service per strategy, per page or per table.
+ 
+- Kafka, Kubernetes and a service mesh on day one.
+ 
+- Rewrite the strategies in Go or Rust “for speed”. The latency is in the network and the broker, not in Python.
+ 
+- Event-source everything. Only the order and fill stream needs it.
+ 
+- Multi-region active-active. The market is in Mumbai.
+ 
+- Let the UI enforce risk. The OMS does.
+
+ Linck · architecture proposal · 22 Oct 2026
+ One self-contained file: fonts included, works offline.
