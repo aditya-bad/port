@@ -8,6 +8,7 @@ import hashlib
 import json
 import socket
 import sys
+import time
 import traceback
 
 
@@ -66,6 +67,7 @@ def run(strategy):
 class Strategy:
     def init(self, p):
         self.fast_a, self.slow_a, self.panic_at = p["fast"], p["slow"], int(p.get("panic_at", 0))
+        self.work_s = float(p.get("work_ms", 0)) / 1000      # a slow strategy, for the latest-tick test
         self.S = {"Fast": 0.0, "Slow": 0.0, "Pos": 0, "Seen": 0}
 
     def on_fill(self, ctx, f):
@@ -76,6 +78,8 @@ class Strategy:
         if self.panic_at and ctx.seq == self.panic_at:
             legs = []
             legs[3]                                       # a bug: on this batch, every time
+        if self.work_s:
+            time.sleep(self.work_s)
         for t in ticks:
             if t["id"] != 1:
                 continue

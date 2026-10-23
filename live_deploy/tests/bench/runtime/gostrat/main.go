@@ -17,6 +17,7 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"time"
 )
 
 // ── the SDK ─────────────────────────────────────────────────────────────
@@ -135,10 +136,12 @@ type Strategy struct {
 	S            State
 	fastA, slowA float64
 	panicAt      int64
+	work         time.Duration // a slow strategy, for the latest-tick test
 }
 
 func (s *Strategy) Init(p map[string]float64) {
 	s.fastA, s.slowA, s.panicAt = p["fast"], p["slow"], int64(p["panic_at"])
+	s.work = time.Duration(p["work_ms"] * float64(time.Millisecond))
 }
 
 func (s *Strategy) OnFill(ctx *Ctx, f Fill) {
@@ -153,6 +156,9 @@ func (s *Strategy) OnBatch(ctx *Ctx, ticks []Tick) {
 	if s.panicAt > 0 && ctx.Seq == s.panicAt {
 		var legs []int
 		_ = legs[3] // a bug: index out of range, on this batch, every time
+	}
+	if s.work > 0 {
+		time.Sleep(s.work)
 	}
 	for _, t := range ticks {
 		if t.ID != 1 {

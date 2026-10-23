@@ -34,3 +34,12 @@ Python making the same decisions on the same journal.
     cd tests/bench/runtime
     (cd gostrat && go build -o ../gostrat_bin .)
     python3 supervisor.py
+
+**Two more promises** (`runtime/promises.py`, for `docs/linck-how-it-works.html`):
+a strategy that takes 40 ms to decide, fed a tick every 5 ms, decides on prices
+seconds old through a queue and ~45 ms old through conflation; and a "zombie"
+process that lost its lease but keeps sending orders is refused by the epoch
+check, where ids alone would let its stale orders win.
+
+    cd tests/bench/runtime
+    python3 promises.py

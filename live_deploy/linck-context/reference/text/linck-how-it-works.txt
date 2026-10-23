@@ -1,0 +1,278 @@
+Linck · How it works · 23 Oct 2026
+
+Linck · How it works23 Oct 2026
+
+ How Linck keeps its promises
+
+ The platform explained from what it promises a user, not from its boxes. For each promise: the mechanism in plain words, a worked example, and the evidence, marked by whether it runs in your app today, works in a prototype, was measured, or is still a design.
+
+ Short answerOne tradeLatest priceOrders onceFailuresReplayTrustLanguagesScaleNot proven yetToday
+
+ 00The short answer
+How the platform keeps its promises, and how sure we are of each.
+
+No single part is trusted to be perfect. Five plain mechanisms, each doing one job, carry every promise.
+
+The runtime owns time, inputs and state · prices keep only the latest value, while orders and fills are a log · one service writes money, and checks an id and an epoch on every order · every input is numbered and kept, so any moment can be replayed · every paper fill is checked against what the market would really have given.
+
+Earlier documents described the parts. This one starts from what Linck promises a user and shows, promise by promise, how it is kept, with a worked example and the evidence. Each piece of evidence is marked:
+
+running today in your app now, under the test gateprototype works in tests/bench/runtime, not in the app yetmeasured a number measured heredesign only designed, not built or proven
+
+The promise | How it is kept, in one line | How sure we are | 
+1 · Every decision is on the latest price | One slot per instrument, overwritten; a slow strategy gets the newest value, never a queue | prototype measured · today’s app doesn’t yet (P0) | 
+2 · An order is never lost or placed twice | The intent is logged before it’s sent; its id is fixed by deployment, batch and position; a seen id is refused | prototype · single process today, so not yet needed | 
+3 · Two copies of a strategy can never both trade | Every start gets a new epoch; the order service refuses an old epoch | prototype | 
+4 · A crash costs seconds, not trades | Restart from the last saved state; catch up from the journal; same bug twice → stop, don’t loop | running today (from the database) prototype (any language) | 
+5 · Any day can be replayed exactly, and repaired | Feed the recorded batches to the same code; branch where a minute reads two ways | running today (on 1-minute candles) prototype (exact, from the journal) | 
+6 · Paper numbers you can trust before going live | Zerodha-exact charges, order-book slippage, shadow checks on every fill | running today · real Kite margin/freeze data unverified | 
+7 · Write it in any language | The runner never runs your code; it runs a process that speaks one protocol | prototype measured | 
+8 · One bad strategy can’t hurt the others | A process per strategy with time and memory budgets, sandboxed; cells for blast radius | prototype (process isolation) design only (sandbox, cells) | 
+9 · It holds up at thousands of strategies | Compute once, deliver only changes, fork Python cheaply, size hosts by memory | measured (unit costs) design only (full load test) | 
+10 · Feed and broker trouble is seen and survived | Stall detection and reconnect; per-broker isolation; exits queued; reconciliation | running today (Kite) design only (more brokers) | 
+
+ 01Follow one trade
+A short straddle written in Go, from a NIFTY tick to a fill, then a crash and the end of the day. The numbers are the order things happen in.
+
+[Diagram: One trade through the platform, step by step. Seven lanes: market feed, tick cache, supervisor, strategy, journal, orders and risk, broker or sim venue. A NIFTY tick overwrites the cache slot; the supervisor builds batch 812 from the latest values, writes it to the journal, and sends it; the strategy asks for the option chain and gets it from the host cache; it answers with a two-leg sell; the supervisor sends the intents with the current epoch; orders and risk checks the epoch, the id and the risk rules and routes the order; the fill comes back and is delivered in the next batch. Later the process crashes and is restored from a snapshot, and the day check replays the journal.]
+
+ The price. A NIFTY tick arrives and overwrites NIFTY’s slot in the host’s tick cache. Three ticks came while the strategy was busy; they were overwritten, not queued. Promise 1.microseconds
+
+ The batch. The strategy finished its last batch, so the supervisor reads the slots that changed. That is the newest NIFTY by construction, with “skipped 3”.microseconds
+
+ Written down first. Batch 812 goes into the deployment’s journal before it is sent. From now on this moment can be replayed exactly. Promise 5.append
+
+ Sent. The batch goes to the strategy process over a local socket. It is a Go binary; it could be Python, Rust or TypeScript. Promise 7.~40–60 µs round trip
+
+ A question. The strategy asks for this week’s option chain.
+
+ Answered locally. The supervisor answers from the host’s cache. Today the app calls Kite here, spaced 0.35 s apart, which is why an entry waits 0.7–4 s; this step removes that.microseconds
+
+ The decision. The strategy returns “sell CE and PE” plus why. It never names its orders: the SDK names them dep7:812:0 and dep7:812:1, the same names every time batch 812 is replayed. Promise 2.7–47 µs today’s logic
+
+ Stamped with the epoch. The supervisor sends the intents with this process’s epoch, 4. Promise 3.
+
+ The one writer of money. Orders & risk checks: is epoch 4 current? Is the id new? Do risk rules pass (lots, margin, freeze limit, order rate, market hours)? Then it writes the order and an outbox row in one transaction and routes it: to Kite when live, to the sim venue on paper, and a shadow copy to the sim venue either way. Promises 2, 3, 6.< a few ms ours
+
+ The fill. It comes back from the broker and is written to the ledger.20–200 ms broker
+
+ Announced. The fill goes out as an event. Fills, order updates and timers are never skipped and never reordered.
+
+ Delivered. Batch 813 carries the fill to the strategy, which updates its state.
+
+ 11:02, a crash. The process dies. A new one starts with epoch 5 from the last snapshot and replays the journal up to batch 1,240. It makes the same orders again with the same names, and the order service refuses them as already placed. Promise 4.tens of ms
+
+ 15:45, the check. The day check walks the journal through the same code and compares; shadow mode has already said, for each fill, whether Kite would have taken it and at what price. Promises 5, 6.after the close
+
+ 02Promise 1 · Every decision is on the latest price
+You asked: a client stuck while 3 ticks arrive must get the latest one next. Here is that, measured.
+
+How
+
+One slot per instrument for each receiver. A new price overwrites the old one. Nothing ever queues behind a busy strategy.
+
+One batch in flight. A busy receiver isn’t sent anything. When it’s ready it gets the slots that changed, which are the newest values, and how many it skipped.
+
+Numbered prices. Each instrument’s updates carry a sequence number, so an older price can never overtake a newer one, even after a reconnect.
+
+A reconnect starts from a snapshot of the latest values, never a backlog.
+
+Fills, order updates and timers are the opposite: a separate lane, every one delivered, in order.
+
+Why no transport does this for you
+
+gRPC, WebSocket and SSE all run on TCP, which never drops: old ticks wait in buffers and are read first.
+
+NATS can drop the newest message or disconnect a slow client.
+
+Kafka-style logs replay a backlog by design.
+
+So the guarantee is our own few lines of code at every hop. With them, the transport underneath matters little, and we use the simplest: gRPC streams between services, shared memory on a host, a socket into the strategy.
+
+Measured: a strategy that takes 40 ms to decide, fed a tick every 5 ms prototype measured
+
+[Diagram: Price age at each decision: a queue against conflation. A tick every 5 ms for 3 seconds; a strategy that takes 40 ms to decide. With a queue, each decision is on an older price, up to 3.5 seconds old, and 474 ticks are still waiting after the feed stops. With conflation, every decision is on a price about 43 ms old, which is the strategy's own decision time, and 500 ticks were skipped and counted.]
+
+Delivery | Decisions | Price age when the decision came back | Newer ticks that existed | Left waiting 1 s after the feed stopped | 
+A queue (what today’s app does) | 98 | median 1.8 s, worst 3.5 s, and growing | up to 498 | 474 ticks | 
+Conflation (the design) | 75 | median 43 ms, worst 70 ms | up to 9 (those that arrived during its own 40 ms) | 0 | 
+
+Same result in Go and Python (tests/bench/runtime/promises.py). Conflation made fewer decisions because there was nothing new to decide on once the feed stopped; the queue was still working through prices up to 3.5 seconds old. “Latest” isn’t “fresh”: if the feed itself stops, the latest price is old, and stall detection says so (your app already does this since 21 Oct).
+
+Your app today: each runner and each open screen has a queue of up to 1,000 tick batches, dropping the oldest only when full, and ticks up to 5 minutes old are still processed. At today’s size strategies are fast enough that this rarely shows, but it is the queue line above. Step P0 replaces it with conflation in the current Python, in days.
+
+ 03Promises 2 and 3 · Each order once, from the right process
+What stops a lost order, a doubled order, and two copies of a strategy trading at once.
+
+Never lost
+
+The strategy’s intent is written to a durable log before anything is sent.
+
+The order service writes the order and an “outbox” row in one database transaction; a relay publishes the outbox. Nothing is saved without being announced, or announced without being saved.
+
+Our order id travels in the broker’s tag field. After a reconnect we ask the broker for every tagged order of the day before sending anything new.
+
+Never doubled
+
+The id is deployment:batch:position, made by the SDK, never by the user. Replaying batch 458 makes exactly the same ids again.
+
+The order service refuses an id it has already seen. A retry, a replay or a catch-up after a crash can’t place a second order.
+
+Never two copies
+
+A deployment runs under a lease. When the lease moves (a crash, a dead host, a network split), the new process gets the next epoch.
+
+Every intent carries its epoch. The order service refuses anything older than the current one, before it looks at anything else.
+
+Why the id alone isn’t enough: a process the supervisor gave up on may still be alive (a “zombie”). It is usually ahead of its replacement, which is still starting. Its orders arrive first, use the same ids, and win.
+
+Measured: a zombie on a feed 3 minutes late, and its replacement prototype
+
+[Diagram: A zombie process and its replacement. Process A runs with epoch 1 until batch 300, when it loses its lease but keeps running on a late feed. Process B starts from snapshot 300 with epoch 2. The order service refuses every order carrying epoch 1 and places B's.]
+
+Order service | Zombie’s orders (stale prices) | Replacement’s orders (real prices) | 
+With the epoch check | 134 sent · 0 placed · 134 refused as an old epoch | 133 sent · 133 placed | 
+Ids only, no epoch check | 134 sent · 134 placed | 133 sent · 5 placed · 128 refused as “already placed” | 
+
+Go and Python alike. Without epochs, the wrong process trades and the right one is blocked by its own ids, which is the failure fencing exists for. The earlier prototype also showed the crash case: killed at batch 458, restored from 400, 57 batches caught up in 14 ms (Go) / 38 ms (Python), the one re-made order refused, orders identical to a run with no crash.
+
+Your app today: one process, and every fill goes through one database transaction (record_fill), so there is no second copy and no network between decision and booking. Ids, epochs and the outbox arrive with the separate order service (steps I1–I3); deterministic ids and epochs are worth adding to today’s runner first, because they make repair safer too.
+
+ 04Promise 4 · Failures cost seconds, not trades
+What can go wrong, how it’s seen, and what happens.
+
+What goes wrong | How it’s seen | What happens | How sure | 
+A bug throws in the strategy | the SDK reports error, batch and stack | restart from the last snapshot, catch up; the same error on the same batch twice → quarantined: no new entries, no restart loop, square-off and stops still run | running today retry back-off and fault matrix (108 cases) · prototype quarantine | 
+The process dies (out of memory, killed) | socket closes | restart, catch up, re-made orders refused | running today kill test: killed every 7 minutes, same fills as an uninterrupted run · prototype any language | 
+It hangs | no answer within its budget (50 ms soft, 1 s hard) | killed and restarted; a process can be killed where a stuck thread can’t | running today 90 s limit per tick · prototype | 
+The host dies | leases expire (~5 s) | another host takes it with the next epoch, from the shipped snapshot and journal | design only | 
+It loses track of a leg | legs checked against the book after a failure and every 5 minutes | restarted clean from the book | running today | 
+Kite’s feed stalls while “connected” | no tick for 90 s in market hours | reconnect with the same login, alert until prices flow | running today since 21 Oct | 
+A bad price (zero, NaN, a spike) | tick filter | dropped, or held until the next tick confirms it | running today | 
+The broker is down | its gateway reports it | that broker’s accounts stop new entries, exits queue, you’re alerted; other brokers carry on | design only | 
+A strategy marked active isn’t running | watchdog every 30 s | restarted automatically, alert, Restart button | running today | 
+
+ 05Promise 5 · Any day can be replayed, and repaired
+The same mechanism behind the day check, repair, replay and backtests.
+
+Today, in your app running today
+
+The day check and repair rebuild the day from Kite’s 1-minute candles, each minute played as four ticks.
+
+Where a minute could have gone either way, both ways are played and you choose.
+
+A plan is applied only if it comes out exactly as you reviewed it, with an undo.
+
+Limits: a candle isn’t the ticks the strategy really saw, and it only works for Python strategies, because it copies the strategy object in memory.
+
+The design prototype
+
+Every batch the strategy was given is in the journal, by number. A replay starts a fresh process of the same version from the snapshot just before, and feeds those batches.
+
+It reproduces live exactly, skipped ticks included; every state hash is checked. The first batch whose decision differs is the answer to “what went wrong”.
+
+An ambiguous stretch: two processes from the same snapshot, one per reading. No copying, so any language works.
+
+Prototype: a walk from snapshot 300 matched live on every one of 300 batches; reading 4 batches the other way parted at batch 311; Go and Python made the same decisions on all 600.
+
+Candles are still needed for a stretch the app never saw (a stall), as today. The journal costs ~60–120 bytes a batch because it references prices in the tick archive instead of copying them (estimate: ~8 GB compressed a day for 2,000 strategies).
+
+ 06Promise 6 · Paper numbers you can trust
+The reason the platform exists: knowing whether a strategy’s paper result would survive real money.
+
+Question | How it’s answered | How sure | 
+What would charges have been? | Zerodha’s formula, matched to the paisa against their calculator on real trades | running today | 
+What price would I really have got? | Each fill walked against the 5-level order book captured at that moment | running today | 
+Would Kite even have taken the order? | Shadow mode: lot size, freeze limit, price band, margin (deployment and account), short-before-hedge, leg-by-leg drift, order rate | running today · the NSE freeze file, Kite’s margin reply and the order-rate limits are assumed until checked on your box | 
+Would it have filled at all? | The limit order followed for 60 s against later ticks | running today | 
+Is this strategy ready for live? | 20 sessions or 3 cycles, nothing refused in the last 10 sessions, shortfall ≤ 1%, no open repair case; and the P&L of trades live would have refused | running today | 
+Does live match paper once live? | Every live order mirrored to the sim venue with the book at that moment; the gap tracked per trade | design only | 
+
+ 07Promises 7 and 8 · Any language, and isolation
+Why the runner’s own language never matters, and what keeps one strategy from hurting another.
+
+Any language
+
+The runner never imports, links or interprets your code. It starts a process and exchanges numbered messages with it: Hello, Ready, Batch, Request/Reply, Done, Snapshot.
+
+Each language needs only a thin SDK that speaks those messages, a build image and a pass of the conformance suite.
+
+Measured round trip, runner to strategy and back: about 40–60 µs in Rust, Go, Node and Python alike measured. Python is forked from a preloaded parent: about 2 MB of its own instead of 52 MB measured.
+
+So moving the runner from Python to Rust later changes nothing for any strategy.
+
+Isolation
+
+A strategy is its own process: its crash, leak or infinite loop is its own prototype.
+
+Budgets per batch and per minute; past them it is rested and restarted.
+
+No network, files or broker tokens inside a strategy; it can only ask the supervisor.
+
+In the cloud, a gVisor sandbox around each process; its cost per round trip isn’t measured yet design only.
+
+Your app today: all strategies share one Python process. Errors are caught and a failing strategy is rested, but a strategy that blocks the event loop would slow everyone. That changes at step I2.
+
+ 08Promise 9 · Thousands of strategies
+What is measured, what is worked out from it, and what still needs a real load test.
+
+Piece | Number | How sure | 
+A strategy decision, today’s code | 7–47 µs | measured | 
+Keeping the latest value (conflation core) | 3–19 million updates a second on one core | measured | 
+One 4-vCPU host feeding strategy processes | 35,000–45,000 batches a second | measured | 
+Memory per strategy | 2 MB (forked Python), 2–4 MB (Go, Rust), 42 MB (Node) | measured | 
+Hosts for 2,000 strategies | 2 (16 vCPU, 64 GB), one of them spare | worked out | 
+Hosts for 20,000 | 4–6, in 2 cells | worked out | 
+The 09:15 burst | assumed 10× normal | assumption | 
+
+Memory and the opening burst set the size, not CPU per decision. The biggest real delay today isn’t compute at all: it is Kite calls inside decisions (2–11 per entry, ≥0.35 s apart). Answering those from local caches is what makes decisions fast.
+
+ 09What isn’t proven yet, and the test that would prove it
+Nothing here is taken on faith; each gap has a test with a pass line.
+
+Claim | Test | Passes when | Where | 
+Today’s app decides on the latest price | P0, then the slow-strategy test from section 02 against the real runner | the next tick processed after a stall is the newest; fills still in order | today’s app, days | 
+Replays of the real app are exact | Journal, batch numbers and snapshots in today’s runner; replay every day after the close | a week of days with every decision identical | today’s app, 1–2 weeks | 
+Separate runner processes trade like today’s | Run both side by side on paper | a week of identical fills | step I2 | 
+The new order service books like today’s | Write both, compare nightly | two weeks equal | step I3 | 
+Hops between services are fast enough | Benchmark a gRPC tick stream and a NATS JetStream publish/ack | tick to decision p99 next benchmark | 
+Sandboxing doesn’t cost too much | Measure the round trip inside gVisor | < 1 ms added | before the public SDK | 
+Hosts are sized right | Log real ticks per instrument and the 09:15 burst from your dispatcher; replay a recorded day at 1×, 10×, 50× | p99 inside budget at 10× | before cells | 
+Shadow verdicts match reality | Go live at 1 lot on one strategy and compare real fills with the shadow verdicts | gap inside shadow’s estimate | your call, later | 
+
+ 10What you can rely on today
+
+Running in your app
+
+Crash recovery from the database, proven by kill tests
+108-case fault matrix, self-reporting strategies
+
+Tick filter, stall detection and reconnect
+Day check and repair on 1-minute candles
+
+Zerodha-exact charges, order-book slippage
+Shadow mode and Ready for live
+
+Proven in the prototype
+
+Latest price for a slow strategy (44 ms vs 3.5 s)
+Any language through one protocol; Go = Python
+
+Exact replay from snapshot + journal; branching
+Crash catch-up with no doubled order
+
+Zombie fenced by epochs
+Same bug twice → quarantined
+
+Still on paper
+
+Separate order service, outbox, broker reconciliation
+Sandboxes, cells, host failover
+
+More brokers, live trading
+Load at thousands of strategies
+NATS and gRPC hop costs, gVisor cost
+
+The next three steps turn the most valuable prototype results into your app: P0 (latest price), the journal with snapshots in today’s runner (exact replay), and deterministic ids with epochs (safe repair and restart).
+
+Linck · how it works · 23 Oct 2026Companion to “Linck architecture” v2, “Brokers, languages and load” and “The strategy runtime”. Prototype: tests/bench/runtime.

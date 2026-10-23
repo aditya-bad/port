@@ -17,6 +17,7 @@ wins; then fix this folder.
 | [02-current-system.md](02-current-system.md) | How today's app is built: process, modules, data, UI, tests |
 | [03-strategies-and-market.md](03-strategies-and-market.md) | Indian F&O facts the code depends on, and each strategy's rules |
 | [04-features.md](04-features.md) | Every user-facing feature, how it behaves and why |
+| [reference/linck-how-it-works.html](reference/linck-how-it-works.html) | The platform explained from its promises, with proof and what isn't proven yet (plain text in `reference/text/`) |
 | [05-target-architecture.md](05-target-architecture.md) | The final and intermediate architectures, and the migration |
 | [06-runtime-and-languages.md](06-runtime-and-languages.md) | Running strategies in any language: protocol, walk, crash, latest tick |
 | [07-brokers-latency-load.md](07-brokers-latency-load.md) | Brokers without a Go SDK, measured latency, capacity |

@@ -108,7 +108,13 @@ platform's square-off, stops held by the OMS and kill switch still work).
 Different errors → back-off 1, 2, 4, 8, then every 15 min. Reproduce with
 `linck replay --deployment D --from 200 --to 250`.
 
-Prototype results (Go and Python, same supervisor): walk from snapshot 300
+Prototype results (Go and Python, same supervisor; `supervisor.py` and
+`promises.py`): a strategy taking 40 ms per decision, fed a tick every 5 ms,
+decided on prices up to 3.5 s old through a queue (474 ticks still waiting)
+and ~44 ms old through conflation (500 skipped and counted); a zombie on a
+3-minute-late feed had all 134 orders refused by the epoch check, while with
+ids alone its 134 orders were placed and 128 of the real process's orders
+refused. Earlier results: walk from snapshot 300
 identical to live through 600; branch parts at batch 311; kill -9 at 458 →
 restored from 400, 57 batches caught up in 14 ms (Go) / 38 ms (Python), 1
 duplicate refused, orders identical; bug at 250 quarantined after the second
