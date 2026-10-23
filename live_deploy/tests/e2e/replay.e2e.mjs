@@ -229,3 +229,39 @@ test('the mini bar stays out of the way on a desktop', async () => {
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+// The timeline was drawn 1000 wide and scaled to fit 48px high, so on a
+// wide window the drawing sat centred with blank space either side while a
+// click was measured across the whole box: away from the middle, the step
+// you got wasn't the one under the pointer.
+test('the timeline: a click or a drag lands on the step under the pointer, at any width', async () => {
+  for (const width of [1600, 1100, 390]) {
+    const ctx = await context(b, { width, height: 900 });
+    const p = await ctx.newPage();
+    await p.goto(`${BASE}/linck/#/d/${ID}/geek/replay`);
+    await ready(p);
+    const n = await p.evaluate(() => +document.querySelector('[data-range]').max + 1);
+    const track = await p.locator('[data-rp="track"] svg').boundingBox();
+    const head = async () => { const c = await p.locator('[data-rp="track"] svg circle').boundingBox(); return c.x + c.width / 2; };
+    const slack = track.width / n + 2;   // one step's width, and rounding
+    for (const f of [0.03, 0.5, 0.97]) {
+      const x = track.x + f * track.width;
+      await p.mouse.click(x, track.y + track.height / 2);
+      await p.waitForTimeout(50);
+      const hx = await head();
+      assert.ok(Math.abs(hx - x) <= slack, `at ${width}px, clicked ${Math.round(x)}, the playhead went to ${Math.round(hx)}`);
+    }
+    // the ends of the drawing are the ends of the box
+    const line = await p.locator('[data-rp="track"] svg path').first().boundingBox();
+    assert.ok(line.x - track.x <= 6 && track.x + track.width - (line.x + line.width) <= 6,
+      `at ${width}px the P&L line spans the timeline (${Math.round(line.x - track.x)}px and ${Math.round(track.x + track.width - line.x - line.width)}px spare)`);
+    // dragging follows the pointer too
+    await p.mouse.move(track.x + 0.2 * track.width, track.y + 20);
+    await p.mouse.down();
+    await p.mouse.move(track.x + 0.7 * track.width, track.y + 20, { steps: 5 });
+    await p.mouse.up();
+    assert.ok(Math.abs(await head() - (track.x + 0.7 * track.width)) <= slack, `at ${width}px a drag ends under the pointer`);
+    assert.deepEqual(ctx.errors, []);
+    await ctx.close();
+  }
+});

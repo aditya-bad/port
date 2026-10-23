@@ -296,8 +296,12 @@ const esc = t => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
 
 // ── the timeline: P&L across the whole replay, its trades, the playhead ─
 
-const TW = 1000, TH = 48;
-function timeline(D, i) {
+// Drawn at the width it's shown at (like the payoff), so the line fills the
+// track and a click or drag maps straight onto the step under the pointer.
+let TW = 1000;
+const TH = 48;
+function timeline(D, i, width = 1000) {
+  TW = Math.round(Math.max(200, width));
   const F = D.frames, n = F.length, v = F.map(f => f.pnl);
   let lo = Math.min(0, ...v), hi = Math.max(0, ...v);
   if (hi === lo) { hi += 1; lo -= 1; }
@@ -503,7 +507,8 @@ export default {
       const xs = R ? grid(R[0], R[1], N) : [];
       const bad = mismatched(D, i);
       const P = R && f.legs.length && !bad.length ? payoff(D, i, xs) : null;
-      set('track', timeline(D, i));
+      const tr = el.querySelector('[data-rp="track"]');
+      set('track', timeline(D, i, tr && tr.clientWidth ? tr.clientWidth : 1000));
       set('strip', strip(D, i));
       set('paystats', P ? payStats(D, i, P, xs) : '');
       set('mini', html`<span class="mono small">${dShort(f.t).replace(/ '\d\d$/, '')} ${hhmm(asOf(D, i))}</span> <b class="mono small ${tone(f.pnl)}">${inr(f.pnl)}</b>`);
@@ -554,7 +559,8 @@ export default {
     const seek = e => {
       const s = el.querySelector('[data-rp="track"] svg');
       if (!s || !D || !D.frames) return;
-      const rc = s.getBoundingClientRect(), fx = Math.max(0, Math.min(1, (e.clientX - rc.left - rc.width * 4 / TW) / (rc.width * (TW - 8) / TW)));
+      const rc = s.getBoundingClientRect(), X = (e.clientX - rc.left) / rc.width * TW;   // in the timeline's own units
+      const fx = Math.max(0, Math.min(1, (X - 4) / (TW - 8)));
       to(Math.round(fx * (D.frames.length - 1)));
     };
 
