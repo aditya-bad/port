@@ -7,7 +7,14 @@ import { BASE, IDS, browser, context } from './helper.mjs';
 
 let b;
 test.before(async () => { b = await browser(); });
-test.after(async () => { await b.close(); });
+test.after(async () => {
+  // dismissals are kept on the server per user now: leave none behind for the other specs
+  const ctx = await context(b);
+  const keys = Object.keys(await (await ctx.request.get(`${BASE}/v2/alerts/dismissed`)).json());
+  if (keys.length) await ctx.request.post(`${BASE}/v2/alerts/dismissed`, { data: { restore: keys } });
+  await ctx.close();
+  await b.close();
+});
 
 test('a drifting deployment needs you on the Desk, until dismissed', async () => {
   const ID = IDS['BankNifty DTT Plain'];

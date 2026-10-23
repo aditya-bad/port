@@ -268,6 +268,8 @@ def test_health_carries_the_open_issues_for_the_header(push_on):
     check(push_on, at("09:10"))
     h = push_on.get("/health").json()
     assert [x["key"] for x in h["open_issues"]] == ["kite:login"] and h["open_issues"][0]["severity"] == "critical"
+    x = h["open_issues"][0]   # the Alerts panel shows what it is and since when
+    assert "can't trade until you log in" in x["detail"] and x["opened_at"]
 
 
 def test_alerts_go_to_open_tabs_as_events(push_on, monkeypatch):
@@ -284,3 +286,20 @@ def test_alerts_go_to_open_tabs_as_events(push_on, monkeypatch):
 def test_no_pushes_without_push_configured_but_issues_still_open(client, pushes):
     check(client, at("09:10"))
     assert keys(client) == ["kite:login"] and pushes == []
+
+
+def test_open_tabs_are_told_which_alerts_are_repeats(push_on, monkeypatch):
+    """The phone is pushed every minute; a tab shows an issue once, when it
+    opens (static/linck/js/app.js shows only metadata.repeat == false),
+    and again when it clears."""
+    seen = []
+    eb = push_on.app.state.event_broadcaster
+
+    async def grab(ev):
+        seen.append(ev)
+    monkeypatch.setattr(eb, "broadcast", grab)
+    check(push_on, at("09:10"))
+    check(push_on, at("09:11"))
+    check(push_on, at("09:12"))
+    assert [(e["event_type"], e["metadata"]["repeat"]) for e in seen] == [
+        ("health_issue", False), ("health_issue", True), ("health_issue", True)]

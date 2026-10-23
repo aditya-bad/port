@@ -128,6 +128,9 @@ export const api = {
   strategies: () => req('/v2/strategies'),
   prefs: () => req('/v2/preferences'),
   savePrefs: patch => req('/v2/preferences', { method: 'PUT', body: patch }),
+  // alert dismissals, per user (app/v2/alerts.py): {key: token}
+  alertDismissals: () => req('/v2/alerts/dismissed'),
+  changeAlertDismissals: (items = [], restore = []) => post('/v2/alerts/dismissed', { items, restore }),
   closeEverything: () => post('/v2/close-everything', { confirm: 'CLOSE ALL' }),
   create: body => post('/v2/deployments', body),
   restart: id => post(`/v2/deployments/${enc(id)}/restart`),

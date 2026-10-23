@@ -369,8 +369,10 @@ class OpsMonitor:
             if not snoozed and due:
                 await self.pool.execute(
                     "UPDATE ops_issues SET last_alert_at = $2, alerts = alerts + 1 WHERE id = $1", row["id"], now)
+                # repeat: the phone is pushed again every minute; open tabs show only the first
                 await self._alert(p.title, p.detail, {"key": key, "kind": p.kind, "severity": p.severity,
-                                                      "issue_id": row["id"], "deployment_id": p.deployment_id})
+                                                      "issue_id": row["id"], "deployment_id": p.deployment_id,
+                                                      "repeat": row["alerts"] > 0})
         for key, row in open_rows.items():
             if key in seen:
                 continue

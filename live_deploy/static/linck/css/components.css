@@ -410,3 +410,25 @@ a.fix-tag:hover, a.fix-flag:hover { background: var(--soft); }
 .rc-reported { display: flex; flex-direction: column; border-top: 1px solid var(--line); margin-bottom: 8px; }
 .rc-reported > div { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); align-items: start; }
 .rc-reported > div.done { opacity: .6; }
+
+/* The Alerts panel (ui/alertspanel.js): a drawer from the header's Alerts button */
+.ap-scrim { position: fixed; inset: 0; z-index: 40; background: var(--scrim); display: flex; justify-content: flex-end; }
+.apanel { width: min(480px, 100vw); height: 100%; display: flex; flex-direction: column; background: var(--paper); border-left: 2px solid var(--ink); box-shadow: 0 30px 80px var(--shadow); animation: rise .2s ease both; }
+.apanel > header { display: flex; align-items: center; gap: 10px; padding: 16px 18px; border-bottom: 1.5px solid var(--ink); }
+.apanel h2 { margin: 0; font-size: 20px; display: flex; align-items: center; gap: 8px; }
+.ap-n { min-width: 24px; height: 24px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; background: var(--y); font: 700 13px var(--f-mono); }
+.ap-x { font-size: 22px; line-height: 1; padding: 4px 8px; color: var(--mute); background: none; border: 0; cursor: pointer; }
+.ap-x:hover { color: var(--ink); }
+.ap-body { flex: 1; overflow-y: auto; padding: 12px 18px 24px; display: flex; flex-direction: column; gap: 10px; }
+.ap-item { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--y); }
+.ap-item.k-error, .ap-item.k-kite { border-left-color: var(--r); }
+.ap-item.k-health, .ap-item.k-streak { border-left-color: var(--y); }
+.ap-item.k-paused, .ap-item.k-vix { border-left-color: var(--b); }
+.ap-item.off { border-left-color: var(--line2); opacity: .8; }
+.ap-acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.ap-ok { padding: 24px 0; text-align: center; }
+.ap-off { display: flex; flex-direction: column; gap: 10px; margin-top: 6px; padding-top: 12px; border-top: 1px solid var(--line); }
+.ap-off .linkish, .attn-more.linkish { background: none; border: 0; padding: 0; color: var(--ink); text-align: left; }
+.attn-more.linkish { padding: 10px 26px 14px; }
+@media (max-width: 600px) { .apanel { border-left: 0; } }
+@media (prefers-reduced-motion: reduce) { .apanel { animation: none; } }

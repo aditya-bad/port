@@ -10,7 +10,8 @@ import { listen } from './core/store.js';
 import * as book from './data/book.js';
 import { INDICES } from './data/config.js';
 import { prices, startTicks, startEvents, pollStatus, primeQuotes, kite, backfill, health } from './data/live.js';
-import { alerts } from './data/alerts.js';
+import { loadDismissed } from './data/alerts.js';
+import { openAlerts, alertCount } from './ui/alertspanel.js';
 import { installTooltip } from './ui/tooltip.js';
 import { startInstall } from './data/install.js';
 import { openDialog, isOpen, closeDialog } from './ui/dialog.js';
@@ -68,7 +69,7 @@ function basisControl() {
 }
 function renderHeader() {
   const cur = app.route ? app.route.nav : 'desk';
-  const n = alerts().length;
+  const n = alertCount();
   const initials = app.me ? app.me.username.slice(0, 2) : '··';
   mount($('#top'), html`
     <header class="hdr">
@@ -79,7 +80,7 @@ function renderHeader() {
       ${basisControl()}
       ${kiteChip()}
       <button type="button" class="theme-btn hide-1520" data-act="theme" title="Theme"><i></i>${prefs.themeLabel()}</button>
-      <a class="alerts-btn" href="${href('desk')}" title="Things that need you"><i class="${n ? '' : 'zero'}">${n}</i><span class="hide-phone">Alerts</span></a>
+      <button type="button" class="alerts-btn" data-act="alerts" title="Things that need you" aria-label="${n} alert${n === 1 ? '' : 's'}: open the list"><i class="${n ? '' : 'zero'}">${n}</i><span class="hide-phone">Alerts</span></button>
       <button type="button" class="btn btn-sm only-mid" data-act="more">More</button>
       <a class="avatar ${cur === 'account' ? 'on' : ''}" href="${href('account')}" title="Account">${initials}</a>
     </header>
@@ -104,7 +105,7 @@ function renderStrip() {
 }
 function renderBnav() {
   const cur = app.route ? app.route.nav : 'desk';
-  const n = alerts().length;
+  const n = alertCount();
   mount($('#bnav'), html`${BNAV.map(([k, l]) => html`
     <a href="${href(k)}" class="${k === cur ? 'on' : ''}"><span class="n">${k === 'desk' && n ? n : ''}</span>${l}</a>`)}
     <button type="button" class="${IN_MORE.includes(cur) ? 'on' : ''}" data-act="more"><span class="n">${health.issues.length || ''}</span>More</button>`);
@@ -200,6 +201,7 @@ async function boot() {
     theme: () => prefs.cycleTheme(),
     kite: () => kiteDialog(),
     more: () => openMore(),
+    alerts: () => openAlerts(),
   };
   const click = (e, el) => { const fn = handlers[el.dataset.act]; if (fn) { e.preventDefault(); fn(el.dataset); } };
   on(top, 'click', '[data-act]', click);
@@ -209,10 +211,13 @@ async function boot() {
   onBasis(() => { renderHeader(); route(); });
   prefs.subscribe(() => renderHeader());
   listen('status', () => { renderHeader(); });
-  // a health alert (every minute while an issue is open, once when it clears)
+  // a health alert: when an issue opens and when it clears. The phone is
+  // pushed every minute while it's open; a tab shows it once, and it waits
+  // in the Alerts list.
   listen('event', ev => {
-    if (ev.event_type === 'health_issue' || ev.event_type === 'health_resolved') say(ev.message, null, 8000);
+    if (ev.event_type === 'health_resolved' || (ev.event_type === 'health_issue' && !(ev.metadata && ev.metadata.repeat))) say(ev.message, null, 8000);
   });
+  listen('alerts', () => renderHeader());
   listen('data', () => renderHeader());
   listen('ticks', () => renderStrip());
   setInterval(renderStrip, 1000);
@@ -223,6 +228,7 @@ async function boot() {
   setInterval(pollStatus, 20000);
   primeQuotes(INDICES.map(i => i.token));
   prefs.sync();
+  loadDismissed();
   api.me().then(me => { app.me = me; renderHeader(); }).catch(() => {});
 
   route();

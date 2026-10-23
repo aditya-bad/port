@@ -44,7 +44,7 @@
 @media (max-width: 359px) { .kite-chip { font-size: 0; gap: 0; padding: 9px; } .kite-chip > span { display: none; } }
 .theme-btn { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 700; white-space: nowrap; flex: none; }
 .theme-btn > i { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--ink); background: linear-gradient(90deg, var(--ink) 50%, var(--paper) 50%); }
-.alerts-btn { text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; white-space: nowrap; flex: none; }
+.alerts-btn { text-decoration: none; background: none; border: 0; padding: 0; color: inherit; cursor: pointer; font-family: inherit; display: inline-flex; align-items: center; gap: 6px; font-weight: 700; font-size: 13px; white-space: nowrap; flex: none; }
 .alerts-btn > i { min-width: 22px; height: 22px; padding: 0 5px; display: inline-flex; align-items: center; justify-content: center; background: var(--y); font-family: var(--f-mono); font-size: 12px; font-style: normal; }
 .alerts-btn > i.zero { background: var(--soft); }
 .avatar { width: 32px; height: 32px; border-radius: 50%; background: var(--soft); display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; border: 1.5px solid transparent; flex: none; text-decoration: none; text-transform: uppercase; }

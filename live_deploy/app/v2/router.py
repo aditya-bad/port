@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 from uuid import UUID
 
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from ..db import queries
 from ..deployments.schemas import DeploymentCreate
 from ..strategies.registry import is_registered
-from . import actions, book, catalog, preferences, session
+from . import actions, alerts, book, catalog, preferences, session
 
 router = APIRouter(prefix="/v2", tags=["v2"])
 
@@ -196,6 +196,34 @@ async def put_preferences(payload: dict, request: Request):
     if uid is None:
         raise HTTPException(400, "Preferences are saved per signed-in user")
     return await preferences.merge(request.app.state.db_pool, uid, payload)
+
+
+# ── alert dismissals (app/v2/alerts.py): every device agrees ─────────
+class AlertsIn(BaseModel):
+    items: list = Field(default_factory=list)   # [{key, token}] to dismiss; anything else is dropped
+    restore: list[str] = Field(default_factory=list)  # keys to bring back
+
+
+@router.get("/alerts/dismissed")
+async def get_alert_dismissals(request: Request):
+    return await alerts.get(request.app.state.db_pool, _user_id(request))
+
+
+@router.post("/alerts/dismissed")
+async def change_alert_dismissals(payload: AlertsIn, request: Request):
+    uid = _user_id(request)
+    if uid is None:
+        raise HTTPException(400, "Dismissals are kept per signed-in user")
+    pool = request.app.state.db_pool
+    out = await alerts.dismiss(pool, uid, payload.items) if payload.items else await alerts.get(pool, uid)
+    if payload.restore:
+        out = await alerts.restore(pool, uid, payload.restore)
+    eb = getattr(request.app.state, "event_broadcaster", None)
+    if eb is not None:   # the user's other devices update at once
+        await eb.broadcast({"deployment_id": None, "deployment_name": None, "strategy_name": None,
+                            "event_type": "alerts_dismissed", "message": "", "metadata": {"user_id": str(uid)},
+                            "created_at": datetime.now(timezone.utc).isoformat()})
+    return out
 
 
 class CloseEverythingIn(BaseModel):

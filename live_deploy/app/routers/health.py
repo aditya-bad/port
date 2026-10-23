@@ -45,6 +45,6 @@ async def health(request: Request):
         "ticks_stalled_s": manager.tick_stall(datetime.now(timezone.utc)) if hasattr(manager, "tick_stall") else None,
         # The health monitor's open issues as of its last check (app/ops_health.py):
         # the header's Repair badge.
-        "open_issues": [{k: x.get(k) for k in ("id", "key", "severity", "title", "deployment_id", "snoozed_until")}
+        "open_issues": [{k: x.get(k) for k in ("id", "key", "severity", "title", "detail", "opened_at", "deployment_id", "snoozed_until")}
                         for x in getattr(getattr(request.app.state, "ops", None), "open", None) or []],
     }

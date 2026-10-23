@@ -6,15 +6,17 @@ import { html, raw, mount, $, $$, actions, setText, setTone } from '../core/dom.
 import { inr, inrS, price, hhmm, hhmmss, dLong, sessionFrac, sessionLeft, isSessionOpen, plural, tone, toneVar, ist, OPEN_MIN, SESSION_MIN } from '../core/format.js';
 import { current as basisNow } from '../core/basis.js';
 import { ui, listen } from '../core/store.js';
-import { go, href } from '../core/router.js';
+import { href } from '../core/router.js';
 import * as book from '../data/book.js';
 import { kite } from '../data/live.js';
-import { alerts, dismiss, attention } from '../data/alerts.js';
+import { alerts, dismiss, restore, attention } from '../data/alerts.js';
+import { openAlerts, runAlert } from '../ui/alertspanel.js';
 import { DESK_LANES, STREAK_ALERT } from '../data/config.js';
 import { chips, utabs, marker, empty } from '../ui/components.js';
 import { legHead, legRow, liveTag, tickLegs } from '../ui/legs.js';
 import { repairChip } from '../ui/repairs.js';
-import { primary, resume, kiteDialog, restartDeployment } from '../actions.js';
+import { primary, kiteDialog } from '../actions.js';
+import { say, fail } from '../ui/toast.js';
 
 const st = ui('desk', { f: 'all', sort: 'attn', all: false, lab: false });
 const EV = {
@@ -133,11 +135,11 @@ function attentionPanel(A) {
           <span class="mono tiny mute">${a.n}</span>
           <div class="col" style="gap:1px"><b>${a.title}</b><span class="small mute pretty">${a.body}</span></div>
           <div class="row" style="gap:6px">
-            ${a.canDismiss ? html`<button type="button" class="attn-x" title="Dismiss" aria-label="Dismiss" data-act="dismiss" data-key="${a.key}">×</button>` : ''}
+            <button type="button" class="attn-x" title="Dismiss on all your devices" aria-label="Dismiss" data-act="dismiss" data-key="${a.key}">×</button>
             <button type="button" class="btn btn-sm" data-act="alert" data-key="${a.key}">${a.act}</button>
           </div>
         </div>`)}
-      ${A.length > 5 ? html`<div class="attn-more small mute">+ ${A.length - 5} more</div>` : ''}
+      ${A.length > 5 ? html`<button type="button" class="attn-more linkish small" data-act="allAlerts">See all ${A.length} ›</button>` : ''}
       ${!A.length ? html`<div class="attn-ok mute">Nothing needs you. Every running deployment is connected, managed and within its limits.</div>` : ''}
     </div>`;
 }
@@ -327,21 +329,16 @@ export default {
       lab: () => { st.set({ lab: !st.get().lab }); paint(); },
       all: () => { st.set({ all: !st.get().all }); paint(); },
       primary: d => { const v = book.find(d.id); if (v) primary(v)[1](); },
-      dismiss: d => { const a = alerts().find(x => x.key === d.key); if (a) { dismiss(a); paint(); } },
-      alert: d => {
+      dismiss: d => {
         const a = alerts().find(x => x.key === d.key);
-        if (!a) return;
-        const ac = a.action;
-        if (ac.type === 'kite') kiteDialog();
-        else if (ac.type === 'open') go(`d/${ac.id}${ac.tab ? `/${ac.tab}` : ''}`);
-        else if (ac.type === 'dismiss') { dismiss(a); paint(); }
-        else if (ac.type === 'resume') { const v = book.find(ac.id); if (v) resume([v]); }
-        else if (ac.type === 'restart') restartDeployment(ac.id);
+        if (a) dismiss(a).then(() => say('Dismissed on all your devices.', () => restore(a))).catch(e => fail(e, 'Couldn’t dismiss it'));
       },
+      alert: d => { const a = alerts().find(x => x.key === d.key); if (a) runAlert(a); },
+      allAlerts: () => openAlerts(),
     });
     api.recentTrades(40).then(r => { recent = r; paint(); }).catch(() => {});
     paint();
-    const offs = [listen('data', paint), listen('status', paint), listen('ticks', tick)];
+    const offs = [listen('data', paint), listen('status', paint), listen('alerts', paint), listen('ticks', tick)];
     const iv = setInterval(() => { tick(); const nc = $('.now-chip', main); if (nc) setText(nc, hhmm(new Date())); }, 1000);
     const iv2 = setInterval(paint, 60000);   // move the now-line
     return () => { offActs(); offs.forEach(f => f()); clearInterval(iv); clearInterval(iv2); };
