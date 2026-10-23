@@ -42,6 +42,9 @@ for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     assert.match(await card.locator('[data-rule="record"]').innerText(), /At least 20 sessions in shadow\s+\d+ of 20/);
     assert.match(await card.locator('li.no[data-rule="rejects"]').innerText(), /Nothing Kite would refuse in the last 10 sessions\s+1 refused/);
     assert.match(await card.locator('.ready-stats').innerText(), /Kite would accept[\s\S]*%[\s\S]*Worse than paper/);
+    assert.match(await card.locator('.ready-stats').innerText(), /Peak margin\s+₹[\d,]+\s+\d+(\.\d)?% of its capital[\s\S]*Placing legs one by one\s+[−+]?₹[\d,]+/, 'the seeded ₹14, plus any real trade another spec closed');
+    const worse = panel.locator('[data-shadow="worse"]');
+    assert.match(await worse.getAttribute('data-tip'), /Order rate: 2 orders in that second[\s\S]*Leg by leg: Placed after 1 leg \(about 0\.4 s later\): the price had moved ₹14 against it\./);
     await panel.locator('[data-act="shadowAll"]').click();
     assert.equal(await p.locator('[data-shadow-panel] .sh-row').count(), total, 'then all of them');
     await p.locator('[data-shadow-panel] [data-act="shadowAll"]').click();

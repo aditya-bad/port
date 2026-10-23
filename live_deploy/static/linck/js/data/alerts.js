@@ -91,7 +91,7 @@ export const RULES = [
     }));
   },
 ];
-const SHADOW_RULE = { lot: 'Lot size', freeze: 'Freeze limit', band: 'Price band', book: 'Order book', follow: 'Within 60 s' };
+const SHADOW_RULE = { lot: 'Lot size', freeze: 'Freeze limit', band: 'Price band', book: 'Order book', follow: 'Within 60 s', margin: 'Margin', legs: 'Leg by leg', rate: 'Order rate' };
 
 const all = list => RULES.flatMap(rule => rule(list)).map(a => ({ ...a, canDismiss: true }));
 const isOff = a => dismissed[a.key] === a.token;

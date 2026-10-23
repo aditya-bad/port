@@ -243,6 +243,11 @@ async def seed_shadow(pool, dep):
         else:
             kw = dict(lot=LOT["BANKNIFTY"], depth={side: [{"price": px, "quantity": 5000}]})
         res = shadow.assess(act, qty, px, tick=0.05, freeze=1050, freeze_source="config", band=(0.05, px * 3), **kw)
+        res["checks"].append(shadow.check_rate(2, 2))
+        if act == "sell":    # the straddle's entries open short legs: their margin
+            res["checks"].append(shadow.check_margin(round(qty * px * 9), 500000, round(qty * px * 30), 4000000))
+        if lot["id"] == worse:
+            res["checks"].append(shadow.check_leg(1, 0.4, 14.0))
         await shadow.save(pool, {"lot_id": lot["id"], "deployment_id": dep, "executed_at": lot["executed_at"], "symbol": lot["symbol"],
                                  "instrument_token": lot["instrument_token"], "action": act, "qty": qty, "paper_price": px}, res)
 

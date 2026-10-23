@@ -51,11 +51,21 @@ QUOTE_BATCH_S = 2.0         # fills' quotes are asked for together, once per thi
 MAX_BOOK_AGE = timedelta(seconds=30)
 NSE_FREEZE_URL = "https://nsearchives.nseindia.com/content/fo/qtyfreeze.csv"
 
-RULES = {"lot": "Lot size", "freeze": "Freeze limit", "band": "Price band", "book": "Order book", "follow": "Within 60 s"}
+LEG_GAP_S = 0.4            # live places a trade's legs one after another, this far apart
+RATE_PER_S = 10             # orders Kite takes a second (per API key)
+RATE_PER_MIN = 200          # and a minute
+KITE_IDLE_S = 1.0           # shadow's own Kite calls wait for this long without a strategy's
+
+RULES = {"lot": "Lot size", "freeze": "Freeze limit", "band": "Price band", "book": "Order book", "follow": "Within 60 s",
+         "margin": "Margin", "legs": "Leg by leg", "rate": "Order rate"}
 
 
-def _check(rule: str, status: str, detail: str) -> dict:
-    return {"rule": rule, "status": status, "detail": detail}
+def _check(rule: str, status: str, detail: str, **data) -> dict:
+    return {"rule": rule, "status": status, "detail": detail, **data}
+
+
+def _inr(x: float) -> str:
+    return f"₹{x:,.0f}"
 
 
 def _r(x: Optional[float], n: int = 2) -> Optional[float]:
@@ -208,6 +218,80 @@ def follow(res: dict, action: str, qty: float, paper: float, prices: list[tuple[
                followup={"reached": True, "seconds": round(hit[0]), "best": _r(best)})
     res["checks"].append(_check("follow", "ok", f"The rest filled {round(hit[0])} s later, when the price came to ₹{limit:,.2f}."))
     return res
+
+
+def check_margin(required: Optional[float], capital: float, acc_required: Optional[float] = None,
+                 acc_free: Optional[float] = None) -> dict:
+    """The margin Kite would block for the deployment's open legs after
+    the trade, against its capital; and every deployment's together
+    against the account's free margin."""
+    if required is None:
+        return _check("margin", "unknown", "No margin figure from Kite.")
+    data = {"required": round(required, 2), "capital": round(capital, 2)}
+    if acc_required is not None and acc_free is not None:
+        data.update(account_required=round(acc_required, 2), account_free=round(acc_free, 2))
+    if required > capital + 0.5:
+        return _check("margin", "reject", f"Its open legs need {_inr(required)} of margin; the deployment has {_inr(capital)}.", **data)
+    if acc_required is not None and acc_free is not None and acc_required > acc_free + 0.5:
+        return _check("margin", "reject", f"Every deployment's open legs together need {_inr(acc_required)}; the account has {_inr(acc_free)} free.", **data)
+    acc = f" · all deployments {_inr(acc_required)} of {_inr(acc_free)} free" if acc_required is not None and acc_free is not None else ""
+    return _check("margin", "ok", f"Needs {_inr(required)} of its {_inr(capital)}{acc}.", **data)
+
+
+def check_placing(peak: float, capital: float, short: str, hedge: str) -> dict:
+    """A short placed before its hedge: Kite blocks the naked short's
+    margin until the hedge fills."""
+    if peak > capital + 0.5:
+        return _check("margin", "reject", f"Placed before its hedge ({hedge}), {short} alone needs {_inr(peak)} of margin; "
+                      f"the deployment has {_inr(capital)}. Place the hedge first.", required=round(peak, 2), capital=round(capital, 2), placing=True)
+    return _check("margin", "ok", f"Placed before its hedge, it needs {_inr(peak)} of its {_inr(capital)} until the hedge fills.",
+                  required=round(peak, 2), capital=round(capital, 2), placing=True)
+
+
+def leg_cost(action: str, qty: float, paper: float, later: Optional[float]) -> Optional[float]:
+    """Rupees worse (positive) or better for a leg placed after the ones
+    before it, at `later` instead of the paper price."""
+    if later is None:
+        return None
+    return ((later - paper) if action == "buy" else (paper - later)) * qty
+
+
+def check_leg(k: int, gap_s: float, cost: Optional[float]) -> dict:
+    after = f"Placed after {k} leg{'s' if k > 1 else ''} (about {k * gap_s:.1f} s later)"
+    if cost is None:
+        return _check("legs", "unknown", f"{after}: no price for then.")
+    if cost >= WORSE_FROM:
+        return _check("legs", "warn", f"{after}: the price had moved {_inr(cost)} against it.", cost=round(cost, 2))
+    if cost <= -WORSE_FROM:
+        return _check("legs", "ok", f"{after}: the price had moved {_inr(-cost)} in its favour.", cost=round(cost, 2))
+    return _check("legs", "ok", f"{after}: the price hadn't moved.", cost=round(cost, 2))
+
+
+def check_rate(in_second: int, in_minute: int) -> dict:
+    if in_second > RATE_PER_S:
+        late = (in_second - RATE_PER_S) / RATE_PER_S
+        return _check("rate", "warn", f"{in_second} orders in the same second across deployments; Kite takes {RATE_PER_S} a second, "
+                      f"so live would send some about {late:.1f} s late.", second=in_second, minute=in_minute)
+    if in_minute > RATE_PER_MIN:
+        return _check("rate", "warn", f"{in_minute} orders in the same minute across deployments; Kite takes {RATE_PER_MIN} a minute.",
+                      second=in_second, minute=in_minute)
+    return _check("rate", "ok", f"{in_second} order{'s' if in_second != 1 else ''} in that second across deployments.",
+                  second=in_second, minute=in_minute)
+
+
+def basket(legs: list[dict], product: str) -> list[dict]:
+    """Open legs as the order basket Kite prices the margin of."""
+    return [{"exchange": x["exchange"], "tradingsymbol": x["symbol"], "transaction_type": "SELL" if x["side"] == "short" else "BUY",
+             "variety": "regular", "product": product, "order_type": "MARKET", "quantity": int(round(float(x["qty"]))),
+             "price": 0, "trigger_price": 0} for x in legs if float(x["qty"]) > 0]
+
+
+def basket_total(resp) -> Optional[float]:
+    """Kite's basket margin answer: the total after hedge benefits."""
+    try:
+        return float((resp.get("final") or resp.get("initial"))["total"])
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return None
 
 
 # ── freeze limits ───────────────────────────────────────────────────────
@@ -393,23 +477,34 @@ async def rejections(pool, day: date) -> list[dict]:
 # ── the service ─────────────────────────────────────────────────────────
 
 class ShadowService:
-    """Takes fills from the runners (submit) and checks each in the
-    background; at most `parallel` at once."""
+    """Takes fills from the runners (submit) and checks them in the
+    background, a trade at a time: a deployment's fills within `batch_s`
+    of each other are one trade (its legs), checked together."""
 
     def __init__(self, pool, dispatcher, config: Optional[dict] = None, *,
                  quotes: Optional[Callable[[list[str]], Awaitable[dict]]] = None,
+                 margins: Optional[Callable[[list[dict]], Awaitable[Any]]] = None,
+                 funds: Optional[Callable[[], Awaitable[Optional[float]]]] = None,
                  freeze: Optional[FreezeLimits] = None, follow_s: int = FOLLOW_S, parallel: int = 8,
-                 batch_s: float = QUOTE_BATCH_S):
+                 batch_s: float = QUOTE_BATCH_S, leg_gap_s: Optional[float] = None):
         cfg = (config or {}).get("shadow") or {}
         self.pool = pool
         self.dispatcher = dispatcher
         self.enabled = bool(cfg.get("enabled", True))
+        self.margin_on = bool(cfg.get("margin", True))
         self.buffer_pct = float(cfg.get("limit_buffer_pct", BUFFER_PCT))
+        self.leg_gap_s = float(leg_gap_s if leg_gap_s is not None else cfg.get("leg_gap_s", LEG_GAP_S))
         self.freeze = freeze or FreezeLimits(pool, cfg.get("freeze_qty"))
         self.quotes = quotes or self._kite_quotes
+        self.margins = margins or self._kite_margins
+        self.funds = funds or self._kite_funds
         self.batch_s = batch_s
         self._asked: dict[str, list[asyncio.Future]] = {}
         self._batch: Optional[asyncio.Task] = None
+        self._trades: dict[Any, list[dict]] = {}          # deployment -> fills waiting to be checked together
+        self._trails: dict[int, list[tuple[float, float]]] = {}   # token -> (loop time, price) just after a fill
+        self._sent: list[tuple[float, int]] = []           # (loop time, orders) of every fill, the last minute
+        self._acct: Optional[tuple[float, Optional[float], Optional[float]]] = None   # (when, all legs' margin, free)
         self.follow_s = follow_s
         # fills are only taken on the loop that owns the pool (one in the
         # app; a test process can run several)
@@ -419,44 +514,96 @@ class ShadowService:
             self.loop = None
         self.sem = asyncio.Semaphore(parallel)
         self.tasks: set[asyncio.Task] = set()
+        self.handed = 0
         self.checked = 0
         self.failed = 0
 
+    def _spawn(self, coro, name: str) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+        self.tasks.add(task)
+        task.add_done_callback(self.tasks.discard)
+        return task
+
     def submit(self, fill: dict) -> None:
         """Called as a fill is recorded. The order book is taken now (what
-        the order would have met); everything else happens later."""
+        the order would have met), and the price followed for a few
+        seconds (what a leg placed after it would have met); everything
+        else happens later."""
         if not self.enabled:
             return
-        if self.loop is not None and asyncio.get_running_loop() is not self.loop:
+        loop = asyncio.get_running_loop()
+        if self.loop is not None and loop is not self.loop:
             return
         token = int(fill["instrument_token"])
         cached = getattr(self.dispatcher, "last_depths", {}).get(token)
         fresh = cached is not None and datetime.now(timezone.utc) - cached[1] <= MAX_BOOK_AGE
-        fill = {**fill, "depth": cached[0] if fresh else None}
-        task = asyncio.create_task(self._run(fill), name=f"shadow-{fill['lot_id']}")
-        self.tasks.add(task)
-        task.add_done_callback(self.tasks.discard)
+        fill = {**fill, "depth": cached[0] if fresh else None, "_t": loop.time()}
+        self.handed += 1
+        self._sent.append((fill["_t"], 1))    # every deployment's orders, for the rate (freeze splits added later)
+        if token not in self._trails:
+            self._trails[token] = []
+            self._spawn(self._trail(token), f"shadow-trail-{token}")
+        dep = fill["deployment_id"]
+        if dep not in self._trades:
+            self._trades[dep] = []
+            self._spawn(self._trade(dep), f"shadow-trade-{dep}")
+        self._trades[dep].append(fill)
 
     async def drain(self) -> None:
         while self.tasks:
             await asyncio.gather(*list(self.tasks), return_exceptions=True)
 
-    async def _run(self, fill: dict) -> None:
+    async def _trail(self, token: int, every_s: float = 0.1) -> None:
+        """The price just after a fill, for the legs placed after it."""
+        loop = asyncio.get_running_loop()
+        end = loop.time() + self.batch_s + 4 * self.leg_gap_s + 0.5
         try:
-            async with self.sem:
-                await self.check(fill)
-            self.checked += 1
-        except Exception as e:
-            self.failed += 1
-            logger.exception("Shadow check of %s failed", fill.get("symbol"))
-            try:
-                await save(self.pool, fill, {"verdict": "unknown", "checks": [_check("book", "unknown", f"The check failed: {e}")]})
-            except Exception:
-                logger.exception("Couldn't store the failed shadow check")
+            while loop.time() < end:
+                p = self.dispatcher.last_prices.get(token)
+                if p:
+                    self._trails[token].append((loop.time(), float(p)))
+                await asyncio.sleep(every_s)
+            await asyncio.sleep(self.batch_s + 1)    # kept until the trade that needs it is checked
+        finally:
+            self._trails.pop(token, None)
+
+    def _price_at(self, token: int, t: float) -> Optional[float]:
+        trail = self._trails.get(token) or []
+        before = [p for (at, p) in trail if at <= t + 1e-6]
+        return before[-1] if before else None
+
+    # ── Kite, politely ──────────────────────────────────────────────────
+
+    @staticmethod
+    async def _kite_idle(limit_s: float = 30.0) -> None:
+        """Wait until no Kite call has gone out for KITE_IDLE_S: the
+        strategies' own calls (entries, quotes) go first."""
+        from .options import resolver as R
+        loop = asyncio.get_running_loop()
+        end = loop.time() + limit_s
+        import time as _t
+        while loop.time() < end and _t.monotonic() - (R._kite_call_next_allowed_at - R._KITE_CALL_MIN_INTERVAL) < KITE_IDLE_S:
+            await asyncio.sleep(0.2)
 
     async def _kite_quotes(self, keys: list[str]) -> dict:
         from .options import OptionsResolver
+        await self._kite_idle()
         return await OptionsResolver(self.dispatcher).get_quotes(keys)
+
+    async def _kite_margins(self, orders: list[dict]):
+        from .options import OptionsResolver
+        await self._kite_idle()
+        r = OptionsResolver(self.dispatcher)
+        kite = r._kite()
+        return await r._kite_call(lambda: kite.basket_order_margins(orders, consider_positions=False, mode="compact"))
+
+    async def _kite_funds(self) -> Optional[float]:
+        from .options import OptionsResolver
+        await self._kite_idle()
+        r = OptionsResolver(self.dispatcher)
+        kite = r._kite()
+        m = await r._kite_call(lambda: kite.margins("equity"))
+        return float(m["net"]) if m and m.get("net") is not None else None
 
     async def quote(self, key: str) -> Optional[dict]:
         """One instrument's quote (for its price band). Every fill's ask in
@@ -466,16 +613,14 @@ class ShadowService:
         fut = asyncio.get_running_loop().create_future()
         self._asked.setdefault(key, []).append(fut)
         if self._batch is None or self._batch.done():
-            self._batch = asyncio.create_task(self._flush(), name="shadow-quotes")
-            self.tasks.add(self._batch)
-            self._batch.add_done_callback(self.tasks.discard)
+            self._batch = self._spawn(self._flush(), "shadow-quotes")
         return await fut
 
     async def _flush(self) -> None:
         await asyncio.sleep(self.batch_s)
         asked, self._asked = self._asked, {}
         try:
-            got = await asyncio.wait_for(self.quotes(list(asked)), QUOTE_TIMEOUT_S)
+            got = await asyncio.wait_for(self.quotes(list(asked)), QUOTE_TIMEOUT_S + 30)
         except BaseException as e:
             for futs in asked.values():
                 for f in futs:
@@ -489,7 +634,10 @@ class ShadowService:
                 if not f.done():
                     f.set_result(got.get(k))
 
+    # ── one fill ────────────────────────────────────────────────────────
+
     async def check(self, fill: dict) -> dict:
+        """What the fill's own order would have met (not yet stored)."""
         token, symbol, action = int(fill["instrument_token"]), fill["symbol"], fill["action"]
         qty, paper = float(fill["qty"]), float(fill["paper_price"])
         meta = instrument_meta(token) or {}
@@ -497,21 +645,167 @@ class ShadowService:
         quote = None
         try:
             quote = await asyncio.wait_for(self.quote(f"{exchange}:{meta.get('tradingsymbol') or symbol}"),
-                                           self.batch_s + QUOTE_TIMEOUT_S + 1)
+                                           self.batch_s + QUOTE_TIMEOUT_S + 31)
         except Exception as e:
             logger.info("Shadow: no quote for %s (%s)", symbol, e)
         quote = quote or {}
         depth = fill.get("depth") or quote.get("depth")
         freeze, src = self.freeze.get(meta.get("name") or underlying_of(symbol))
-        res = assess(action, qty, paper, lot=meta.get("lot_size"), tick=meta.get("tick_size"),
-                     freeze=freeze, freeze_source=src,
-                     band=(quote.get("lower_circuit_limit"), quote.get("upper_circuit_limit")),
-                     depth=depth, buffer_pct=self.buffer_pct)
+        return assess(action, qty, paper, lot=meta.get("lot_size"), tick=meta.get("tick_size"),
+                      freeze=freeze, freeze_source=src,
+                      band=(quote.get("lower_circuit_limit"), quote.get("upper_circuit_limit")),
+                      depth=depth, buffer_pct=self.buffer_pct)
+
+    async def _one(self, fill: dict) -> dict:
+        try:
+            async with self.sem:
+                return await self.check(fill)
+        except Exception as e:
+            self.failed += 1
+            logger.exception("Shadow check of %s failed", fill.get("symbol"))
+            return {"verdict": "unknown", "checks": [_check("book", "unknown", f"The check failed: {e}")]}
+
+    # ── one trade: its fills together ───────────────────────────────────
+
+    async def _trade(self, dep) -> None:
+        await asyncio.sleep(self.batch_s)
+        fills = self._trades.pop(dep, [])
+        if not fills:
+            return
+        results = list(await asyncio.gather(*(self._one(f) for f in fills)))
+        # the last leg's moment (placed one after another) has to have come
+        loop = asyncio.get_running_loop()
+        wait = fills[0]["_t"] + (len(fills) - 1) * self.leg_gap_s + 0.15 - loop.time()
+        if len(fills) > 1 and wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            self._rate(fills, results)
+            self._legs(fills, results)
+            if self.margin_on:
+                await self._margin(dep, fills, results)
+        except Exception:
+            logger.exception("Shadow: the trade checks failed for %s", dep)
+        for f, res in zip(fills, results):
+            if any(c["status"] == "reject" for c in res["checks"]):
+                res["verdict"] = "reject"
+            try:
+                await save(self.pool, f, res)
+                self.checked += 1
+            except Exception:
+                self.failed += 1
+                logger.exception("Couldn't store the shadow check of %s", f.get("symbol"))
+                continue
+            if res["verdict"] in ("partial", "no_fill"):
+                self._spawn(self._follow(f, res), f"shadow-follow-{f['lot_id']}")
+
+    async def _follow(self, fill: dict, res: dict) -> None:
+        res = follow(res, fill["action"], float(fill["qty"]), float(fill["paper_price"]),
+                     await self._watch(int(fill["instrument_token"])), self.follow_s)
         await save(self.pool, fill, res)
-        if res["verdict"] in ("partial", "no_fill"):
-            res = follow(res, action, qty, paper, await self._watch(token), self.follow_s)
-            await save(self.pool, fill, res)
-        return res
+
+    def _rate(self, fills: list[dict], results: list[dict]) -> None:
+        """Orders across every deployment in the second (and the minute)
+        up to each fill: every fill was recorded as it was handed over,
+        and this runs batch_s later, so the others are in."""
+        for f, res in zip(fills, results):
+            if (res.get("orders") or 1) > 1:
+                self._sent.append((f["_t"], int(res["orders"]) - 1))
+        now = max(f["_t"] for f in fills)
+        self._sent = [x for x in self._sent if now - x[0] <= 61]
+        for f, res in zip(fills, results):
+            sec = sum(n for t, n in self._sent if f["_t"] - 1.0 < t <= f["_t"] + 1e-6)
+            mnt = sum(n for t, n in self._sent if f["_t"] - 60 < t <= f["_t"] + 1e-6)
+            res["checks"].append(check_rate(sec, mnt))
+
+    def _legs(self, fills: list[dict], results: list[dict]) -> None:
+        """Paper fills a trade's legs at once; live places them one after
+        another. The k-th leg meets the price about k × leg_gap_s later."""
+        if len(fills) < 2:
+            return
+        t0 = fills[0]["_t"]
+        for k, (f, res) in enumerate(zip(fills, results)):
+            if k == 0:
+                continue
+            p = self._price_at(int(f["instrument_token"]), t0 + k * self.leg_gap_s)
+            res["checks"].append(check_leg(k, self.leg_gap_s, leg_cost(f["action"], float(f["qty"]), float(f["paper_price"]), p)))
+
+    async def _open_legs(self, dep=None) -> list[dict]:
+        rows = await self.pool.fetch(
+            """SELECT p.id, p.deployment_id, p.symbol, p.instrument_token, p.side, p.qty, d.mode
+               FROM positions p JOIN deployments d ON d.id = p.deployment_id
+               WHERE p.status = 'open' AND d.status <> 'stopped' AND ($1::uuid IS NULL OR p.deployment_id = $1)""", dep)
+        out = []
+        for r in rows:
+            meta = instrument_meta(int(r["instrument_token"])) or {}
+            out.append({"id": r["id"], "deployment_id": r["deployment_id"], "symbol": meta.get("tradingsymbol") or r["symbol"],
+                        "exchange": meta.get("exchange") or ("BFO" if underlying_of(r["symbol"]) in ("SENSEX", "BANKEX") else "NFO"),
+                        "side": r["side"], "qty": r["qty"], "mode": r["mode"]})
+        return out
+
+    async def _required(self, legs: list[dict]) -> Optional[float]:
+        if not legs:
+            return 0.0
+        products = {"MIS" if x["mode"] == "intraday" else "NRML" for x in legs}
+        orders = [o for prod in products for o in basket([x for x in legs if ("MIS" if x["mode"] == "intraday" else "NRML") == prod], prod)]
+        return basket_total(await self.margins(orders))
+
+    async def _account(self) -> tuple[Optional[float], Optional[float]]:
+        loop = asyncio.get_running_loop()
+        if self._acct and loop.time() - self._acct[0] < 5:
+            return self._acct[1], self._acct[2]
+        need = await self._required(await self._open_legs())
+        free = await self.funds()
+        self._acct = (loop.time(), need, free)
+        return need, free
+
+    async def _margin(self, dep, fills: list[dict], results: list[dict]) -> None:
+        """After a trade that opens legs: the deployment's open legs
+        against its capital, everyone's against the account; and a
+        short placed before its hedge, at that moment."""
+        lot_ids = [f["lot_id"] for f in fills]
+        rows = await self.pool.fetch(
+            """SELECT pl.id AS lot_id, p.id AS position_id, p.side, pl.action FROM position_lots pl JOIN positions p ON p.id = pl.position_id
+               WHERE pl.id = ANY($1::uuid[])""", lot_ids)
+        info = {r["lot_id"]: r for r in rows}
+        opening = [i for i, f in enumerate(fills) if (r := info.get(f["lot_id"])) is not None
+                   and (r["side"] == "short") == (r["action"] == "sell")]
+        if not opening:
+            return
+        capital = float(await self.pool.fetchval("SELECT initial_capital FROM deployments WHERE id = $1", dep) or 0)
+        try:
+            legs = await self._open_legs(dep)
+            need = await self._required(legs)
+            acc_need, acc_free = await self._account()
+        except Exception as e:
+            for i in opening:
+                results[i]["checks"].append(_check("margin", "unknown", f"Couldn't get the margin from Kite: {e}"))
+            return
+        verdict = check_margin(need, capital, acc_need, acc_free)
+        # placed one after another: a short before its hedge stands alone until the hedge fills
+        placing: dict[int, dict] = {}
+        opened = [info[fills[i]["lot_id"]]["position_id"] for i in opening]
+        base = [x for x in legs if x["id"] not in opened]
+        by_pos = {x["id"]: x for x in legs}
+        sells = [i for i in opening if fills[i]["action"] == "sell"]
+        buys = [i for i in opening if fills[i]["action"] == "buy"]
+        if sells and buys and min(sells) < max(buys):
+            so_far = list(base)
+            for i in opening:
+                leg = by_pos.get(info[fills[i]["lot_id"]]["position_id"])
+                if leg is None:
+                    continue
+                so_far.append(leg)
+                hedge_later = any(j > i for j in buys)
+                if fills[i]["action"] == "sell" and hedge_later:
+                    try:
+                        peak = await self._required(so_far)
+                    except Exception:
+                        peak = None
+                    if peak is not None:
+                        hedge = fills[next(j for j in buys if j > i)]["symbol"]
+                        placing[i] = check_placing(peak, capital, fills[i]["symbol"], hedge)
+        for i in opening:
+            results[i]["checks"].append(placing.get(i) or dict(verdict))
 
     async def _watch(self, token: int, every_s: float = 1.0) -> list[tuple[float, float]]:
         """The price every second for follow_s seconds."""
@@ -621,11 +915,25 @@ def card(mode: str, checks: list[dict], episodes: list[dict], lots_of: dict, ope
         "worst": None if worst is None or not worst["shortfall"] else
             {"shortfall": float(worst["shortfall"]), "symbol": worst["symbol"], "at": worst["executed_at"]},
         "splits": sum(1 for c in checks if (c.get("orders") or 1) > 1),
+        "margin": _peak_margin(checks),
+        "legs_cost": round(sum(float(x.get("cost") or 0) for c in checks for x in c.get("checks") or [] if x["rule"] == "legs"), 2),
         "refused": {"n": refused[0], "pnl": round(refused[1], 2), "pnl_net": round(refused[2], 2), "pnl_net_slip": round(refused[3], 2)},
         "unfilled": {"n": unfilled[0], "pnl": round(unfilled[1], 2), "pnl_net": round(unfilled[2], 2), "pnl_net_slip": round(unfilled[3], 2)},
         "total": {"pnl": round(total[0], 2), "pnl_net": round(total[1], 2), "pnl_net_slip": round(total[2], 2)},
         "bar": bar,
     }
+
+
+def _peak_margin(checks: list[dict]) -> Optional[dict]:
+    """The most margin Kite would have blocked for the deployment at any
+    point, against its capital."""
+    ms = [x for c in checks for x in c.get("checks") or [] if x["rule"] == "margin" and x.get("required") is not None]
+    if not ms:
+        return None
+    m = max(ms, key=lambda x: float(x["required"]) / float(x["capital"] or 1))
+    cap = float(m["capital"] or 0)
+    return {"required": float(m["required"]), "capital": cap,
+            "pct": round(float(m["required"]) / cap * 100, 1) if cap else None, "placing": bool(m.get("placing"))}
 
 
 async def scorecards(pool, deployment_id=None) -> dict[str, dict]:

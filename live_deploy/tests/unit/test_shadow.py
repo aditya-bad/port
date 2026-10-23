@@ -252,3 +252,62 @@ def test_positional_counts_full_cycles_and_the_pnl_live_couldnt_have_made():
 def test_freeze_splits_are_counted():
     c = shadow.card("intraday", [chk("a", D0, orders=3), chk("b", D0)], [], {}, 0)
     assert c["splits"] == 1
+
+
+# ── stage 3: margin, leg by leg, order rate ─────────────────────────────
+
+def test_margin_against_the_deployment_and_the_account():
+    assert shadow.check_margin(None, 500000)["status"] == "unknown"
+    ok = shadow.check_margin(300000, 500000, 900000, 2000000)
+    assert ok["status"] == "ok" and ok["detail"] == "Needs ₹300,000 of its ₹500,000 · all deployments ₹900,000 of ₹2,000,000 free."
+    assert ok["required"] == 300000 and ok["account_free"] == 2000000
+    over = shadow.check_margin(600000, 500000)
+    assert over["status"] == "reject" and "the deployment has ₹500,000" in over["detail"]
+    acc = shadow.check_margin(300000, 500000, 2100000, 2000000)
+    assert acc["status"] == "reject" and "the account has ₹2,000,000 free" in acc["detail"]
+
+
+def test_a_short_before_its_hedge():
+    r = shadow.check_placing(600000, 500000, "NIFTY26OCT25800CE", "NIFTY26OCT26800CE")
+    assert r["status"] == "reject" and r["placing"] and "Place the hedge first" in r["detail"]
+    assert shadow.check_placing(400000, 500000, "A", "B")["status"] == "ok"
+
+
+def test_a_leg_placed_after_the_others():
+    assert shadow.leg_cost("sell", 75, 80.0, 79.0) == 75.0        # sold ₹1 lower
+    assert shadow.leg_cost("buy", 75, 20.0, 19.5) == -37.5        # bought cheaper
+    assert shadow.leg_cost("buy", 75, 20.0, None) is None
+    assert shadow.check_leg(2, 0.4, 75.0)["detail"] == "Placed after 2 legs (about 0.8 s later): the price had moved ₹75 against it."
+    assert shadow.check_leg(1, 0.4, -37.5)["status"] == "ok"
+    assert shadow.check_leg(1, 0.4, None)["status"] == "unknown"
+
+
+def test_the_order_rate():
+    assert shadow.check_rate(10, 40)["status"] == "ok"
+    r = shadow.check_rate(14, 40)
+    assert r["status"] == "warn" and "about 0.4 s late" in r["detail"]
+    assert shadow.check_rate(2, 230)["status"] == "warn"
+
+
+def test_open_legs_as_kites_basket_and_its_answer():
+    legs = [{"exchange": "NFO", "symbol": "NIFTY26OCT25800CE", "side": "short", "qty": 75.0},
+            {"exchange": "NFO", "symbol": "NIFTY26OCT26800CE", "side": "long", "qty": 75.0},
+            {"exchange": "NFO", "symbol": "X", "side": "long", "qty": 0}]
+    b = shadow.basket(legs, "NRML")
+    assert [(o["transaction_type"], o["quantity"], o["product"]) for o in b] == [("SELL", 75, "NRML"), ("BUY", 75, "NRML")]
+    assert shadow.basket_total({"initial": {"total": 9.0}, "final": {"total": 5.0}}) == 5.0
+    assert shadow.basket_total({"initial": {"total": 9.0}}) == 9.0
+    assert shadow.basket_total(None) is None and shadow.basket_total({}) is None
+
+
+def test_the_card_has_the_peak_margin_and_what_placing_legs_cost():
+    c1 = chk("a", D0)
+    c1["checks"] = [{"rule": "margin", "status": "ok", "detail": "", "required": 200000, "capital": 500000},
+                    {"rule": "legs", "status": "warn", "detail": "", "cost": 75.0}]
+    c2 = chk("b", D0)
+    c2["checks"] = [{"rule": "margin", "status": "reject", "detail": "", "required": 600000, "capital": 500000, "placing": True},
+                    {"rule": "legs", "status": "ok", "detail": "", "cost": -20.0}]
+    c = shadow.card("intraday", [c1, c2], [], {}, 0)
+    assert c["margin"] == {"required": 600000, "capital": 500000, "pct": 120.0, "placing": True}
+    assert c["legs_cost"] == 55.0
+    assert shadow.card("intraday", [], [], {}, 0)["margin"] is None

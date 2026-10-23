@@ -7,7 +7,8 @@ import { inr, price, dStamp, plural, tone } from '../core/format.js';
 import { pick } from '../core/basis.js';
 import { sect } from './components.js';
 
-export const RULE = { lot: 'Lot size', freeze: 'Freeze limit', band: 'Price band', book: 'Order book', follow: 'Within 60 s' };
+export const RULE = { lot: 'Lot size', freeze: 'Freeze limit', band: 'Price band', book: 'Order book', follow: 'Within 60 s',
+  margin: 'Margin', legs: 'Leg by leg', rate: 'Order rate' };
 
 // What the chip says.
 export function verdictLabel(s) {
@@ -64,6 +65,8 @@ export function readyCard(c) {
       <div><span class="l">Worse than paper</span><b class="mono">${c.shortfall_pct == null ? '—' : `${c.shortfall_pct.toFixed(2)}%`}</b><span class="s">${inr(c.shortfall, { sign: false })} in all${c.worst ? ` · worst ${inr(c.worst.shortfall, { sign: false })}` : ''}</span></div>
       ${money(c.refused, 'Made on trades Kite would refuse')}
       ${money(c.unfilled, 'Made on trades that wouldn’t fill')}
+      ${c.margin ? html`<div><span class="l">Peak margin</span><b class="mono">${inr(c.margin.required, { sign: false })}</b><span class="s">${c.margin.pct == null ? '' : `${c.margin.pct}% of its capital`}${c.margin.placing ? ' · while placing legs' : ''}</span></div>` : ''}
+      ${c.legs_cost ? html`<div><span class="l">Placing legs one by one</span><b class="mono ${tone(-c.legs_cost)}">${inr(-c.legs_cost)}</b><span class="s">against filling them at once</span></div>` : ''}
       ${c.splits ? html`<div><span class="l">Over the freeze limit</span><b class="mono">${c.splits}</b><span class="s">orders split</span></div>` : ''}
     </div>`}
   </div>`;
@@ -88,7 +91,7 @@ export function shadowPanel(sh, { all = false, n = 8 } = {}) {
         <span class="mono tiny mute">${dStamp(s.executed_at)}</span>
         <span class="mono tiny">${s.action === 'sell' ? 'Sold' : 'Bought'} ${Number(s.qty)} ${s.symbol} @ ${price(s.paper_price)}</span>
         <span class="right">${shadowChip(s)}</span></div>`)
-      : html`<p class="small mute" style="margin:8px 0 0">Each fill is checked a few seconds after it happens: lot size, the freeze limit, today’s price band and the order book, for a limit order ${sh.buffer_pct}% past the price.</p>`}
+      : html`<p class="small mute" style="margin:8px 0 0">Each fill is checked a few seconds after it happens: lot size, the freeze limit, today’s price band and the order book, for a limit order ${sh.buffer_pct}% past the price; and for a trade, its margin, its legs placed one after another and the order rate.</p>`}
   </div>`;
 }
 
