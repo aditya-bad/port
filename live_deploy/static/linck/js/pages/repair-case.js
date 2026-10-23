@@ -184,12 +184,13 @@ export default {
         </div></div>`;
     }
 
-    // A flagged day left as it is: no longer marked anywhere (undo brings it back).
+    // A flagged day left as it is ("ignored"): no longer marked anywhere, and
+    // listed as done on the Repair page (undo brings it back).
     function dismissBit() {
       if (c.applied || !['rule', 'mismatch', 'ambiguous'].includes(c.check.status)) return '';
       return c.check.dismissed_at
-        ? html`<span class="grow"></span><span class="small mute" data-dismissed>Dismissed ${dStamp(c.check.dismissed_at)}: not marked as flagged</span><button type="button" class="btn btn-xs btn-quiet" data-act="undismiss">Undo</button>`
-        : html`<span class="grow"></span><button type="button" class="btn btn-sm btn-quiet" data-act="dismiss" data-tip="You’ve looked at it and its numbers stand: it stops being marked as flagged on every page. A repair stays possible.">Dismiss</button>`;
+        ? html`<span class="grow"></span><span class="small mute" data-dismissed>Ignored ${dStamp(c.check.dismissed_at)}: its numbers stand, not marked as flagged</span><button type="button" class="btn btn-xs btn-quiet" data-act="undismiss">Undo</button>`
+        : html`<span class="grow"></span><button type="button" class="btn btn-sm btn-quiet" data-act="dismiss" data-tip="You’ve looked at it and its numbers stand: it stops being marked as flagged on every page and moves to Done on the Repair page. A repair stays possible.">Ignore</button>`;
     }
 
     function stateBar() {
@@ -276,7 +277,7 @@ export default {
       unchoose: x => { const ch = { ...c.draft.choices }; Object.keys(ch).forEach(m => { if (m >= x.m) delete ch[m]; }); plan(ch); },
       reset: () => plan({}),
       dismiss: async () => {
-        try { await api.dismissDay(day, dep); say('Dismissed. It’s no longer marked as flagged.'); await book.load(['book']); } catch (e) { fail(e, 'Couldn’t dismiss it'); }
+        try { await api.dismissDay(day, dep); say('Ignored. Its numbers stand, and it’s no longer marked as flagged.'); await book.load(['book']); } catch (e) { fail(e, 'Couldn’t ignore it'); }
         load();
       },
       undismiss: async () => {

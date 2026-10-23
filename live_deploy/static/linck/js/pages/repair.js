@@ -12,6 +12,7 @@ import { href } from '../core/router.js';
 import { listen } from '../core/store.js';
 import { sect, empty, loading } from '../ui/components.js';
 import { say, fail } from '../ui/toast.js';
+import * as book from '../data/book.js';
 import { pollStatus } from '../data/live.js';
 
 const SNOOZES = [['30m', '30 min'], ['2h', '2 hours'], ['today', 'Until tomorrow']];
@@ -113,10 +114,22 @@ function endState(end) {
   </div>`;
 }
 
+// A flagged day is done once it's repaired, or ignored (its numbers left as
+// they are): it moves out of the to-do list into Done, where it can still
+// be opened, and an ignored one brought back.
+const REPAIRABLE = ['rule', 'mismatch', 'ambiguous'];
+const isDone = x => !!(x.repaired || x.dismissed_at);
+function doneTag(x) {
+  if (x.repaired) return html`<span class="dc-done-tag ok" data-tip="The repair was applied: its trades replaced the app’s. Undo it from its case">Repaired ${dStamp(x.repaired.applied_at)}</span>`;
+  if (x.dismissed_at) return html`<span class="dc-done-tag" data-tip="You left its numbers as they are: no longer marked as flagged">Ignored ${dStamp(x.dismissed_at)}</span>`;
+  return '';
+}
+
 function checkRow(x, open, day) {
   const diff = x.diff || {}, rep = x.replay || {};
-  return html`<details class="dc-row t-${CHECK[x.status][1]}" ${open ? 'open' : ''} data-dc="${x.deployment_id}">
-    <summary>${pill(x.status)}<b>${x.name}</b><span class="small mute">${x.strategy} · ${x.mode}</span>${x.dismissed_at ? html`<span class="tag" data-tip="Dismissed from its case: no longer marked as flagged">Dismissed</span>` : ''}<span class="dc-head">${x.headline}</span></summary>
+  const done = isDone(x);
+  return html`<details class="dc-row t-${done ? (x.repaired ? 'ok' : 'mute') : CHECK[x.status][1]} ${done ? 'is-done' : ''}" ${open ? 'open' : ''} data-dc="${x.deployment_id}">
+    <summary>${pill(x.status)}<b>${x.name}</b><span class="small mute">${x.strategy} · ${x.mode}</span>${doneTag(x)}<span class="dc-head">${x.headline}</span></summary>
     <div class="dc-body">
       ${(x.rules || []).map(r => html`<div class="dc-rule ${r.severity}"><b>${r.title}</b><span>${r.detail}</span></div>`)}
       ${diff.end ? html`${endState(diff.end)}${tradesTable(diff)}` : ''}
@@ -127,7 +140,11 @@ function checkRow(x, open, day) {
         ${(rep.notes || []).map(n => html`<span>${n}</span>`)}
       </div>
       <div class="row" style="gap:14px">
-        ${['rule', 'mismatch', 'ambiguous'].includes(x.status) ? html`<a class="btn btn-sm btn-primary" href="${href(`repair/${day}/${x.deployment_id}`)}">Review and repair ›</a>` : ''}
+        ${x.repaired ? html`<a class="btn btn-sm" href="${href(`repair/${day}/${x.deployment_id}`)}">Open the repair ›</a>`
+          : REPAIRABLE.includes(x.status) ? html`<a class="btn btn-sm ${x.dismissed_at ? '' : 'btn-primary'}" href="${href(`repair/${day}/${x.deployment_id}`)}">Review and repair ›</a>` : ''}
+        ${!x.repaired && REPAIRABLE.includes(x.status) ? (x.dismissed_at
+          ? html`<button type="button" class="btn btn-sm btn-quiet" data-act="unignoreDay" data-dep="${x.deployment_id}">Undo ignore</button>`
+          : html`<button type="button" class="btn btn-sm btn-quiet" data-act="ignoreDay" data-dep="${x.deployment_id}" data-tip="${'You’ve looked at it and its numbers stand.\nIt moves to Done and stops being marked as flagged on every page.\nA repair stays possible.'}">Ignore</button>`) : ''}
         <a class="small" href="${href(`d/${x.deployment_id}`)}">Open deployment ›</a></div>
     </div>
   </details>`;
@@ -137,8 +154,12 @@ function dayCheckSection(c, day) {
   if (!c) return loading(3);
   const results = c.results || [];
   const flagged = results.filter(x => x.status !== 'ok');
+  const todo = flagged.filter(x => !isDone(x)), done = flagged.filter(isDone);
   const fine = results.filter(x => x.status === 'ok');
-  const counts = Object.entries(c.counts || {}).sort((a, b) => Object.keys(CHECK).indexOf(a[0]) - Object.keys(CHECK).indexOf(b[0]));
+  // what's left to do, by finding; then how many are done
+  const tally = {};
+  for (const x of [...todo, ...fine]) tally[x.status] = (tally[x.status] || 0) + 1;
+  const counts = Object.entries(tally).sort((a, b) => Object.keys(CHECK).indexOf(a[0]) - Object.keys(CHECK).indexOf(b[0]));
   const days = c.days || [];
   return html`<div class="dc">
     <div class="dc-bar">
@@ -147,9 +168,11 @@ function dayCheckSection(c, day) {
       <span class="grow"></span>
       <button type="button" class="btn btn-sm" data-act="runCheck" ${c.run && c.run.status === 'running' ? 'disabled' : ''}>Run the day check${c.day ? ` for ${dDay(fromDay(day || c.day))}` : ' now'}</button>
     </div>
-    ${counts.length ? html`<div class="dc-counts">${counts.map(([k, n]) => html`<span>${pill(k)} ${n}</span>`)}</div>` : ''}
+    ${counts.length || done.length ? html`<div class="dc-counts">${counts.map(([k, n]) => html`<span>${pill(k)} ${n}</span>`)}${done.length ? html`<span><span class="dc-pill t-done" data-tip="Repaired, or ignored with its numbers left as they are">Done</span> ${done.length}</span>` : ''}</div>` : ''}
     ${!results.length ? empty('', c.day ? 'No results for this day yet.' : 'The day check runs by itself once the 15:45 export succeeds. Each deployment’s day is replayed from its open on Kite’s 1-minute candles and checked against what the app did.')
-      : html`<div class="dc-list">${flagged.map(x => checkRow(x, flagged.length <= 3, c.day))}
+      : html`<div class="dc-list">${todo.map(x => checkRow(x, todo.length <= 3, c.day))}
+        ${!todo.length && done.length ? html`<p class="small mute dc-clear" style="margin:0">Nothing left to do for this day: ${done.length === 1 ? 'the flagged deployment is' : `all ${done.length} flagged are`} repaired or ignored.</p>` : ''}
+        ${done.length ? html`<details class="dc-fine dc-done"><summary>${done.length} done: repaired or ignored</summary>${done.map(x => checkRow(x, false, c.day))}</details>` : ''}
         ${fine.length ? html`<details class="dc-fine"><summary>${plural(fine.length, 'deployment')} as expected</summary>${fine.map(x => checkRow(x, false, c.day))}</details>` : ''}</div>`}
   </div>`;
 }
@@ -200,6 +223,17 @@ export default {
           say('The day check is running. It replays every deployment, so it takes a few minutes.');
           await loadChecks();
         } catch (e) { fail(e, 'Couldn’t start the day check'); }
+      },
+      ignoreDay: async x => {
+        try {
+          await api.dismissDay(dc.day, x.dep);
+          say('Ignored. Its numbers stand: it’s in Done and no longer marked as flagged.');
+          await Promise.all([loadChecks(), book.load(['book'])]);
+        } catch (e) { fail(e, 'Couldn’t ignore it'); }
+      },
+      unignoreDay: async x => {
+        try { await api.dismissDay(dc.day, x.dep, true); say('Back on the list, and flagged again.'); await Promise.all([loadChecks(), book.load(['book'])]); }
+        catch (e) { fail(e, 'Couldn’t undo it'); }
       },
       dismissReport: async x => {
         try { await api.dismissStrategyIssue(x.id); say('Dismissed. If the deployment reports it again, it comes back.'); await loadAlerts(); await loadReported(); pollStatus(); }

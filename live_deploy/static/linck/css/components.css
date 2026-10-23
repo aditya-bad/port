@@ -347,6 +347,12 @@ a.fix-tag:hover, a.fix-flag:hover { background: var(--soft); }
 .dc-fine { margin-top: 4px; }
 .dc-fine > summary { cursor: pointer; padding: 6px 0; color: var(--mute); font-weight: 600; }
 .dc-fine .dc-row { margin-top: 6px; }
+.dc-row.t-mute { border-left-color: var(--line2); }
+.dc-row.is-done > summary .dc-head { color: var(--mute); }
+.dc-row.is-done > summary .dc-pill { background: none; border-color: var(--line2); color: var(--mute); }   /* what it was; the tag says it's dealt with */
+.dc-done-tag { font-size: 11px; font-weight: 700; padding: 1px 6px; border: 1px solid var(--line2); color: var(--mute); white-space: nowrap; }
+.dc-done-tag.ok { border-color: var(--g); color: var(--g); }
+.dc-pill.t-done { border-color: var(--line2); color: var(--ink); }
 @media (max-width: 700px) {
   .dc-end { grid-template-columns: 1fr; }
   .dc-trades > div { grid-template-columns: minmax(0, 1fr); gap: 2px; padding: 8px 0; }

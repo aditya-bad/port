@@ -506,14 +506,20 @@ async def get_day_checks(request: Request, day: Optional[str] = None):
     if d is None:
         return {"day": None, "days": [], "run": None, "results": [], "counts": {}}
     run = await pool.fetchrow("SELECT * FROM day_check_runs WHERE day = $1 ORDER BY id DESC LIMIT 1", d)
+    # with the repair applied to that day, if any: the Repair page lists a
+    # flagged day as done once it's repaired (or dismissed, "ignored")
     rows = await pool.fetch(
-        "SELECT c.*, dp.deployment_name, dp.strategy_name, dp.mode FROM day_checks c "
-        "JOIN deployments dp ON dp.id = c.deployment_id WHERE c.day = $1", d)
+        "SELECT c.*, dp.deployment_name, dp.strategy_name, dp.mode, r.id AS repair_id, r.applied_at AS repaired_at "
+        "FROM day_checks c JOIN deployments dp ON dp.id = c.deployment_id "
+        "LEFT JOIN LATERAL (SELECT id, applied_at FROM stall_repairs s WHERE s.deployment_id = c.deployment_id "
+        "  AND s.day = c.day AND s.undone_at IS NULL ORDER BY applied_at DESC LIMIT 1) r ON true "
+        "WHERE c.day = $1", d)
     results = sorted(({
         "deployment_id": str(r["deployment_id"]), "name": r["deployment_name"], "strategy": r["strategy_name"],
         "mode": r["mode"], "status": r["status"], "headline": r["headline"], "rules": r["rules"] or [],
         "diff": r["diff"] or {}, "replay": r["replay"] or {}, "checked_at": r["checked_at"].isoformat(),
         "dismissed_at": r["dismissed_at"].isoformat() if r["dismissed_at"] else None,
+        "repaired": {"id": str(r["repair_id"]), "applied_at": r["repaired_at"].isoformat()} if r["repair_id"] else None,
     } for r in rows), key=lambda x: (_CHECK_ORDER.get(x["status"], 9), x["name"]))
     counts: dict = {}
     for x in results:

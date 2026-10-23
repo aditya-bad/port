@@ -132,3 +132,21 @@ def test_only_a_flagged_unrepaired_day_can_be_dismissed(client):
     assert client.post(f"/v2/repair-cases/{ok}/{d['id']}/dismiss", json={}).status_code == 409
     assert client.post(f"/v2/repair-cases/{fixed}/{d['id']}/dismiss", json={}).status_code == 409
     assert client.post(f"/v2/repair-cases/{TODAY}/{d['id']}/dismiss", json={}).status_code == 409, "never checked"
+
+
+def test_the_day_check_says_which_flagged_days_are_repaired_or_ignored(client):
+    """The Repair page moves a flagged day out of the to-do list once it's
+    been repaired or ignored: /v2/day-checks says which, and when."""
+    y = TODAY - timedelta(days=1)
+    deps = {n: make_deployment(client, name=n) for n in ("Still open", "Fixed", "Left as is", "Fixed then undone")}
+    for d in deps.values():
+        check(client, d, y, "mismatch", "Traded differently")
+    fixed = repair(client, deps["Fixed"], y)
+    repair(client, deps["Fixed then undone"], y, undone=True)
+    assert client.post(f"/v2/repair-cases/{y}/{deps['Left as is']['id']}/dismiss", json={}).status_code == 200
+    rows = {x["name"]: x for x in client.get(f"/v2/day-checks?day={y}").json()["results"]}
+    assert rows["Fixed"]["repaired"]["id"] == str(fixed) and rows["Fixed"]["repaired"]["applied_at"]
+    assert rows["Fixed"]["dismissed_at"] is None
+    assert rows["Left as is"]["repaired"] is None and rows["Left as is"]["dismissed_at"]
+    assert rows["Still open"]["repaired"] is None and rows["Still open"]["dismissed_at"] is None
+    assert rows["Fixed then undone"]["repaired"] is None, "an undone repair puts the day back on the list"

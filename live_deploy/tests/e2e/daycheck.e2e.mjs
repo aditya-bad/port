@@ -72,3 +72,72 @@ test('on a phone the day check stacks and fits', async () => {
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+// Once a flagged day is repaired, or ignored (its numbers left as they
+// are), it leaves the to-do list for Done: it used to stay listed with
+// "Review and repair" after the repair was applied.
+test('a flagged day you ignore moves to Done and stops being flagged; undo brings it back', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/repair`);
+  await p.waitForSelector('.dc-list > .dc-row');
+  const todo = p.locator('.dc-list > .dc-row');
+  assert.equal(await todo.count(), 3);
+  const row = todo.nth(1), dep = await row.getAttribute('data-dc');
+  const day = (await api(ctx, '/v2/day-checks')).day;
+  const flagged = async () => (await api(ctx, '/v2/book')).repairs.filter(m => m.deployment_id === dep && m.day === day && m.state === 'flagged').length;
+  assert.equal(await flagged(), 1);
+  // whatever happens below, leave the day flagged for the specs after this one
+  const restore = () => ctx.request.post(`${BASE}/v2/repair-cases/${day}/${dep}/dismiss`, { data: { undo: true } });
+  try {
+  await row.locator('[data-act="ignoreDay"]').click();
+  await until(async () => (await todo.count()) === 2);
+  assert.match(await p.locator('.dc-done > summary').innerText(), /1 done: repaired or ignored/);
+  assert.match(await p.locator('.dc-counts').innerText(), /Done\s*1/i);
+  const done = p.locator(`.dc-done .dc-row[data-dc="${dep}"]`);
+  assert.equal(await p.locator('.dc-done').evaluate(el => el.open), false, 'Done is folded away');
+  await p.locator('.dc-done > summary').click();
+  assert.match(await done.locator('summary').innerText(), /Ignored/);
+  assert.equal(await flagged(), 0, 'no longer marked as flagged anywhere');
+  // still there to open, and undo puts it back on the list
+  await done.locator('summary').click();
+  await done.locator('[data-act="unignoreDay"]').click();
+  await until(async () => (await todo.count()) === 3);
+  assert.equal(await p.locator('.dc-done').count(), 0);
+  assert.equal(await flagged(), 1, 'flagged again');
+  } finally { await restore(); }
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('a repaired day is in Done with its repair to open, and nothing is left to do once all are', async () => {
+  const ctx = await context(b, { blockSW: true });
+  const p = await ctx.newPage();
+  let all = false;
+  // the repair worker isn't run here: the day check's answer says which are repaired
+  await ctx.route('**/v2/day-checks*', async r => {
+    const res = await r.fetch(), body = await res.json();
+    for (const x of body.results) {
+      if (x.status !== 'ok' && (all || x.name === 'BankNifty DTT Plain')) x.repaired = { id: 'r1', applied_at: new Date().toISOString() };
+    }
+    await r.fulfill({ response: res, json: body });
+  });
+  await p.goto(`${BASE}/linck/#/repair`);
+  await p.waitForSelector('.dc-done');
+  assert.equal(await p.locator('.dc-list > .dc-row').count(), 2, 'two left to do');
+  const done = p.locator('.dc-done .dc-row');
+  assert.equal(await done.count(), 1);
+  await p.locator('.dc-done > summary').click();
+  assert.match(await done.locator('summary').innerText(), /BankNifty DTT Plain[\s\S]*Repaired/);
+  await done.locator('summary').click();
+  assert.equal(await done.locator('a', { hasText: 'Open the repair' }).count(), 1);
+  assert.equal(await done.locator('[data-act="ignoreDay"]').count(), 0, 'nothing to ignore once repaired');
+  assert.doesNotMatch(await p.locator('.dc-counts').innerText(), /Rule broken/i, 'the counts are of what’s left to do');
+  all = true;
+  await p.reload();
+  await p.waitForSelector('.dc-clear');
+  assert.match(await p.locator('.dc-clear').innerText(), /Nothing left to do for this day: all 3 flagged are repaired or ignored/);
+  assert.equal(await p.locator('.dc-list > .dc-row').count(), 0);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
