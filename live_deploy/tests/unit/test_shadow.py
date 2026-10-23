@@ -169,3 +169,86 @@ def test_the_underlying_from_a_symbol():
     assert shadow.underlying_of("NIFTY26OCT25800CE") == "NIFTY"
     assert shadow.underlying_of("BANKNIFTY26OCT55700PE") == "BANKNIFTY"
     assert shadow.underlying_of("SENSEX2610282000CE") == "SENSEX"
+
+
+# ── ready for live? ─────────────────────────────────────────────────────
+
+from datetime import date, datetime, timedelta, timezone
+
+
+def chk(lot, day, verdict="fill", shortfall=0.0, paper=100.0, qty=75, orders=1):
+    at = datetime.combine(day, datetime.min.time(), timezone.utc) + timedelta(hours=5)
+    return {"lot_id": lot, "executed_at": at.isoformat(), "verdict": verdict, "shortfall": shortfall,
+            "paper_price": paper, "filled_qty": qty if verdict in ("fill", "worse", "partial") else None,
+            "qty": qty, "orders": orders, "symbol": f"S{lot}"}
+
+
+D0 = date(2026, 9, 1)
+
+
+def days(n):
+    return [D0 + timedelta(days=i) for i in range(n)]
+
+
+def test_an_intraday_record_of_20_clean_sessions_is_ready():
+    checks = [chk(f"{i}a", d) for i, d in enumerate(days(20))] + [chk(f"{i}b", d, "worse", 7.5) for i, d in enumerate(days(20))]
+    c = shadow.card("intraday", checks, [], {}, 0)
+    assert c["ready"] and c["state"] == "ready" and c["sessions"] == 20
+    assert c["accepted_pct"] == 100 and c["filled_pct"] == 100
+    assert c["shortfall_pct"] == pytest.approx(0.05)    # ₹7.5 on ₹7,500, half the fills
+    assert [r["ok"] for r in c["rules"]] == [True, True, True, True]
+
+
+def test_not_yet_says_which_rule_and_by_how_much():
+    checks = [chk(f"{i}", d) for i, d in enumerate(days(12))]
+    checks.append(chk("r", days(12)[-1], "reject"))
+    checks.append(chk("w", days(12)[-1], "worse", 150.0))    # 2% on one fill
+    c = shadow.card("intraday", checks, [], {}, 2)
+    assert not c["ready"] and c["state"] == "not_yet"
+    r = {x["key"]: x for x in c["rules"]}
+    assert r["record"]["value"] == "12 of 20" and not r["record"]["ok"]
+    assert r["rejects"]["value"] == "1 refused" and not r["rejects"]["ok"]
+    assert r["price"]["ok"], "0.15% on average is inside 1%"
+    assert r["repairs"]["value"] == "2 open" and not r["repairs"]["ok"]
+    assert c["worst"]["shortfall"] == 150.0 and c["worst"]["symbol"] == "Sw"
+
+
+def test_a_reject_older_than_the_last_ten_sessions_no_longer_counts():
+    ds = days(25)
+    checks = [chk(f"{i}", d) for i, d in enumerate(ds)] + [chk("old", ds[5], "reject")]
+    assert shadow.card("intraday", checks, [], {}, 0)["ready"]
+    checks.append(chk("new", ds[20], "reject"))
+    assert not shadow.card("intraday", checks, [], {}, 0)["ready"]
+
+
+def test_unknown_checks_dont_count_towards_the_record():
+    checks = [chk(f"{i}", d, "unknown") for i, d in enumerate(days(25))]
+    c = shadow.card("intraday", checks, [], {}, 0)
+    assert c["sessions"] == 0 and c["accepted_pct"] is None and not c["ready"]
+    assert {x["key"]: x["value"] for x in c["rules"]}["price"] == "no fills yet"
+    assert shadow.card("intraday", [], [], {}, 0)["state"] == "none"
+
+
+def test_positional_counts_full_cycles_and_the_pnl_live_couldnt_have_made():
+    ep = lambda ps, pnl, closed=True: {"positions": ps, "closed": closed, "pnl": pnl}   # noqa: E731
+    lots = {"p1": ["a", "b"], "p2": ["c", "d"], "p3": ["e", "f"], "p4": ["g", "h"], "p5": ["i"]}
+    d = days(9)
+    checks = [chk("a", d[0]), chk("b", d[1]),                       # cycle 1: complete
+              chk("c", d[2], "reject"), chk("d", d[3]),             # cycle 2: Kite refuses its entry
+              chk("e", d[4]), chk("f", d[5], "no_fill"),            # cycle 3: its exit wouldn't fill
+              chk("g", d[6]), chk("h", d[7], "unknown"),            # cycle 4: one fill unchecked
+              chk("i", d[8])]                                       # cycle 5: still open
+    eps = [ep(["p1"], [1000, 900, 850]), ep(["p2"], [5000, 4800, 4700]), ep(["p3"], [-700, -800, -850]),
+           ep(["p4"], [200, 150, 100]), ep(["p5"], [0, 0, 0], closed=False)]
+    c = shadow.card("positional", checks, eps, lots, 0)
+    assert c["cycles"] == 3, "1, 2 and 3 are fully checked; 4 isn't; 5 is open"
+    assert {x["key"]: x for x in c["rules"]}["record"]["value"] == "3 of 3"
+    assert c["refused"] == {"n": 1, "pnl": 5000, "pnl_net": 4800, "pnl_net_slip": 4700}
+    assert c["unfilled"] == {"n": 1, "pnl": -700, "pnl_net": -800, "pnl_net_slip": -850}
+    assert c["total"] == {"pnl": 5500, "pnl_net": 5050, "pnl_net_slip": 4800}
+    assert not c["ready"], "a refusal in the last ten sessions"
+
+
+def test_freeze_splits_are_counted():
+    c = shadow.card("intraday", [chk("a", D0, orders=3), chk("b", D0)], [], {}, 0)
+    assert c["splits"] == 1

@@ -539,3 +539,122 @@ def submit(fill: dict) -> None:
         svc.submit(fill)
     except Exception:
         logger.exception("Couldn't hand %s to shadow mode", fill.get("symbol"))
+
+
+# ── ready for live? ─────────────────────────────────────────────────────
+
+# The bar a deployment's shadow record has to clear (the "Standard" one).
+READY = {"sessions": 20, "cycles": 3, "clean_sessions": 10, "shortfall_pct": 1.0}
+FILLED = ("fill", "worse", "partial")
+
+
+def _day(t) -> date:
+    t = datetime.fromisoformat(t) if isinstance(t, str) else t
+    return t.astimezone(IST).date()
+
+
+def card(mode: str, checks: list[dict], episodes: list[dict], lots_of: dict, open_cases: int,
+         bar: Optional[dict] = None) -> dict:
+    """Pure: one deployment's shadow record -> its "ready for live?" card.
+
+    checks:    shadow_checks rows (row_out) of its fills
+    episodes:  its cycles: {"positions": [position ids], "closed": bool,
+               "pnl": [gross, net, net+slip]}
+    lots_of:   {position id: [lot ids]}
+    open_cases: days the end-of-day check flagged that nobody repaired or
+               dismissed (the Repair page)
+    """
+    bar = {**READY, **(bar or {})}
+    known = [c for c in checks if c["verdict"] != "unknown"]
+    verdict = {c["lot_id"]: c["verdict"] for c in checks}
+    days = sorted({_day(c["executed_at"]) for c in known})
+    counts: dict[str, int] = {}
+    for c in checks:
+        counts[c["verdict"]] = counts.get(c["verdict"], 0) + 1
+    recent = set(days[-bar["clean_sessions"]:])
+    recent_rejects = sum(1 for c in known if c["verdict"] == "reject" and _day(c["executed_at"]) in recent)
+
+    filled = [c for c in known if c["verdict"] in FILLED and c.get("filled_qty")]
+    value = sum(float(c["paper_price"]) * float(c["filled_qty"]) for c in filled)
+    short = sum(float(c["shortfall"] or 0) for c in filled)
+    worst = max(filled, key=lambda c: float(c["shortfall"] or 0), default=None)
+
+    # cycles: complete when every fill in it was checked; refused when live
+    # would have refused one of its orders, unfilled when one wouldn't fill
+    complete, refused, unfilled, total = 0, [0, 0.0, 0.0, 0.0], [0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
+    for ep in episodes:
+        if not ep["closed"]:
+            continue
+        lots = [lot for p in ep["positions"] for lot in lots_of.get(p, [])]
+        vs = [verdict.get(lot) for lot in lots]
+        total = [a + b for a, b in zip(total, ep["pnl"])]
+        if lots and all(v not in (None, "unknown") for v in vs):
+            complete += 1
+        hit = refused if "reject" in vs else unfilled if "no_fill" in vs else None
+        if hit is not None:
+            hit[0] += 1
+            for i in range(3):
+                hit[i + 1] += ep["pnl"][i]
+
+    intraday = mode == "intraday"
+    have = len(days) if intraday else complete
+    need = bar["sessions"] if intraday else bar["cycles"]
+    avg = short / value * 100 if value else None
+    unit = "session" if intraday else "full cycle"
+    rules = [
+        {"key": "record", "ok": have >= need, "label": f"At least {need} {unit}s in shadow",
+         "value": f"{have} of {need}"},
+        {"key": "rejects", "ok": recent_rejects == 0, "label": f"Nothing Kite would refuse in the last {bar['clean_sessions']} sessions",
+         "value": "none" if not recent_rejects else f"{recent_rejects} refused"},
+        {"key": "price", "ok": avg is not None and avg <= bar["shortfall_pct"], "label": f"Fills within {bar['shortfall_pct']:g}% of the paper price on average",
+         "value": "no fills yet" if avg is None else f"{avg:.2f}% worse"},
+        {"key": "repairs", "ok": open_cases == 0, "label": "No open Repair case",
+         "value": "none" if not open_cases else f"{open_cases} open"},
+    ]
+    n = len(known)
+    return {
+        "ready": all(r["ok"] for r in rules), "state": "none" if not checks else "ready" if all(r["ok"] for r in rules) else "not_yet",
+        "rules": rules, "counts": counts, "checked": len(checks), "sessions": len(days), "cycles": complete,
+        "accepted_pct": round((n - counts.get("reject", 0)) / n * 100, 1) if n else None,
+        "filled_pct": round(sum(1 for c in known if c["verdict"] in ("fill", "worse")) / n * 100, 1) if n else None,
+        "shortfall": round(short, 2), "shortfall_pct": None if avg is None else round(avg, 3),
+        "worst": None if worst is None or not worst["shortfall"] else
+            {"shortfall": float(worst["shortfall"]), "symbol": worst["symbol"], "at": worst["executed_at"]},
+        "splits": sum(1 for c in checks if (c.get("orders") or 1) > 1),
+        "refused": {"n": refused[0], "pnl": round(refused[1], 2), "pnl_net": round(refused[2], 2), "pnl_net_slip": round(refused[3], 2)},
+        "unfilled": {"n": unfilled[0], "pnl": round(unfilled[1], 2), "pnl_net": round(unfilled[2], 2), "pnl_net_slip": round(unfilled[3], 2)},
+        "total": {"pnl": round(total[0], 2), "pnl_net": round(total[1], 2), "pnl_net_slip": round(total[2], 2)},
+        "bar": bar,
+    }
+
+
+async def scorecards(pool, deployment_id=None) -> dict[str, dict]:
+    """Every deployment's card (or one's)."""
+    from .db import queries
+    from .v2 import book
+    one = [deployment_id] if deployment_id is not None else None
+    deps = await pool.fetch("SELECT id, mode FROM deployments WHERE $1::uuid[] IS NULL OR id = ANY($1::uuid[])", one)
+    rows = await pool.fetch("SELECT * FROM shadow_checks WHERE $1::uuid[] IS NULL OR deployment_id = ANY($1::uuid[])", one)
+    lots = await pool.fetch("SELECT id, position_id, deployment_id FROM position_lots WHERE $1::uuid[] IS NULL OR deployment_id = ANY($1::uuid[])", one)
+    cases = await pool.fetch(
+        """SELECT c.deployment_id, count(*) AS n FROM day_checks c
+           WHERE c.status IN ('rule', 'mismatch', 'ambiguous') AND c.dismissed_at IS NULL
+             AND ($1::uuid[] IS NULL OR c.deployment_id = ANY($1::uuid[]))
+             AND NOT EXISTS (SELECT 1 FROM stall_repairs r WHERE r.deployment_id = c.deployment_id AND r.day = c.day AND r.undone_at IS NULL)
+           GROUP BY c.deployment_id""", one)
+    async with pool.acquire() as conn:
+        positions, reasons = await book._positions(conn)
+    checks: dict = {}
+    for r in rows:
+        checks.setdefault(r["deployment_id"], []).append(row_out(r))
+    lots_of: dict = {}
+    for r in lots:
+        lots_of.setdefault(r["position_id"], []).append(str(r["id"]))
+    by_dep = book._by_dep(positions)
+    open_cases = {r["deployment_id"]: int(r["n"]) for r in cases}
+    out = {}
+    for d in deps:
+        eps = [{"positions": [r["id"] for r in ep["rows"]], "closed": ep["end"] is not None, "pnl": list(book._bases(ep["rows"]))}
+               for ep in queries._group_into_episodes(by_dep.get(d["id"], []), reasons)]
+        out[str(d["id"])] = card(d["mode"], checks.get(d["id"], []), eps, lots_of, open_cases.get(d["id"], 0))
+    return out

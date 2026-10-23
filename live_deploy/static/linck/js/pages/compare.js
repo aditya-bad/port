@@ -19,6 +19,7 @@ import { say } from '../ui/toast.js';
 import { openDialog } from '../ui/dialog.js';
 import { resolve, decode, encode, keyOf } from '../data/groups.js';
 import { repairsLine } from '../ui/repairs.js';
+import { readyShort } from '../ui/shadow.js';
 
 const st = ui('compare', { items: [], p: 'all', norm: false, comb: false, mode: 'all', q: '', view: false });
 if (!Array.isArray(st.get().items)) st.set({ items: (st.get().ids || []).map(id => ({ ids: [id] })) });   // saved before groups
@@ -169,6 +170,7 @@ export default {
         ['Capital', groups.length ? 'added up for a group · not scored' : 'not scored', null, null],
         ...(groups.length ? [['Deployments', 'combined into each · not scored', null, null]] : []),
         ['Trades', 'sample size, not scored', m => String(m.n), null],
+        ['Ready for live', 'shadow mode · not scored', null, null],
       ];
       const wins = deps.map(() => 0);
       const mrows = R.map(([l, h, f, val, col]) => {
@@ -177,7 +179,9 @@ export default {
           const vs = deps.map(x => val(x.m)), mx = Math.max(...vs);
           if (vs.filter(q => q === mx).length === 1) { b = vs.indexOf(mx); wins[b]++; }
         }
-        const cell = x => (l === 'Capital' ? inrS(x.v.cap, { sign: false }) : l === 'Deployments' ? String(x.v.isGroup ? x.v.members.length : 1) : f(x.m));
+        const ready = x => { if (x.v.isGroup) return '—'; const c = book.shadowCard(x.v.id), r = readyShort(c); return c && c.state === 'not_yet' ? `Not yet · ${c.rules.filter(q => !q.ok).length} to clear` : r.text; };
+        const cell = x => (l === 'Capital' ? inrS(x.v.cap, { sign: false }) : l === 'Deployments' ? String(x.v.isGroup ? x.v.members.length : 1)
+          : l === 'Ready for live' ? ready(x) : f(x.m));
         return { l, h, win: b >= 0 ? deps[b].v.name : val ? 'Tie' : '—', cells: deps.map((x, i) => ({ v: cell(x), cls: col ? col(x.m) : '', best: i === b })) };
       });
       const scored = R.filter(r => r[3]).length, bi = wins.indexOf(Math.max(...wins)), Ld = deps[bi], others = deps.filter((_, i) => i !== bi);

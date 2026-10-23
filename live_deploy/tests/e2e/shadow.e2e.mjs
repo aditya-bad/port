@@ -36,6 +36,12 @@ for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     assert.match(await rej.getAttribute('data-tip'), /Lot size: Kite takes whole lots only[\s\S]*Freeze limit: Within the freeze limit of 1,050 \(config\)/);
     assert.match(await panel.locator('[data-shadow="worse"]').innerText(), /Would fill ₹\d+ worse/);
     assert.equal(await panel.locator('.sh-row').count(), 8, 'the latest eight');
+    // ready for live? not yet: a refusal in its last ten sessions, too short a record
+    const card = panel.locator('.ready-card[data-ready="not_yet"]');
+    assert.match(await card.innerText(), /Not ready for live yet/);
+    assert.match(await card.locator('[data-rule="record"]').innerText(), /At least 20 sessions in shadow\s+\d+ of 20/);
+    assert.match(await card.locator('li.no[data-rule="rejects"]').innerText(), /Nothing Kite would refuse in the last 10 sessions\s+1 refused/);
+    assert.match(await card.locator('.ready-stats').innerText(), /Kite would accept[\s\S]*%[\s\S]*Worse than paper/);
     await panel.locator('[data-act="shadowAll"]').click();
     assert.equal(await p.locator('[data-shadow-panel] .sh-row').count(), total, 'then all of them');
     await p.locator('[data-shadow-panel] [data-act="shadowAll"]').click();
@@ -82,6 +88,37 @@ test('an order Kite would refuse is an alert, once for the day', async () => {
   await p.click('.alerts-btn');
   await p.waitForSelector('.apanel');
   assert.equal(await p.locator('.apanel .ap-item[data-key]', { hasText: 'would have refused' }).count(), 0, 'dismissed for the day');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('Geek mode: Live-ready, with the card, the days and every fill', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/shadow`);
+  await p.waitForSelector('#gkView .ready-card');
+  const chart = p.locator('#gkView svg[aria-label="Worse than paper, day by day"]');
+  assert.ok(await chart.locator('.hit[data-tip]').count() >= 2, 'a tip on each day');
+  assert.match(await chart.locator('.hit[data-tip]').last().getAttribute('data-tip'), /Fills checked {2}\d+[\s\S]*Kite would refuse {2}1/);
+  await p.locator('#gkView [data-act="v"][data-k="reject"]').click();
+  assert.equal(await p.locator('#gkView .gk-tbl .tr:not(.th)').count(), 1, 'the one Kite would refuse');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('the Leaderboard and Compare say which deployments are ready for live', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/leaderboard`);
+  const chip = p.locator(`[data-ready-of="${ID}"]`);
+  await chip.waitFor();
+  assert.equal((await chip.innerText()).trim(), 'Not yet');
+  assert.match(await chip.getAttribute('data-tip'), /✗ Nothing Kite would refuse in the last 10 sessions {2}1 refused/);
+  assert.equal((await p.locator(`[data-ready-of="${IDS['Nifty Strangle B']}"]`).innerText()).trim(), 'No record');
+  await p.goto(`${BASE}/linck/#/compare?ids=${ID},${IDS['Nifty Strangle B']}`);
+  const row = p.locator('.mrow', { hasText: 'Ready for live' }).first();
+  await row.waitFor();
+  assert.match(await row.innerText(), /Not yet · \d to clear[\s\S]*No record/);
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });

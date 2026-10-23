@@ -143,9 +143,18 @@ async def get_shadow(deployment_id: UUID, request: Request, limit: int = 50):
         raise HTTPException(404, "No such deployment")
     counts = await pool.fetch("SELECT verdict, count(*) AS n FROM shadow_checks WHERE deployment_id = $1 GROUP BY verdict", deployment_id)
     svc = getattr(request.app.state, "shadow", None)
+    cards = await shadow.scorecards(pool, deployment_id)
     return {"checks": await shadow.list_checks(pool, deployment_id, max(1, min(limit, 500))),
-            "counts": {r["verdict"]: int(r["n"]) for r in counts},
+            "counts": {r["verdict"]: int(r["n"]) for r in counts}, "card": cards.get(str(deployment_id)),
             "enabled": bool(svc and svc.enabled), "buffer_pct": svc.buffer_pct if svc else shadow.BUFFER_PCT}
+
+
+@router.get("/shadow/scorecards")
+async def get_shadow_scorecards(request: Request):
+    """Every deployment's "ready for live?" card from its shadow record
+    (app/shadow.py card): {deployment id: card}."""
+    from .. import shadow
+    return await shadow.scorecards(request.app.state.db_pool)
 
 
 @router.get("/shadow/rejections")

@@ -13,8 +13,8 @@ import { dayKey } from '../core/format.js';
 import { LAB_TAG, YOUNG_DAYS, QUIET_DAYS } from './config.js';
 import { tradeMetrics } from './metrics.js';
 
-const raw = { deployments: [], positions: [], trades: [], daily: [], repairs: [], cycles: {}, session: null, strategies: [], tags: [], health: {}, spike: null, exposure: null, shadowRej: [] };
-const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false, health: false, spike: false, exposure: false, shadow: false };
+const raw = { deployments: [], positions: [], trades: [], daily: [], repairs: [], cycles: {}, session: null, strategies: [], tags: [], health: {}, spike: null, exposure: null, shadowRej: [], cards: {} };
+const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false, health: false, spike: false, exposure: false, shadow: false, cards: false };
 const errors = {};
 let version = 0;
 
@@ -33,11 +33,18 @@ const LOADERS = {
   exposure: async () => { raw.exposure = await api.vixExposure(); },
   // orders Kite would have refused today (app/shadow.py), per deployment and rule
   shadow: async () => { raw.shadowRej = (await api.shadowRejections()).rejections || []; },
+  // each deployment's "ready for live?" card from its shadow record
+  cards: async () => { raw.cards = await api.shadowCards(); },
 };
 
 export async function load(kinds = Object.keys(LOADERS)) {
   await Promise.all(kinds.map(async k => {
     try { await LOADERS[k](); loaded[k] = true; delete errors[k]; } catch (e) { errors[k] = e.message; }
+    // as each kind lands, not once the slowest has: a page painted in
+    // between (another load's 'data') must not read figures memoized
+    // from before it (the Strategy page forgot its picks that way)
+    version++;
+    cache.clear();
   }));
   version++;
   cache.clear();
@@ -54,12 +61,12 @@ listen('event', ev => {
   const t = ev.event_type || '';
   if (/fill|execution|flatten|removed|close/.test(t)) {
     refresh('deployments', 'positions', 'book', 'session', 'health');
-    setTimeout(() => refresh('shadow'), 8000);   // checked a few seconds after the fill
+    setTimeout(() => refresh('shadow', 'cards'), 8000);   // checked a few seconds after the fill
   } else refresh('deployments', 'session');
 });
 setInterval(() => refresh('deployments', 'session'), 60000);   // snapshots land every 5 min
 setInterval(() => refresh('positions'), 30000);                 // server-side marks when no ticks flow
-setInterval(() => refresh('health'), 600000);                   // the server checks every 10 minutes
+setInterval(() => refresh('health', 'cards'), 600000);          // the server checks every 10 minutes
 setInterval(() => refresh('spike', 'exposure', 'shadow'), 60000); // and VIX every minute
 
 // ── Live leg P&L ──────────────────────────────────────────────────
@@ -266,6 +273,7 @@ export function totals(list) {
 export const healthOf = id => raw.health[id] || [];
 export const vixExposure = () => raw.exposure;
 export const shadowRejections = () => raw.shadowRej;
+export const shadowCard = id => raw.cards[id] || null;
 export const vixSpike = () => (raw.spike && raw.spike.spiking ? raw.spike : null);
 export const allTrades = () => raw.trades;
 export const allDaily = () => raw.daily;

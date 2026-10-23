@@ -14,6 +14,7 @@ import { STREAK_ALERT } from '../data/config.js';
 import { seg, check, empty } from '../ui/components.js';
 import { say } from '../ui/toast.js';
 import { cyclesMark } from '../ui/repairs.js';
+import { readyShort } from '../ui/shadow.js';
 
 const st = ui('leaderboard', { p: 'year', sk: 'rdd', lab: false, board: 'overview' });
 
@@ -120,6 +121,7 @@ export default {
           <div class="lb-tbl">
             <div class="tr th"><span></span><span>#</span><span>Deployment</span>
               ${cols.map(([k, l]) => html`<button type="button" class="right ${s.sk === k ? 'on' : ''}" data-act="sk" data-v="${k}">${l}${s.sk === k ? ' ↓' : ''}</button>`)}
+              <span data-tip="${'From shadow mode: would Kite have taken its orders, at about the paper price?'}">Live-ready</span>
               <span style="padding-left:16px">Flags</span></div>
             ${rows.map(x => html`
               <div class="tr hover ${sel.has(x.v.id) ? 'sel' : ''} ${x.unranked ? 'unranked' : ''}">
@@ -134,6 +136,7 @@ export default {
                 <span class="num" title="${verdictPf(x.m.pf)}">${K.pf[1](x.m)}</span>
                 <span class="num">${K.cons[1](x.m)}</span>
                 <span class="num mute">${x.m.n}</span>
+                <span>${(r => html`<span class="flag sh-chip ${r.cls}" data-ready-of="${x.v.id}" data-tip="${r.tip}">${r.text}</span>`)(readyShort(book.shadowCard(x.v.id)))}</span>
                 <span class="row wrap" style="gap:4px;padding-left:16px">${cyclesMark(x.v, since(s.p))}${flags(x).map(([t, c]) => html`<span class="flag ${c}">${t}</span>`)}</span>
               </div>`)}
           </div>

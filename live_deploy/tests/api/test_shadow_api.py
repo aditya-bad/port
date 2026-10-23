@@ -72,3 +72,27 @@ def test_each_fill_of_a_cycle_carries_its_verdict(client):
     fills = [f for e in ch["events"] for f in e["fills"]]
     assert [f["shadow"]["verdict"] if f["shadow"] else None for f in fills] == ["worse", None], "the exit wasn't checked"
     assert fills[0]["lot_id"] == str(r1["lot_id"])
+
+
+def test_ready_for_live_card_per_deployment_and_for_all(client):
+    from tests.conftest import sql
+    d = make_deployment(client, name="Card")
+    y = TODAY - timedelta(days=1)
+    # trade 1: Kite would refuse its entry (100 isn't a whole 75-lot); it made ₹3,000
+    r1 = add_fill(client, d["id"], "NIFTY26OCT25000CE", 11, "sell", 100, 100, at(y, "09:30"), reason="entry")
+    r2 = add_fill(client, d["id"], "NIFTY26OCT25000CE", 11, "buy", 100, 70, at(y, "10:30"), reason="exit")
+    check(client, d, r1, "NIFTY26OCT25000CE", 11, "sell", 100, 100.0, at(y, "09:30"), lot=75, depth=BOOK)
+    check(client, d, r2, "NIFTY26OCT25000CE", 11, "buy", 100, 70.0, at(y, "10:30"), lot=None, depth={"sell": [{"price": 70.0, "quantity": 500}]})
+    # an open Repair case
+    sql(client, "INSERT INTO day_checks (day, deployment_id, status, headline) VALUES ($1, $2::uuid, 'mismatch', 'h')", y, d["id"])
+    card = client.get(f"/v2/deployments/{d['id']}/shadow").json()["card"]
+    assert card["state"] == "not_yet" and card["sessions"] == 1
+    assert card["refused"]["n"] == 1 and card["refused"]["pnl"] == pytest.approx(3000)
+    assert card["total"]["pnl"] == pytest.approx(3000)
+    rules = {r["key"]: r for r in card["rules"]}
+    assert rules["record"]["value"] == "1 of 20" and rules["rejects"]["value"] == "1 refused"
+    assert rules["repairs"]["value"] == "1 open"
+    allc = client.get("/v2/shadow/scorecards").json()
+    assert allc[d["id"]] == card
+    other = make_deployment(client, name="Nothing yet")
+    assert client.get("/v2/shadow/scorecards").json()[other["id"]]["state"] == "none"

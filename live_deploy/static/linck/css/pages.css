@@ -124,6 +124,17 @@ a.cell-name:hover b { text-decoration: underline; }
 .tr.th.hold-grid { border-top: 0; border-bottom: 1px solid var(--line); min-height: 34px; }
 .cycle-grid { grid-template-columns: 120px 72px minmax(0, 1fr) 90px; align-items: baseline; padding: 10px 0; }
 .sh-row { grid-template-columns: 120px minmax(0, 1fr) auto; align-items: baseline; gap: 12px; padding: 8px 0; }
+/* shadow mode's "ready for live?" card (ui/shadow.js) */
+.ready-card { display: flex; flex-direction: column; gap: 12px; padding: 14px 0 16px; border-bottom: 1px solid var(--line); }
+.ready-rules { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ready-rules li { display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: 13px; }
+.ready-rules li i { font-style: normal; font-weight: 700; }
+.ready-rules li.ok i { color: var(--g); }
+.ready-rules li.no i { color: var(--wt); }
+.ready-stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 18px; }
+.ready-stats > div { display: flex; flex-direction: column; gap: 2px; }
+.ready-stats .l { font-size: 12px; color: var(--mute); }
+.ready-stats .s { font-size: 11px; color: var(--mute); }
 .state-row { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .state-v { font-size: 17px; word-break: break-word; }
 @media (max-width: 900px) {
@@ -216,8 +227,8 @@ a.cell-name:hover b { text-decoration: underline; }
 .pod-bar.p2 { background: var(--ink); color: var(--paper); }
 .pod-bar.p3 { background: var(--bz); }
 .field-rank { display: grid; grid-template-columns: 28px minmax(0, 1fr) 110px; gap: 8px; align-items: center; min-height: 34px; border-bottom: 1px solid var(--line); text-decoration: none; }
-.lb-tbl { min-width: 1150px; }
-.lb-tbl .tr { grid-template-columns: 28px 44px minmax(220px, 1fr) 110px 86px 96px 130px 76px 76px 96px 64px 200px; min-height: 52px; }
+.lb-tbl { min-width: 1250px; }
+.lb-tbl .tr { grid-template-columns: 28px 44px minmax(220px, 1fr) 110px 86px 96px 130px 76px 76px 96px 64px 92px 200px; min-height: 52px; }
 .lb-tbl .tr.th { min-height: 40px; }
 .lb-tbl .tr.unranked { color: var(--mute); }
 .lb-rank { font-family: var(--f-display); font-weight: 700; font-size: 18px; letter-spacing: -.03em; }
