@@ -339,7 +339,9 @@ function load(i) {
   pausedAt = 0;
   if (STILL) { paused = true; pausedAt = s.dur; }   // reduced motion: show the finished picture
   document.querySelectorAll('.dots button').forEach((b, j) => b.classList.toggle('on', j === cur));
-  if (!RECORD) history.replaceState(null, '', `#${cur + 1}`);
+  // the scene number in the address, where allowed: viewers that show the
+  // page in a sandboxed srcdoc iframe (claude.ai artifacts) refuse it
+  if (!RECORD) try { history.replaceState(null, '', `#${cur + 1}`); } catch (e) { /* no address to update */ }
   window.__sceneDone = false;
 }
 function frame(now) {
