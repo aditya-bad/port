@@ -11,9 +11,10 @@ SVG stage, each told in steps; every step has a sentence or two of voice
 HTML file (works offline, light and dark, phone and desktop) and, when
 wanted, an MP4 per scene plus one of the whole thing.
 
-The owner liked this format for learning. Two things matter most to them:
-**it must be clear**, and **it must never look paused**, waiting for the
-narrator to catch up. Some playful life (a stamp slamming down, confetti, a
+The owner liked this format for learning. Three things matter most to them:
+**it must be clear**, **it must never look paused** (waiting for the
+narrator to catch up), and **nothing may jitter**: anything that has
+arrived stays put unless it's meant to move. Some playful life (a stamp slamming down, confetti, a
 snoring idle process) is welcome where it makes the point land, not
 everywhere.
 
@@ -94,18 +95,25 @@ scene({
 - **Pacing, the "never paused" rule.** The clock stretches each step to
   the length of its voice. The animation runs at up to 0.6× the speed you
   drew it, and never slower than 0.35×; if the voice outlasts that, the
-  animation finishes early and holds. The camera drift, spotlight and `rt`
-  effects keep moving, but a long hold still feels like waiting. `check.mjs`
-  prints, per step, animation vs voice and any hold, and warns over 1.5 s.
-  To fix one: draw more motion for that sentence, split the step, or say
-  less. Aim for animation ≈ 0.5–1× the voice.
+  animation finishes early and holds. `check.mjs` prints, per step,
+  animation vs voice and any hold (warns over 1.5 s), and **fails a scene
+  where nothing moves for 2 s** (warns over 1.2 s). To fix one: draw more
+  motion for that sentence (something that means something: a gear turning
+  while a server works, a stream of prices, a bubble), split the step, or
+  say less. Aim for animation ≈ 0.5–1× the voice.
+- **Still means still.** Never move the whole picture to look busy (no
+  creeping zoom, no idle sway of everything): a fraction of a pixel a
+  frame on every edge and letter reads as shaking. The camera moves only
+  to frame something new and then holds; `check.mjs` fails a camera that
+  keeps moving. Motion is for particular things, and only while it means
+  something (a waiting message bobs, a busy server sweats).
 - **One event, its own sentence.** If something must land on a particular
   phrase (a stamp, a crash, a fill), give that phrase its own step whose
   `at` is the event. Inside a step, motion is spread over the whole voice,
   not timed to its second sentence.
 - **Point at things.** `focus: [x, y, w, h]` eases the camera to frame
-  that area and keeps it until another step changes it (`'all'` to pull
-  back); the camera also drifts slightly closer through every step.
+  that area (one smooth move over about a second, then still) and keeps it
+  until another step changes it (`'all'` to pull back).
   `spot: [x, y, w, h]` dims everything else while that step is spoken.
   Use them to say "look here" when the stage is busy, not on every step.
 - **Words.** Plain, short sentences, from the listener's side ("the order

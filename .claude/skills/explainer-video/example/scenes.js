@@ -23,6 +23,7 @@ scene({
   const conf = burst(M, 230, 330, { seed: 4 });
   const nap = zzz(B, 1150, 300);
   const flow = stream(M, there, 'b', 3, 1.4);
+  const cog = gear(B, 1090, 345, 16);                    // turns while the server does the job
   return (t, rt) => {
     pop(phone, t, 0.2); pop(srv, t, 0.6);
     reveal(there, t, 1.6, 2.2);
@@ -34,6 +35,7 @@ scene({
     drops.go(rt, t > 4.4 && t < 7.6);
     wobble(srv, rt, t > 4.4 && t < 7.6 ? 1.2 : 0);
     flash(srv, t, 8.6, 1.2);
+    spin(cog, rt); op(cog, t > 8.6 && t < 10.4 ? 1 : 0);
     reveal(back, t, 10.2, 10.8);
     travel(ans, back, t, 10.4, 12.0, true);
     squash(ans._in, t, 12.0);

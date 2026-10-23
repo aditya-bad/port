@@ -1,8 +1,11 @@
 // Check a built page before anyone sees it, and leave pictures to look at.
 //   node check.mjs <project>/out/<slug>.html [--fast] [--dark]
-// Fails (exit 1) on: a script error, a step with no caption, a moment where
-// the picture stops moving (two frames 0.4 s apart identical: the "paused,
-// waiting for the narrator" look). Warns about labels that overlap, run off
+// Fails (exit 1) on: a script error, a step with no caption, a stretch of
+// 2 s or more where nothing on screen moves (the "paused, waiting for the
+// narrator" look; over 1.2 s is a warning), and a camera that keeps moving
+// once it has framed its subject (every edge and letter creeps by a
+// fraction of a pixel a frame, which reads as everything shaking). Warns
+// about labels that overlap, run off
 // the stage or out of their box, and about steps whose voice is much longer
 // than their animation (a long hold). Writes frames and one contact sheet
 // per scene to <project>/check/ — look at every sheet.
@@ -13,7 +16,6 @@ const EV = process.env.EV_HOME || path.join(os.homedir(), '.cache/explainer-vide
 const { chromium } = await import(process.env.PW || path.join(EV, 'node/node_modules/playwright/index.mjs'));
 const html = path.resolve(process.argv[2]);
 const fast = process.argv.includes('--fast'), dark = process.argv.includes('--dark');
-const extra = process.argv.includes('--nodrift') ? '&nodrift=1' : '';   // selftest only
 const out = path.join(path.dirname(path.dirname(html)), 'check');
 fs.rmSync(out, { recursive: true, force: true });
 fs.mkdirSync(out, { recursive: true });
@@ -22,7 +24,7 @@ const p = await b.newPage({ viewport: { width: 1600, height: 1000 }, colorScheme
 const errors = [], fails = [], warns = [];
 p.on('pageerror', e => errors.push(e.message));
 p.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
-await p.goto(`file://${html}?record=1&seek=1&scene=1${extra}`);
+await p.goto(`file://${html}?record=1&seek=1&scene=1`);
 const n = await p.evaluate(() => SCENES.length);
 const stage = await p.locator('#stage').boundingBox();
 // the picture only: not the progress bar, which moves even when nothing else does
@@ -62,16 +64,33 @@ for (let s = 1; s <= n; s++) {
       if (f === 0.6) { const file = `s${String(s).padStart(2, '0')}-${String(j + 1).padStart(2, '0')}.png`; fs.writeFileSync(path.join(out, file), await p.screenshot()); frames.push(file); }
     }
   }
-  // never still: two frames 0.4 s apart must differ, everywhere after the
-  // scene's first half second (its stage may open empty for a moment)
-  const still = [];
-  for (let tau = 0.5; tau < plan.total - 0.4; tau += fast ? 1 : 0.5) {
-    await p.evaluate(([s, t]) => window.__seek(s, t), [s, tau]);
-    const a = await shot();
-    await p.evaluate(([s, t]) => window.__seek(s, t), [s, tau + 0.4]);
-    if (a.equals(await shot())) still.push(tau.toFixed(1));
+  // the camera holds still once it has arrived: compare its frame (not the
+  // shake of a quake) early and late in each step that lasts long enough
+  const frameOf = () => p.evaluate(() => (document.getElementById('cam').getAttribute('transform') || '').replace(/^translate\([^)]*\)\s*/, ''));
+  for (const [j, st] of plan.steps.entries()) {
+    if (st.D < 2) continue;
+    await p.evaluate(([s, t]) => window.__seek(s, t), [s, st.T0 + 1.4]);
+    const early = await frameOf();
+    await p.evaluate(([s, t]) => window.__seek(s, t), [s, st.T0 + st.D - 0.1]);
+    if (early !== await frameOf()) fails.push(`scene ${s} step ${j + 1}: the camera keeps moving after it has framed its subject — everything on screen will look like it's shaking`);
   }
-  if (still.length) fails.push(`scene ${s}: the picture doesn't move at ${still.join(', ')} s`);
+  // nothing still for long: compare frames every half second; a run of
+  // identical ones is a stretch where the picture waits for the voice
+  const last = plan.steps[plan.steps.length - 1], end = last.T0 + last.D, dt = fast ? 1 : 0.5;
+  let prev = null, from = null;
+  const runs = [];
+  for (let tau = 0.5; tau <= end + 1e-6; tau += dt) {
+    await p.evaluate(([s, t]) => window.__seek(s, t), [s, tau]);
+    const img = await shot();
+    if (prev && img.equals(prev)) { if (from == null) from = tau - dt; }
+    else if (from != null) { runs.push([from, tau - dt]); from = null; }
+    prev = img;
+  }
+  if (from != null) runs.push([from, end]);
+  for (const [a, b] of runs) {
+    const msg = `scene ${s}: nothing moves from ${a.toFixed(1)} to ${b.toFixed(1)} s (${(b - a).toFixed(1)} s) — add motion there, or say less`;
+    if (b - a >= 2) fails.push(msg); else if (b - a >= 1.2) warns.push(msg);
+  }
   // a contact sheet of the scene, one frame per step
   const cols = 3, w = 520, h = Math.round(w * 1000 / 1600);
   fs.writeFileSync(path.join(out, 'sheet.html'), `<body style="margin:0;display:grid;grid-template-columns:repeat(${cols},${w}px);gap:2px;background:#777">${frames.map(f => `<img src="${f}" style="width:${w}px;height:${h}px">`).join('')}</body>`);

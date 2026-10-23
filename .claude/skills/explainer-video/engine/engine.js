@@ -156,9 +156,13 @@ function quake(t, a, d = 0.4, amp = 8) {
 // Each step lasts as long as its voice (plus a breath), or its animation
 // at 0.6× speed if that's longer. The animation is spread over the whole
 // step; only when the voice is much longer than the motion (under 0.35×)
-// does it reach its end early, and then the camera drift, the spotlight
-// and anything driven by rt keep the picture moving. tools/check.mjs
-// reports any half-second where nothing on screen changes.
+// does it reach its end early and hold. Whatever runs on rt (streams,
+// bubbles, the spotlight's ring) keeps moving meanwhile. tools/check.mjs
+// fails a scene where nothing moves for 2 s.
+//
+// The camera moves only to frame something new, then holds perfectly
+// still: a camera that keeps creeping moves every edge and letter by a
+// fraction of a pixel a frame, and everything looks like it's shaking.
 const SCENES = [];
 function scene(meta, build) { SCENES.push({ ...meta, steps: meta.steps || [[0, '']], build }); }
 const SLOW = 0.6, MIN_RATE = 0.35, PAD = 0.6, TAIL = 1.0, WPS = 2.5;
@@ -168,7 +172,6 @@ const ONLY = params.has('scene') ? +params.get('scene') - 1 : null;
 const AT = params.has('t') ? +params.get('t') : null;
 const SEEK = params.has('seek');                         // frames drawn only by __seek (video, checks)
 const STILL = !RECORD && matchMedia('(prefers-reduced-motion: reduce)').matches;
-const DRIFT = params.has('nodrift') ? 0 : 1;            // tools/selftest.sh only: proves check.mjs catches a pause
 
 const sentences = s => s.split(/(?<=[.?!])\s+(?=[A-Z0-9₹“"(])/).filter(Boolean);
 function estimate(text) {                                 // before the voice exists: words at ~2.5 a second
@@ -214,8 +217,7 @@ function camera(pl, j, into) {
   const st = pl.steps[j];
   const to = view(st.focus), from = view(j ? pl.steps[j - 1].focus : st.focus);
   const f = ke(into, 0, 1.2);
-  const drift = 1 + DRIFT * (0.03 * ease(clamp(into / st.D)) + 0.006 * Math.max(0, into - st.D));   // always a little closer while it's spoken
-  let s = lerp(from.s, to.s, f) * drift, cx = lerp(from.cx, to.cx, f), cy = lerp(from.cy, to.cy, f);
+  let s = lerp(from.s, to.s, f), cx = lerp(from.cx, to.cx, f), cy = lerp(from.cy, to.cy, f);
   // keep the frame on the stage: no empty paper past its edges
   const hw = 800 / s, hh = 450 / s;
   cx = clamp(cx, hw, 1600 - hw); cy = clamp(cy, hh, 900 - hh);
