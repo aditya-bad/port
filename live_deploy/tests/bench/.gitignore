@@ -1,3 +1,4 @@
 ipc/rs/target/
 ipc/rs/Cargo.lock
 ipc/gostrat_bin
+runtime/gostrat_bin

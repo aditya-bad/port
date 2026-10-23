@@ -22,3 +22,15 @@ the latest-value core (one slot per instrument, a changed-set per subscriber).
     $S/conflate
 
 Standard libraries only: nothing to download.
+
+**The any-language runtime** (`runtime/`, for `docs/linck-runtime.html`): one
+supervisor runs a Go and a Python strategy through the same protocol and shows,
+for both: a live run with a write-ahead journal and snapshots; a walk from a
+snapshot that matches live exactly; a branch on an ambiguous stretch; a
+`kill -9` mid-run recovered from the last snapshot with no order placed twice;
+a crash on the same batch twice quarantined instead of looped; and Go and
+Python making the same decisions on the same journal.
+
+    cd tests/bench/runtime
+    (cd gostrat && go build -o ../gostrat_bin .)
+    python3 supervisor.py
