@@ -123,12 +123,15 @@ a.cell-name:hover b { text-decoration: underline; }
 .hold-grid { grid-template-columns: minmax(0, 1fr) 64px 60px 84px 84px 104px; min-width: 440px; font-size: 13px; }
 .tr.th.hold-grid { border-top: 0; border-bottom: 1px solid var(--line); min-height: 34px; }
 .cycle-grid { grid-template-columns: 120px 72px minmax(0, 1fr) 90px; align-items: baseline; padding: 10px 0; }
+.sh-row { grid-template-columns: 120px minmax(0, 1fr) auto; align-items: baseline; gap: 12px; padding: 8px 0; }
 .state-row { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); }
 .state-v { font-size: 17px; word-break: break-word; }
 @media (max-width: 900px) {
   .dep-title { font-size: 32px; }
   .cycle-grid { grid-template-columns: 96px 60px minmax(0, 1fr); }
   .cycle-grid > :last-child { grid-column: 3; text-align: left; }
+  .sh-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .sh-row > .right { text-align: left; }
 }
 
 /* ── Charts and analytics ───────────────────────────────────── */

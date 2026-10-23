@@ -10,7 +10,7 @@
 // longer streak, a different error, the next day).
 
 import { kite, health } from './live.js';
-import { deployments, healthOf, vixSpike } from './book.js';
+import { deployments, healthOf, vixSpike, shadowRejections } from './book.js';
 import { STREAK_ALERT } from './config.js';
 import { api } from '../core/api.js';
 import { ui, emit, listen } from '../core/store.js';
@@ -79,7 +79,19 @@ export const RULES = [
     title: `${v.name}: ${f.title.toLowerCase()}`, body: f.body,
     act: 'Open', action: { type: 'open', id: v.id, tab: 'performance' },
   }))),
+  // Shadow mode (app/shadow.py): an order Kite would have refused. Once
+  // per deployment, rule and day; dismissed for that day.
+  list => {
+    const byId = new Map(list.filter(v => !v.isLab).map(v => [v.id, v]));
+    return shadowRejections().filter(x => byId.has(x.deployment_id)).map(x => ({
+      key: `shadow:${x.deployment_id}:${x.rule}:${x.day}`, token: x.day, kind: 'shadow', id: x.deployment_id,
+      title: `${x.name}: Kite would have refused ${x.n > 1 ? `${x.n} orders` : 'an order'} today`,
+      body: `${SHADOW_RULE[x.rule] || x.rule}: ${x.detail}${x.symbol ? ` ${x.n > 1 ? 'First on' : 'On'} ${x.symbol}.` : ''} The paper trade went through; live, it wouldn’t have.`,
+      act: 'See its fills', action: { type: 'open', id: x.deployment_id, tab: 'now' },
+    }));
+  },
 ];
+const SHADOW_RULE = { lot: 'Lot size', freeze: 'Freeze limit', band: 'Price band', book: 'Order book', follow: 'Within 60 s' };
 
 const all = list => RULES.flatMap(rule => rule(list)).map(a => ({ ...a, canDismiss: true }));
 const isOff = a => dismissed[a.key] === a.token;

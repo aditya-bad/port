@@ -20,6 +20,7 @@ import { pick, basis } from '../../core/basis.js';
 import { registerScrub } from '../../ui/tooltip.js';
 import { empty, loading } from '../../ui/components.js';
 import { spanMark } from '../../ui/repairs.js';
+import { shadowChip } from '../../ui/shadow.js';
 
 // Event types: label and colour. 'rollout' is the strangle's EOD roll-out.
 const KINDS = { entry: ['Entry', 'var(--ink)'], adjustment: ['Adjustment', 'var(--b)'], rollout: ['EOD roll-out', 'var(--c5)'], exit: ['Exit', null] };
@@ -206,7 +207,7 @@ function body(v, row, ch, i, L, embed = false) {
         <div class="ss-orders">${m.events.length ? m.events.map(e => html`<div>
           <i style="background:${(KINDS[e.kind] && KINDS[e.kind][1]) || toneVar(m.finalGross)}"></i>
           <span class="col" style="gap:2px;min-width:0"><b>${kindLabel(e.kind)}${reasonOf(e) ? html` <span class="mute" style="font-weight:500">· ${reasonOf(e)}</span>` : ''}</b>${e.kind === 'rollout' ? html`<span class="small mute">Tested side rolled out instead of converging into a straddle overnight</span>` : ''}
-            ${e.fills.map(f => html`<span class="small mute">${f.action.toUpperCase()} ${Number(f.qty)} ${f.symbol} @ ${price(f.price)}</span>`)}</span>
+            ${e.fills.map(f => html`<span class="small mute row wrap" style="gap:6px">${f.action.toUpperCase()} ${Number(f.qty)} ${f.symbol} @ ${price(f.price)} ${shadowChip(f.shadow)}</span>`)}</span>
           <span class="col" style="gap:2px;align-items:flex-end"><span class="mono tiny">${m.when(e.k)}</span>${m.U.length ? html`<span class="mono tiny mute">${sym} ${price(m.U[e.k])}</span>` : ''}</span></div>`) : empty('', 'No fills recorded.')}</div>
       </div>
     </div>`;

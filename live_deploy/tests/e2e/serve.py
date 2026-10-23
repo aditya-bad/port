@@ -214,11 +214,37 @@ async def seed():
     await seed_repair_cases(pool, ids)
     await seed_strategy_issues(pool, ids)
     await seed_old_repair(pool, ids["BankNifty DTT Advanced"])
+    await seed_shadow(pool, ids["BankNifty DTT Plain"])
     await queries.record_event(pool, ids["Sensex Credit Spread"], "strategy_error",
                                message="Order rejected: margin check failed. Hedge leg not placed.", metadata={})
     await close_pool(pool)
     Path(os.environ.get("E2E_IDS") or HERE / ".ids.json").write_text(json.dumps({"ids": ids, "password": PASSWORD, "port": PORT}, indent=1))
     return prices
+
+
+# Shadow mode (app/shadow.py) on BankNifty DTT Plain's latest fills: today's
+# first entry leg Kite would refuse (a lot size the strategy got wrong),
+# the next fills ₹ worse on a thin book, the rest at the paper price.
+async def seed_shadow(pool, dep):
+    from app import shadow
+    lots = await pool.fetch(
+        "SELECT pl.*, p.symbol, p.instrument_token FROM position_lots pl JOIN positions p ON p.id = pl.position_id "
+        "WHERE pl.deployment_id = $1 ORDER BY pl.executed_at DESC, pl.id LIMIT 12", dep)
+    today = [x for x in lots if x["executed_at"].astimezone(IST).date() == TODAY.date()]
+    assert today, "BankNifty DTT Plain trades today"
+    worse = next(x for x in lots if x["id"] != today[-1]["id"])["id"]
+    for lot in lots:
+        qty, px, act = float(lot["qty"]), float(lot["price"]), lot["action"]
+        side = "buy" if act == "sell" else "sell"     # the side the order meets
+        if lot["id"] == today[-1]["id"]:
+            kw = dict(lot=int(qty) + 5, depth={side: [{"price": px, "quantity": 5000}]})
+        elif lot["id"] == worse:
+            kw = dict(lot=LOT["BANKNIFTY"], depth={side: [{"price": round(px - 0.4 if act == "sell" else px + 0.4, 2), "quantity": 5000}]})
+        else:
+            kw = dict(lot=LOT["BANKNIFTY"], depth={side: [{"price": px, "quantity": 5000}]})
+        res = shadow.assess(act, qty, px, tick=0.05, freeze=1050, freeze_source="config", band=(0.05, px * 3), **kw)
+        await shadow.save(pool, {"lot_id": lot["id"], "deployment_id": dep, "executed_at": lot["executed_at"], "symbol": lot["symbol"],
+                                 "instrument_token": lot["instrument_token"], "action": act, "qty": qty, "paper_price": px}, res)
 
 
 # intraday_dtt_simple the way it really trades: an ATM straddle at

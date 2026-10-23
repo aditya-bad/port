@@ -419,6 +419,12 @@ async def startup() -> None:
     app.state.vix = vix_mod.state["service"] = vix_mod.VixService(db_pool, dispatcher)
     app.state.vix_task = asyncio.create_task(app.state.vix.run_loop(), name="vix-loop")
 
+    # ── Shadow mode: would Kite have taken each paper fill, and at what
+    # price? Checked in the background after each fill — see app/shadow.py.
+    from . import shadow as shadow_mod
+    app.state.shadow = shadow_mod.state["service"] = shadow_mod.ShadowService(db_pool, dispatcher, config)
+    app.state.freeze_task = asyncio.create_task(app.state.shadow.freeze.loop(dispatcher), name="freeze-limits-loop")
+
     app.state.vix_spike_task = asyncio.create_task(
         app.state.vix.spike_loop(lambda s, now: vix_mod.push_spike_once(db_pool, config, s, now)), name="vix-spike-loop")
 
@@ -472,7 +478,7 @@ async def shutdown() -> None:
     except asyncio.CancelledError:
         pass
 
-    for name in ("index_candles_task", "candle_backfill_task", "ops_task", "watchdog_task", "strategy_health_task", "vix_task", "vix_spike_task"):
+    for name in ("index_candles_task", "candle_backfill_task", "ops_task", "watchdog_task", "strategy_health_task", "vix_task", "vix_spike_task", "freeze_task"):
         task = getattr(app.state, name, None)
         if task is None:
             continue
@@ -481,6 +487,12 @@ async def shutdown() -> None:
             await task
         except asyncio.CancelledError:
             pass
+    # shadow checks still watching a resting limit: they'd outlive the pool
+    shadow_svc = getattr(app.state, "shadow", None)
+    for task in list(shadow_svc.tasks if shadow_svc else []):
+        task.cancel()
+    if shadow_svc and shadow_svc.tasks:
+        await asyncio.gather(*list(shadow_svc.tasks), return_exceptions=True)
 
     # Stop the aggregate-read cache's background refresh loops before
     # the DB pool closes below — otherwise a loop mid-sleep can wake up

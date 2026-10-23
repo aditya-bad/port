@@ -754,13 +754,19 @@ async def force_close_position(
     pool: asyncpg.Pool, deployment_id: UUID, position: asyncpg.Record,
     price: float, executed_at: datetime, reason: str, book_price: Optional[float] = None,
 ) -> dict[str, Any]:
-    """Convenience wrapper — close an existing open position at `price`."""
+    """Convenience wrapper — close an existing open position at `price`.
+    Handed to shadow mode like a runner's own fill (app/shadow.py)."""
+    from .. import shadow
     action = "sell" if position["side"] == "long" else "buy"
-    return await record_fill(
+    result = await record_fill(
         pool, deployment_id, position["symbol"], position["instrument_token"],
         action, float(position["qty"]), price, executed_at, reason=reason,
         book_price=book_price,
     )
+    shadow.submit({"lot_id": result["lot_id"], "deployment_id": deployment_id, "executed_at": executed_at,
+                   "symbol": position["symbol"], "instrument_token": position["instrument_token"],
+                   "action": action, "qty": float(position["qty"]), "paper_price": price})
+    return result
 
 
 # ═════════════════════════════════════════════════════════════════════

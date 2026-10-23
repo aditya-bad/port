@@ -28,6 +28,7 @@ import asyncpg
 
 from ..db import queries
 from ..slippage import resolve_book_price
+from .. import shadow
 from .health import DROP_WORDS, BlockedWatch, Breaker, Issues, TickFilter, describe
 from .strategy_base import StrategyBase
 
@@ -1158,6 +1159,10 @@ class DeploymentRunner:
             raise
         if self.issues.is_open(f"fill_failed:{symbol}"):
             await self.issues.resolve(f"fill_failed:{symbol}")
+        # would Kite have taken it? checked in the background (app/shadow.py)
+        shadow.submit({"lot_id": result["lot_id"], "deployment_id": self.deployment_id, "executed_at": executed_at,
+                       "symbol": symbol, "instrument_token": instrument_token, "action": action,
+                       "qty": qty, "paper_price": price})
 
         # Refresh from the DB rather than replicating averaging/closing
         # math here — see module docstring.

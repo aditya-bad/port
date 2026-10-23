@@ -124,6 +124,9 @@ export const api = {
   vix: (q = {}) => req(`/v2/vix?${new URLSearchParams(Object.entries(q).filter(([, x]) => x != null && x !== '')).toString()}`),
   vixSpike: () => req('/v2/vix/spike'),
   vixExposure: () => req('/v2/vix/exposure'),
+  // shadow mode (app/shadow.py): would Kite have taken each fill
+  shadow: (id, limit = 50) => req(`/v2/deployments/${id}/shadow?limit=${limit}`),
+  shadowRejections: () => req('/v2/shadow/rejections'),
   strategyHealth: (fresh = false) => req(`/v2/strategy-health${fresh ? '?fresh=true' : ''}`),
   strategies: () => req('/v2/strategies'),
   prefs: () => req('/v2/preferences'),

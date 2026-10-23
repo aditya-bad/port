@@ -133,6 +133,33 @@ async def get_underlying(deployment_id: UUID, request: Request):
     return await underlying.build(pool, dict(dep), request.app.state.dispatcher)
 
 
+@router.get("/deployments/{deployment_id}/shadow")
+async def get_shadow(deployment_id: UUID, request: Request, limit: int = 50):
+    """Shadow mode (app/shadow.py): would Kite have taken this
+    deployment's fills, newest first, and how many of each verdict."""
+    from .. import shadow
+    pool = request.app.state.db_pool
+    if await queries.get_deployment(pool, deployment_id) is None:
+        raise HTTPException(404, "No such deployment")
+    counts = await pool.fetch("SELECT verdict, count(*) AS n FROM shadow_checks WHERE deployment_id = $1 GROUP BY verdict", deployment_id)
+    svc = getattr(request.app.state, "shadow", None)
+    return {"checks": await shadow.list_checks(pool, deployment_id, max(1, min(limit, 500))),
+            "counts": {r["verdict"]: int(r["n"]) for r in counts},
+            "enabled": bool(svc and svc.enabled), "buffer_pct": svc.buffer_pct if svc else shadow.BUFFER_PCT}
+
+
+@router.get("/shadow/rejections")
+async def get_shadow_rejections(request: Request, day: Optional[str] = None):
+    """Orders Kite would have refused today (IST), per deployment and
+    rule: the Alerts panel shows each once per day."""
+    from .. import shadow
+    try:
+        d = datetime.fromisoformat(day).date() if day else datetime.now(shadow.IST).date()
+    except ValueError:
+        raise HTTPException(400, "day must be YYYY-MM-DD")
+    return {"day": d.isoformat(), "rejections": await shadow.rejections(request.app.state.db_pool, d)}
+
+
 @router.get("/deployments/{deployment_id}/repairs")
 async def get_repairs(deployment_id: UUID, request: Request):
     """The stall repairs applied to this deployment (custom_scripts/

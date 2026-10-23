@@ -124,6 +124,7 @@ def _group_events(lots: list, cycle: dict) -> list[dict]:
             "qty": _num(lot["qty"]), "price": _num(lot["price"]),
             "reason": lot["reason"], "strike": meta.get("strike"),
             "leg_role": meta.get("leg_role"), "position_id": str(lot["position_id"]),
+            "lot_id": str(lot["id"]) if lot.get("id") is not None else None,
         }
         if events and lot["executed_at"] - events[-1]["_last"] <= _EVENT_GAP:
             events[-1]["fills"].append(fill)
@@ -231,6 +232,12 @@ async def cycle_chart(deployment_id: UUID, key: str, request: Request):
     positions = cycle["positions"]
     lots = await queries.list_lots_for_positions(pool, [p["id"] for p in positions])
     events = _group_events(lots, cycle)
+    # would Kite have taken each fill (app/shadow.py)
+    from .. import shadow
+    verdicts = await shadow.by_lots(pool, [lot["id"] for lot in lots if lot.get("id") is not None])
+    for ev in events:
+        for f in ev["fills"]:
+            f["shadow"] = verdicts.get(f["lot_id"])
     snapshots = await queries.list_snapshots_between(pool, deployment_id, win_start, win_end)
 
     store = request.app.state.candles

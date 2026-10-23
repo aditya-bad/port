@@ -13,8 +13,8 @@ import { dayKey } from '../core/format.js';
 import { LAB_TAG, YOUNG_DAYS, QUIET_DAYS } from './config.js';
 import { tradeMetrics } from './metrics.js';
 
-const raw = { deployments: [], positions: [], trades: [], daily: [], repairs: [], cycles: {}, session: null, strategies: [], tags: [], health: {}, spike: null, exposure: null };
-const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false, health: false, spike: false, exposure: false };
+const raw = { deployments: [], positions: [], trades: [], daily: [], repairs: [], cycles: {}, session: null, strategies: [], tags: [], health: {}, spike: null, exposure: null, shadowRej: [] };
+const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false, health: false, spike: false, exposure: false, shadow: false };
 const errors = {};
 let version = 0;
 
@@ -31,6 +31,8 @@ const LOADERS = {
   spike: async () => { raw.spike = await api.vixSpike(); },
   // what open legs gain or lose if VIX rises a point (app/vix.exposure)
   exposure: async () => { raw.exposure = await api.vixExposure(); },
+  // orders Kite would have refused today (app/shadow.py), per deployment and rule
+  shadow: async () => { raw.shadowRej = (await api.shadowRejections()).rejections || []; },
 };
 
 export async function load(kinds = Object.keys(LOADERS)) {
@@ -50,13 +52,15 @@ const flush = debounce(() => { const k = [...pending]; pending.clear(); load(k);
 export function refresh(...kinds) { kinds.forEach(k => pending.add(k)); flush(); }
 listen('event', ev => {
   const t = ev.event_type || '';
-  if (/fill|execution|flatten|removed|close/.test(t)) refresh('deployments', 'positions', 'book', 'session', 'health');
-  else refresh('deployments', 'session');
+  if (/fill|execution|flatten|removed|close/.test(t)) {
+    refresh('deployments', 'positions', 'book', 'session', 'health');
+    setTimeout(() => refresh('shadow'), 8000);   // checked a few seconds after the fill
+  } else refresh('deployments', 'session');
 });
 setInterval(() => refresh('deployments', 'session'), 60000);   // snapshots land every 5 min
 setInterval(() => refresh('positions'), 30000);                 // server-side marks when no ticks flow
 setInterval(() => refresh('health'), 600000);                   // the server checks every 10 minutes
-setInterval(() => refresh('spike', 'exposure'), 60000);         // and VIX every minute
+setInterval(() => refresh('spike', 'exposure', 'shadow'), 60000); // and VIX every minute
 
 // ── Live leg P&L ──────────────────────────────────────────────────
 export function legPrice(p) {
@@ -261,6 +265,7 @@ export function totals(list) {
 }
 export const healthOf = id => raw.health[id] || [];
 export const vixExposure = () => raw.exposure;
+export const shadowRejections = () => raw.shadowRej;
 export const vixSpike = () => (raw.spike && raw.spike.spiking ? raw.spike : null);
 export const allTrades = () => raw.trades;
 export const allDaily = () => raw.daily;

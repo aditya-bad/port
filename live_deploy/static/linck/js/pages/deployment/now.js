@@ -2,7 +2,7 @@
 // (each value tagged LIVE or CHECKPOINT by where it comes from).
 
 import { api } from '../../core/api.js';
-import { html, mount, $, setText, setTone } from '../../core/dom.js';
+import { html, mount, $, on, setText, setTone } from '../../core/dom.js';
 import { inr, price, dStamp, hhmm, plural, tone } from '../../core/format.js';
 import { pnlOf } from '../../core/basis.js';
 import { listen } from '../../core/store.js';
@@ -12,6 +12,7 @@ import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
 import { hasOwn } from '../../data/geek.js';
 import { underlyingPanel } from '../../ui/underlying.js';
 import { repairsNote } from '../../ui/repairs.js';
+import { shadowPanel } from '../../ui/shadow.js';
 
 // The strangle's engine at a glance (geek mode has the full view).
 function engineCard(eng) {
@@ -56,7 +57,7 @@ function timeline(lots, start, v) {
 export default {
   // `g` is set when geek mode reuses this tab (it has its own engine view).
   render(el, v0, g) {
-    let lots = null, openPos = null, status = null, eng = null, und = null, fixes = null;
+    let lots = null, openPos = null, status = null, eng = null, und = null, fixes = null, sh = null, shAll = false;
     const withEngine = !g && hasOwn(v0);
     function paint() {
       const v = book.find(v0.id) || v0;
@@ -80,6 +81,7 @@ export default {
                   <span class="mono tiny mute pretty">${r.x}${r.why ? html`<br><span class="b" style="font-family:var(--f-body)">${r.why}</span>` : ''}</span>
                   <span class="mono tiny right ${r.tone || ''}">${r.val || ''}</span></div>`) : empty('', 'No cycle yet.')}
             </div>
+            ${shadowPanel(sh, { all: shAll })}
           </div>
           <div>
             ${withEngine ? engineCard(eng) : ''}
@@ -123,6 +125,12 @@ export default {
     loadUnd();
     api.repairs(v0.id).then(r => { fixes = r.repairs; const box = $('[data-repairs]', el); if (box) box.outerHTML = String(repairsNote(fixes, v0.id)); }).catch(() => {});
     const ivU = setInterval(loadUnd, 15000);
+    // shadow mode: what Kite would have done with each fill (app/shadow.py)
+    const putShadow = () => { const box = $('[data-shadow-panel]', el); if (box) box.outerHTML = String(shadowPanel(sh, { all: shAll })); };
+    const loadShadow = () => api.shadow(v0.id).then(r => { sh = r; putShadow(); }).catch(() => {});
+    loadShadow();
+    const ivS = setInterval(loadShadow, 15000);
+    offs.push(on(el, 'click', '[data-act="shadowAll"]', () => { shAll = !shAll; putShadow(); }));
     // the Live tag turns stale when ticks stop, even with nothing to repaint
     const iv2 = setInterval(() => { const v = book.find(v0.id); if (v) tickLegs(el, v.legs); }, 5000);
     let iv3 = null;   // its "Open geek mode" button is handled by the page (data-act="geek")
@@ -135,6 +143,6 @@ export default {
       load();
       iv3 = setInterval(load, 5000);
     }
-    return () => { offs.forEach(f => f()); clearInterval(iv); clearInterval(iv2); clearInterval(ivU); if (iv3) clearInterval(iv3); };
+    return () => { offs.forEach(f => f()); clearInterval(iv); clearInterval(iv2); clearInterval(ivU); clearInterval(ivS); if (iv3) clearInterval(iv3); };
   },
 };

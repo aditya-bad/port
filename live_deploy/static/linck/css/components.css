@@ -90,6 +90,11 @@
 .flag { display: inline-block; font-size: 11px; font-weight: 700; padding: 2px 7px; border: 1px solid var(--line); color: var(--mute); white-space: nowrap; }
 .flag.bad { border-color: var(--wr); background: var(--ys); color: var(--wt); }
 .flag.lab { background: var(--ys); color: var(--ink); }
+/* shadow mode verdicts (ui/shadow.js) */
+.sh-chip.ok { color: var(--g); border-color: var(--g); }
+.sh-chip.warn { background: var(--ys); color: var(--ink); border-color: var(--line2); }
+.sh-chip.bad { border-color: var(--wr); background: var(--ys); color: var(--wt); }
+.sh-chip.unk { border-style: dashed; }
 .stamp { font-family: var(--f-mono); font-size: 11px; font-weight: 600; padding: 2px 7px; border: 1px solid currentColor; white-space: nowrap; }
 .fresh { font-family: var(--f-mono); font-size: 10px; font-weight: 600; padding: 1px 6px; border: 1px solid var(--ink); white-space: nowrap; }
 .fresh.ck { border-color: var(--line); background: var(--soft); }
@@ -422,7 +427,7 @@ a.fix-tag:hover, a.fix-flag:hover { background: var(--soft); }
 .ap-body { flex: 1; overflow-y: auto; padding: 12px 18px 24px; display: flex; flex-direction: column; gap: 10px; }
 .ap-item { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--y); }
 .ap-item.k-error, .ap-item.k-kite { border-left-color: var(--r); }
-.ap-item.k-health, .ap-item.k-streak { border-left-color: var(--y); }
+.ap-item.k-health, .ap-item.k-streak, .ap-item.k-shadow { border-left-color: var(--y); }
 .ap-item.k-paused, .ap-item.k-vix { border-left-color: var(--b); }
 .ap-item.off { border-left-color: var(--line2); opacity: .8; }
 .ap-acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
