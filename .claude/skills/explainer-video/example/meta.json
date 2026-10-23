@@ -1,0 +1,8 @@
+{
+  "title": "How the example works",
+  "slug": "example",
+  "description": "Two short scenes that show the camera, the spotlight and the effects.",
+  "voice": "af_heart",
+  "speed": 0.95,
+  "say": [["P&L", "P and L"]]
+}

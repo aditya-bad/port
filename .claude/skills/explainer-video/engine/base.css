@@ -1,0 +1,175 @@
+/* The page, the caption band, the start screen, and every class the engine and its scenes draw with. */
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--paper); color: var(--ink); font: 400 16px/1.5 var(--f-body); overflow: hidden;
+  display: flex; flex-direction: column; }
+#stage { display: block; flex: 1 1 auto; min-height: 0; width: 100%; }
+button:focus-visible { outline: 2px solid var(--b); outline-offset: 2px; }
+
+/* the caption band under the stage: what the narrator is saying, and the controls */
+.band { flex: 0 0 auto; min-height: 104px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
+  gap: 8px 24px; padding: 12px 24px; background: var(--card); border-top: 1px solid var(--line); }
+#cap { margin: 0 auto; max-width: 68ch; text-align: center; text-wrap: balance; font: 500 clamp(15px, 1.5vw, 21px)/1.45 var(--f-body); }
+nav.ctl { display: flex; align-items: center; gap: 8px; }
+nav.ctl > button { font: 600 13px/1 var(--f-mono); color: var(--ink); background: none; border: 1px solid var(--line2); width: 34px; height: 30px; cursor: pointer; }
+nav.ctl > button:hover { background: var(--soft); }
+.dots { display: flex; flex-wrap: wrap; gap: 5px; max-width: 272px; }
+.dots button { width: 11px; height: 11px; padding: 0; border: 1.5px solid var(--ink); background: none; cursor: pointer; }
+.dots button.on { background: var(--ink); }
+body.record .band { grid-template-columns: minmax(0, 1fr); }
+body.record nav.ctl { display: none; }
+body.record *, body.record *::before { transition: none !important; animation: none !important; }
+@media (max-height: 500px) {
+  .band { min-height: 0; padding: 6px 16px; gap: 4px 16px; }
+  #cap { font-size: 14px; }
+  nav.ctl > button { width: 28px; height: 26px; }
+  .dots { display: none; }
+}
+@media (max-width: 760px) {
+  .band { grid-template-columns: minmax(0, 1fr); padding: 10px 16px; min-height: 0; }
+  nav.ctl { justify-content: center; flex-wrap: wrap; }
+}
+
+.turn { display: none; }
+@media (orientation: portrait) and (max-width: 700px) {
+  .turn { display: flex; justify-content: center; gap: 10px; align-items: center; padding: 8px 16px 0;
+    font: 500 12px/1.4 var(--f-mono); color: var(--mute); }
+  .turn svg { width: 26px; height: 26px; animation: turn 2.4s ease-in-out infinite; }
+  @keyframes turn { 0%, 30% { transform: rotate(0); } 60%, 100% { transform: rotate(-90deg); } }
+}
+
+/* the start screen: sound needs one click before a browser will play it */
+#start { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px;
+  background: color-mix(in oklch, var(--paper) 82%, transparent); }
+#start[hidden] { display: none; }
+#start .card { max-width: 460px; padding: 32px; background: var(--card); border: 1.5px solid var(--ink); display: grid; gap: 14px; }
+#start h1 { margin: 0; font: 700 34px/1.05 var(--f-display); letter-spacing: -.02em; }
+#start p { margin: 0; color: var(--mute); }
+#start .row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; }
+#start button { font: 600 15px/1 var(--f-body); padding: 13px 18px; cursor: pointer; border: 1.5px solid var(--ink); }
+#go { background: var(--ink); color: var(--paper); }
+#go-muted { background: none; color: var(--ink); }
+
+/* stage text */
+#stage text { font-family: var(--f-body); fill: var(--ink); }
+#stage .ttl { font: 700 44px var(--f-display); letter-spacing: -.02em; }
+#stage .idx { font: 500 16px var(--f-mono); fill: var(--mute); }
+#stage .prog { fill: var(--ink); }
+#stage .bl { font-weight: 650; font-size: 22px; }
+#stage .bs { font: 400 13px var(--f-mono); fill: var(--mute); }
+#stage .bt { font: 500 12px var(--f-mono); fill: var(--mute); }
+#stage .fl { font: 600 14px var(--f-mono); letter-spacing: .1em; text-transform: uppercase; fill: var(--mute); }
+#stage .cl { font-weight: 650; font-size: 18px; }
+#stage .mono { font: 500 17px var(--f-mono); }
+#stage .step { font: 600 18px var(--f-mono); letter-spacing: .14em; text-transform: uppercase; fill: var(--mute); }
+#stage .lane { font: 700 26px var(--f-display); }
+#stage .lanes { font: 400 13px var(--f-mono); fill: var(--mute); }
+#stage .hop { font: 400 14px var(--f-mono); fill: var(--mute); }
+#stage .lab { font: 500 16px var(--f-mono); }
+#stage .ms { font: 400 13px var(--f-mono); }
+#stage .sl { font: 600 16px var(--f-mono); }
+#stage .sv { font: 500 16px var(--f-mono); font-variant-numeric: tabular-nums; }
+#stage .gl { font-weight: 650; font-size: 18px; }
+#stage .gs { font: 400 13px var(--f-mono); fill: var(--mute); }
+#stage .rule { font: 700 22px var(--f-mono); }
+#stage .eq { font: 700 22px var(--f-mono); fill: var(--g); }
+#stage .bigs { font-weight: 600; font-size: 22px; }
+#stage .big { font: 700 46px var(--f-display); font-variant-numeric: tabular-nums; }
+#stage .huge { font: 700 64px var(--f-display); letter-spacing: -.02em; }
+#stage .warnl { font-weight: 650; font-size: 19px; fill: var(--r); }
+#stage .warnbig { font: 700 80px var(--f-display); fill: var(--r); }
+#stage .okl { font-weight: 650; font-size: 20px; fill: var(--g); }
+#stage .good { fill: var(--g); }
+#stage .warn, #stage .warnc { fill: var(--r); }
+#stage .pt { font: 600 15px var(--f-mono); fill: var(--paper); }
+
+/* boxes */
+.bx > rect { fill: var(--card); stroke: var(--ink); stroke-width: 1.6; transition: fill .18s, stroke .18s; }
+.bx.frame > rect { fill: color-mix(in oklch, var(--ink) 4%, transparent); stroke: var(--line2); stroke-dasharray: 7 5; }
+.bx.key > rect { fill: var(--ys); stroke-width: 2.6; }
+.bx.frame.key > rect { fill: color-mix(in oklch, var(--y) 22%, transparent); stroke: var(--ink); stroke-dasharray: none; }
+.bx.band > rect, .bx.side > rect { fill: color-mix(in oklch, var(--ink) 7%, transparent); }
+.bx.chip > rect { stroke: var(--line2); rx: 6px; }
+.bx.spare > rect { fill: none; stroke-dasharray: 5 5; }
+.bx.spare .bl { fill: var(--mute); }
+.bx.out > rect { fill: var(--paper); stroke: var(--mute); stroke-dasharray: 3 4; stroke-width: 2; }
+.bx.store > rect { fill: var(--soft); stroke-width: 2.4; }
+.bx.proc > rect { stroke: var(--b); stroke-width: 2.4; }
+.bx.art > rect { stroke: var(--g); stroke-width: 2.4; }
+.bx.btn > rect { rx: 10px; }
+.bx.file .mono { font-size: 16px; }
+.hot > rect { fill: var(--y) !important; }
+.bx.frame.hot > rect { fill: color-mix(in oklch, var(--r) 12%, var(--soft)) !important; stroke: var(--r); stroke-dasharray: none; }
+.bad > rect { stroke: var(--r) !important; stroke-width: 3 !important; fill: color-mix(in oklch, var(--r) 10%, var(--card)) !important; stroke-dasharray: none !important; }
+.off > * { opacity: .25; }
+.mini { fill: var(--card); stroke: var(--line); }
+.slot rect { fill: var(--card); stroke: var(--line2); }
+.slot.hot rect { fill: var(--y); }
+.gate > rect { fill: var(--card); stroke: var(--ink); stroke-width: 1.4; }
+.gate.hot > rect { fill: var(--y); }
+
+/* lines and moving things */
+.ln { fill: none; stroke-width: 2.4; stroke-linecap: round; }
+.c-ink { stroke: var(--ink); } .c-b { stroke: var(--b); } .c-g { stroke: var(--g); }
+.c-pu { stroke: var(--pu); } .c-wt { stroke: var(--wt); } .c-r { stroke: var(--r); }
+.ln.dash { stroke-dasharray: 7 6; }
+.ah-ink { fill: var(--ink); } .ah-b { fill: var(--b); } .ah-g { fill: var(--g); }
+.ah-pu { fill: var(--pu); } .ah-wt { fill: var(--wt); } .ah-r { fill: var(--r); }
+.f-ink { fill: var(--ink); } .f-b { fill: var(--b); } .f-g { fill: var(--g); }
+.f-pu { fill: var(--pu); } .f-wt { fill: var(--wt); } .f-r { fill: var(--r); } .f-y { fill: var(--y); }
+.pk.refused rect { fill: var(--r); }
+.ck circle { fill: var(--card); stroke: var(--g); stroke-width: 2.4; }
+.ck path { fill: none; stroke: var(--g); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+.ck.no circle, .ck.no path { stroke: var(--r); }
+.boom path { stroke: var(--r); stroke-width: 3.5; stroke-linecap: round; }
+.boom .bx-x { stroke-width: 5; }
+.gear circle { fill: none; stroke: var(--ink); stroke-width: 2; }
+.gear circle:first-child { stroke-width: 6; stroke-dasharray: 5 4; }
+.snap { fill: var(--pu); }
+.sandbox { fill: none; stroke: var(--g); stroke-width: 1.8; stroke-dasharray: 3 4; rx: 8px; }
+.life { stroke: var(--line2); stroke-width: 1.4; stroke-dasharray: 4 5; }
+.axis { stroke: var(--ink); stroke-width: 1.5; }
+.run-ink, .run-g, .run-amb, .run-b { fill: none; stroke-width: 9; stroke-linecap: round; }
+.run-ink { stroke: var(--ink); } .run-g { stroke: var(--g); } .run-amb { stroke: var(--wt); } .run-b { stroke: var(--b); }
+.picked { stroke-width: 14; }
+.odot { fill: var(--g); }
+.no-ring { fill: none; stroke: var(--r); stroke-width: 3; stroke-dasharray: 4 3; }
+.hl { fill: color-mix(in oklch, var(--r) 10%, transparent); stroke: var(--r); stroke-width: 1.5; stroke-dasharray: 5 4; }
+.zig { fill: none; stroke: var(--r); stroke-width: 3; }
+.jb { fill: var(--line2); } .jb.read { fill: var(--g); }
+.candle rect { fill: var(--wt); } .wick { stroke: var(--wt); stroke-width: 2.5; }
+.xline { stroke: var(--r); stroke-width: 2; stroke-dasharray: 5 4; }
+.cursor { fill: var(--ink); stroke: var(--paper); stroke-width: 1.5; }
+.lvl rect { stroke: var(--line); }
+.lvl.ask rect { fill: color-mix(in oklch, var(--r) 9%, var(--card)); }
+.lvl.bid rect { fill: color-mix(in oklch, var(--g) 9%, var(--card)); }
+.lvl rect.eat { fill: var(--g); opacity: .35; stroke: none; }
+.limit { stroke: var(--r); stroke-width: 2; stroke-dasharray: 6 4; }
+.sdot { fill: var(--b); }
+.memf { fill: var(--b); } .memb { fill: none; stroke: var(--ink); stroke-width: 1.5; }
+.fadeout { opacity: .1; transition: opacity .25s; }
+
+/* the spotlight: the stage dimmed around what the narrator is talking about */
+.spot-veil { fill: var(--paper); }
+.hud-ground { fill: var(--paper); }
+.spot-ring { fill: none; stroke: var(--y); stroke-width: 4; }
+
+/* life (engine/life.js) */
+.lf-stamp rect { fill: none; stroke-width: 5; }
+.lf-stamp text { font: 800 34px var(--f-mono) !important; letter-spacing: .14em; text-transform: uppercase; }
+.lf-stamp.r rect { stroke: var(--r); } .lf-stamp.r text { fill: var(--r) !important; }
+.lf-stamp.g rect { stroke: var(--g); } .lf-stamp.g text { fill: var(--g) !important; }
+.lf-stamp.b rect { stroke: var(--b); } .lf-stamp.b text { fill: var(--b) !important; }
+.lf-bubble rect, .lf-bubble path { fill: var(--card); stroke: var(--ink); stroke-width: 2; }
+.lf-bubble text { font: 600 18px var(--f-body); }
+.lf-bubble.think rect { stroke-dasharray: 5 4; }
+.lf-puff circle { fill: var(--line2); }
+.lf-zzz text { font: 700 22px var(--f-mono) !important; fill: var(--b) !important; }
+.lf-drop { fill: var(--b); }
+.lf-star { fill: var(--y); stroke: var(--wt); stroke-width: 1; }
+.lf-ghost .body { fill: var(--card); stroke: var(--ink); stroke-width: 2.5; }
+.lf-ghost .eye { fill: var(--ink); }
+.lf-rocket .hull { fill: var(--card); stroke: var(--ink); stroke-width: 2; }
+.lf-rocket .fin { fill: var(--r); }
+.lf-rocket .flame { fill: var(--wt); }
+.lf-bit { stroke: none; }
