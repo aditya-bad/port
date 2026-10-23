@@ -78,7 +78,7 @@ test('the whole picture: strip, equity, each deployment, risk, exits and setting
   await p.goto(`${BASE}/linck/#/s/strangle_monthly_v2`);
   await p.waitForSelector('.st-strip');
   assert.deepEqual(await p.$$eval('.st-strip .stat .l', s => s.map(x => x.textContent)),
-    ['Overall P&L', 'Today', 'Unrealized', 'Return on capital', 'Return / drawdown', 'Win rate']);
+    ['Overall P&L', 'Cycle', 'Unrealized', 'Return on capital', 'Return / drawdown', 'Win rate']);
   const text = await p.innerText('#main');
   for (const want of [/Equity, combined/, /Deployments/, /Risk and quality/, /How trades ended/, /What stands out/, /Settings in use/]) assert.match(text, want);
   assert.doesNotMatch(text, /undefined|NaN|\[object/);

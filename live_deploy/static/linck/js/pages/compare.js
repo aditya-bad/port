@@ -249,7 +249,7 @@ export default {
           <div class="grid-two" style="padding-top:10px">
             <div class="scroll-x">
               <h3 class="t-h3" style="padding-bottom:4px">Do they move together?</h3>
-              <p class="mute small" style="margin:0 0 12px">Correlation of daily P&L. Near 1 means the same bet twice; near 0 or below means they diversify each other.</p>
+              <p class="mute small" style="margin:0 0 12px">Correlation of P&L by day (a positional cycle counts on the day it closes). Near 1 means the same bet twice; near 0 or below means they diversify each other.</p>
               <div class="corr" style="grid-template-columns:120px repeat(${deps.length}, minmax(60px, 1fr))">
                 <span></span>${deps.map(x => html`<span class="corr-h"><span class="swatch" style="background:${x.c}"></span>${short(x.v.name)}</span>`)}
                 ${deps.map((x, i) => html`<span class="corr-h"><span class="swatch" style="background:${x.c}"></span>${short(x.v.name)}</span>

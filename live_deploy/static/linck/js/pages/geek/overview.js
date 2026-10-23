@@ -1,6 +1,7 @@
 // Overview: the normal page's figures plus where the engine stands —
 // next move, headline numbers, equity with each cycle shaded, the open
-// legs live, the latest decisions and daily P&L.
+// legs live, the latest decisions and each cycle's P&L (an intraday
+// deployment's cycle is the day; a positional one's is entry to exit).
 
 import { api } from '../../core/api.js';
 import { html, mount, $, setText, setTone } from '../../core/dom.js';
@@ -15,6 +16,7 @@ import { registerScrub } from '../../ui/tooltip.js';
 import { legHead, legRow, liveTag, tickLegs } from '../../ui/legs.js';
 import { empty } from '../../ui/components.js';
 import { head, nextMove, tiles, table, poll, LABEL } from './ui.js';
+import { cycleText, cycleWhat, closedToday } from '../../ui/cycle.js';
 import { hasView } from './views.js';
 
 const OUT = { acted: 'Acted', no_action: 'No action', blocked: 'Blocked' };
@@ -25,7 +27,7 @@ function equity(v, cycles) {
   const lo0 = Math.min(0, ...days.map(d => d.cum)), hi0 = Math.max(1, ...days.map(d => d.cum));
   registerScrub('gkEquity', f => {
     const d = days[Math.max(0, Math.min(days.length - 1, Math.round(f * (days.length - 1))))];
-    return { t: `${dFull(d.date)}\nCumulative  ${inr(d.cum)}\nThat day  ${inr(d.day)}`, ys: [yOf(d.cum, 190, lo0, hi0) / 190], cs: ['var(--ink)'] };
+    return { t: `${dFull(d.date)}\nCumulative  ${inr(d.cum)}\n${v.modeKey === 'positional' ? 'Cycles closed that day' : 'That day’s cycle'}  ${inr(d.day)}`, ys: [yOf(d.cum, 190, lo0, hi0) / 190], cs: ['var(--ink)'] };
   });
   const cum = days.map(d => d.cum);
   const t0 = days[0].date.getTime(), t1 = days[days.length - 1].date.getTime() + 864e5;
@@ -49,12 +51,16 @@ export default {
       const cum = dailySeries(v.daily, pnlOf, v.created).map(d => d.cum);
       const maxDd = Math.min(0, ...ddSeries(cum));
       const s = cycles && cycles.summary;
-      const daily = dailySeries(v.daily, pnlOf, v.created).filter(d => d.has).slice(-60);
+      // each cycle's P&L: an intraday cycle is the day, a positional one is entry to exit
+      const pos = v.modeKey === 'positional';
+      const cyc = pos
+        ? v.trades.slice(-60).map(t => ({ p: pnlOf(t), tip: [`${dFull(new Date(t.opened_at))} → ${dFull(new Date(t.closed_at))}  ${inr(pnlOf(t))}`, ...dayNotes(notes, dayKey(new Date(t.closed_at)))].join('\n') }))
+        : dailySeries(v.daily, pnlOf, v.created).filter(d => d.has).slice(-60).map(d => ({ p: d.day, tip: [`${dFull(d.date)}  ${inr(d.day)}`, ...dayNotes(notes, dayKey(d.date))].join('\n') }));
       mount(el, html`
         ${head('Overview', 'Everything from the normal page, plus where the engine stands.')}
         ${g.engine() ? nextMove(g.engine(), g.href('engine')) : html`<div class="skel" style="height:52px"></div>`}
         ${tiles([
-          ['Today', html`<span data-ov="today">${v.rawStatus === 'stopped' ? '—' : inr(x.today)}</span>`, 'live', toneOf(x.today)],
+          ['Cycle', html`<span data-ov="today">${cycleText(x)}</span>`, `${cycleWhat(v, x)}${closedToday(x) != null ? ` · closed today ${inr(closedToday(x))}` : ''}`, x.cycle == null ? '' : toneOf(x.cycle)],
           ['Overall', html`<span data-ov="overall">${inr(x.overall)}</span>`, `${v.trades.length} trades`, toneOf(x.overall)],
           ['Unrealized', html`<span data-ov="unreal">${inr(x.unreal)}</span>`, `${v.legs.length} legs`, toneOf(x.unreal)],
           ['Return', pct(x.ret), `on ${inr(v.cap, { sign: false })}`, toneOf(x.ret)],
@@ -69,7 +75,7 @@ export default {
           ]),
         ], 8)}
         <div class="gk-two">
-          <div class="gk-panel"><h3>${own ? html`Equity &amp; cycles <span class="s">cumulative realized · shading alternates by cycle, numbered below</span>` : html`Equity <span class="s">cumulative realized</span>`}<a href="${g.href('performance')}">Performance →</a></h3>${equity(v, cycles)}</div>
+          <div class="gk-panel"><h3>${own ? html`Equity &amp; cycles <span class="s">cumulative, as each cycle closes · shading alternates by cycle, numbered below</span>` : html`Equity <span class="s">cumulative, as each cycle closes</span>`}<a href="${g.href('performance')}">Performance →</a></h3>${equity(v, cycles)}</div>
           <div class="gk-panel"><h3>Open legs ${liveTag(v.legs)}<a href="${g.href('positions')}">Positions →</a></h3>
             ${v.legs.length ? html`<div class="scroll-x">${legHead()}${v.legs.map(legRow)}</div>` : empty('', 'Flat.')}
             <h3 style="margin-top:14px">Latest decisions <a href="${g.href('decisions')}">Decisions →</a></h3>
@@ -78,9 +84,9 @@ export default {
               : empty('', 'No decisions yet.')}
           </div>
         </div>
-        <div class="gk-panel"><h3>Daily P&L <span class="s">last ${daily.length} trading days with a close</span>${own ? html`<a href="${g.href('cycles')}">Cycles →</a>` : ''}</h3>
-          ${daily.length ? upDownBars(daily.map(d => d.day), daily.map(d => [`${dFull(d.date)}  ${inr(d.day)}`, ...dayNotes(notes, dayKey(d.date))].join('\n')), 110) : empty('', 'No closed trades yet.')}
-          ${notes.length ? html`<p class="gk-note">Hover a day to see its journal notes · <a href="${g.href('journal')}">Journal →</a></p>` : ''}</div>`);
+        <div class="gk-panel"><h3>Cycle P&L <span class="s">${pos ? `last ${cyc.length} closed cycles, entry to exit` : `last ${cyc.length} days with a close (an intraday cycle is the day)`}</span>${own ? html`<a href="${g.href('cycles')}">Cycles →</a>` : ''}</h3>
+          ${cyc.length ? upDownBars(cyc.map(c => c.p), cyc.map(c => c.tip), 110) : empty('', 'No closed cycles yet.')}
+          ${notes.length ? html`<p class="gk-note">Hover a cycle to see its journal notes · <a href="${g.href('journal')}">Journal →</a></p>` : ''}</div>`);
     }
     const stops = [
       ...(own ? [
@@ -100,9 +106,9 @@ export default {
       if (!v) return;
       tickLegs(el, v.legs);
       const x = book.live(v);
-      [['today', x.today], ['overall', x.overall], ['unreal', x.unreal]].forEach(([k, val]) => {
+      [['today', x.cycle], ['overall', x.overall], ['unreal', x.unreal]].forEach(([k, val]) => {
         const e = $(`[data-ov="${k}"]`, el);
-        if (e && !(k === 'today' && v.rawStatus === 'stopped')) { setText(e, inr(val)); setTone(e.parentElement, toneOf(val)); }
+        if (e && val != null) { setText(e, inr(val)); setTone(e.parentElement, toneOf(val)); }
       });
     })];
     paint();

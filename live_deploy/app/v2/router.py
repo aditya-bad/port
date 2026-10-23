@@ -31,14 +31,15 @@ async def _refresh_caches(request: Request) -> None:
 
 @router.get("/book")
 async def get_book(request: Request, since: Optional[datetime] = None):
-    """Closed trades, daily realized P&L and repaired or flagged days for every deployment."""
+    """Closed trades (cycles), P&L by day and cycle, each positional
+    deployment's open cycle, and repaired or flagged days."""
     cached = getattr(request.app.state, "v2_book", None)
     if since is None and cached and time.monotonic() - cached[0] < _BOOK_TTL:
         return cached[1]
     pool = request.app.state.db_pool
-    trades, daily, repairs = await asyncio.gather(
-        book.list_trades(pool, since), book.list_daily(pool, since), book.list_repairs(pool))
-    out = {"trades": trades, "daily": daily, "repairs": repairs}
+    trades, daily, repairs, cycles = await asyncio.gather(
+        book.list_trades(pool, since), book.list_daily(pool, since), book.list_repairs(pool), book.list_cycles(pool))
+    out = {"trades": trades, "daily": daily, "repairs": repairs, "cycles": cycles}
     if since is None:
         request.app.state.v2_book = (time.monotonic(), out)
     return out

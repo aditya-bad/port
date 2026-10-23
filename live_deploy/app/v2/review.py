@@ -58,9 +58,9 @@ def _week_of(iso: str) -> date:
 
 def summarize(trades: list[dict], daily: list[dict], week: date) -> dict:
     """Pure: the week's totals, per deployment, best/worst, and the usual
-    week from the 8 before. P&L is what was booked (daily: every leg
-    closed that week, including legs of trades still open, so it matches
-    the day bars); trades and wins count trades that finished.
+    week from the 8 before. P&L is by cycle (daily: an intraday
+    deployment's days, a positional one's cycles on the day each closed,
+    so it matches the day bars); trades and wins count cycles that finished.
     trades: book.list_trades rows; daily: book.list_daily rows."""
     weeks = [week - timedelta(days=7 * i) for i in range(HISTORY_WEEKS, 0, -1)]
     t_by: dict = defaultdict(list)

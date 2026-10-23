@@ -130,7 +130,7 @@ export default {
         </div>
         ${vixSection(w)}
         <div class="rv-two">
-          <section><h3 class="t-h3">Day by day</h3>${bars(days)}</section>
+          <section><h3 class="t-h3">Day by day</h3><p class="tiny mute" style="margin:0 0 8px">Intraday cycles on their day; positional cycles on the day they closed.</p>${bars(days)}</section>
           <section><h3 class="t-h3">This week and the 8 before</h3>${bars(hist)}</section>
         </div>
         ${w.health.length || w.rules.length ? html`<div class="rv-two">

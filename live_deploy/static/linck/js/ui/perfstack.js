@@ -34,7 +34,7 @@ export function perfStack(a, { key, hm, cal, title = 'Risk and quality' }) {
       <p class="small pretty" style="margin:10px 0 0">${a.hNote}</p>
     </div>
     <div class="scroll-x">
-      <div class="sect"><h3 class="t-h3">Trading calendar</h3><span class="mute small">every weekday, shaded by that day’s realized P&L</span>
+      <div class="sect"><h3 class="t-h3">Trading calendar</h3><span class="mute small">every weekday, shaded by the cycles that closed that day (an intraday cycle is the day)</span>
         <span class="grow"></span><div class="chips">${a.yOpts.map(o => html`<button type="button" class="chip ${cal === o ? 'on' : ''}" data-act="cal" data-v="${o}">${o === 'last' ? 'Last 12 months' : o}</button>`)}</div></div>
       ${calendar(a)}
     </div>

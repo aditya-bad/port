@@ -1,7 +1,7 @@
 import './setup.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dayPnl, quietDay, tradedToday } from '../../static/linck/js/data/book.js';
+import { dayPnl, cyclePnl } from '../../static/linck/js/data/book.js';
 
 const OPEN = Date.parse('2026-10-20T09:15:00+05:30');
 const legs = [{ instrument_token: 1 }, { instrument_token: 2 }];
@@ -43,25 +43,57 @@ test('an older server without realized_open falls back to the old rule', () => {
   assert.deepEqual(dayPnl({ ...base, realizedOpen: null }, () => null), { today: 4200, stale: false, fresh: false });
 });
 
-// The Desk's hero: on a day nothing has traded or moved yet, today's ₹0
-// would mislead, so it shows the open positions' P&L instead.
-test('a quiet day: nothing priced since the open, nothing filled, nothing booked', () => {
-  const dep = (id, extra = {}) => ({ id, rawStatus: 'active', legs, ...extra });
-  const x = { a: { today: 0, fresh: false }, b: { today: 0, fresh: false }, s: { today: 0, fresh: true } };
-  const ev = { a: [], b: [] };
-  const q = list => quietDay(list, v => x[v.id], v => ev[v.id] || []);
-  assert.equal(q([dep('a'), dep('b')]), true, 'holiday, weekend, before 09:15, or Kite down');
-  assert.equal(q([dep('a'), dep('s', { rawStatus: 'stopped' })]), true, 'a stopped deployment doesn’t count');
-  assert.equal(q([]), true);
-  x.b = { today: 0, fresh: true };
-  assert.equal(q([dep('a'), dep('b')]), false, 'a leg ticked since the open: today is real, even if ₹0');
-  x.b = { today: 0, fresh: false };
-  ev.b = [{ kind: 'fill' }];
-  assert.equal(q([dep('a'), dep('b')]), false, 'a fill today');
-  ev.b = [];
-  x.b = { today: -750, fresh: false };
-  assert.equal(q([dep('a'), dep('b')]), false, 'something booked today');
-  assert.equal(tradedToday({ today: 0.2, fresh: false }, []), false, 'paise of rounding aren’t a trade');
+// Cycle P&L, what every page follows: an intraday deployment's cycle is
+// the day; a positional one's is the open episode (entry, adjustments,
+// rolls, exit): what its closed legs realized plus the open legs now.
+test('intraday: the cycle is the day', () => {
+  const c = cyclePnl({ positional: false, today: -750, unreal: 300, hasLegs: true });
+  assert.equal(c.cycle, -750);
+  assert.equal(c.sum, -750);
+  assert.equal(c.since, null);
+  assert.deepEqual(c.parts, [{ kind: 'day', value: -750, open: true }]);
+});
+
+test('positional: the open cycle is what its closed legs realized plus the open legs, from its entry', () => {
+  const c = cyclePnl({ positional: true, today: 0, unreal: 1200, hasLegs: true, open: { realized: 750, start: '2026-10-19T10:00:00+05:30' } });
+  assert.equal(c.cycle, 1950, 'not the day’s ₹0: the cycle holds since Monday');
+  assert.equal(c.sum, 1950);
+  assert.equal(c.since, '2026-10-19T10:00:00+05:30');
+  assert.equal(c.parts.length, 1);
+});
+
+test('the switch day: a cycle closed today shows beside the new one, the headline is the new one', () => {
+  const c = cyclePnl({ positional: true, today: 0, unreal: -200, hasLegs: true,
+    open: { realized: 0, start: '2026-10-23T13:00:00+05:30' },
+    closedToday: [{ value: 6000, from: '2026-10-14T09:30:00+05:30', to: '2026-10-23T12:55:00+05:30' }] });
+  assert.equal(c.cycle, -200, 'the new cycle');
+  assert.equal(c.sum, 5800, 'totals add both on the day it switched');
+  assert.deepEqual(c.parts.map(q => q.kind), ['closed', 'open']);
+  assert.equal(c.since, '2026-10-23T13:00:00+05:30');
+});
+
+test('the next day only the new cycle is left (no cycle closed today)', () => {
+  const c = cyclePnl({ positional: true, today: 0, unreal: 400, hasLegs: true, open: { realized: -100, start: '2026-10-23T13:00:00+05:30' } });
+  assert.equal(c.cycle, 300);
+  assert.deepEqual(c.parts.map(q => q.kind), ['open']);
+});
+
+test('positional and flat after exiting today: the closed cycle is what it shows', () => {
+  const c = cyclePnl({ positional: true, today: 0, unreal: 0, hasLegs: false, closedToday: [{ value: -1400, from: 'a', to: 'b' }] });
+  assert.equal(c.cycle, -1400);
+  assert.equal(c.since, null);
+});
+
+test('positional and flat with nothing closed today: no cycle', () => {
+  assert.equal(cyclePnl({ positional: true, today: 0, unreal: 0, hasLegs: false }).cycle, null);
+});
+
+test('positional legs the server has no cycle for yet (just entered): their unrealized', () => {
+  assert.equal(cyclePnl({ positional: true, today: 0, unreal: 250, hasLegs: true }).cycle, 250);
+});
+
+test('a stopped deployment has no cycle', () => {
+  assert.deepEqual(cyclePnl({ positional: true, stopped: true, today: 5, unreal: 9, hasLegs: true }), { cycle: null, parts: [], sum: 0, since: null });
 });
 
 test('the Desk’s "If VIX +1": the total, each deployment, and what was left out', async () => {

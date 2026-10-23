@@ -7,7 +7,14 @@ performance tab):
   is flat again. Grouping is queries._group_into_episodes, the same
   merge the Detail page's cycles and positional digest already use, so
   a "trade" means the same thing everywhere.
-* daily — realized P&L per deployment per IST trading day.
+* daily — P&L per deployment per IST trading day, by cycle: an intraday
+  deployment's cycle is the day, so its row is what closed that day; a
+  positional deployment's cycle is one episode, entry through adjustments
+  to exit, so its row is the P&L of the cycles that closed that day
+  (a roll closing mid-cycle counts when the cycle does).
+* cycles — each positional deployment's open cycle: when it started and
+  what its closed legs (rolls, adjustments) have realized so far; the UI
+  adds the open legs' live P&L to make the cycle's P&L now.
 * repairs — the days each deployment was repaired, or flagged and not yet.
 
 Both carry gross, after-charges and after-charges-and-slippage figures
@@ -112,19 +119,81 @@ async def _worst_points(conn, trades: list[dict]) -> None:
             t["worst"] = round(min(0.0, r["low"] - r["first"], t["pnl"]), 2)
 
 
+async def _positions(conn) -> tuple[list, dict]:
+    """Every position (sorted per deployment by opened_at) and the
+    closing reasons episode grouping needs."""
+    positions = await conn.fetch(
+        """
+        SELECT id, deployment_id, opened_at, closed_at, status,
+               realized_pnl::float8 AS realized_pnl,
+               COALESCE(estimated_charges, 0)::float8 AS estimated_charges,
+               CASE WHEN status = 'closed' THEN COALESCE(estimated_slippage, 0) ELSE 0 END::float8 AS estimated_slippage
+        FROM positions
+        ORDER BY deployment_id, opened_at ASC
+        """
+    )
+    return positions, await queries._fetch_closing_reasons(conn, [r["id"] for r in positions])
+
+
+def _by_dep(positions) -> dict:
+    out: dict = defaultdict(list)
+    for r in positions:
+        out[r["deployment_id"]].append(r)
+    return out
+
+
+async def _positional_ids(conn) -> set:
+    return {r["id"] for r in await conn.fetch("SELECT id FROM deployments WHERE mode = 'positional'")}
+
+
+def cycle_days(trades: list[dict]) -> list[dict[str, Any]]:
+    """Pure: closed cycles (episodes_to_trades rows) -> one row per
+    deployment per IST day a cycle closed, with the cycles' P&L."""
+    rows: dict = {}
+    for t in trades:
+        day = datetime.fromisoformat(t["closed_at"]).astimezone(IST).date().isoformat()
+        k = (t["deployment_id"], day)
+        r = rows.setdefault(k, {"deployment_id": t["deployment_id"], "day": day, "pnl": 0.0, "pnl_net": 0.0,
+                                "pnl_net_slip": 0.0, "closes": 0})
+        for f in ("pnl", "pnl_net", "pnl_net_slip"):
+            r[f] = round(r[f] + t[f], 2)
+        r["closes"] += 1
+    return sorted(rows.values(), key=lambda r: (r["day"], r["deployment_id"]))
+
+
+def open_cycle(rows: list, reasons: dict) -> Optional[dict[str, Any]]:
+    """Pure: one deployment's positions -> its open cycle (the episode
+    still holding legs): when it started, and what its legs closed so far
+    (rolls, adjustments) have realized. None when flat."""
+    eps = queries._group_into_episodes(rows, reasons)
+    if not eps or eps[-1]["end"] is not None:
+        return None
+    ep = eps[-1]
+    closed = [r for r in ep["rows"] if r["closed_at"] is not None]
+    gross, net, net_slip = _bases(closed)
+    return {"start": ep["start"].isoformat(), "pnl": round(gross, 2), "pnl_net": round(net, 2),
+            "pnl_net_slip": round(net_slip, 2), "legs_closed": len(closed),
+            "legs_open": len(ep["rows"]) - len(closed)}
+
+
+async def list_cycles(pool: asyncpg.Pool) -> dict[str, Any]:
+    """{deployment id: its open cycle} for every positional deployment
+    holding legs."""
+    async with pool.acquire() as conn:
+        positions, reasons = await _positions(conn)
+        positional = await _positional_ids(conn)
+    out = {}
+    for dep_id, rows in _by_dep(positions).items():
+        if dep_id in positional:
+            c = open_cycle(rows, reasons)
+            if c is not None:
+                out[str(dep_id)] = c
+    return out
+
+
 async def list_trades(pool: asyncpg.Pool, since: Optional[datetime] = None) -> list[dict[str, Any]]:
     async with pool.acquire() as conn:
-        positions = await conn.fetch(
-            """
-            SELECT id, deployment_id, opened_at, closed_at, status,
-                   realized_pnl::float8 AS realized_pnl,
-                   COALESCE(estimated_charges, 0)::float8 AS estimated_charges,
-                   CASE WHEN status = 'closed' THEN COALESCE(estimated_slippage, 0) ELSE 0 END::float8 AS estimated_slippage
-            FROM positions
-            ORDER BY deployment_id, opened_at ASC
-            """
-        )
-        reasons = await queries._fetch_closing_reasons(conn, [r["id"] for r in positions])
+        positions, reasons = await _positions(conn)
         repaired = {r["position_id"]: r["day"] or True for r in await conn.fetch(
             "SELECT DISTINCT ON (position_id) position_id, metadata->'repair'->>'day' AS day "
             "FROM position_lots WHERE metadata ? 'repair' ORDER BY position_id, executed_at")}
@@ -144,6 +213,24 @@ async def list_trades(pool: asyncpg.Pool, since: Optional[datetime] = None) -> l
 
 
 async def list_daily(pool: asyncpg.Pool, since: Optional[datetime] = None) -> list[dict[str, Any]]:
+    """P&L per deployment per day, by cycle (see the module docstring)."""
+    async with pool.acquire() as conn:
+        positional = await _positional_ids(conn)
+        positions, reasons = await _positions(conn) if positional else ([], {})
+    cycles = []
+    for dep_id, rows in _by_dep(positions).items():
+        if dep_id in positional:
+            cycles.extend(episodes_to_trades(dep_id, rows, reasons))
+    if since is not None:
+        cycles = [t for t in cycles if t["_end"] >= since]
+    for t in cycles:
+        del t["_start"], t["_end"]
+    days = [r for r in await _realized_days(pool, since) if r["deployment_id"] not in {str(x) for x in positional}]
+    return sorted(days + cycle_days(cycles), key=lambda r: (r["day"], r["deployment_id"]))
+
+
+async def _realized_days(pool: asyncpg.Pool, since: Optional[datetime] = None) -> list[dict[str, Any]]:
+    """What closed each day, per deployment: an intraday deployment's cycles."""
     rows = await pool.fetch(
         """
         SELECT deployment_id,

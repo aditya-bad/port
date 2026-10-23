@@ -33,7 +33,7 @@ export default {
       const maxDd = Math.min(0, ...dd);
       registerScrub('eq', f => {
         const i = Math.round(f * (days.length - 1)), q = days[i];
-        return q ? { t: `${dFull(q.date)}\nEquity  ${inr(q.cum)}\nThat day  ${inr(q.day)}\nBelow peak  ${inr(dd[i])}\nReturn on capital  ${pct(q.cum / v.cap * 100)}`, ys: [1 - (q.cum - low) / ((top - low) || 1)] } : null;
+        return q ? { t: `${dFull(q.date)}\nEquity  ${inr(q.cum)}\n${v.modeKey === 'positional' ? 'Cycles closed that day' : 'That day’s cycle'}  ${inr(q.day)}\nBelow peak  ${inr(dd[i])}\nReturn on capital  ${pct(q.cum / v.cap * 100)}`, ys: [1 - (q.cum - low) / ((top - low) || 1)] } : null;
       });
       registerScrub('dd', f => {
         const i = Math.round(f * (days.length - 1)), q = days[i];

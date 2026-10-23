@@ -270,7 +270,7 @@ export async function openSession(v, at) {
     const row = L && L[i];
     mount(el, html`
       <div class="ss-bar">
-        <button type="button" class="b" data-ss="close">‹ ${intra ? 'Daily stats' : 'Cycles'}</button>
+        <button type="button" class="b" data-ss="close">‹ Cycles</button>
         <span class="grow"></span>
         ${L ? html`<span class="mono tiny mute nowrap">${L.length - i} of ${L.length}</span>
           <button type="button" class="btn btn-sm" data-ss="prev" ${i > 0 ? '' : 'disabled style="opacity:.3"'}>${intra ? html`‹ Newer<span class="hide-phone">&nbsp;day</span>` : '‹ Newer'}</button>

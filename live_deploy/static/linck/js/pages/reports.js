@@ -90,7 +90,7 @@ export default {
       const eq = days.map(d => d.cum);
       registerScrub('acct', f => {
         const q = days[Math.round(f * (days.length - 1))];
-        return q ? { t: `${q.date.getDate ? `${ist(q.date).d} ${MONTHS[ist(q.date).mo]} ${ist(q.date).y}` : ''}\nAccount equity  ${inr(q.cum)}\nThat day  ${inr(q.day)}`, ys: [1 - (q.cum - Math.min(0, ...eq)) / ((Math.max(1, ...eq) - Math.min(0, ...eq)) || 1)] } : null;
+        return q ? { t: `${q.date.getDate ? `${ist(q.date).d} ${MONTHS[ist(q.date).mo]} ${ist(q.date).y}` : ''}\nAccount equity  ${inr(q.cum)}\nClosed that day  ${inr(q.day)}`, ys: [1 - (q.cum - Math.min(0, ...eq)) / ((Math.max(1, ...eq) - Math.min(0, ...eq)) || 1)] } : null;
       });
 
       // Capital and exposure (live)

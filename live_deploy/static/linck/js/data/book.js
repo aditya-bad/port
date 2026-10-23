@@ -9,10 +9,11 @@ import { basis, pick, pnlOf, baseOf } from '../core/basis.js';
 import { emit, listen } from '../core/store.js';
 import { debounce } from '../core/dom.js';
 import { prices, health } from './live.js';
+import { dayKey } from '../core/format.js';
 import { LAB_TAG, YOUNG_DAYS, QUIET_DAYS } from './config.js';
 import { tradeMetrics } from './metrics.js';
 
-const raw = { deployments: [], positions: [], trades: [], daily: [], repairs: [], session: null, strategies: [], tags: [], health: {}, spike: null, exposure: null };
+const raw = { deployments: [], positions: [], trades: [], daily: [], repairs: [], cycles: {}, session: null, strategies: [], tags: [], health: {}, spike: null, exposure: null };
 const loaded = { deployments: false, positions: false, book: false, session: false, strategies: false, tags: false, health: false, spike: false, exposure: false };
 const errors = {};
 let version = 0;
@@ -20,7 +21,7 @@ let version = 0;
 const LOADERS = {
   deployments: async () => { raw.deployments = await api.deployments(); },
   positions: async () => { raw.positions = await api.openPositions(); },
-  book: async () => { const b = await api.book(); raw.trades = b.trades; raw.daily = b.daily; raw.repairs = b.repairs || []; },
+  book: async () => { const b = await api.book(); raw.trades = b.trades; raw.daily = b.daily; raw.repairs = b.repairs || []; raw.cycles = b.cycles || {}; },
   session: async () => { raw.session = await api.session(); },
   strategies: async () => { raw.strategies = await api.strategies(); },
   tags: async () => { raw.tags = await api.tags(); },
@@ -191,14 +192,24 @@ export function dayPnl({ realized, overall, legs, equityOpen, realizedOpen, open
   return { today: overall - (equityOpen ? baseOf(equityOpen) : realized), stale: false, fresh };
 }
 
-// Has anything happened today: a leg priced since the open, or a fill,
-// exit or error today? When nothing has (a holiday, a weekend, before
-// 09:15, Kite not connected, a day with no trades and nothing held
-// moving), today's P&L is a misleading ₹0, so the Desk shows what's open
-// instead. Pure, for tests.
-export const tradedToday = (x, events) => !!(x.fresh || (events && events.length) || Math.abs(x.today) >= 0.5);
-export function quietDay(list, liveOf, eventsOf) {
-  return !list.some(v => v.rawStatus !== 'stopped' && tradedToday(liveOf(v), eventsOf(v)));
+// Cycle P&L: what every page follows, instead of the day. A cycle is one
+// entry to its exit: an intraday deployment's cycle is the day (dayPnl);
+// a positional deployment's is one episode, entry through adjustments
+// and rolls to flat (app/v2/book.py), so its P&L is what the cycle's
+// closed legs realized plus its open legs now. On the day a cycle closes
+// it's shown beside the new one; from the next day only the new one.
+// open: the server's open cycle ({realized, start}) or null;
+// closedToday: [{value, from, to}] for cycles that closed today. Pure, for tests.
+export function cyclePnl({ positional, today, unreal, hasLegs, open, closedToday = [], stopped }) {
+  if (stopped) return { cycle: null, parts: [], sum: 0, since: null };
+  if (!positional) return { cycle: today, parts: [{ kind: 'day', value: today, open: hasLegs }], sum: today, since: null };
+  const parts = closedToday.map(c => ({ kind: 'closed', value: c.value, from: c.from, to: c.to, open: false }));
+  let cur = null;
+  if (open) cur = { kind: 'open', value: open.realized + unreal, from: open.start, open: true };
+  else if (hasLegs) cur = { kind: 'open', value: unreal, from: null, open: true };   // before the server's answer
+  if (cur) parts.push(cur);
+  const sum = parts.reduce((a, q) => a + q.value, 0);
+  return { cycle: cur ? cur.value : parts.length ? parts[parts.length - 1].value : null, parts, sum, since: cur ? cur.from : null };
 }
 
 // Live figures for one deployment in the current basis.
@@ -215,7 +226,18 @@ export function live(v) {
     realized, overall, legs: v.legs, equityOpen: v.equityOpen, realizedOpen: v.realizedOpen,
     openAt: raw.session ? raw.session.open_at : Infinity, stopped: v.rawStatus === 'stopped',
   }, tok => { const t = prices.get(tok); return t ? t.at : null; });
-  return { realized, unreal, overall, today, stale, fresh, ret: v.cap ? overall / v.cap * 100 : 0 };
+  const positional = v.modeKey === 'positional', now = dayKey(new Date());
+  const oc = positional ? raw.cycles[v.id] : null;
+  const c = cyclePnl({
+    positional, today, unreal, hasLegs: v.legs.length > 0, stopped: v.rawStatus === 'stopped',
+    open: oc ? { realized: pick(oc, 'pnl') || 0, start: oc.start } : null,
+    closedToday: positional ? v.trades.filter(t => dayKey(new Date(t.closed_at)) === now).map(t => ({ value: pnlOf(t), from: t.opened_at, to: t.closed_at })) : [],
+  });
+  return {
+    realized, unreal, overall, today, stale, fresh, ret: v.cap ? overall / v.cap * 100 : 0,
+    cycle: c.cycle, cycleParts: c.parts, cycleSum: c.sum, cycleSince: c.since, positional,
+    lastCycle: positional && v.trades.length ? v.trades[v.trades.length - 1] : null,
+  };
 }
 
 export function deployments() {
@@ -230,13 +252,12 @@ export function deployments() {
 export const find = id => deployments().find(v => v.id === id) || null;
 export const rawDeployment = id => raw.deployments.find(d => d.id === id) || null;
 export const eventsToday = v => (raw.session && raw.session.lanes[v.id] ? raw.session.lanes[v.id].events : []);
-export const quiet = list => quietDay(list, live, eventsToday);
 export function totals(list) {
   return list.reduce((a, v) => {
     const x = live(v);
-    a.today += x.today; a.overall += x.overall; a.unreal += x.unreal; a.realized += x.realized; a.legs += v.legs.length;
+    a.today += x.today; a.cycle += x.cycleSum; a.overall += x.overall; a.unreal += x.unreal; a.realized += x.realized; a.legs += v.legs.length;
     return a;
-  }, { today: 0, overall: 0, unreal: 0, realized: 0, legs: 0 });
+  }, { today: 0, cycle: 0, overall: 0, unreal: 0, realized: 0, legs: 0 });
 }
 export const healthOf = id => raw.health[id] || [];
 export const vixExposure = () => raw.exposure;

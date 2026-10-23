@@ -1,4 +1,4 @@
-// Daily stats (intraday) or Cycles (positional).
+// Cycles: an intraday deployment's cycles are its days, a positional one's are its entries to exits.
 
 import { html, mount, actions, $, setText, setTone } from '../../core/dom.js';
 import { inr, pct, dShort, WEEKDAYS, ist, dayKey, fromDay, plural, tone } from '../../core/format.js';
@@ -50,7 +50,7 @@ function intraday(v) {
     byD[k].p += pnlOf(t); byD[k].n++; if (t.exit_reason) byD[k].rs.add(t.exit_reason);
   });
   const days = Object.values(byD).sort((a, b) => b.d - a.d);
-  if (!days.length) return empty('No trading days yet', 'Daily stats appear after the first closed trade.');
+  if (!days.length) return empty('No trading days yet', 'Cycles appear after the first closed trade.');
   const green = days.filter(x => x.p > 0), red = days.filter(x => x.p <= 0);
   let streak = 0, cur = 0;
   [...days].reverse().forEach(x => { cur = x.p <= 0 ? cur + 1 : 0; streak = Math.max(streak, cur); });

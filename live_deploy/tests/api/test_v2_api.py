@@ -29,7 +29,7 @@ def trade(client, dep_id, sym, tok, entry, exit_, opened, minutes=30, side="sell
 # ── Book ──────────────────────────────────────────────────────────────
 
 def test_book_is_empty_without_trades(client):
-    assert client.get("/v2/book").json() == {"trades": [], "daily": [], "repairs": []}
+    assert client.get("/v2/book").json() == {"trades": [], "daily": [], "repairs": [], "cycles": {}}
 
 
 def test_book_groups_legs_into_one_trade_and_days_into_daily_rows(client):
@@ -49,6 +49,45 @@ def test_book_groups_legs_into_one_trade_and_days_into_daily_rows(client):
     assert t["exit_reason"] == "exit" and t["wins"] == 1
     [row] = b["daily"]
     assert row["day"] == day1.isoformat() and row["pnl"] == pytest.approx(750) and row["closes"] == 2
+
+
+def test_a_positional_deployment_is_followed_by_cycle_not_by_day(client):
+    """Day rows for a positional deployment are its cycles, by the day each
+    closed: a roll that closes mid-cycle counts when the cycle does, not
+    on its own day. Its open cycle is in `cycles`: when it began and what
+    its closed legs have realized so far."""
+    p = make_deployment(client, name="Positional", strategy="strangle_monthly_v2", mode="positional")
+    d1, d2, d3, d4 = (TODAY - timedelta(days=k) for k in (9, 8, 6, 5))
+    # cycle 1: in on d1, the put rolled on d2 (+₹1,500 closed that day), out on d3
+    add_fill(client, p["id"], "CE1", 1, "sell", 75, 100, at(d1, "10:00"), reason="entry")
+    add_fill(client, p["id"], "PE1", 2, "sell", 75, 100, at(d1, "10:00"), reason="entry")
+    add_fill(client, p["id"], "PE1", 2, "buy", 75, 80, at(d2, "11:00"), reason="roll")
+    add_fill(client, p["id"], "PE2", 3, "sell", 75, 90, at(d2, "11:00"), reason="roll")
+    add_fill(client, p["id"], "CE1", 1, "buy", 75, 60, at(d3, "14:00"), reason="checkpoint")
+    add_fill(client, p["id"], "PE2", 3, "buy", 75, 70, at(d3, "14:00"), reason="checkpoint")
+    # cycle 2: in on d4, a leg rolled the same day (+₹750), still open
+    add_fill(client, p["id"], "CE3", 4, "sell", 75, 100, at(d4, "10:00"), reason="entry")
+    add_fill(client, p["id"], "PE3", 5, "sell", 75, 100, at(d4, "10:00"), reason="entry")
+    add_fill(client, p["id"], "PE3", 5, "buy", 75, 90, at(d4, "13:00"), reason="roll")
+    add_fill(client, p["id"], "PE4", 6, "sell", 75, 95, at(d4, "13:00"), reason="roll")
+    b = client.get("/v2/book").json()
+    rows = [r for r in b["daily"] if r["deployment_id"] == p["id"]]
+    # cycle 1: 1500 (put roll) + 3000 (call) + 1500 (new put) = 6000, all on d3, its close
+    assert rows == [{"deployment_id": p["id"], "day": d3.isoformat(), "pnl": pytest.approx(6000), "pnl_net": rows[0]["pnl_net"],
+                     "pnl_net_slip": rows[0]["pnl_net_slip"], "closes": 1}], "nothing on d2: the roll waits for its cycle"
+    c = b["cycles"][p["id"]]
+    assert datetime.fromisoformat(c["start"]) == at(d4, "10:00") and c["pnl"] == pytest.approx(750) and c["legs_closed"] == 1 and c["legs_open"] == 2
+    assert c["pnl_net_slip"] <= c["pnl_net"] < c["pnl"]
+    # an intraday deployment keeps its days, and has no cycle entry (its cycle is the day)
+    i = make_deployment(client, name="Intraday")
+    trade(client, i["id"], "CE", 7, 100, 80, at(d1, "10:00"))
+    b = client.get("/v2/book").json()
+    assert [r["day"] for r in b["daily"] if r["deployment_id"] == i["id"]] == [d1.isoformat()] and i["id"] not in b["cycles"]
+    # flat: no open cycle
+    for sym, tok in (("CE3", 4), ("PE4", 6)):
+        add_fill(client, p["id"], sym, tok, "buy", 75, 50, at(TODAY - timedelta(days=1), "14:00"), reason="checkpoint")
+    client.app.state.v2_book = None
+    assert p["id"] not in client.get("/v2/book").json()["cycles"]
 
 
 def test_book_counts_a_later_open_as_an_adjustment(client):

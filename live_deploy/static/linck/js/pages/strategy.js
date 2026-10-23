@@ -6,6 +6,7 @@
 // performance stack, how trades ended, and the settings each one uses.
 
 import { html, mount, actions } from '../core/dom.js';
+import { cycleText, cycleTone, cycleTip, closedNote } from '../ui/cycle.js';
 import { inr, inrS, pct, dFull, dShort, dMonthYear, plural, tone } from '../core/format.js';
 import { pnlOf } from '../core/basis.js';
 import { ui, listen } from '../core/store.js';
@@ -80,7 +81,7 @@ export default {
       const tm = tradeMetrics(rec.trades.map(pnlOf));
       const cells = [
         ['Overall P&L', inrS(t.overall), tone(t.overall), 'realized + open'],
-        ['Today', inr(t.today), tone(t.today), 'all in view'],
+        ['Cycle', inr(t.cycle), tone(t.cycle), 'current cycles, all in view'],
         ['Unrealized', inr(t.unreal), tone(t.unreal), plural(t.legs, 'open leg')],
         ['Return on capital', pct(t.overall / cap * 100), tone(t.overall), `on ${inrS(rec.cap, { sign: false })}`],
         ['Return / drawdown', m.ddp < 0 ? fmtRatio(m.rdd) : '—', '', m.ddp < 0 ? verdictRdd(m.rdd) : 'no drawdown yet'],
@@ -129,7 +130,7 @@ export default {
           <span class="num tiny">${inrS(v.cap, { sign: false })}</span>
           <span class="num tiny">${m.n || '—'}</span>
           <span class="num tiny">${m.n ? `${m.win.toFixed(0)}%` : '—'}</span>
-          <span class="num ${v.rawStatus === 'stopped' ? 'flat' : tone(x.today)}">${v.rawStatus === 'stopped' ? '—' : inr(x.today)}</span>
+          <span class="num col" style="gap:1px;align-items:flex-end" data-tip="${cycleTip(v, x)}"><span class="${cycleTone(x)}">${cycleText(x)}</span>${closedNote(x)}</span>
           <span class="num ${tone(x.overall)}">${inrS(x.overall)}</span>
           <span class="num tiny ${tone(x.ret)}">${pct(x.ret, 1)}</span>
           <span class="num tiny ${m.ddp < 0 ? 'neg' : ''}">${m.ddp < 0 ? pct(m.ddp, 1) : '—'}</span>
@@ -148,16 +149,16 @@ export default {
         <div class="hide-phone scroll-x">
           <div class="tbl st-tbl">
             <div class="tr th"><span></span><span>Deployment</span><span>Status</span><span class="right">Capital</span><span class="right">Trades</span><span class="right">Won</span>
-              <span class="right">Today</span><span class="right">Overall</span><span class="right">Return</span><span class="right">Max DD</span><span class="right">R/DD</span></div>
+              <span class="right">Cycle</span><span class="right">Overall</span><span class="right">Return</span><span class="right">Max DD</span><span class="right">R/DD</span></div>
             ${R.map(row)}
             <div class="tr tot"><span></span><b>${sel.length === deps.length ? 'All' : `${sel.length} in view`}, combined</b><span></span>
               <span class="num tiny">${inrS(rec.cap, { sign: false })}</span><span class="num tiny">${tm.n || '—'}</span><span class="num tiny">${tm.n ? `${tm.win.toFixed(0)}%` : '—'}</span>
-              <span class="num ${tone(t.today)}">${inr(t.today)}</span><span class="num ${tone(t.overall)}">${inrS(t.overall)}</span>
+              <span class="num ${tone(t.cycle)}">${inr(t.cycle)}</span><span class="num ${tone(t.overall)}">${inrS(t.overall)}</span>
               <span class="num tiny ${tone(t.overall)}">${pct(t.overall / (rec.cap || 1) * 100, 1)}</span>
               <span class="num tiny ${tm.ddp < 0 ? 'neg' : ''}">${tm.ddp < 0 ? pct(tm.ddp, 1) : '—'}</span><span class="num tiny">${tm.ddp < 0 ? fmtRatio(tm.rdd) : '—'}</span></div>
           </div>
         </div>
-        <p class="tiny mute" style="margin:8px 0 0">Combined: P&L added up day by day and trades pooled, on the capital of the ones in view together, so its drawdown is the portfolio’s own. Ticked ones are in view; tap a box to leave one out.</p>`;
+        <p class="tiny mute" style="margin:8px 0 0">Combined: P&L added up by day (positional cycles count on the day they close) and trades pooled, on the capital of the ones in view together, so its drawdown is the portfolio’s own. Ticked ones are in view; tap a box to leave one out.</p>`;
     }
 
     function exits(rec) {

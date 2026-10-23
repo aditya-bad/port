@@ -1,5 +1,5 @@
 // One deployment: header with actions on every tab, a five-figure strip,
-// and tabs Now · Performance · Cycles/Daily stats · Trades & replay · Settings.
+// and tabs Now · Performance · Cycles · Trades & replay · Settings.
 // Each tab is its own module exporting render(el, v) → cleanup.
 
 import { html, mount, $, actions, on, setText, setTone } from '../../core/dom.js';
@@ -11,6 +11,7 @@ import * as book from '../../data/book.js';
 import { periodMetrics, verdictRdd, fmtRatio } from '../../data/metrics.js';
 import { status, tagChip, empty } from '../../ui/components.js';
 import { repairChip } from '../../ui/repairs.js';
+import { cycleWhat, cycleTip, closedToday } from '../../ui/cycle.js';
 import { say } from '../../ui/toast.js';
 import * as A from '../../actions.js';
 import { supports as geekOk, enter as enterGeek } from '../../data/geek.js';
@@ -18,7 +19,7 @@ import { supports as geekOk, enter as enterGeek } from '../../data/geek.js';
 export const TABS = v => [
   ['now', 'Now', () => import('./now.js')],
   ['performance', 'Performance', () => import('./performance.js')],
-  ['cycles', v.modeKey === 'intraday' ? 'Daily stats' : 'Cycles', () => import('./days.js')],
+  ['cycles', 'Cycles', () => import('./days.js')],
   ['trades', 'Trades & replay', () => import('./trades.js')],
   ['settings', 'Settings', () => import('./settings.js')],
 ];
@@ -27,7 +28,8 @@ function strip(v) {
   const x = book.live(v);
   const m = periodMetrics({ trades: v.trades, daily: v.daily, cap: v.cap, pnlOf, period: 'all' });
   return [
-    ['Today', v.rawStatus === 'stopped' ? '—' : inrFit(x.today), tone(x.today), basisNow().l.toLowerCase(), 'today'],
+    ['Cycle', x.cycle == null ? '—' : inrFit(x.cycle), x.cycle == null ? 'flat' : tone(x.cycle),
+      `${cycleWhat(v, x)}${closedToday(x) != null ? ` · closed today ${inr(closedToday(x))}` : ''} · ${basisNow().l.toLowerCase()}`, 'today', cycleTip(v, x)],
     ['Overall', inrFit(x.overall), tone(x.overall), plural(v.trades.length, 'trade'), 'overall'],
     ['Unrealized', inrFit(x.unreal), tone(x.unreal), plural(v.legs.length, 'open leg'), 'unreal'],
     ['Return on capital', pct(x.ret), tone(x.ret), 'all-time', 'ret'],
@@ -89,8 +91,8 @@ export default {
               ${v.legs.length ? html`<button type="button" class="btn btn-primary" data-act="close">Close ${plural(v.legs.length, 'leg')}…</button>` : ''}
               <button type="button" class="btn" data-act="pauseNow">Pause</button>
             </div>` : ''}
-          <div class="strip" style="grid-template-columns:var(--g-5)">${strip(v).map(([l, val, c, s, k]) => html`
-            <div class="stat"><span class="l">${l}</span><span class="v ${c}" ${k ? html`data-strip="${k}"` : ''}>${val}</span><span class="s">${s}</span></div>`)}</div>
+          <div class="strip" style="grid-template-columns:var(--g-5)">${strip(v).map(([l, val, c, s, k, tip]) => html`
+            <div class="stat" ${tip ? html`data-tip="${tip}"` : ''}><span class="l">${l}</span><span class="v ${c}" ${k ? html`data-strip="${k}"` : ''}>${val}</span><span class="s">${s}</span></div>`)}</div>
           <nav class="tabs" aria-label="Deployment">${TABS(v).map(([k, l]) => html`
             <a href="${href(`d/${v.id}/${k}`)}" class="${k === tabKey ? 'on' : ''}" ${k === tabKey ? html`aria-current="page"` : ''}>${l}</a>`)}</nav>
         </div>`;
@@ -157,9 +159,9 @@ export default {
         const v = vNow();
         if (!v) return;
         const x = book.live(v);
-        [['today', x.today, inrFit], ['overall', x.overall, inrFit], ['unreal', x.unreal, inrFit], ['ret', x.ret, pct]].forEach(([k, val, f]) => {
+        [['today', x.cycle, inrFit], ['overall', x.overall, inrFit], ['unreal', x.unreal, inrFit], ['ret', x.ret, pct]].forEach(([k, val, f]) => {
           const el = $(`[data-strip="${k}"]`, main);
-          if (el && !(k === 'today' && v.rawStatus === 'stopped')) { setText(el, f(val)); setTone(el, tone(val)); }
+          if (el && val != null) { setText(el, f(val)); setTone(el, tone(val)); }
         });
       }),
     ];

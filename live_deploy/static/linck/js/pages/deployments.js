@@ -11,16 +11,17 @@ import { LAB_TAG } from '../data/config.js';
 import { status, check, chips, tagChip, empty, marker, STATUS } from '../ui/components.js';
 import { say } from '../ui/toast.js';
 import * as A from '../actions.js';
+import { cycleText, cycleTone, cycleTip, closedNote } from '../ui/cycle.js';
 import { repairChip } from '../ui/repairs.js';
 
 const st = ui('deployments', { q: '', st: 'all', mode: 'all', idx: 'all', tag: 'all', lab: false, sk: 'today', sd: -1, page: 0, dense: false });
 const COLS = [
   ['status', 'Status'], ['name', 'Deployment'], [null, 'Tags'], ['mode', 'Mode'], ['idx', 'Index'],
-  ['cap', 'Capital', 1], ['today', 'Today', 1], ['overall', 'Overall', 1], ['ret', 'Return', 1], ['legs', 'Legs', 1], ['last', 'Last trade', 1], [null, '', 1],
+  ['cap', 'Capital', 1], ['today', 'Cycle', 1], ['overall', 'Overall', 1], ['ret', 'Return', 1], ['legs', 'Legs', 1], ['last', 'Last trade', 1], [null, '', 1],
 ];
 const SK = {
   status: r => ['error', 'paused', 'active', 'stopped'].indexOf(r.v.status), name: r => r.v.name, mode: r => r.v.mode, idx: r => r.v.index,
-  cap: r => r.v.cap, today: r => r.x.today, overall: r => r.x.overall, ret: r => r.x.ret, legs: r => r.v.legs.length,
+  cap: r => r.v.cap, today: r => (r.x.cycle == null ? -Infinity : r.x.cycle), overall: r => r.x.overall, ret: r => r.x.ret, legs: r => r.v.legs.length,
   last: r => (r.v.lastTradeAt ? r.v.lastTradeAt.getTime() : 0),
 };
 
@@ -65,7 +66,7 @@ export default {
       const tagNames = book.tags().map(t => t.name);
       const selected = [...sel].map(id => book.find(id)).filter(Boolean);
       const allOnPage = pr.length && pr.every(r => sel.has(r.v.id));
-      const T = rows.reduce((a, r) => { a.cap += r.v.cap; a.today += r.v.rawStatus === 'stopped' ? 0 : r.x.today; a.overall += r.x.overall; a.legs += r.v.legs.length; return a; }, { cap: 0, today: 0, overall: 0, legs: 0 });
+      const T = rows.reduce((a, r) => { a.cap += r.v.cap; a.today += r.x.cycleSum; a.overall += r.x.overall; a.legs += r.v.legs.length; return a; }, { cap: 0, today: 0, overall: 0, legs: 0 });
       const stratF = strat !== 'all' ? (book.strategy(strat) || { label: strat }).label : null;
       const bulk = [
         ['Pause', 'bulkPause', selected.some(v => v.rawStatus === 'active'), 'Nothing selected is running'],
@@ -106,7 +107,7 @@ export default {
             ${pr.map(({ v, x }) => html`
               <a class="card-row ${v.issue ? 'att' : ''}" href="${href(`d/${v.id}`)}">
                 <span class="row" style="gap:8px;min-width:0">${marker(v.status)}<b class="ell">${v.name}</b></span>
-                <span class="mono right ${v.rawStatus === 'stopped' ? 'flat' : tone(x.today)}" data-today="${v.id}">${v.rawStatus === 'stopped' ? '—' : inr(x.today)}</span>
+                <span class="col right" style="gap:1px;align-items:flex-end" data-tip="${cycleTip(v, x)}"><span class="mono ${cycleTone(x)}" data-today="${v.id}">${cycleText(x)}</span>${closedNote(x)}</span>
                 <span class="tiny mute" style="padding-left:17px">${STATUS[v.status].label} · ${v.mode} · ${plural(v.legs.length, 'leg')} · ${noteOf(v) || v.strategy}</span>
                 <span class="mono right mute" style="font-size:11px">${inrS(x.overall)} all</span>
               </a>`)}
@@ -131,7 +132,7 @@ export default {
                   <span class="small mute">${v.mode}</span>
                   <span class="mono tiny">${v.index}</span>
                   <span class="num tiny">${inrS(v.cap, { sign: false })}</span>
-                  <span class="num ${v.rawStatus === 'stopped' ? 'flat' : tone(x.today)}" data-today="${v.id}">${v.rawStatus === 'stopped' ? '—' : inr(x.today)}</span>
+                  <span class="num col" style="gap:1px;align-items:flex-end" data-tip="${cycleTip(v, x)}"><span class="${cycleTone(x)}" data-today="${v.id}">${cycleText(x)}</span>${closedNote(x)}</span>
                   <span class="num ${tone(x.overall)}" data-overall="${v.id}">${inrS(x.overall)}</span>
                   <span class="num tiny ${tone(x.overall)}">${pct(x.ret, 1)}</span>
                   <span class="num tiny">${v.legs.length || '—'}</span>
@@ -147,7 +148,7 @@ export default {
                 <div class="tr tot">
                   <span></span><span>Total</span><span class="small mute">${plural(rows.length, 'deployment')}</span><span></span><span></span><span></span>
                   <span class="num tiny">${inrS(T.cap, { sign: false })}</span>
-                  <span class="num ${tone(T.today)}" data-tot-today>${inr(T.today)}</span>
+                  <span class="num ${tone(T.today)}" data-tot-today data-tip="${'Every deployment’s current cycle added up,\nwith any positional cycle that closed today'}">${inr(T.today)}</span>
                   <span class="num ${tone(T.overall)}">${inrS(T.overall)}</span>
                   <span class="num tiny ${tone(T.overall)}">${pct(T.cap ? T.overall / T.cap * 100 : 0, 1)}</span>
                   <span class="num tiny">${T.legs || '—'}</span><span></span><span></span>
@@ -231,7 +232,7 @@ export default {
       book.deployments().forEach(v => {
         if (v.rawStatus === 'stopped') return;
         const x = book.live(v);
-        main.querySelectorAll(`[data-today="${v.id}"]`).forEach(el => { setText(el, inr(x.today)); setTone(el, tone(x.today)); });
+        main.querySelectorAll(`[data-today="${v.id}"]`).forEach(el => { setText(el, cycleText(x)); setTone(el, cycleTone(x)); });
       });
     })];
     return () => { offActs(); offChips(); offSearch(); offDoc(); offs.forEach(f => f()); };

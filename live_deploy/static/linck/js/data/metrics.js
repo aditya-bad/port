@@ -1,4 +1,5 @@
-// Pure analytics over closed trades and daily realized P&L. No DOM, no
+// Pure analytics over closed trades (cycles) and P&L by day, where a
+// positional deployment's day is the cycles that closed that day. No DOM, no
 // fetching: give it numbers, get numbers and words back. Definitions
 // follow the design spec's "Data rules":
 //   Return/DD: above 3 excellent, 1.5–3 good, 0.8–1.5 fair, below weak.
@@ -179,7 +180,7 @@ export function analytics(days, trades, { cap, pctMode = false, calRange = 'last
         tip = `${WEEKDAYS[p.wd]} ${p.d} ${MONTHS[p.mo]} ${p.y}\n`;
         const v = dmap[k];
         if (!running.has(k)) { bd = '1px solid var(--line)'; tip += 'not running'; }
-        else if (!v) { bg = 'var(--soft)'; tip += 'no realized P&L'; inR.push({ dt, v: 0 }); }
+        else if (!v) { bg = 'var(--soft)'; tip += 'no cycle closed'; inR.push({ dt, v: 0 }); }
         else {
           const lv = Math.max(1, Math.min(4, Math.ceil(Math.abs(v) / dmx * 4)));
           bg = mix(v, [0, 28, 50, 72, 95][lv]);

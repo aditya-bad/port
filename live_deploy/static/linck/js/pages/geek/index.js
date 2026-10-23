@@ -16,9 +16,10 @@ import { indexByName } from '../../data/config.js';
 import { loadVix, vixNow, vixTip } from '../../data/vix.js';
 import { supports, takeEntry, exit } from '../../data/geek.js';
 import { empty } from '../../ui/components.js';
+import { cycleText, cycleTone, cycleTip } from '../../ui/cycle.js';
 import { repairChip } from '../../ui/repairs.js';
 
-import { BASICS, GROUPS, viewsFor, hasView } from './views.js';
+import { BASICS, GROUPS, viewsFor } from './views.js';
 
 export { viewsFor };
 
@@ -41,7 +42,6 @@ export default {
       const x = book.live(v);
       const ix = indexByName(v.index);
       const spot = ix ? prices.get(ix.token) : null;
-      const ck = engine && engine.rules ? engine.rules.find(r => r.key === 'checkpoint_target') : null;
       const cycle = engine && engine.state ? engine.state.cycle_id : null;
       return html`
         <img class="mark gk-mark" src="/icons/linck-mark.svg" alt="" width="24" height="24"><img class="mark gk-mark mark-paper" src="/icons/linck-mark-paper.svg" alt="" width="24" height="24"><span class="gk-badge">GEEK</span>
@@ -51,8 +51,7 @@ export default {
         <span class="grow"></span>
         ${ix ? html`<span class="gk-kv hide-m"><span>${v.index}</span><b data-gk="spot">${spot ? price(spot.price) : '—'}${spot && spot.prevClose ? html` <span class="${tone(spot.price / spot.prevClose - 1)}">${pct((spot.price / spot.prevClose - 1) * 100)}</span>` : ''}</b></span>` : ''}
         ${vixKv()}
-        <span class="gk-kv"><span>Today</span><b class="${tone(x.today)}" data-gk="today">${v.rawStatus === 'stopped' ? '—' : inr(x.today)}</b></span>
-        ${hasView(v.strategy, 'cycles') || cycle ? html`<span class="gk-kv hide-m"><span>${cycle ? `Cycle ${cycle}` : 'Cycle'}</span><b class="${ck ? tone(ck.value) : ''}" data-gk="cycle">${ck ? inr(ck.value) : '—'}</b></span>` : ''}
+        <span class="gk-kv" data-tip="${cycleTip(v, x)}"><span>${cycle ? `Cycle ${cycle}` : 'Cycle'}</span><b class="${cycleTone(x)}" data-gk="today">${cycleText(x)}</b></span>
         <span class="gk-kv hide-m"><span>Overall</span><b class="${tone(x.overall)}" data-gk="overall">${inr(x.overall)}</b></span>
         <span class="gk-kv hide-m"><span>IST</span><b data-gk="clock">${hhmmss(new Date())}</b></span>
         <button type="button" class="gk-exit" data-act="exit">Exit <kbd>Esc</kbd></button>`;
@@ -142,7 +141,7 @@ export default {
         if (!v || !mounted) return;
         const x = book.live(v);
         const set = (k, val, t) => { const el = $(`[data-gk="${k}"]`, main); if (el) { setText(el, val); if (t !== undefined) setTone(el, tone(t)); } };
-        if (v.rawStatus !== 'stopped') set('today', inr(x.today), x.today);
+        if (x.cycle != null) set('today', cycleText(x), x.cycle);
         set('overall', inr(x.overall), x.overall);
         const vx = vixNow();
         const vel = $('[data-gk="vix"]', main);

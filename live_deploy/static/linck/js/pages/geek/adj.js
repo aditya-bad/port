@@ -61,7 +61,7 @@ export function adPanel(a) {
   }
   return html`<div class="gk-panel" data-adj><h3>The day <span class="s">${a.adjusted_side ? `${a.adjusted_side} side adjusted · ${a.legs[a.adjusted_side].length} legs` : 'no side adjusted yet'}</span></h3>
     ${tiles([
-      ['Day P&L', a.day_pnl == null ? '—' : inr(a.day_pnl), a.target ? `target ${inr(a.target, { sign: false })}` : '', tone(a.day_pnl)],
+      ['Cycle P&L', a.day_pnl == null ? '—' : inr(a.day_pnl), a.target ? `target ${inr(a.target, { sign: false })}` : '', tone(a.day_pnl)],
       ['Booked today', a.realized_today == null ? '—' : inr(a.realized_today), 'legs already closed', tone(a.realized_today)],
       ['CE side', a.totals.CE == null ? '—' : price(a.totals.CE), `${a.legs.CE.length} leg${a.legs.CE.length === 1 ? '' : 's'}`],
       ['PE side', a.totals.PE == null ? '—' : price(a.totals.PE), `${a.legs.PE.length} leg${a.legs.PE.length === 1 ? '' : 's'}`],

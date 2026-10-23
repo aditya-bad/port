@@ -3,7 +3,7 @@
 
 import { api } from '../core/api.js';
 import { html, raw, mount, $, $$, actions, setText, setTone } from '../core/dom.js';
-import { inr, inrS, price, hhmm, hhmmss, dLong, sessionFrac, sessionLeft, isSessionOpen, plural, tone, toneVar, ist, OPEN_MIN, SESSION_MIN } from '../core/format.js';
+import { inr, inrS, price, hhmm, hhmmss, dLong, dayKey, sessionFrac, sessionLeft, isSessionOpen, plural, tone, toneVar, ist, OPEN_MIN, SESSION_MIN } from '../core/format.js';
 import { current as basisNow } from '../core/basis.js';
 import { ui, listen } from '../core/store.js';
 import { href } from '../core/router.js';
@@ -15,6 +15,7 @@ import { DESK_LANES, STREAK_ALERT } from '../data/config.js';
 import { chips, utabs, marker, empty } from '../ui/components.js';
 import { legHead, legRow, liveTag, tickLegs } from '../ui/legs.js';
 import { repairChip } from '../ui/repairs.js';
+import { cycleText, cycleTone, cycleTip, closedNote } from '../ui/cycle.js';
 import { primary, kiteDialog } from '../actions.js';
 import { say, fail } from '../ui/toast.js';
 
@@ -56,25 +57,37 @@ function laneNote(v) {
   return [`${v.strategy} · ${v.mode}`, false];
 }
 // Lane geometry: x in 0–1000 over 09:15–15:30, y around 31 in a 62-high box.
+// The lane is the deployment's cycle P&L through the session: an intraday
+// cycle is the day, so it starts at 0; a positional cycle that began
+// before today starts where it stood at the open, one that began today
+// starts at its entry.
 function lanePath(v, x, frac) {
   const lane = book.session() && book.session().lanes[v.id];
   const pts = [];
+  const mOf = t => { const p = ist(t); return p.h * 60 + p.mi - OPEN_MIN; };
+  const now = x.cycle == null ? x.today : x.cycle;
+  const startedToday = x.positional && x.cycleSince && dayKey(x.cycleSince) === dayKey(new Date());
+  const from = startedToday ? Math.max(0, mOf(x.cycleSince)) : 0;
+  const off = x.positional && x.cycle != null && !startedToday ? x.cycle - x.today : 0;
   // Legs unpriced since the open: they haven't moved, so neither has the lane.
   if (lane && !x.stale) {
+    // a cycle that began today: the day's curve from its entry, less where the day stood then
+    let atEntry = 0;
+    if (startedToday) for (const [t, val] of lane.series) if (mOf(t) <= from) atEntry = val;
     for (const [t, val] of lane.series) {
-      const p = ist(t), m = p.h * 60 + p.mi - OPEN_MIN;
-      if (m >= 0 && m <= SESSION_MIN) pts.push([m / SESSION_MIN, val]);
+      const m = mOf(t);
+      if (m > from && m <= SESSION_MIN) pts.push([m / SESSION_MIN, startedToday ? val - atEntry : val + off]);
     }
   }
   if (v.rawStatus !== 'stopped') {
-    if (!pts.length || pts[0][0] > 0.001) pts.unshift([0, 0]);
-    pts.push([frac, x.today]);
+    if (!pts.length || pts[0][0] > from / SESSION_MIN + 0.001) pts.unshift([from / SESSION_MIN, startedToday ? 0 : off]);
+    pts.push([Math.max(frac, from / SESSION_MIN), now]);
   }
   if (!pts.length) return { d: '', area: '' };
   // Floor the scale at 0.1% of capital (min ₹100): a few rupees mustn't fill the lane.
   const sc = Math.max(100, v.cap * 0.001, ...pts.map(p => Math.abs(p[1])));
   const d = pts.map(([fx, y], i) => `${i ? 'L' : 'M'}${(fx * 1000).toFixed(1)} ${(31 - y / sc * 26).toFixed(1)}`).join(' ');
-  return { d, area: `${d} L${(pts[pts.length - 1][0] * 1000).toFixed(1)} 31 L0 31 Z` };
+  return { d, area: `${d} L${(pts[pts.length - 1][0] * 1000).toFixed(1)} 31 L${(pts[0][0] * 1000).toFixed(1)} 31 Z` };
 }
 function laneEvents(v, frac) {
   const lane = book.session() && book.session().lanes[v.id];
@@ -87,27 +100,26 @@ function laneEvents(v, frac) {
   });
 }
 
-// The hero's number: today's P&L, or — on a day nothing has traded or
-// moved yet (holiday, weekend, before the open, Kite down) — the P&L of
-// what's open, so it isn't a misleading ₹0.
-export const heroValue = (T, quiet) => (quiet ? T.unreal : T.today);
-function hero(T, list, quiet) {
+// The hero's number: every deployment's cycle P&L added up. A cycle is one
+// entry to its exit: an intraday deployment's is the day, a positional
+// one's is its open cycle (and, on the day one closes, that one too).
+export const heroValue = T => T.cycle;
+function hero(T, list) {
   const live = kite.state === 'connected';
   const left = sessionLeft();
   const capAll = list.reduce((a, v) => a + (v.rawStatus === 'stopped' ? 0 : v.cap), 0);
   const capUse = list.filter(v => v.legs.length).reduce((a, v) => a + v.cap, 0);
-  const text = inr(heroValue(T, quiet));
+  const text = inr(heroValue(T));
   const scale = Math.min(1, (matchMedia('(max-width:900px)').matches ? 7 : 10) / text.length);
+  const n = list.filter(v => v.rawStatus !== 'stopped').length;
   return html`
     <div class="hero-l">
       <div class="row hero-date"><span class="dot ${live ? 'live' : 'off'}"></span>
-        <span data-hero-label>${quiet
-          ? `${dLong(new Date())} · nothing traded today · open positions’ P&L, ${T.legs ? plural(T.legs, 'leg') : 'none open'}`
-          : `${dLong(new Date())} · day P&L across ${plural(list.filter(v => v.rawStatus !== 'stopped').length, 'deployment')}`} <span class="stamp">${basisNow().stamp}</span></span></div>
-      <div class="hero-num ${tone(heroValue(T, quiet))} ${live ? '' : 'dim'}" style="zoom:${scale.toFixed(3)}" id="heroNum" data-quiet="${quiet ? '1' : ''}"
-        data-tip="${quiet ? `Open positions’ P&L\nToday so far  ${inr(T.today)}\nNo leg has a price since 09:15 and nothing was filled today, so today’s P&L would read ₹0.` : `Today’s P&L\nOpen positions  ${inr(T.unreal)}`}">${odometer(text)}</div>
+        <span data-hero-label>${dLong(new Date())} · cycle P&L across ${plural(n, 'deployment')} <span class="stamp">${basisNow().stamp}</span></span></div>
+      <div class="hero-num ${tone(heroValue(T))} ${live ? '' : 'dim'}" style="zoom:${scale.toFixed(3)}" id="heroNum"
+        data-tip="${'Cycle P&L: each deployment’s current cycle\nIntraday: the day · Positional: the open cycle,\nand on the day one closes, that one too'}">${odometer(text)}</div>
       <div class="hero-subs">
-        ${[['Realized', inr(T.realized), tone(T.realized), 'subR'], quiet ? ['Today', inr(T.today), tone(T.today), 'subT'] : ['Unrealized', inr(T.unreal), tone(T.unreal), 'subU'], ['Overall', inrS(T.overall), tone(T.overall), 'subO'],
+        ${[['Realized', inr(T.realized), tone(T.realized), 'subR'], ['Unrealized', inr(T.unreal), tone(T.unreal), 'subU'], ['Overall', inrS(T.overall), tone(T.overall), 'subO'],
           ['Capital in use', `${inrS(capUse, { sign: false })} / ${inrS(capAll, { sign: false })}`, '', ''], ['Session left', live ? left || 'closed' : 'not live', '', '']]
           .map(([l, v, c, id]) => html`<div class="col" style="gap:2px"><span class="label">${l}</span><span class="mono hero-sub ${c}" ${id ? html`id="${id}"` : ''}>${v}</span></div>`)}
         ${vixSub(book.vixExposure())}
@@ -144,7 +156,7 @@ function attentionPanel(A) {
     </div>`;
 }
 
-function lanesBlock(list, frac, quiet) {
+function lanesBlock(list, frac) {
   const s = st.get();
   const base = list.filter(v => s.lab || !v.isLab);
   const F = [
@@ -153,25 +165,26 @@ function lanesBlock(list, frac, quiet) {
   ];
   const fn = (F.find(f => f[0] === s.f) || F[0])[2];
   let L = base.filter(fn).map(v => ({ v, x: book.live(v), a: attention(v) }));
-  if (s.sort === 'attn') L.sort((p, q) => q.a - p.a || Math.abs(q.x.today) - Math.abs(p.x.today));
-  else if (s.sort === 'today') L.sort((p, q) => q.x.today - p.x.today);
+  const cy = x => (x.cycle == null ? 0 : x.cycle);
+  if (s.sort === 'attn') L.sort((p, q) => q.a - p.a || Math.abs(cy(q.x)) - Math.abs(cy(p.x)));
+  else if (s.sort === 'today' || s.sort === 'cycle') L.sort((p, q) => cy(q.x) - cy(p.x));
   else L.sort((p, q) => p.v.name.localeCompare(q.v.name));
   const total = L.length, shown = s.all ? L : L.slice(0, DESK_LANES), compact = shown.length > 14;
   const labN = list.filter(v => v.isLab).length;
   return html`
     <div class="pad-x lanes-head">
       <div class="col"><h2 class="t-h2">The session, deployment by deployment</h2>
-        <span class="mute">Each lane is one deployment’s P&L since 09:15. Diamonds mark fills, exits and errors. Click a name to open it.</span></div>
+        <span class="mute">Each lane is one deployment’s cycle P&L through the session: an intraday cycle is the day, a positional one runs from its entry to its exit. Diamonds mark fills, exits and errors. Click a name to open it.</span></div>
       <span class="grow"></span>
       <div class="chips">${chips(F.map(([k, l, f]) => [k, l, base.filter(f).length]), s.f, 'filter', { strong: true })}</div>
-      <div class="row small mute" style="gap:6px;font-weight:600">Sort ${utabs([['attn', 'Attention'], ['today', 'Today P&L'], ['name', 'Name']], s.sort, 'sort')}</div>
+      <div class="row small mute" style="gap:6px;font-weight:600">Sort ${utabs([['attn', 'Attention'], ['cycle', 'Cycle P&L'], ['name', 'Name']], s.sort === 'today' ? 'cycle' : s.sort, 'sort')}</div>
     </div>
     <div class="pad-x" style="padding-bottom:30px">
       <div class="lane-axis">
         <b class="small">${plural(total, 'deployment')}</b>
         <div class="axis">${HOURS.map((t, i) => html`<span class="${i % 3 ? 'hide-phone' : ''}" style="left:${i * 60 / 375 * 100}%">${t}</span>`)}
           ${isSessionOpen() ? html`<span class="now-chip" style="left:${frac * 100}%">${hhmm(new Date())}</span>` : ''}</div>
-        <b class="small right">${quiet ? html`<span data-tip="Nothing traded today: each lane shows its open positions’ P&L">Open</span>` : 'Today'}</b><span></span>
+        <b class="small right"><span data-tip="${'Each deployment’s current cycle\nIntraday: the day · Positional: entry to exit'}">Cycle</span></b><span></span>
       </div>
       <div class="lanes ${compact ? 'compact' : ''}">
         <div class="now-line" style="left:calc(var(--lane-off) + (100% - var(--lane-rest)) * ${frac.toFixed(4)})"></div>
@@ -189,11 +202,11 @@ function lanesBlock(list, frac, quiet) {
               <div class="lane-plot">
                 <svg viewBox="0 0 1000 62" preserveAspectRatio="none" aria-hidden="true">
                   <line x1="0" x2="1000" y1="31" y2="31" stroke="var(--line)" vector-effect="non-scaling-stroke"></line>
-                  ${p.d ? raw(`<path d="${p.area}" fill="${x.today >= 0 ? 'var(--gs)' : 'var(--rs)'}"/><path d="${p.d}" fill="none" stroke="${stopped ? 'var(--line2)' : toneVar(x.today)}" stroke-width="2" vector-effect="non-scaling-stroke"/>`) : ''}
+                  ${p.d ? raw(`<path d="${p.area}" fill="${cy(x) >= 0 ? 'var(--gs)' : 'var(--rs)'}"/><path d="${p.d}" fill="none" stroke="${stopped ? 'var(--line2)' : toneVar(cy(x))}" stroke-width="2" vector-effect="non-scaling-stroke"/>`) : ''}
                 </svg>
                 ${laneEvents(v, frac).map(e => html`<span class="lane-ev" data-tip="${e.tip}" style="left:${e.x}%;background:${e.c}"></span>`)}
               </div>
-              <span class="mono lane-today ${stopped ? 'flat' : tone(quiet ? x.unreal : x.today)}" data-today="${v.id}">${stopped ? '—' : inr(quiet ? x.unreal : x.today)}</span>
+              <span class="lane-today col" data-tip="${cycleTip(v, x)}"><span class="mono ${cycleTone(x)}" data-today="${v.id}">${cycleText(x)}</span>${closedNote(x)}</span>
               <span class="lane-act hide-phone"><button type="button" class="btn btn-xs" data-act="primary" data-id="${v.id}">${act}</button></span>
             </div>`;
         })}
@@ -272,7 +285,6 @@ export default {
       const all = book.deployments();
       const list = all.filter(v => !v.isLab || st.get().lab);
       const T = book.totals(all.filter(v => v.rawStatus !== 'stopped'));
-      const quiet = book.quiet(all);
       const A = alerts(all);
       const frac = sessionFrac();
       mount(main, html`
@@ -287,8 +299,8 @@ export default {
             <span class="mute grow">Prices and P&L below are frozen. No deployment can enter, adjust or exit until you reconnect. Your daily Kite login expires at about 08:00.</span>
             <button type="button" class="btn btn-primary" data-act="kite">Reconnect Kite</button>
           </div>` : ''}
-        <section class="hero" aria-label="Today">${hero(T, all, quiet)}${attentionPanel(A)}</section>
-        <section aria-label="Session lanes">${lanesBlock(all, frac, quiet)}</section>
+        <section class="hero" aria-label="Cycle P&L">${hero(T, all)}${attentionPanel(A)}</section>
+        <section aria-label="Session lanes">${lanesBlock(all, frac)}</section>
         <section class="desk-bottom">${positionsBlock(list, T)}${activityBlock(all, recent)}</section>`);
       clearAxis();
     }
@@ -305,18 +317,16 @@ export default {
       if (!book.isLoaded('deployments')) return;
       const all = book.deployments();
       const T = book.totals(all.filter(v => v.rawStatus !== 'stopped'));
-      const quiet = book.quiet(all);
       const hn = $('#heroNum', main);
-      if (hn && (hn.dataset.quiet === '1') !== quiet) { paint(); return; }   // the first tick of the day: switch back to today's P&L
-      setOdometer($('#heroNum .odo', main), inr(heroValue(T, quiet)));
-      if (hn) setTone(hn, tone(heroValue(T, quiet)));
-      [['#subR', T.realized, inr], ['#subU', T.unreal, inr], ['#subT', T.today, inr], ['#subO', T.overall, inrS], ['#unrTot', T.unreal, inr]].forEach(([sel, v, f]) => {
+      setOdometer($('#heroNum .odo', main), inr(heroValue(T)));
+      if (hn) setTone(hn, tone(heroValue(T)));
+      [['#subR', T.realized, inr], ['#subU', T.unreal, inr], ['#subO', T.overall, inrS], ['#unrTot', T.unreal, inr]].forEach(([sel, v, f]) => {
         const el = $(sel, main); setText(el, f(v)); setTone(el, tone(v));
       });
       all.forEach(v => {
         const x = book.live(v);
         const el = $(`[data-today="${v.id}"]`, main);
-        if (el && v.rawStatus !== 'stopped') { const y = quiet ? x.unreal : x.today; setText(el, inr(y)); setTone(el, tone(y)); }
+        if (el && v.rawStatus !== 'stopped') { setText(el, cycleText(x)); setTone(el, cycleTone(x)); }
         const g = $(`[data-grp="${v.id}"]`, main);
         if (g) { setText(g, inr(x.unreal)); setTone(g, tone(x.unreal)); }
       });

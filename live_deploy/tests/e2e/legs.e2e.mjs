@@ -104,7 +104,10 @@ const laneOf = (p, id) => p.evaluate(id => {
   return { today: document.querySelector(`[data-today="${id}"]`).textContent.trim(), ys };
 }, id);
 
-test('no ticks since the open: lanes holding legs stay flat at ₹0', async () => {
+// a figure as shown (₹1,23,400 / −₹750) as a number
+const num = t => Number(t.replace(/[₹,\s]/g, '').replace('−', '-'));
+
+test('no ticks since the open: lanes stay flat, a positional lane shows its open cycle', async () => {
   const ctx = await context(b);
   await streamTicks(ctx, [], false);
   const p = await ctx.newPage();
@@ -112,8 +115,12 @@ test('no ticks since the open: lanes holding legs stay flat at ₹0', async () =
   await p.waitForSelector(`[data-today="${ID}"]`);
   await p.waitForTimeout(500);
   const l = await laneOf(p, ID);
-  assert.equal(l.today, '₹0', 'nothing moved today');
   assert.equal(new Set(l.ys).size, 1, `a flat lane, not a spike (${l.ys.join(',')})`);
+  // positional: what its open cycle's closed legs made plus what its open legs hold now
+  const { cycles } = await api(ctx, '/v2/book');
+  assert.ok(cycles[ID], 'the server has the open cycle');
+  const held = num(await p.innerText(`[data-grp="${ID}"]`));
+  assert.ok(Math.abs(num(l.today) - (Number(cycles[ID].pnl) + held)) <= 1, `${l.today} = cycle realized ${cycles[ID].pnl} + open ${held}`);
   await ctx.close();
 });
 
@@ -183,41 +190,71 @@ test('the Cycles tab shows the running cycle first, its P&L moving with the tick
   await ctx.close();
 });
 
-// A holiday, a weekend, before the open, or Kite down with nothing
-// traded today: today's P&L would read ₹0, which says nothing. The Desk
-// shows the open positions' P&L instead, and says so.
-test('nothing traded today: the Desk shows the open positions’ P&L, not ₹0', async () => {
+// Every page follows cycle P&L, not the day's: an intraday deployment's
+// cycle is the day, a positional one's runs from its entry to its exit.
+test('the Desk follows cycles: the hero adds them up, each lane shows its own', async () => {
   const ctx = await context(b);
   await streamTicks(ctx, [], false);
-  // today's session as on such a day: no fills, nothing booked since the open
-  const deps = await api(ctx, '/deployments');
-  await ctx.route('**/v2/session', async r => {
-    const s = await (await r.fetch()).json();
-    for (const d of deps) {
-      const l = s.lanes[d.id] || (s.lanes[d.id] = { series: [] });
-      l.events = [];
-      l.realized_open = { gross: Number(d.realized_pnl), net: Number(d.realized_pnl_net ?? d.realized_pnl), net_slip: Number(d.realized_pnl_net_slip ?? d.realized_pnl_net ?? d.realized_pnl) };
-      l.equity_open = null;
-    }
-    return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(s) });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/desk`);
+  await p.waitForSelector(`[data-today="${ID}"]`);
+  await p.waitForTimeout(500);
+  assert.match(await p.innerText('[data-hero-label]'), /cycle P&L across \d+ deployments?/);
+  assert.doesNotMatch(await p.innerText('[data-hero-label]'), /nothing traded today/);
+  assert.equal((await p.innerText('.lane-axis b.right')).trim(), 'Cycle');
+  // every lane, Strategy Lab ones too: the hero counts them all
+  const lab = p.locator('[data-act="lab"]', { hasText: 'Show' });
+  if (await lab.count()) await lab.click();
+  const all = p.locator('[data-act="all"]', { hasText: 'Show all' });
+  if (await all.count()) await all.click();
+  await p.waitForTimeout(300);
+  const lanes = await p.$$eval('[data-today]', els => els.map(e => ({ t: e.textContent.trim(), note: e.closest('.lane-today')?.querySelector('[data-closed-today] b')?.textContent.trim() || null })));
+  const hero = num(await p.getAttribute('#heroNum .odo', 'aria-label'));
+  const sum = lanes.reduce((a, l) => a + (l.t === '—' ? 0 : num(l.t)) + (l.note ? num(l.note) : 0), 0);
+  assert.ok(Math.abs(hero - sum) <= lanes.length, `hero ${hero} = the lanes' cycles ${sum}`);
+  // the intraday lane is the day
+  const dtt = IDS['BankNifty DTT Plain'];
+  const tip = await p.getAttribute(`.lane-today:has([data-today="${dtt}"])`, 'data-tip');
+  assert.match(tip, /An intraday cycle is the day/);
+  assert.match(await p.getAttribute(`.lane-today:has([data-today="${ID}"])`, 'data-tip'), /Open cycle since[\s\S]*one entry, its adjustments and its exit/);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+// The day a positional cycle exits and a new one enters: both show that
+// day, the new one as the figure and the closed one under it. From the
+// next day, only the new one.
+test('the switch day: a positional cycle closed today shows under the new one', async () => {
+  const ctx = await context(b);
+  await streamTicks(ctx, [], false);
+  const now = new Date();
+  const closed = { at: now };
+  await ctx.route('**/v2/book', async r => {
+    const bk = await (await r.fetch()).json();
+    const t0 = bk.trades.find(t => t.deployment_id === ID) || bk.trades[0];
+    const at = closed.at.toISOString();
+    bk.trades.push({ ...t0, deployment_id: ID, opened_at: new Date(closed.at - 9 * 864e5).toISOString(), closed_at: at, pnl: 6000, pnl_net: 5600, pnl_net_slip: 5400 });
+    bk.cycles[ID] = { ...(bk.cycles[ID] || {}), start: at, pnl: 0, pnl_net: 0, pnl_net_slip: 0 };
+    return r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(bk) });
   });
   const p = await ctx.newPage();
   await p.goto(`${BASE}/linck/#/desk`);
-  await p.waitForSelector('#heroNum[data-quiet="1"]');
-  const label = await p.innerText('[data-hero-label]');
-  assert.match(label, /nothing traded today · open positions’ P&L, \d+ legs?/);
-  const hero = (await p.getAttribute('#heroNum .odo', 'aria-label'));
-  const subT = (await p.innerText('#subT')).trim();
-  assert.equal(subT, '₹0', 'today is still there, as a figure under it');
-  assert.notEqual(hero, '₹0', 'the open legs’ P&L, not a misleading ₹0');
-  assert.equal(await p.locator('#subU').count(), 0);
-  // the lanes too: each shows its open P&L under an "Open" column
-  assert.equal((await p.innerText('.lane-axis b.right')).trim(), 'Open');
-  // each holding lane shows the same open P&L as its group in Open positions
-  const pairs = await p.$$eval('[data-grp]', gs => gs.map(g => [g.textContent.trim(), document.querySelector(`[data-today="${g.dataset.grp}"]`)?.textContent.trim()]));
-  assert.ok(pairs.length, 'some deployment holds legs');
-  for (const [grp, lane] of pairs) if (lane != null) assert.equal(lane, grp, 'a holding lane shows what it holds');
-  assert.ok(pairs.some(([g]) => g !== '₹0'));
+  const cell = p.locator(`.lane-today:has([data-today="${ID}"])`);
+  await cell.locator('[data-closed-today]').waitFor();
+  assert.match(await cell.locator('[data-closed-today]').innerText(), /\+ closed today\s*\+₹6,000/);
+  const held = num(await p.innerText(`[data-grp="${ID}"]`));
+  assert.ok(Math.abs(num(await cell.locator(`[data-today="${ID}"]`).innerText()) - held) <= 1, 'the figure is the new cycle: its open legs');
+  assert.match(await cell.getAttribute('data-tip'), /Closed today[\s\S]*\+₹6,000[\s\S]*Open cycle since/);
+  // the Deployments list says the same
+  await p.goto(`${BASE}/linck/#/deployments`);
+  await p.locator(`[data-closed-today]`).first().waitFor();
+  // the next day: the cycle closed yesterday no longer shows
+  closed.at = new Date(now - 864e5);
+  await p.goto(`${BASE}/linck/#/desk`);
+  await p.reload();
+  await p.waitForSelector(`[data-today="${ID}"]`);
+  await p.waitForTimeout(500);
+  assert.equal(await cell.locator('[data-closed-today]').count(), 0, 'only the new cycle from the next day');
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
