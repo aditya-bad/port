@@ -427,3 +427,29 @@ def test_shadows_kite_calls_wait_for_the_strategies(monkeypatch):
         await shadow.ShadowService._kite_idle()
         assert _t.monotonic() - t < 0.1, "quiet now: no wait"
     asyncio.run(go())
+
+
+# ── stage 4: estimating past fills ──────────────────────────────────────
+
+def test_backfill_estimates_every_fill_without_a_check_once(pool_run):
+    async def go(pool):
+        a, b = await dep(pool, "A"), await dep(pool, "B")
+        r1 = await queries.record_fill(pool, a, "NIFTY26OCT25800CE", 1, "sell", 75, 100.0, T0, book_price=99.9)
+        r2 = await queries.record_fill(pool, a, "NIFTY26OCT25800CE", 1, "buy", 75, 90.0, T0 + timedelta(hours=1))
+        r3 = await queries.record_fill(pool, b, "NIFTY26OCT24800PE", 2, "sell", 75, 50.0, T0, book_price=50.0)
+        f = shadow.FreezeLimits(pool, {"NIFTY": 1800})
+        # B's fill was checked as it happened: kept as it is
+        await shadow.save(pool, handed(b, r3, "NIFTY26OCT24800PE", 2, "sell", 75, 50.0), shadow.assess("sell", 75, 50.0, depth=book(bids=[(50.0, 99)])))
+        dry = await shadow.backfill(pool, f, dry_run=True)
+        assert dry == {"fills": 2, "verdicts": {"worse": 1, "unknown": 1}, "written": 0}
+        assert await row(pool, r1["lot_id"]) is None, "a dry run writes nothing"
+        only_b = await shadow.backfill(pool, f, deployment_id=b)
+        assert only_b["fills"] == 0
+        out = await shadow.backfill(pool, f)
+        assert out["written"] == 2
+        e1, e2, kept = await row(pool, r1["lot_id"]), await row(pool, r2["lot_id"]), await row(pool, r3["lot_id"])
+        assert e1["estimated"] and e1["verdict"] == "worse" and e1["shortfall"] == pytest.approx(7.5)
+        assert e2["estimated"] and e2["verdict"] == "unknown"
+        assert not kept["estimated"]
+        assert (await shadow.backfill(pool, f))["fills"] == 0, "again: nothing left"
+    pool_run(go)

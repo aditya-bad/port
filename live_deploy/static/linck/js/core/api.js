@@ -128,6 +128,7 @@ export const api = {
   shadow: (id, limit = 50) => req(`/v2/deployments/${id}/shadow?limit=${limit}`),
   shadowRejections: () => req('/v2/shadow/rejections'),
   shadowCards: () => req('/v2/shadow/scorecards'),
+  shadowBackfill: (deploymentId, dryRun = false) => post('/v2/shadow/backfill', { deployment_id: deploymentId || null, dry_run: dryRun }),
   strategyHealth: (fresh = false) => req(`/v2/strategy-health${fresh ? '?fresh=true' : ''}`),
   strategies: () => req('/v2/strategies'),
   prefs: () => req('/v2/preferences'),

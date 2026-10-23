@@ -134,3 +134,22 @@ test('the server answers for any deployment', async () => {
   assert.ok(Array.isArray(body.checks) && typeof body.counts === 'object' && body.enabled === true);
   await ctx.close();
 });
+
+// Last: it changes the seeded record (the earlier tests count it).
+test('fills from before shadow mode are estimated from stored data, on request', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/shadow`);
+  const bar = p.locator('#gkView [data-unchecked]');
+  await bar.waitFor();
+  const n = Number((await bar.innerText()).match(/(\d+) earlier fills?/)[1]);
+  assert.ok(n > 0, 'the seeded history before the checked twelve');
+  await bar.locator('[data-act="backfill"]').click();
+  await p.waitForSelector('.toast', { timeout: 15000 });
+  assert.match(await p.innerText('.toast'), new RegExp(`Estimated ${n} fills? from stored data`));
+  await p.waitForFunction(() => !document.querySelector('#gkView [data-unchecked]'), null, { timeout: 15000 });
+  assert.ok(await p.locator('#gkView [data-shadow]', { hasText: '(est.)' }).count() > 0, 'estimates say so');
+  assert.match(await p.innerText('#gkView [data-estimated]'), new RegExp(`${n} fills? estimated later from stored data: in these figures, not in the record above\\.`));
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

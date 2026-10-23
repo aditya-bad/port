@@ -5,10 +5,11 @@
 
 import { api } from '../../core/api.js';
 import { html, mount, actions } from '../../core/dom.js';
-import { inr, price, dStamp, dShort } from '../../core/format.js';
+import { inr, price, dStamp, dShort, plural } from '../../core/format.js';
 import { ui } from '../../core/store.js';
 import { empty, loading } from '../../ui/components.js';
 import { readyCard, shadowChip } from '../../ui/shadow.js';
+import { say, fail } from '../../ui/toast.js';
 import { head, table, svg, hit, wide } from './ui.js';
 
 const st = ui('geekShadow', { v: 'all' });
@@ -54,6 +55,9 @@ export default {
       const rows = data.checks.filter(c => s.v === 'all' || c.verdict === s.v);
       const days = byDay(data.checks);
       mount(el, html`${h}
+        ${data.unchecked ? html`<div class="row wrap" style="gap:10px;align-items:center" data-unchecked>
+          <span class="small mute">${plural(data.unchecked, 'earlier fill')} ${data.unchecked === 1 ? 'has' : 'have'} no check (from before shadow mode, or missed).</span>
+          <button type="button" class="btn btn-sm" data-act="backfill">Estimate ${data.unchecked === 1 ? 'it' : 'them'} from stored data</button></div>` : ''}
         ${readyCard(data.card)}
         ${days.length ? html`<div class="gk-panel"><h3>Worse than paper, day by day</h3>
           <p class="small mute" style="margin:0 0 8px">Bars: rupees the fills would have cost against the paper price that day. A red mark: Kite would have refused an order.</p>
@@ -69,7 +73,17 @@ export default {
           : empty('', data.checks.length ? 'Nothing with that verdict.' : 'No fills checked yet. Each fill is checked a few seconds after it happens.')}`);
     }
     const load = () => api.shadow(v.id, 500).then(r => { data = r; paint(); }).catch(e => { data = e; paint(); });
-    const off = actions(el, { v: d => { st.set({ v: d.k }); paint(); } });
+    const off = actions(el, {
+      v: d => { st.set({ v: d.k }); paint(); },
+      backfill: async (d, b) => {
+        b.disabled = true;
+        try {
+          const r = await api.shadowBackfill(v.id);
+          say(`Estimated ${plural(r.written, 'fill')} from stored data.`);
+          load();
+        } catch (e) { b.disabled = false; fail(e, 'Couldn’t estimate them'); }
+      },
+    });
     paint();
     load();
     const iv = setInterval(load, 30000);

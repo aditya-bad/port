@@ -151,6 +151,17 @@ zero writes.
   0 = totals only), `--deployment NAME`. Run via `docker exec
   live-deploy python3 custom_scripts/slippage_report.py`.
 
+- **`shadow_backfill.py`** — shadow mode (`app/shadow.py`) for fills
+  from before it existed, or any it missed: estimated from what was stored
+  at the fill (the recorded order book's average, today's lot size while
+  the contract is listed, today's freeze limits) and marked "estimated".
+  The price band, margin, legs placed one by one and the 60 s after
+  weren't stored, so they're left out. Estimates count in the "ready for
+  live?" stats, not its record. Safe to re-run (checked fills are
+  skipped). `--dry-run`, `--deployment ID`. Run via `docker exec
+  live-deploy python3 custom_scripts/shadow_backfill.py --dry-run`; the
+  same runs from Geek mode → Live-ready.
+
 - **`remove_todays_trades.py`** — "undo a whole calendar day, everywhere,
   correctly": deletes every trade dated `--date` (required, no default —
   a destructive op shouldn't have a "today" convenience default) across

@@ -144,7 +144,10 @@ async def get_shadow(deployment_id: UUID, request: Request, limit: int = 50):
     counts = await pool.fetch("SELECT verdict, count(*) AS n FROM shadow_checks WHERE deployment_id = $1 GROUP BY verdict", deployment_id)
     svc = getattr(request.app.state, "shadow", None)
     cards = await shadow.scorecards(pool, deployment_id)
-    return {"checks": await shadow.list_checks(pool, deployment_id, max(1, min(limit, 500))),
+    unchecked = await pool.fetchval(
+        "SELECT count(*) FROM position_lots pl LEFT JOIN shadow_checks s ON s.lot_id = pl.id WHERE pl.deployment_id = $1 AND s.lot_id IS NULL",
+        deployment_id)
+    return {"checks": await shadow.list_checks(pool, deployment_id, max(1, min(limit, 500))), "unchecked": int(unchecked),
             "counts": {r["verdict"]: int(r["n"]) for r in counts}, "card": cards.get(str(deployment_id)),
             "enabled": bool(svc and svc.enabled), "buffer_pct": svc.buffer_pct if svc else shadow.BUFFER_PCT}
 
@@ -155,6 +158,28 @@ async def get_shadow_scorecards(request: Request):
     (app/shadow.py card): {deployment id: card}."""
     from .. import shadow
     return await shadow.scorecards(request.app.state.db_pool)
+
+
+class ShadowBackfillIn(BaseModel):
+    deployment_id: Optional[UUID] = None
+    dry_run: bool = False
+
+
+@router.post("/shadow/backfill")
+async def post_shadow_backfill(payload: ShadowBackfillIn, request: Request):
+    """Fills from before shadow mode (or any it missed), estimated from
+    what was stored at the time and marked as estimated (app/shadow.py
+    backfill). Safe to repeat: checked fills are skipped."""
+    from .. import shadow
+    pool = request.app.state.db_pool
+    if payload.deployment_id and await queries.get_deployment(pool, payload.deployment_id) is None:
+        raise HTTPException(404, "No such deployment")
+    svc = getattr(request.app.state, "shadow", None)
+    freeze = svc.freeze if svc else shadow.FreezeLimits(pool)
+    if not svc:
+        await freeze.load()
+    return await shadow.backfill(pool, freeze, deployment_id=payload.deployment_id,
+                                 buffer_pct=svc.buffer_pct if svc else shadow.BUFFER_PCT, dry_run=payload.dry_run)
 
 
 @router.get("/shadow/rejections")

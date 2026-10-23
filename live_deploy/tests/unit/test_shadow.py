@@ -311,3 +311,36 @@ def test_the_card_has_the_peak_margin_and_what_placing_legs_cost():
     assert c["margin"] == {"required": 600000, "capital": 500000, "pct": 120.0, "placing": True}
     assert c["legs_cost"] == 55.0
     assert shadow.card("intraday", [], [], {}, 0)["margin"] is None
+
+
+# ── stage 4: estimating past fills ──────────────────────────────────────
+
+def test_a_past_fill_is_estimated_from_the_book_recorded_with_it():
+    r = shadow.estimate("sell", 75, 100.0, 99.8, lot=75, freeze=1800, freeze_source="config")
+    assert r["verdict"] == "worse" and r["shortfall"] == pytest.approx(15.0) and r["est_price"] == 99.8
+    st = {c["rule"]: c["status"] for c in r["checks"]}
+    assert st == {"lot": "ok", "freeze": "ok", "band": "unknown", "book": "ok"}
+    assert "config, today's limit" in next(c for c in r["checks"] if c["rule"] == "freeze")["detail"]
+    assert "margin" not in st and "legs" not in st, "not stored: left out, not guessed"
+
+
+def test_a_book_average_past_the_limit_means_part_would_have_rested():
+    r = shadow.estimate("buy", 75, 100.0, 101.0, lot=75)      # limit 100.50
+    assert r["verdict"] == "partial" and r["filled_qty"] is None and r["est_price"] is None
+    assert "How much isn't known" in r["checks"][-1]["detail"]
+
+
+def test_no_book_recorded_or_an_expired_contract():
+    r = shadow.estimate("sell", 75, 100.0, None)
+    assert r["verdict"] == "unknown"
+    assert next(c for c in r["checks"] if c["rule"] == "lot")["detail"].startswith("The contract has expired")
+    assert shadow.estimate("sell", 100, 100.0, 100.0, lot=75)["verdict"] == "reject", "a lot size it can still see"
+
+
+def test_estimates_count_in_the_stats_not_the_record():
+    live = [chk(f"{i}", d) for i, d in enumerate(days(5))]
+    old = [{**chk(f"e{i}", d - timedelta(days=60), "reject"), "estimated": True} for i, d in enumerate(days(25))]
+    c = shadow.card("intraday", live + old, [], {}, 0)
+    assert c["sessions"] == 5, "only what was checked as it happened"
+    assert {x["key"]: x["ok"] for x in c["rules"]}["rejects"], "old estimated refusals don't block"
+    assert c["estimated"] == 25 and c["counts"]["reject"] == 25 and c["accepted_pct"] < 20

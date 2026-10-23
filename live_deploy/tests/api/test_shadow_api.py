@@ -96,3 +96,18 @@ def test_ready_for_live_card_per_deployment_and_for_all(client):
     assert allc[d["id"]] == card
     other = make_deployment(client, name="Nothing yet")
     assert client.get("/v2/shadow/scorecards").json()[other["id"]]["state"] == "none"
+
+
+def test_fills_without_a_check_are_counted_and_estimated_on_request(client):
+    d = make_deployment(client, name="Older")
+    add_fill(client, d["id"], "NIFTY26OCT25000CE", 11, "sell", 75, 100, at(TODAY - timedelta(days=3), "09:30"), reason="entry")
+    add_fill(client, d["id"], "NIFTY26OCT25000CE", 11, "buy", 75, 80, at(TODAY - timedelta(days=3), "10:30"), reason="exit")
+    assert client.get(f"/v2/deployments/{d['id']}/shadow").json()["unchecked"] == 2
+    r = client.post("/v2/shadow/backfill", json={"deployment_id": d["id"], "dry_run": True}).json()
+    assert r["fills"] == 2 and r["written"] == 0
+    r = client.post("/v2/shadow/backfill", json={"deployment_id": d["id"]}).json()
+    assert r["written"] == 2
+    body = client.get(f"/v2/deployments/{d['id']}/shadow").json()
+    assert body["unchecked"] == 0 and all(c["estimated"] for c in body["checks"])
+    assert body["card"]["estimated"] == 2 and body["card"]["sessions"] == 0
+    assert client.post("/v2/shadow/backfill", json={"deployment_id": "00000000-0000-0000-0000-000000000000"}).status_code == 404

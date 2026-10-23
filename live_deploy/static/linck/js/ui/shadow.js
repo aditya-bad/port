@@ -10,9 +10,13 @@ import { sect } from './components.js';
 export const RULE = { lot: 'Lot size', freeze: 'Freeze limit', band: 'Price band', book: 'Order book', follow: 'Within 60 s',
   margin: 'Margin', legs: 'Leg by leg', rate: 'Order rate' };
 
-// What the chip says.
+// What the chip says ("(est.)": estimated later from stored data).
 export function verdictLabel(s) {
   if (!s) return '';
+  const t = label(s);
+  return s.estimated ? `${t} (est.)` : t;
+}
+function label(s) {
   switch (s.verdict) {
     case 'fill': return 'Would fill';
     case 'worse': return `Would fill ${inr(s.shortfall, { sign: false })} worse`;
@@ -68,7 +72,8 @@ export function readyCard(c) {
       ${c.margin ? html`<div><span class="l">Peak margin</span><b class="mono">${inr(c.margin.required, { sign: false })}</b><span class="s">${c.margin.pct == null ? '' : `${c.margin.pct}% of its capital`}${c.margin.placing ? ' · while placing legs' : ''}</span></div>` : ''}
       ${c.legs_cost ? html`<div><span class="l">Placing legs one by one</span><b class="mono ${tone(-c.legs_cost)}">${inr(-c.legs_cost)}</b><span class="s">against filling them at once</span></div>` : ''}
       ${c.splits ? html`<div><span class="l">Over the freeze limit</span><b class="mono">${c.splits}</b><span class="s">orders split</span></div>` : ''}
-    </div>`}
+    </div>
+    ${c.estimated ? html`<p class="tiny mute" style="margin:0" data-estimated>${plural(c.estimated, 'fill')} estimated later from stored data: in these figures, not in the record above.</p>` : ''}`}
   </div>`;
 }
 

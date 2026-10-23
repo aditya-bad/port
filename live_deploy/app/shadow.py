@@ -474,6 +474,68 @@ async def rejections(pool, day: date) -> list[dict]:
              "day": day.isoformat()} for r in rows]
 
 
+# ── fills from before shadow mode (estimated) ───────────────────────────
+
+def estimate(action: str, qty: float, paper: float, book_price: Optional[float], *, lot: Optional[int] = None,
+             tick: Optional[float] = None, freeze: Optional[int] = None, freeze_source: Optional[str] = None,
+             buffer_pct: float = BUFFER_PCT) -> dict:
+    """Pure: a past fill, from what was stored at the time. The order
+    book's average for the whole quantity was recorded with each fill
+    (position_lots.book_price, since slippage capture began); its levels,
+    the price band, the margin and the prices just after were not, so
+    those rules say so instead of guessing."""
+    tick = tick or DEFAULT_TICK
+    checks = [check_lot(qty, lot) if lot else _check("lot", "unknown", "The contract has expired: its lot size isn't in today's instrument list.")]
+    limit = limit_for(action, paper, tick, buffer_pct)
+    fz, orders = check_freeze(qty, freeze, f"{freeze_source}, today's limit" if freeze_source else None)
+    checks.append(fz)
+    checks.append(_check("band", "unknown", "Not stored for past fills."))
+    out = {"limit_price": limit, "est_price": None, "filled_qty": None, "shortfall": None, "orders": orders}
+    if book_price is None:
+        checks.append(_check("book", "unknown", "No order book was recorded for this fill."))
+        verdict = "unknown"
+    else:
+        bp = float(book_price)
+        inside = bp <= limit + 1e-9 if action == "buy" else bp >= limit - 1e-9
+        if inside:
+            verdict, short = _verdict(action, paper, qty, qty, bp)
+            out.update(est_price=round(bp, 4), filled_qty=qty, shortfall=_r(short))
+            checks.append(_check("book", "ok", f"The book recorded at the fill averaged ₹{bp:,.2f} for the whole quantity, inside the limit ₹{limit:,.2f}."))
+        else:
+            verdict = "partial"
+            checks.append(_check("book", "warn", f"The book recorded at the fill averaged ₹{bp:,.2f} for the whole quantity, past the limit "
+                                 f"₹{limit:,.2f}: part would have rested. How much isn't known (only the average was stored)."))
+    if any(c["status"] == "reject" for c in checks):
+        verdict = "reject"
+    out.update(verdict=verdict, checks=checks)
+    return out
+
+
+async def backfill(pool, freeze: FreezeLimits, *, deployment_id=None, buffer_pct: float = BUFFER_PCT,
+                   dry_run: bool = False) -> dict:
+    """Every fill without a shadow check, estimated from what was stored
+    (marked estimated). Safe to run again: checked fills are skipped."""
+    rows = await pool.fetch(
+        """SELECT pl.id, pl.deployment_id, pl.executed_at, pl.action, pl.qty, pl.price, pl.book_price,
+                  p.symbol, p.instrument_token
+           FROM position_lots pl JOIN positions p ON p.id = pl.position_id
+           LEFT JOIN shadow_checks s ON s.lot_id = pl.id
+           WHERE s.lot_id IS NULL AND ($1::uuid IS NULL OR pl.deployment_id = $1)
+           ORDER BY pl.executed_at""", deployment_id)
+    counts: dict[str, int] = {}
+    for r in rows:
+        meta = instrument_meta(int(r["instrument_token"])) or {}
+        fz, src = freeze.get(meta.get("name") or underlying_of(r["symbol"]))
+        res = estimate(r["action"], float(r["qty"]), float(r["price"]), r["book_price"], lot=meta.get("lot_size"),
+                       tick=meta.get("tick_size"), freeze=fz, freeze_source=src, buffer_pct=buffer_pct)
+        counts[res["verdict"]] = counts.get(res["verdict"], 0) + 1
+        if not dry_run:
+            await save(pool, {"lot_id": r["id"], "deployment_id": r["deployment_id"], "executed_at": r["executed_at"],
+                              "symbol": r["symbol"], "instrument_token": r["instrument_token"], "action": r["action"],
+                              "qty": float(r["qty"]), "paper_price": float(r["price"])}, res, estimated=True)
+    return {"fills": len(rows), "verdicts": counts, "written": 0 if dry_run else len(rows)}
+
+
 # ── the service ─────────────────────────────────────────────────────────
 
 class ShadowService:
@@ -860,13 +922,18 @@ def card(mode: str, checks: list[dict], episodes: list[dict], lots_of: dict, ope
     """
     bar = {**READY, **(bar or {})}
     known = [c for c in checks if c["verdict"] != "unknown"]
+    # the record (sessions, cycles, recent refusals) is what was checked as
+    # it happened: an estimate from stored data couldn't see the band, the
+    # margin or the legs (stats below include both)
+    live = [c for c in known if not c.get("estimated")]
     verdict = {c["lot_id"]: c["verdict"] for c in checks}
-    days = sorted({_day(c["executed_at"]) for c in known})
+    live_lots = {c["lot_id"] for c in live}
+    days = sorted({_day(c["executed_at"]) for c in live})
     counts: dict[str, int] = {}
     for c in checks:
         counts[c["verdict"]] = counts.get(c["verdict"], 0) + 1
     recent = set(days[-bar["clean_sessions"]:])
-    recent_rejects = sum(1 for c in known if c["verdict"] == "reject" and _day(c["executed_at"]) in recent)
+    recent_rejects = sum(1 for c in live if c["verdict"] == "reject" and _day(c["executed_at"]) in recent)
 
     filled = [c for c in known if c["verdict"] in FILLED and c.get("filled_qty")]
     value = sum(float(c["paper_price"]) * float(c["filled_qty"]) for c in filled)
@@ -882,7 +949,7 @@ def card(mode: str, checks: list[dict], episodes: list[dict], lots_of: dict, ope
         lots = [lot for p in ep["positions"] for lot in lots_of.get(p, [])]
         vs = [verdict.get(lot) for lot in lots]
         total = [a + b for a, b in zip(total, ep["pnl"])]
-        if lots and all(v not in (None, "unknown") for v in vs):
+        if lots and all(v not in (None, "unknown") for v in vs) and all(lot in live_lots for lot in lots):
             complete += 1
         hit = refused if "reject" in vs else unfilled if "no_fill" in vs else None
         if hit is not None:
@@ -909,6 +976,7 @@ def card(mode: str, checks: list[dict], episodes: list[dict], lots_of: dict, ope
     return {
         "ready": all(r["ok"] for r in rules), "state": "none" if not checks else "ready" if all(r["ok"] for r in rules) else "not_yet",
         "rules": rules, "counts": counts, "checked": len(checks), "sessions": len(days), "cycles": complete,
+        "estimated": sum(1 for c in checks if c.get("estimated")),
         "accepted_pct": round((n - counts.get("reject", 0)) / n * 100, 1) if n else None,
         "filled_pct": round(sum(1 for c in known if c["verdict"] in ("fill", "worse")) / n * 100, 1) if n else None,
         "shortfall": round(short, 2), "shortfall_pct": None if avg is None else round(avg, 3),

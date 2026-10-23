@@ -55,3 +55,8 @@ test('Live-ready: rupees worse than paper and refusals, per day', async () => {
   ]);
   assert.deepEqual(d, [{ day: '2026-10-21', short: 0, rejects: 0, n: 1 }, { day: '2026-10-22', short: 10, rejects: 1, n: 2 }]);
 });
+
+test('an estimate from stored data says so on its chip', () => {
+  assert.equal(verdictLabel({ ...base, verdict: 'worse', shortfall: 45, estimated: true }), 'Would fill ₹45 worse (est.)');
+  assert.equal(verdictLabel({ ...base, verdict: 'unknown', estimated: true }), 'Couldn’t check (est.)');
+});
