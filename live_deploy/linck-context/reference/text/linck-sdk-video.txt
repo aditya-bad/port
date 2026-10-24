@@ -1,0 +1,319 @@
+The Linck SDK: the narrated video, as text
+
+The script of reference/explainers/linck-sdk (15 scenes, about 15 minutes).
+Each scene's narration, in order. Numbers marked measured come from the
+prototype or today's app; targets and estimates say so.
+
+1. The Linck SDK
+
+This video is for developers who write strategies for Linck.
+
+What you write, and the one object that connects it to the world. The
+manifest. The same strategy in Go. What the SDK does for you, and the rules
+that keep a strategy exact. How it gets from your laptop to live money. How
+each language runs, with measured numbers. WASM and remote strategies,
+indicators, and the tests every SDK must pass.
+
+And at the end, one number from the architecture video, how many strategies
+fit on a machine, and how to read it.
+
+2. The one idea
+
+One idea makes everything else possible. The runtime owns time, state and the
+inputs. A strategy, in any language, is a function behind a protocol.
+
+Given its saved state and a numbered batch, it returns orders, decisions, and
+its new state. Nothing else goes in, and nothing else comes out.
+
+So a live day, a backtest, a replay, a repair and a run on your laptop are all
+the same thing: the runtime feeding numbered batches to that function. Only
+the clock, the market and the broker change.
+
+None of that is written per language. A strategy in Go is walked, restarted
+and replayed exactly the way a Python one is: by the runtime, never by the
+strategy.
+
+3. What you write
+
+Here is a whole strategy, in Python. When the SuperTrend on NIFTY’s 15-minute
+bars flips, it sells a weekly option, hedged with a cheaper one further out.
+
+A param is a setting. Its type, its limits and its label become the deploy
+form in the app, so nobody edits code to change a number.
+
+State is what the strategy remembers. The platform saves it after every batch,
+so a restart, a move or a replay picks up exactly here.
+
+subscribe says what it listens to. Here, a SuperTrend on 15-minute bars: a
+computed stream, worked out once for everyone who asks, not inside this
+strategy.
+
+A handler runs on each event it subscribed to: here, each new bar.
+
+The option chain comes from ctx, and answers from the machine’s own cache.
+Picking the strike nearest 100 rupees makes no call to the broker.
+
+Orders are a basket, placed hedge first: the buy leg must fill before the sell
+leg goes. The strategy never names an order; the SDK does.
+
+And when it does nothing, it says why. ctx.decide writes the decision log
+behind Geek mode, so “why didn’t it trade?” always has an answer.
+
+4. ctx: the only door
+
+Everything a strategy touches goes through one object: ctx. It is the only
+door to the world.
+
+ctx.now is the only clock: the time of the batch, not the machine’s.
+ctx.random is the only randomness, seeded for each deployment and day.
+
+ctx.state is what it remembers. ctx.index, the bars and the chain are the
+market, all answered on the machine.
+
+ctx.orders places orders and baskets. ctx.decide records what it decided and
+why. And ctx.report raises an issue about itself, with the day attached.
+
+Timers are events too: a square-off at 15:15 is a handler, like a bar.
+
+Swap what is behind ctx, and the same code runs live, in a backtest, or in a
+replay. The strategy can’t tell, and doesn’t need to.
+
+5. The manifest: linck.toml
+
+Every strategy has a manifest, linck.toml, versioned with its code.
+
+It names the strategy, its entry point, and the SDK versions it works with.
+
+runtime pins the exact image it runs in. That pin is part of determinism: the
+same code, in the same image, gives the same decisions.
+
+resources is its budget: CPU time per event, and memory. Certification checks
+the strategy stays inside them.
+
+markets says which underlyings and segments it trades: here, NIFTY and
+BANKNIFTY options.
+
+6. The same strategy in Go
+
+The same strategy, in Go. It is the same idea, in Go’s own shapes.
+
+Settings and state are struct fields, tagged param and state. The tags carry
+the limits, so the deploy form is the same as Python’s.
+
+Subscribe asks for the same computed stream, and OnBar handles each bar.
+
+Doing nothing is still a decision, with its reason.
+
+The chain is local, the basket is hedge first, and the SDK names the orders.
+
+And main hands the strategy to the SDK. linck.Run speaks the protocol on the
+socket the supervisor gives it; you never write the loop.
+
+Go has one trap: map order is random, so the SDK’s lint flags ranging over a
+map, and goroutines, inside a handler. TypeScript’s trap is the clock: Date
+and Math.random are replaced by ctx.now and ctx.random.
+
+7. What the SDK does for you
+
+Between your code and the runtime, the SDK is a few thin layers.
+
+Your strategy sits on the SDK’s API: Strategy, params, State, the handler
+decorators and ctx. Under that, the SDK core: the event loop, the state codec,
+the determinism guards, and an adapter for version zero. Under that, protocol
+version one, and then the host: the cloud supervisor, or the simulator on your
+laptop.
+
+Every SDK, in every language, has the same duties. It owns main: it reads
+Hello, builds your class, says Ready, and runs the loop.
+
+It saves and restores only the state you declare, serialised the same way
+every time.
+
+It keeps decisions deterministic, and it names every order the same way on
+every replay: the deployment, the batch, and a number. You never name an
+order.
+
+It reports a crash with where and why: the batch, the error and the stack. And
+it never sends null for an empty list. That one is a real bug the prototype
+found in Go.
+
+8. Determinism
+
+Determinism is what makes walks, repairs and certification exact: the same
+inputs give the same decisions, every time.
+
+The only clock is ctx.now, the batch’s time. The only randomness is
+ctx.random, seeded for each deployment and day.
+
+No network, no files and no threads inside a handler. And the runtime image is
+pinned, for each strategy version.
+
+Each language has a trap, and the SDK closes it. Python’s hash seed is fixed.
+Go’s lint flags map ranging and goroutines. TypeScript’s Date and Math.random
+are replaced.
+
+Floating point is deterministic for the same operations, in the same order, on
+the same CPU: in the prototype, Go and Python EMAs match bit for bit. Two
+traps are closed by policy. Replay machines use the same CPU architecture as
+live, because Go may fuse a multiply and an add on arm64. And the strategy
+version is pinned in the journal’s header.
+
+Certification proves it: a day run twice, and the hash of every decision and
+intent compared. One difference fails the build.
+
+9. From your laptop to live money
+
+From your laptop to live money, in nine steps.
+
+linck init scaffolds a strategy, with tests. linck run replays a real day on
+your laptop, through the same SDK core and the same sim venue library as the
+cloud, in seconds. The CLI carries the supervisor, the sim venue and a reader
+for the lake, so a local run equals a cloud run.
+
+linck backtest runs on the farm: a sweep of a parameter, with option chains as
+they were on each day, and walk-forward tests to catch overfitting. Minutes.
+
+linck push sends your source and lockfile, never a binary, to the builder,
+which builds it in the pinned image for your language: uv, go mod, cargo or
+npm. Then it is certified: the fault matrix, the determinism run and the
+budgets, and signed.
+
+linck deploy, with paper, pins that exact version. Moving to shadow and then
+live is a change of state, not a rebuild. Paper takes days. Shadow, priced
+against the live book beside what Kite would really have done, takes weeks.
+
+Live goes through your own broker, starting at one lot with a loss limit,
+raised when you say. And every day it is watched: the day check, issues, drift
+from its backtest, and repair when it is needed.
+
+10. How each language runs
+
+Each language runs a little differently. The round trips and the memory here
+were measured: a Rust supervisor and a strategy, over a Unix socket.
+
+A Python strategy is CPython inside gVisor, forked from a zygote that already
+has the SDK loaded, so each costs about 2 megabytes. One tick there and back
+takes 56 to 62 microseconds.
+
+Go is a static binary in the same kind of sandbox, or WASM for density: 44 to
+46 microseconds, and about 4 megabytes.
+
+Rust is native, or a WASM component, and the fastest: 39 to 42 microseconds,
+and 2 megabytes.
+
+TypeScript runs in Node: 57 to 58 microseconds, but 42 megabytes a process,
+which is why WASM comes later, for density.
+
+And C++, or any other language, comes in as a WASM component, or as your own
+process over gRPC. Remote adds the network to every decision.
+
+11. WASM and remote strategies
+
+Two more ways to run a strategy: as WASM, and remote.
+
+A WASM strategy implements one interface, a WIT world: linck strategy, version
+one. It imports ctx functions, like now, chain and decide, and exports on-
+start and on-batch.
+
+on-batch takes an event batch and returns commands, both as protobuf bytes:
+the same messages as every other sandbox. Bindings are generated for Rust, for
+Go through TinyGo, for TypeScript and for C++. It runs in Wasmtime, and starts
+in milliseconds.
+
+A remote strategy runs on your own machine, and talks over one gRPC stream in
+both directions, carrying the same batches and commands. Its prices are
+conflated too, and each batch is acknowledged.
+
+But the platform still owns risk, the orders and the clock. A remote strategy
+proposes; Heimdall decides. And the network is now part of every decision.
+
+12. Indicators: subscribe, or call linck-core
+
+Indicators stay identical across languages, in two ways.
+
+Subscribe to a computed stream, and the platform computes it once for the
+whole cell, and shares it. Ask for EMA 20 on NIFTY’s hourly bars, and you get
+the same node as everyone else who asked.
+
+Or call linck-core, the shared Rust library, inside your strategy. Rust uses
+it directly, Python through PyO3, Node through napi-rs, and Go as a WASM
+module run by wazero, so Go needs no cgo.
+
+Either way, live, a backtest and a run on your laptop compute the same
+numbers. The first version has indicators inside each strategy; the subscribe
+form arrives with computed streams, and the old form keeps working.
+
+13. The tests every SDK passes
+
+Every SDK release, and every build of your strategy, runs the same conformance
+suite. No SDK ships without it.
+
+Walk equivalence: restore from a snapshot and replay from there, and the
+orders, decisions and state hashes must be identical to the straight run. In
+the prototype, 300 batches were identical, in Go and in Python.
+
+Crash and catch-up: kill it mid-batch, restore it, and catch it up. Every
+state hash must match, and no order may be placed twice. In the prototype, the
+one order made again was refused.
+
+Determinism: the same day, run twice, gives the same hash of every decision
+and intent.
+
+Cross-SDK: reference strategies written in each SDK make the same decisions on
+the same journal. In the prototype, Go matched Python on all 600 batches.
+
+And old strategies keep running. An adapter in the SDK core runs today’s
+StrategyBase strategies unchanged, which is how our own nine strategies move
+first.
+
+The runtime keeps every protocol version it ever shipped for at least twelve
+months, and the SDKs follow semantic versioning, so an upgrade never breaks a
+running strategy.
+
+14. How many strategies fit on a machine
+
+Finally, one number from the architecture video. It said a runtime machine
+could hold an estimated three to five thousand strategies. Here is how to read
+that.
+
+That estimate came from an assumption: about one millisecond of CPU for each
+strategy event. Measured, today’s strategies take 7 to 47 microseconds to
+decide on a tick, and the runner around them about a tenth of a millisecond. A
+round trip to a sandboxed strategy is 39 to 62 microseconds. So CPU per
+decision is not what fills a machine.
+
+What fills it is memory, and the burst at the open. Memory is the number of
+strategies times what each one costs: 2 to 4 megabytes for forked Python, Go
+or Rust, but 42 for Node, plus the caches.
+
+CPU is the batches a second at the open, times about 60 microseconds of round
+trip, plus each strategy’s own time. And a machine is only filled to 60
+percent: 40 is kept for the open, for a machine that fails, and for moves.
+
+Worked out, as estimates: 2,000 light strategies make about 20,000 batches a
+second at the open, about one and a half cores, and need 6 to 10 gigabytes:
+two runtime machines of 16 virtual CPUs and 64 gigabytes. 20,000 strategies
+need 4 to 6 machines, in two cells.
+
+So read three to five thousand as a placeholder, not a measurement. The real
+number depends on the language mix, and on how heavy each strategy is: a heavy
+one is placed by its measured CPU. And the burst at the open is assumed to be
+ten times normal, until it is logged.
+
+It gets measured at step I2, by replaying recorded days at one, ten and fifty
+times speed, before any cell is sized. What you control, as a developer, is
+your strategy’s memory and its time per batch, and your manifest declares
+both.
+
+15. The SDK, in short
+
+To recap. A strategy is a function behind a protocol: the runtime owns time,
+state and the inputs, and ctx is the only door to the world.
+
+The SDK owns main, saves your state and names your orders. Determinism is kept
+by rule: one clock, one source of randomness, a pinned image, and tests that
+prove it.
+
+A strategy goes from your laptop to a backtest, to push and certification,
+then paper, shadow and live. And how many fit on a machine is set by memory
+and the open, and measured before any cell is sized.
