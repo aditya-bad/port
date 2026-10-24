@@ -8,8 +8,10 @@
 //   rt  real seconds since the scene began: for things that should keep moving
 //       while the narrator talks (streams, bobbing, pulses), never paused
 //   at  the scene time where that step's animation begins
-//   focus [x, y, w, h] | 'all'  the camera eases to frame it (kept until changed)
-//   spot  [x, y, w, h]          dim everything else while this step is spoken
+//   focus 'name' | ['name', …] | [x, y, w, h] | 'all'   the camera eases to frame it (kept until changed)
+//   spot  'name' | ['name', …] | [x, y, w, h]           dim everything else while this step is spoken
+//   Names are things the scene's build gave a name: named('server', box(…)).
+//   Prefer names: the frame is then measured from the things themselves.
 const NS = 'http://www.w3.org/2000/svg';
 const svg = document.getElementById('stage');
 const hud = document.getElementById('hud');
@@ -207,15 +209,41 @@ function clock(pl, tau) {
 }
 
 // ── the camera and the spotlight ───────────────────────────────────────
+let NAMED = {};
+function named(name, el) { NAMED[name] = el; return el; }  // for focus and spot to point at
+// The rect around named things: a box by its own bounds; anything else by
+// its bounding box and its position (its transform attribute, not the CSS
+// scale of a pop or a bob, so the frame doesn't wobble while they move).
+function rectOf(target, pad = 0) {
+  if (!target || target === 'all') return null;
+  if (typeof target[0] === 'number') return target;
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const n of typeof target === 'string' ? [target] : target) {
+    const el = NAMED[n];
+    if (!el) throw new Error(`focus/spot: nothing is named "${n}" in "${SCENES[cur].title}" (name it in the scene: named('${n}', …))`);
+    let pts;
+    if (el.X != null) pts = [[el.X, el.Y], [el.R, el.B]];
+    else {
+      const b = el.getBBox(), m = el.transform && el.transform.baseVal.consolidate();
+      pts = [[b.x, b.y], [b.x + b.width, b.y], [b.x, b.y + b.height], [b.x + b.width, b.y + b.height]]
+        .map(([x, y]) => (m ? [m.matrix.a * x + m.matrix.c * y + m.matrix.e, m.matrix.b * x + m.matrix.d * y + m.matrix.f] : [x, y]));
+    }
+    for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  }
+  return [x0 - pad, y0 - pad, x1 - x0 + 2 * pad, y1 - y0 + 2 * pad];
+}
+// a step's frame and spotlight, measured once, the first time they're drawn
+const focusOf = st => (st._focus === undefined ? (st._focus = rectOf(st.focus)) : st._focus);
+const spotOf = st => (st._spot === undefined ? (st._spot = typeof (st.spot || [])[0] === 'number' ? st.spot : rectOf(st.spot, 16)) : st._spot);
 const FULL = [0, 0, 1600, 900];
 function view(rect) {                                     // a rect → scale and centre that frame it
-  const [x, y, w, h] = rect === 'all' || !rect ? FULL : rect;
+  const [x, y, w, h] = rect || FULL;
   const s = clamp(Math.min(1600 / (w + 80), 790 / (h + 80)), 1, 1.8);
   return { s, cx: x + w / 2, cy: y + h / 2 };
 }
 function camera(pl, j, into) {
   const st = pl.steps[j];
-  const to = view(st.focus), from = view(j ? pl.steps[j - 1].focus : st.focus);
+  const to = view(focusOf(st)), from = view(focusOf(j ? pl.steps[j - 1] : st));
   const f = ke(into, 0, 1.2);
   let s = lerp(from.s, to.s, f), cx = lerp(from.cx, to.cx, f), cy = lerp(from.cy, to.cy, f);
   // keep the frame on the stage: no empty paper past its edges
@@ -228,9 +256,12 @@ let veil = null, backdrop = null;
 function spotlight(pl, j, into, rt) {
   const st = pl.steps[j];
   if (!veil) return;
-  if (!st.spot) { op(veil, 0); return; }
-  const [x, y, w, h] = st.spot, r = 14;
+  window.__spot = null;
+  const sp = spotOf(st);
+  if (!sp) { op(veil, 0); return; }
+  const [x, y, w, h] = sp, r = 14;
   const o = Math.min(ke(into, 0.2, 0.8), 1 - ke(into, st.D - 0.5, st.D)) * 0.6;
+  if (o > 0.1) window.__spot = [x, y, w, h];
   veil.firstChild.setAttribute('d', `M-400 -400H2000V1300H-400Z M${x + r} ${y}H${x + w - r}A${r} ${r} 0 0 1 ${x + w} ${y + r}V${y + h - r}A${r} ${r} 0 0 1 ${x + w - r} ${y + h}H${x + r}A${r} ${r} 0 0 1 ${x} ${y + h - r}V${y + r}A${r} ${r} 0 0 1 ${x + r} ${y}Z`);
   veil.firstChild.setAttribute('opacity', o.toFixed(3));
   const ring = veil.lastChild;
@@ -247,7 +278,7 @@ const capEl = () => document.getElementById('cap');
 
 function load(i) {
   cur = (i + SCENES.length) % SCENES.length;
-  root.innerHTML = ''; hud.innerHTML = '';
+  root.innerHTML = ''; hud.innerHTML = ''; NAMED = {};
   const s = SCENES[cur];
   pl = plan(cur);
   backdrop = E('rect', { x: 0, y: 0, width: 1600, height: 100, class: 'hud-ground' }, hud);
@@ -330,7 +361,7 @@ function begin(withSound) {                               // the start screen's 
   setPaused(false);
 }
 // for frame-by-frame video and checks: a scene's plan, and a seek to a moment
-window.__plan = n => { const p = plan(n - 1); return { total: p.total, steps: p.steps.map(s => ({ T0: s.T0, D: s.D, dur: s.dur, span: s.span, rate: s.rate, file: s.file, text: s.text })) }; };
+window.__plan = n => { const p = plan(n - 1); return { total: p.total, steps: p.steps.map(s => ({ T0: s.T0, D: s.D, dur: s.dur, span: s.span, rate: s.rate, file: s.file, text: s.text, spot: !!s.spot })) }; };
 window.__seek = (n, tau) => { if (cur !== n - 1 || !update) load(n - 1); update(tau); };
 
 window.addEventListener('DOMContentLoaded', () => {

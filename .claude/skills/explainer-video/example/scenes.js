@@ -6,19 +6,19 @@ scene({
   dur: 14,
   steps: [
     [0, 'Here is your phone, and a server that does the work.', { focus: 'all' }],
-    [1.6, 'You tap a button, and a message sets off, along the line, to the server.', { spot: [60, 300, 980, 200] }],
-    [4.2, 'Right now the server is busy with someone else, so the message waits its turn.', { focus: [700, 220, 640, 380] }],
+    [1.6, 'You tap a button, and a message sets off, along the line, to the server.', { spot: ['phone', 'server'] }],
+    [4.2, 'Right now the server is busy with someone else, so the message waits its turn.', { focus: ['server', 'busy'] }],
     [7.6, 'The server finishes, picks the message up, and does the job.', { focus: 'all' }],
     [10.2, 'Done! The answer comes back to your phone, and the server has a nap until the next one.'],
   ],
 }, p => {
   const L = G(p), B = G(p), M = G(p);
-  const phone = box(B, 120, 330, 220, 140, 'Your phone', { sub: 'tap', cls: 'out' });
-  const srv = box(B, 820, 300, 320, 200, 'Server', { sub: 'does the work', cls: 'key' });
+  const phone = named('phone', box(B, 120, 330, 220, 140, 'Your phone', { sub: 'tap', cls: 'out' }));
+  const srv = named('server', box(B, 820, 300, 320, 200, 'Server', { sub: 'does the work', cls: 'key' }));
   const there = line(L, 'M340 380H816', 'b'), back = line(L, 'M820 440H344', 'g');
   const msg = packet(M, 'save my note', 'b');
   const ans = packet(M, 'saved ✓', 'g');
-  const busy = bubble(B, 980, 296, 'busy…');
+  const busy = named('busy', bubble(B, 980, 296, 'busy…'));
   const drops = sweat(B, 1150, 300);
   const conf = burst(M, 230, 330, { seed: 4 });
   const nap = zzz(B, 1150, 300);
@@ -50,21 +50,21 @@ scene({
   dur: 15,
   steps: [
     [0, 'Two copies of one program both think they\u2019re in charge. The old one lost contact but keeps running: a ghost.', { focus: 'all' }],
-    [3.0, 'Each copy sends an order. Each order carries a number: which copy sent it.', { spot: [60, 160, 760, 560] }],
-    [5.6, 'The order desk only accepts the newest copy.', { focus: [820, 160, 720, 560] }],
+    [3.0, 'Each copy sends an order. Each order carries a number: which copy sent it.'],
+    [5.6, 'The order desk only accepts the newest copy.', { focus: ['desk', 'stamp'] }],
     [6.6, 'So the ghost’s order gets stamped: refused!'],
     [9.4, 'The real copy’s order goes through.', { focus: 'all' }],
     [11.4, 'Then a new version launches, and the ghost finally fades away.'],
   ],
 }, p => {
   const L = G(p), B = G(p), M = G(p);
-  const old = box(B, 100, 200, 300, 130, 'Old copy', { sub: 'copy 1 · lost contact' });
-  const neu = box(B, 100, 520, 300, 130, 'New copy', { sub: 'copy 2', cls: 'key' });
-  const desk = box(B, 900, 340, 320, 170, 'Order desk', { sub: 'newest copy only', cls: 'key' });
-  const boo = ghost(B, 440, 230);
+  const old = named('old', box(B, 100, 200, 300, 130, 'Old copy', { sub: 'copy 1 · lost contact' }));
+  const neu = named('new', box(B, 100, 520, 300, 130, 'New copy', { sub: 'copy 2', cls: 'key' }));
+  const desk = named('desk', box(B, 900, 340, 320, 170, 'Order desk', { sub: 'newest copy only', cls: 'key' }));
+  const boo = named('ghost', ghost(B, 440, 230));
   const pa = line(L, 'M400 265C640 265 700 400 896 400', 'wt'), pb = line(L, 'M400 585C640 585 700 460 896 460', 'g');
   const oa = packet(M, 'order · 1', 'wt'), ob = packet(M, 'order · 2', 'g');
-  const no = stamp(M, 1060, 250, 'Refused');
+  const no = named('stamp', stamp(M, 1060, 250, 'Refused'));
   const yes = sparkle(M, 1060, 425, { r: 140 });
   const pr = line(L, 'M150 820C400 760 600 760 900 700', 'pu', { arrow: false });
   const rk = rocket(M);
@@ -74,7 +74,7 @@ scene({
     fade(boo, t, 1.6, 0.6, 12.6); boo.go(rt);
     [pa, pb].forEach((l, i) => reveal(l, t, 3.0 + i * 0.2, 3.6 + i * 0.2));
     travel(oa, pa, t, 3.6, 5.6, t < 7.0);
-    if (t >= 7.0) { op(oa, 1 - k(t, 7.0, 7.6)); tr(oa, lerp(896, 820, k(t, 7.0, 7.6)), 400); }
+    if (t >= 7.0) { placeOn(oa, pa, 1 - 0.55 * ease(k(t, 7.0, 9.2))); op(oa, 1 - k(t, 8.4, 9.2)); }   // sent back to the ghost, fading
     squash(oa._in, t, 5.6);
     flash(desk, t, 5.8, 0.7);                              // the desk reads the number
     no.go(t, 6.6);

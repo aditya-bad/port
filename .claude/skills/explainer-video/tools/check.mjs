@@ -46,7 +46,34 @@ const labels = () => p.evaluate(() => {
   });
   return outl;
 });
+const spotEdges = () => p.evaluate(() => {
+  const vis = el => { let o = 1; for (let e = el; e && e.tagName !== 'svg'; e = e.parentNode) { const c = getComputedStyle(e); o *= +(e.getAttribute('opacity') ?? 1) * +c.opacity; if (c.display === 'none') return 0; } return o; };
+  const outl = [];
+  // the spotlight frames whole things: a box its edge cuts through is half lit
+  const sp = window.__spot;
+  if (sp) document.querySelectorAll('#layer .bx').forEach(g => {
+    if (vis(g) < 0.3 || g.X == null) return;
+    const [x, y, w, h] = sp, inX = g.X >= x - 1 && g.R <= x + w + 1 && g.Y >= y - 1 && g.B <= y + h + 1;
+    const meets = g.X < x + w && g.R > x && g.Y < y + h && g.B > y;
+    if (meets && !inX) outl.push(`the spotlight's edge cuts through the "${(g.querySelector('text') || {}).textContent || 'unnamed'}" box`);
+  });
+  // …and a message travelling across its edge is half dimmed: light where it goes, or don't spotlight
+  if (sp) document.querySelectorAll('#layer .pk').forEach(g => {
+    const m = /translate\(([-\d.]+),([-\d.]+)\)/.exec(g.getAttribute('transform') || '');
+    const r = g.querySelector('rect');
+    if (!m || !r || vis(g) < 0.3) return;
+    const w = +r.getAttribute('width'), cx = +m[1], cy = +m[2], [x, y, sw, sh] = sp;
+    const L = cx - w / 2, R = cx + w / 2, T = cy - 16, B = cy + 16;
+    const meets = L < x + sw && R > x && T < y + sh && B > y, inside = L >= x && R <= x + sw && T >= y && B <= y + sh;
+    if (meets && !inside) outl.push(`"${g.textContent}" crosses the spotlight's edge, half dimmed`);
+  });
+  return outl;
+});
 for (let s = 1; s <= n; s++) {
+  try { await checkScene(s); }
+  catch (e) { fails.push(`scene ${s}: ${(e.message || String(e)).split('\n').find(l => /Error:/.test(l)) || e.message}`); }   // one broken scene doesn't hide the others
+}
+async function checkScene(s) {
   const plan = await p.evaluate(s => window.__plan(s), s);
   const title = await p.evaluate(s => SCENES[s - 1].title, s);
   console.log(`\nscene ${s}: ${title} — ${plan.total.toFixed(1)} s`);
@@ -62,6 +89,14 @@ for (let s = 1; s <= n; s++) {
       if (!cap) fails.push(`scene ${s} step ${j + 1}: no caption at ${tau.toFixed(1)} s`);
       for (const l of await labels()) warns.push(`scene ${s} step ${j + 1} at ${tau.toFixed(1)} s: ${l}`);
       if (f === 0.6) { const file = `s${String(s).padStart(2, '0')}-${String(j + 1).padStart(2, '0')}.png`; fs.writeFileSync(path.join(out, file), await p.screenshot()); frames.push(file); }
+    }
+  }
+  // a spotlight's edges, every quarter second while it's lit (things move across them)
+  for (const [j, st] of plan.steps.entries()) {
+    if (!st.spot) continue;
+    for (let tau = st.T0; tau < st.T0 + st.D; tau += 0.25) {
+      await p.evaluate(([s, t]) => window.__seek(s, t), [s, tau]);
+      for (const l of await spotEdges()) warns.push(`scene ${s} step ${j + 1}: ${l}`);
     }
   }
   // the camera holds still once it has arrived: compare its frame (not the

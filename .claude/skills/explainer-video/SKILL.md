@@ -67,12 +67,14 @@ scene({
   dur: 15,                                    // seconds of animation as you draw it
   steps: [                                    // [scene time the motion starts, what is said, options]
     [0,   'Follow one price on its way to a strategy.', { focus: 'all' }],
-    [2.0, 'It arrives over a WebSocket, and the feed handler cleans it.', { spot: [40, 290, 460, 130] }],
-    [4.2, 'The tick cache keeps one slot per instrument.', { focus: [780, 220, 320, 350] }],
+    [2.0, 'It arrives over a WebSocket, and the feed handler cleans it.', { spot: ['exchange', 'feed'] }],
+    [4.2, 'The tick cache keeps one slot per instrument.', { focus: ['cache'] }],
   ],
 }, p => {
   const L = G(p), B = G(p), M = G(p);        // lines under boxes under moving things
-  const ex = box(B, 40, 300, 200, 110, 'Exchange', { cls: 'out' });
+  const ex = named('exchange', box(B, 40, 300, 200, 110, 'Exchange', { cls: 'out' }));
+  named('feed', box(B, 290, 300, 200, 110, 'Feed handler'));
+  named('cache', box(B, 790, 230, 300, 330, 'Tick cache', { top: true, cls: 'frame' }));
   const pth = line(L, 'M240 355H286', 'b');
   const tick = packet(M, '25,186.10', 'b');
   const flow = stream(M, pth, 'b', 3, 0.9);
@@ -111,11 +113,18 @@ scene({
   phrase (a stamp, a crash, a fill), give that phrase its own step whose
   `at` is the event. Inside a step, motion is spread over the whole voice,
   not timed to its second sentence.
-- **Point at things.** `focus: [x, y, w, h]` eases the camera to frame
-  that area (one smooth move over about a second, then still) and keeps it
-  until another step changes it (`'all'` to pull back).
-  `spot: [x, y, w, h]` dims everything else while that step is spoken.
-  Use them to say "look here" when the stage is busy, not on every step.
+- **Point at things, by name.** In the build, name what you'll point at:
+  `const srv = named('server', box(…))`. Then `focus: ['server']` (or
+  `['server', 'busy']`) eases the camera to frame them (one smooth move
+  over about a second, then still) and keeps it until another step changes
+  it (`'all'` to pull back); `spot: ['phone', 'server']` dims everything
+  else while that step is spoken. The frame is measured from the named
+  things themselves, so it always fits them. Raw `[x, y, w, h]` still
+  works, but a hand-typed rectangle is how a spotlight ends up cutting a
+  box in half. Light everything the sentence is about, including where
+  anything moves while it's said: `check.mjs` warns when the spotlight's
+  edge cuts a box or a moving packet. Use these to say "look here" when
+  the stage is busy, not on every step.
 - **Words.** Plain, short sentences, from the listener's side ("the order
   goes to the broker", not "the OMS dispatches"). The caption is exactly
   what's said; pronunciations go in `meta.say` or a step's `{ say: '…' }`.
@@ -123,7 +132,7 @@ scene({
 
 ## Drawing helpers (engine/engine.js)
 
-`G(p, cls)` group · `E(tag, attrs, p)` any element · `T(p, x, y, text, cls, anchor)`
+`named(name, el)` (returns el) something `focus`/`spot` can point at · `G(p, cls)` group · `E(tag, attrs, p)` any element · `T(p, x, y, text, cls, anchor)`
 text (classes: `ttl bl bs cl mono lab hop step lane lanes big huge warnl okl gs sl sv`)
 · `box(p, x, y, w, h, label, { sub, cls, top, lcls, tag })` with `.X .Y .W .H .cx .cy .R .B`
 (cls: `frame key band chip out store file proc art bad btn`) · `line(p, d, color, { dash, arrow })`
