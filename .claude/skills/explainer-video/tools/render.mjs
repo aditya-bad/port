@@ -9,6 +9,7 @@ import path from 'node:path';
 const EV = process.env.EV_HOME || path.join(os.homedir(), '.cache/explainer-video');
 const { chromium } = await import(process.env.PW || path.join(EV, 'node/node_modules/playwright/index.mjs'));
 const html = path.resolve(process.argv[2]), FF = process.env.FF, FPS = 25;
+if (!FF) { console.error('render.mjs: FF is not set. Run: eval "$(bash $S/tools/setup.sh | grep =)"; export EV_HOME FF'); process.exit(2); }
 const dir = path.join(path.dirname(html), 'vid');
 fs.mkdirSync(dir, { recursive: true });
 const b = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
