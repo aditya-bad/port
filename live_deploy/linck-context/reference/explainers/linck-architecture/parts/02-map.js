@@ -95,7 +95,7 @@
     const hand = E('line', { y1: 420, y2: 515, class: 'xline' }, day);
     op(day, 0);
     return (t, rt) => {
-      pop(reg, t, 0.2); pop(aws, t, 0.4); pop(dr, t, S.at[0] + 1.6); show(repl, t, S.at[0] + 2.2); rf(rt, t > S.at[0] + 2.6 ? 0 : 1e9);
+      pop(reg, t, 0.2); pop(aws, t, 0.9); pop(dr, t, S.at[0] + 1.6); show(repl, t, S.at[0] + 2.2); rf(rt, t > S.at[0] + 2.6 ? 0 : 1e9);
       pop(pc, t, S.at[1] + 0.2); pops(pools, t, S.at[1] + 0.8, 0.5);
       pop(cc, t, S.at[2] + 0.2); pop(md, t, S.at[2] + 0.6); pops(mdp, t, S.at[2] + 1.2, 0.4);
       pop(rtp, t, S.at[3] + 0.2); pop(mach, t, S.at[3] + 0.8); pop(sup, t, S.at[3] + 1.6); pop(cag, t, S.at[3] + 2.0);

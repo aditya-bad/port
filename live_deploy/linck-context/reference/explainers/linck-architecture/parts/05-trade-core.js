@@ -303,7 +303,7 @@
     const runner = dot(M, 'g', 9);
     const rPath = route(M, chain.map(b => [b.cx, b.B + 24]));
     return (t, rt) => {
-      pop(ig, t, 0.2); pops([dc, wf, ...chain], t, 1.0, (S.to[0] - 1.6) / 6); cl.forEach((l, i) => show(l, t, 2.0 + i * 0.4));
+      pop(ig, t, 0.2); pops([dc, wf, ...chain], t, 1.0, (S.to[0] - 1.6) / 6); cl.forEach((l, i) => show(l, t, S.to[0] * 0.55 + i * S.to[0] * 0.13, S.to[0] * 0.55 + (i + 1) * S.to[0] * 0.13));
       reveal(real, t, S.at[1] + 0.4, S.at[1] + 2.4); reveal(rep, t, S.at[1] + 1.4, S.to[1] - 0.6); fade(legend, t, S.at[1] + 0.6);
       fade(mark, t, S.to[1] - 1.0); flag.go(t, S.to[1] - 0.8, null, rt);
       walk([c['day check']], t, S.at[1], S.to[1]);

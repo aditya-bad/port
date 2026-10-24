@@ -69,7 +69,7 @@ for (let i = 0; i < 6; i++) IT['s' + i] = [160 + i * 232, 119, 220, 44];
     const ndb = { 0: db(B, 40, 746, 160, 100, 'Postgres', 'one, + a replica'), 2: db(B, 380, 746, 160, 100, 'S3 lake', 'plain Parquet'), 6: db(B, 1060, 746, 160, 100, 'NATS', 'JetStream: all events') };
     const vault = mbox(M, 'Vault + KMS', null, 'infra');
     return (t, rt) => {
-      pops([...outside, ...fr, ...fdb], t, 0.2, 0.06);
+      pops([...outside, ...fr, ...fdb], t, 0.2, (S.to[0] * 0.45) / 16);
       [...outside, ...fr].forEach(f => { if (t >= S.at[1]) op(f, 1 - k(t, S.at[1] + 0.2, S.to[1] - 0.2)); });
       pop(shelf, t, S.to[1] - 0.2);
       let gone = 0;
@@ -79,7 +79,8 @@ for (let i = 0; i < 6; i++) IT['s' + i] = [160 + i * 232, 119, 220, 44];
         const lab = f <= 0 || f >= 1 ? 1 : Math.max(0, 1 - f / 0.12, (f - 0.88) / 0.12);
         const after = f > 0.5 && kind !== 'merge';
         m.set(r[0], r[1], r[2], r[3], { name: after ? nn : MORPH[i][1], lang: after ? nl : MORPH[i][2], part: after ? np : MORPH[i][3], label: lab });
-        let o = Math.min(1, k(t, 0.3 + i * 0.12, 0.7 + i * 0.12) * 1.5);
+        const g0 = S.to[0] * 0.4 + i * (S.to[0] * 0.55) / MORPH.length;
+        let o = Math.min(1, k(t, g0, g0 + 0.5) * 1.5);
         if (kind === 'merge') o *= 1 - k(f, 0.8, 1);
         if (kind === 'shelf') o *= 1 - 0.35 * k(f, 0.9, 1);
         op(m, o);
