@@ -52,7 +52,18 @@ counter reset and post-convergence EOD question.
 - Until the fill-time fix is deployed, pivot_supertrend_options(_inverse),
   trend_credit_spread and weekly_ema_st_spread stamp fills at their signal
   candle's start (5 min early; 1 h for the weekly spread), and the day check
-  flags their correct days as mismatches. Days flagged that way can be ignored.
+  flags their correct days as mismatches. Their stored fills stay stamped that
+  way. Migration 0038 marks when the fix went live. From then on the day check
+  reads those older fills as happening somewhere in their candle, and a day
+  repair starts at that candle's start, so it doesn't keep the fill and make it
+  again. The first startup also rechecks their open flags against the replay
+  stored with each one (daycheck.recheck_candle_stamped). A flag that's left
+  after that is a real difference.
+- Don't repair a flag on those four strategies before the fix is deployed: the
+  repair would swap the app's real fill prices for 1-minute-candle prices.
+- A flagged day can be repaired only while it's still the deployment's latest
+  day with trades: after a Friday, that means the weekend, before Monday's
+  first trade.
 - Equity snapshots and marks recorded during a stall keep stale prices; repair
   doesn't rewrite them.
 - Compare groups use full capital for the whole history even before a member

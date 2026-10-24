@@ -17,6 +17,7 @@ tick and price.
 """
 
 import math
+from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 
 import pytest
@@ -268,10 +269,30 @@ def test_a_repair_run_after_the_weeks_expiry_refuses_instead_of_trading_next_wee
     pool_run(go)
 
 
-# Some strategies stamp a fill with the start of the candle that triggered
-# it, though it happens at that candle's close. A day repair from a minute
-# in between must not keep the fill AND make it again.
-def test_a_day_repair_from_inside_a_signal_candle_does_not_trade_twice(pool_run, monkeypatch):
+@contextmanager
+def old_fill_times(monkeypatch):
+    """The fill times of the app before the fix (StrategyBase.fill_time):
+    a fill made at a candle's close stamped with the candle's start."""
+    from app.deployments.strategy_base import StrategyBase
+    with monkeypatch.context() as m:
+        m.setattr(StrategyBase, "fill_time", lambda self, fallback=None: fallback or self._tick_at)
+        yield
+
+
+async def fix_went_live(pool, day):
+    """The mark the fix's migration leaves: here after the simulated day,
+    and after any check already run."""
+    at = max(datetime.now(IST), datetime.combine(day, time(23, 59), IST)) + timedelta(seconds=1)
+    await pool.execute("INSERT INTO app_marks (name, at) VALUES ('fills_stamped_at_tick', $1) "
+                       "ON CONFLICT (name) DO UPDATE SET at = $1", at)
+
+
+# Some strategies stamped a fill with the start of the candle that triggered
+# it, though it happened at that candle's close (fixed; their fills from
+# before the fix still are). A day repair from a minute in between must not
+# keep the fill AND make it again.
+@pytest.mark.parametrize("old_stamps", [False, True], ids=["fills timed at their tick", "fills timed before the fix"])
+def test_a_day_repair_from_inside_a_signal_candle_does_not_trade_twice(old_stamps, pool_run, monkeypatch):
     async def go(pool):
         from app.repair import daycheck as D
         from app.repair import dayrepair as R
@@ -282,7 +303,12 @@ def test_a_day_repair_from_inside_a_signal_candle_does_not_trade_twice(pool_run,
         sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), spot=base(datetime(2026, 1, 1, 9, 15)))
         day = sim.market.today
         await D.capture_states(pool, day, "open")
-        await run_live(sim)
+        if old_stamps:
+            with old_fill_times(monkeypatch):
+                await run_live(sim)
+            await fix_went_live(pool, day)
+        else:
+            await run_live(sim)
         lots = await fills_with_symbols(pool, sim.dep_id)
         entry = next(r for r in lots if r["reason"] == "entry" and r["executed_at"].astimezone(IST).hour >= 10)
         stamp = entry["executed_at"].astimezone(IST)
@@ -296,9 +322,13 @@ def test_a_day_repair_from_inside_a_signal_candle_does_not_trade_twice(pool_run,
         assert start == f"{stray:%H:%M}", (start, row.get("diff"))
         plan = await R.run(pool, sim.dep_id, day, book, sim.kite, {})
         assert plan["complete"], plan.get("problems")
+        if old_stamps:
+            assert stamp.minute % 5 == 0 and stamp.second == 0, "stamped at its candle's start"
+            assert plan["from"] == f"{stamp:%H:%M}", "the repair starts before the fill stamped inside its candle"
         mine = [f for f in plan["fills"] if f["symbol"] == entry["symbol"] and f["reason"] == "entry"]
+        cut = datetime.combine(day, time(*map(int, plan["from"].split(":"))), IST)   # what the rewind keeps
         kept = [r for r in lots if r["symbol"] == entry["symbol"] and r["reason"] == "entry"
-                and r["executed_at"].astimezone(IST) < stray]
+                and r["executed_at"].astimezone(IST) < cut]
         assert len(mine) + len(kept) == sum(1 for r in lots if r["symbol"] == entry["symbol"] and r["reason"] == "entry"), \
             f"entry {entry['symbol']} stamped {stamp:%H:%M}: kept {len(kept)}, replayed {len(mine)}"
         res = await R.run(pool, sim.dep_id, day, book, sim.kite, {}, commit=True, expected=plan["fills_key"])
@@ -330,3 +360,67 @@ def test_the_day_check_finds_nothing_on_a_day_the_app_traded_as_its_strategy(str
         assert d["missed"] == [] and d["extra"] == [] and d["matched"], d
         assert all(m["minutes_apart"] == 0 and m["price_diff"] == 0 for m in d["matched"]), d["matched"]
     pool_run(go)
+
+
+# Days traded before the fill-time fix went live. Their stored fills are
+# still timed at their candle's start, so the check flagged them; once the
+# fix is live (migration 0038's mark) the stored flag is matched again on
+# startup without replaying (the contracts may have expired since), and a
+# fresh check of the day agrees.
+CANDLE_STAMPED = ["pivot_supertrend_options", "pivot_supertrend_options_inverse", "trend_credit_spread", "weekly_ema_st_spread"]
+
+
+@pytest.mark.parametrize("strategy", CANDLE_STAMPED)
+def test_a_day_flagged_only_for_its_old_fill_times_checks_clean_once_the_fix_is_live(strategy, pool_run, monkeypatch):
+    async def go(pool):
+        from app.repair import daycheck as D
+        assert sorted(D.CANDLE_STAMPED) == sorted(CANDLE_STAMPED)
+        chain_oi(monkeypatch)
+        mode = "positional" if strategy in POSITIONAL else "intraday"
+        sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), mode=mode, spot=base(datetime(2026, 1, 1, 9, 15)))
+        day = sim.market.today
+        await D.capture_states(pool, day, "open")
+        with old_fill_times(monkeypatch):
+            await run_live(sim)
+        n = await pool.fetchval("SELECT count(*) FROM position_lots WHERE deployment_id = $1", sim.dep_id)
+        book = MinuteBook(day, exact_source(sim))
+        # the check as it ran that evening: every candle-close trade one missed, one extra
+        await D.run_day(pool, day, book, sim.kite)
+        was = dict(await pool.fetchrow("SELECT * FROM day_checks WHERE deployment_id = $1", sim.dep_id))
+        assert was["status"] == "mismatch", (was["status"], was["headline"])
+        await pool.execute("UPDATE day_checks SET dismissed_at = now() WHERE deployment_id = $1", sim.dep_id)
+        # the fix goes live: on startup the stored flag is matched again
+        await fix_went_live(pool, day)
+        changed = await D.recheck_candle_stamped(pool)
+        assert [(c["was"], c["now"]) for c in changed] == [("mismatch", "ok")], changed
+        row = dict(await pool.fetchrow("SELECT * FROM day_checks WHERE deployment_id = $1", sim.dep_id))
+        assert row["status"] == "ok" and row["headline"].startswith("Traded as its strategy would have")
+        assert row["diff"]["missed"] == [] and row["diff"]["extra"] == [] and len(row["diff"]["matched"]) == n
+        assert row["replay"]["rechecked"]["was"]["status"] == "mismatch" and row["dismissed_at"] is None
+        assert await D.recheck_candle_stamped(pool) == [], "only once"
+        # and a check run again from scratch (Check again, after the fix) agrees
+        await D.run_day(pool, day, book, sim.kite)
+        again = dict(await pool.fetchrow("SELECT * FROM day_checks WHERE deployment_id = $1", sim.dep_id))
+        assert again["status"] == "ok", (again["status"], again["headline"], again["diff"].get("missed"), again["diff"].get("extra"))
+        assert len(again["diff"]["matched"]) == n
+    pool_run(go)
+
+
+def test_old_fill_times_are_read_across_their_candle_only_for_the_strategies_that_had_them():
+    from app.repair import daycheck as D
+    day = datetime(2026, 10, 23).date()
+    at = datetime.combine(day, time(10, 15), IST)
+    old = {"at": at, "until": at + timedelta(minutes=5), "minute": "10:15", "action": "sell", "symbol": "X", "qty": 75.0, "price": 1.0}
+    r = {"minute": "10:20", "action": "sell", "symbol": "X", "qty": 75.0, "price": 1.0}
+    assert D.compare([old], [r], [], [], day)["matched"][0]["minutes_apart"] == 0
+    assert D.compare([{**old, "until": None}], [r], [], [], day)["missed"], "a fill timed at its tick: 5 minutes off"
+    assert D.compare([old], [{**r, "minute": "10:23"}], [], [], day)["matched"][0]["minutes_apart"] == 3, "from the candle's end"
+    assert D.compare([old], [{**r, "minute": "10:24"}], [], [], day)["missed"], "past its candle and the 3 minutes"
+    assert D.candle_of({"strategy_name": "weekly_ema_st_spread", "config": {}}) == timedelta(hours=1)
+    assert D.candle_of({"strategy_name": "weekly_ema_st_spread", "config": {"candle_interval_minutes": 30}}) == timedelta(minutes=30)
+    assert D.candle_of({"strategy_name": "strangle_monthly_v2", "config": {}}) is None
+    # a repair from inside such a candle starts at its start; chained candles move it further
+    f2 = {**old, "at": at - timedelta(minutes=5), "until": at}
+    assert D.repair_from([old], day, "10:17") == "10:15"
+    assert D.repair_from([old, f2], day, "10:17") == "10:10", "f2 really happened at 10:15: it goes too"
+    assert D.repair_from([old], day, "10:15") == "10:15" and D.repair_from([old], day, "10:21") == "10:21"

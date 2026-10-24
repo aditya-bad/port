@@ -152,9 +152,11 @@ async def run(pool, dep_id, day: date, book: MinuteBook, kite, choices: dict, *,
     start = divergence(dict(check))
     if start is None:
         raise engine.PlanChanged("the check found nothing to repair")
+    dep = dict(await queries.get_deployment(pool, dep_id))
+    async with pool.acquire() as conn:
+        start = D.repair_from((await D.actual_day(conn, dep_id, day, dep))[0], day, start)
     state, from_what = await state_at(pool, dep_id, day, start, book, kite)
     window = engine.Window(day, _t(start), CLOSE)
-    dep = dict(await queries.get_deployment(pool, dep_id))
     run_id = uuid.uuid4().hex[:12]
     async with pool.acquire() as conn:
         tr = conn.transaction()

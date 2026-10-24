@@ -148,3 +148,41 @@ def test_divergence_is_the_earliest_difference():
                          "replay": {"auto": [{"minute": "13:05"}]}}) == "13:02"
     assert R.divergence({"diff": {"missed": [], "extra": []}, "replay": {"auto": [{"minute": "11:40"}]}}) == "11:40"
     assert R.divergence({"diff": {}, "replay": {}}) is None
+
+
+def test_a_friday_planned_on_saturday_and_applied_on_sunday_repairs_friday_and_not_after_monday_trades(pool_run, monkeypatch):
+    from datetime import date
+
+    from app.repair import market as M
+    friday = date(2026, 10, 16)
+    assert friday.weekday() == 4
+
+    def on(day):
+        class At(datetime):   # the repair's own sense of "now" (Kite history after the day, ltp)
+            @classmethod
+            def now(cls, tz=None):
+                return datetime.combine(day, time(11, 0), IST).astimezone(tz) if tz else datetime.combine(day, time(11, 0))
+        monkeypatch.setattr(M, "datetime", At)
+
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_simple", cfg("intraday_dtt_simple"), today=friday)
+        await D.capture_states(pool, friday, "open")
+        await sim.walk("09:15", "12:15", every_min=5)     # stalled on Friday
+        day, book = await checked(pool, sim)
+        on(date(2026, 10, 17))                             # Saturday: plan it
+        plan = await R.run(pool, sim.dep_id, friday, book, sim.kite, {})
+        assert plan["can_apply"] and plan["from"] == "15:00", plan["why_not"]
+        on(date(2026, 10, 18))                             # Sunday: apply it
+        res = await R.run(pool, sim.dep_id, friday, book, sim.kite, {}, commit=True, expected=plan["fills_key"])
+        assert res["applied"]
+        lots = await pool.fetch("SELECT executed_at FROM position_lots WHERE deployment_id = $1", sim.dep_id)
+        assert {l["executed_at"].astimezone(IST).date() for l in lots} == {friday}, "the repair's fills are Friday's"
+        assert await sim.open_positions() == []
+        await assert_book_consistent(pool, sim.dep_id)
+        # had it waited until Monday's trading, Friday could no longer be repaired
+        await engine.undo(pool, res["applied"]["id"])
+        on(date(2026, 10, 19))
+        await fill(pool, sim.dep_id, "NIFTY26MON", 777003, "sell", 75, 40.0, datetime.combine(date(2026, 10, 19), time(9, 20), IST), "entry")
+        late = await R.run(pool, sim.dep_id, friday, book, sim.kite, {})
+        assert not late["can_apply"] and "traded 1 time(s) since that day" in late["why_not"][0]
+    pool_run(go)

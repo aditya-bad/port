@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime, time, timedelta
+from types import SimpleNamespace
 from typing import Callable, Optional
 
 from ..candles import parse_contract
@@ -114,10 +115,34 @@ async def rewind(conn, dep_id, start_at: datetime, state: Optional[dict]) -> Non
             "ON CONFLICT (deployment_id) DO UPDATE SET state = $2, updated_at = now()", dep_id, state)
 
 
+# ── Fills stamped at their candle's start ───────────────────────────────
+# Until the fix of 24 Oct 2026 (StrategyBase.fill_time) these strategies
+# stamped a fill made at a candle's close with that candle's START: up to
+# one candle early (prices were right). Their fills from before the fix
+# went live (app_marks 'fills_stamped_at_tick', migration 0038) carry
+# `until`, the candle's end: they happened somewhere from `at` to `until`.
+
+CANDLE_STAMPED = {"pivot_supertrend_options": 5, "pivot_supertrend_options_inverse": 5, "trend_credit_spread": 5,
+                  "weekly_ema_st_spread": None}   # None: its config's candle_interval_minutes (60 by default)
+
+
+def candle_of(dep: dict) -> Optional[timedelta]:
+    """The candle a pre-fix fill of this deployment may be early by, if any."""
+    name = dep.get("strategy_name")
+    if name not in CANDLE_STAMPED:
+        return None
+    return timedelta(minutes=CANDLE_STAMPED[name] or int((dep.get("config") or {}).get("candle_interval_minutes", 60)))
+
+
+async def tick_stamped_since(conn) -> Optional[datetime]:
+    return await conn.fetchval("SELECT at FROM app_marks WHERE name = 'fills_stamped_at_tick'")
+
+
 # ── What the app actually did ───────────────────────────────────────────
 
-async def actual_day(conn, dep_id, day: date) -> tuple[list[dict], list[dict]]:
-    """(the day's fills, the legs held at the day's end)."""
+async def actual_day(conn, dep_id, day: date, dep: Optional[dict] = None) -> tuple[list[dict], list[dict]]:
+    """(the day's fills, the legs held at the day's end). With `dep`, a
+    fill stamped at its candle's start (above) carries `until`."""
     start, end = _at(day, time(0)), _at(day + timedelta(days=1), time(0))
     fills = [{"at": r["executed_at"].astimezone(IST), "minute": f"{r['executed_at'].astimezone(IST):%H:%M}",
               "action": r["action"], "symbol": r["symbol"], "token": int(r["instrument_token"]), "qty": float(r["qty"]),
@@ -126,6 +151,12 @@ async def actual_day(conn, dep_id, day: date) -> tuple[list[dict], list[dict]]:
                  "SELECT l.*, p.symbol, p.instrument_token FROM position_lots l JOIN positions p ON p.id = l.position_id "
                  "WHERE l.deployment_id = $1 AND l.executed_at >= $2 AND l.executed_at < $3 ORDER BY l.executed_at",
                  dep_id, start, end)]
+    candle = candle_of(dep) if dep is not None else None
+    since = await tick_stamped_since(conn) if candle is not None else None
+    if since is not None:
+        for f in fills:
+            if f["at"] < since:
+                f["until"] = f["at"] + candle
     held = []
     for p in await conn.fetch(
             "SELECT * FROM positions WHERE deployment_id = $1 AND opened_at < $2 AND (closed_at IS NULL OR closed_at >= $2) "
@@ -180,6 +211,13 @@ def rules(dep: dict, held: list[dict], fills: list[dict], day: date, expiries: O
 
 # ── The replay against the app ──────────────────────────────────────────
 
+def _apart(a: dict, rt: datetime) -> timedelta:
+    """How far the replay's minute is from the app's fill (from its candle,
+    for one stamped at the candle's start)."""
+    lo, hi = a["at"], a.get("until") or a["at"]
+    return lo - rt if rt < lo else rt - hi if rt > hi else timedelta(0)
+
+
 def compare(actual: list[dict], replayed: list[dict], held: list[dict], replay_held: list[dict],
             day: date) -> dict:
     """Match the replay's fills to the app's: same action, contract and
@@ -193,7 +231,7 @@ def compare(actual: list[dict], replayed: list[dict], held: list[dict], replay_h
         best = None
         for a in left:
             if a["action"] == r["action"] and a["symbol"] == r["symbol"] and abs(a["qty"] - r["qty"]) < 1e-9:
-                dt = abs(a["at"] - rt)
+                dt = _apart(a, rt)
                 if dt <= MATCH_WITHIN and (best is None or dt < best[0]):
                     best = (dt, a)
         if best is None:
@@ -209,6 +247,21 @@ def compare(actual: list[dict], replayed: list[dict], held: list[dict], replay_h
             "end": {"app": [{"symbol": s, "side": d, "qty": q} for s, d, q in app_end],
                     "replay": [{"symbol": s, "side": d, "qty": q} for s, d, q in rep_end],
                     "same": app_end == rep_end}}
+
+
+def repair_from(fills: list[dict], day: date, start: str) -> str:
+    """The minute (HH:MM) a repair from `start` must begin at: no later than
+    the start of any fill stamped at its candle's start whose candle runs
+    past it. Otherwise the rewind would keep that fill (stamped before
+    `start`) and the replay would make it again at its real time: twice."""
+    t = _at(day, _hhmm(start))
+    moved = True
+    while moved:
+        moved = False
+        for f in fills:
+            if f.get("until") and f["at"] < t <= f["until"]:
+                t, moved = f["at"].replace(second=0, microsecond=0), True
+    return f"{t:%H:%M}"
 
 
 def _fill(f: dict) -> dict:
@@ -244,7 +297,7 @@ async def check_deployment(pool, dep: dict, day: date, book: MinuteBook, real_ki
     """The check of one deployment's day. Nothing is written but the result."""
     dep_id = dep["id"]
     async with pool.acquire() as conn:
-        fills, held = await actual_day(conn, dep_id, day)
+        fills, held = await actual_day(conn, dep_id, day, dict(dep))
         exp = {int(r["instrument_token"]): r["expiry"] for r in await conn.fetch(
             "SELECT instrument_token, expiry FROM contracts WHERE instrument_token = ANY($1::bigint[])",
             [h["token"] for h in held])} if held else {}
@@ -317,6 +370,43 @@ async def run_day(pool, day: date, book: MinuteBook, real_kite, run_id: Optional
         await pool.execute("UPDATE day_check_runs SET progress = $2 WHERE id = $1", run_id,
                            {"total": len(deps), "done": len(deps), "current": None})
     return results
+
+
+async def recheck_candle_stamped(pool, say: Callable = lambda s: None) -> list[dict]:
+    """Once, after the fill-time fix went live: every open flag (mismatch,
+    ambiguous) of a CANDLE_STAMPED deployment from a check run before it,
+    its app fills matched again to the replay stored with it, read across
+    their candle. The stored replay is reused: it ran that evening, and the
+    contracts may have expired since, so it can't always be run again. A
+    repaired day is left as it is. Returns what changed."""
+    since = await pool.fetchval("SELECT at FROM app_marks WHERE name = 'fills_stamped_at_tick'")
+    if since is None:
+        return []
+    rows = await pool.fetch(
+        "SELECT c.*, d.strategy_name, d.config, d.deployment_name FROM day_checks c JOIN deployments d ON d.id = c.deployment_id "
+        "WHERE c.status IN ('mismatch', 'ambiguous') AND c.checked_at < $1 AND d.strategy_name = ANY($2::text[]) "
+        "AND NOT (c.replay ? 'rechecked') ORDER BY c.day", since, list(CANDLE_STAMPED))
+    out = []
+    for c in rows:
+        rep, diff = dict(c["replay"] or {}), c["diff"] or {}
+        if "fills" not in rep or "end" not in diff:
+            continue
+        async with pool.acquire() as conn:
+            if await engine.live_repair(conn, c["deployment_id"], c["day"]):
+                continue
+            dep = {"strategy_name": c["strategy_name"], "config": c["config"]}
+            fills, held = await actual_day(conn, c["deployment_id"], c["day"], dep)
+        new = compare(fills, rep["fills"], held, diff["end"]["replay"], c["day"])
+        status, headline = verdict(list(c["rules"] or []), new, SimpleNamespace(auto=rep.get("auto") or []), True)
+        rep["rechecked"] = {"at": datetime.now(IST).isoformat(), "was": {"status": c["status"], "headline": c["headline"]}}
+        await pool.execute(
+            "UPDATE day_checks SET status = $3, headline = $4, diff = $5, replay = $6, "
+            "dismissed_at = CASE WHEN status = $3 AND headline = $4 THEN dismissed_at END "
+            "WHERE day = $1 AND deployment_id = $2",
+            c["day"], c["deployment_id"], status, headline, _json(new), _json(rep))
+        out.append({"day": c["day"], "name": c["deployment_name"], "was": c["status"], "now": status, "headline": headline})
+        say(f"{c['day']} {c['deployment_name']}: {c['status']} -> {status}: {headline}")
+    return out
 
 
 def _json(v):

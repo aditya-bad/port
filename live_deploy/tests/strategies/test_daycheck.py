@@ -229,3 +229,26 @@ def test_run_day_stores_one_result_per_deployment_and_replaces_it_on_a_rerun(poo
         await D.run_day(pool, day, book, sim.kite)
         assert await pool.fetchval("SELECT count(*) FROM day_checks") == 1
     pool_run(go)
+
+
+def test_the_startup_recheck_leaves_other_strategies_and_checks_run_after_the_fix_alone(pool_run):
+    from app.db import queries
+
+    async def go(pool):
+        strangle = await queries.create_deployment(pool, "S", "strangle_monthly_v2", "positional", 500000, cfg("strangle_monthly_v2"))
+        pivot = await queries.create_deployment(pool, "P", "pivot_supertrend_options", "intraday", 500000, cfg("pivot_supertrend_options"))
+        day = date(2026, 10, 23)
+        stored = {"fills": [{"minute": "10:20", "action": "sell", "symbol": "X", "qty": 75.0, "price": 1.0, "reason": "entry"}]}
+        diff = {"matched": [], "missed": stored["fills"], "extra": [], "end": {"app": [], "replay": [], "same": True}}
+        for dep, at in ((strangle, "2026-10-23 16:00+05:30"), (pivot, "2026-10-26 16:00+05:30")):
+            await pool.execute(
+                "INSERT INTO day_checks (day, deployment_id, status, headline, rules, diff, replay, checked_at) "
+                "VALUES ($1, $2, 'mismatch', 'h', '[]'::jsonb, $3, $4, $5::timestamptz)",
+                day, dep["id"], diff, stored, datetime.fromisoformat(at))
+        await pool.execute("INSERT INTO app_marks (name, at) VALUES ('fills_stamped_at_tick', $1) ON CONFLICT (name) DO UPDATE SET at = $1",
+                           datetime(2026, 10, 25, 10, 0, tzinfo=IST))
+        assert await D.recheck_candle_stamped(pool) == []
+        assert {r["status"] for r in await pool.fetch("SELECT status FROM day_checks")} == {"mismatch"}
+        await pool.execute("DELETE FROM app_marks")
+        assert await D.recheck_candle_stamped(pool) == [], "no mark (the fix not live): nothing to recheck"
+    pool_run(go)

@@ -143,6 +143,15 @@ async def startup() -> None:
         logger.info("Applied migrations: %s", applied)
     app.state.db_pool = db_pool
 
+    # Day-check flags from before fills were stamped at their tick, matched
+    # again (once; app/repair/daycheck.py recheck_candle_stamped).
+    try:
+        from .repair.daycheck import recheck_candle_stamped
+        for r in await recheck_candle_stamped(db_pool):
+            logger.info("day check %s %s rechecked: %s -> %s", r["day"], r["name"], r["was"], r["now"])
+    except Exception:
+        logger.exception("Rechecking the older day-check flags failed; they stay as they were")
+
     # Every currently-registered strategy gets a settings row (enabled=
     # true by default) on every boot — new strategies added to the
     # codebase since the last restart pick up a row automatically;
