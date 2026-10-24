@@ -42,6 +42,8 @@
 | Cell | Self-contained copy of the runtime, market cache, OMS partition and ledger shard |
 | OMS | Orders & risk service, the only writer of money (target) |
 | Sim venue | Paper fills as just another broker (target) |
+| LinckTrade · LinckLens · Linck Platform | The three parts of the target architecture, as used in the architecture video: Trade does the trading and keeps the money (market data, runtime, OMS, broker gateway, sim venue, control, builder, refdata, integrity, backtest farm); Lens turns its data into what you see (product API, live gateway, read models, assistant) and never writes an order, fill or position; Platform is shared (edge gateway, identity, commerce, notifications). Proposed Oct 2026; placing integrity in Trade and the product API in Lens are recommendations, not yet confirmed |
+| Iceberg · Heimdall · Kraken | Internal nicknames, services only: Iceberg = the strategy runtime (supervisor + sandboxes), Heimdall = orders & risk (OMS), Kraken = the broker gateway (one arm per broker). Every other service keeps its plain name. Proposed Oct 2026. Iceberg clashes with Apache Iceberg, the lake's table format: say "Iceberg tables" for the lake |
 | DTT | The intraday straddle family's name (`intraday_dtt_*`) |
 | BTST | Buy today, sell tomorrow (`calendar_btst`) |
 | NFO / BFO | NSE / BSE F&O segments |

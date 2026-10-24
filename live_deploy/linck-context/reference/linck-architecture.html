@@ -739,7 +739,7 @@ svg .playhead { stroke: var(--ink); stroke-width: 1.2; stroke-dasharray: 3 3; an
 
 <span class="c">// orders/v1/intent.proto: what a strategy proposes; only Orders &amp; risk turns it into money</span>
 <span class="k">message</span> Intent {
-  <span class="k">string</span> intent_id   = 1;   <span class="c">// = hash(deployment_id, epoch, decision_seq, leg): the idempotency key</span>
+  <span class="k">string</span> intent_id   = 1;   <span class="c">// = "deployment:batch:n", the same on every replay: the idempotency key (the epoch is its own field)</span>
   <span class="k">string</span> deployment_id = 2; <span class="k">uint64</span> epoch = 3; <span class="k">uint64</span> decision_seq = 4;
   <span class="k">repeated</span> Leg legs = 5;    <span class="c">// one basket: all or nothing, by policy</span>
   BasketPolicy policy = 6;    <span class="c">// HEDGE_FIRST, SIMULTANEOUS, SEQUENTIAL; leg timeout</span>

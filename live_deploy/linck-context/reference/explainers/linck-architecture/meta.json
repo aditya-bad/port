@@ -1,0 +1,8 @@
+{
+  "title": "Linck architecture",
+  "slug": "linck-architecture",
+  "description": "The final Linck architecture, every service, its language and its job; every flow through it; and how it breaks down into the first version we build.",
+  "voice": "af_heart",
+  "speed": 0.95,
+  "say": [["P&L", "P and L"], ["gRPC", "G R P C"], ["Linck", "Link"], ["NIFTY", "Nifty"], ["etcd", "E T C D"], ["Etcd", "E T C D"], ["NATS", "Nats"], ["ClickHouse", "Click House"], ["WASM", "wasm"], ["EKS", "E K S"], ["RDS", "R D S"], ["KMS", "K M S"], ["NAT gateways", "Nat gateways"], ["NVMe", "N V M E"], ["ECR", "E C R"], ["CEL", "cel"], ["vCPU", "V C P U"], ["S3", "S 3"], ["OMS", "O M S"], ["API", "A P I"], ["SDK", "S D K"], ["CLI", "C L I"], ["IP", "I P"], ["09:00", "nine A M"], ["15:35", "three thirty-five"], ["15:45", "three forty-five"], ["08:30", "eight thirty"], ["09:15", "nine fifteen"], ["16:30", "four thirty"], ["15:15", "three fifteen"], ["15:20", "three twenty"], ["Jäckel", "Yekel"], ["Sigstore", "Sig store"], ["cosign", "co-sign"], ["DAG", "dag"], ["IV", "I V"], ["ctx.now", "context dot now"], ["ctx.random", "context dot random"], ["md.archive.v1", "M D dot archive, version 1"], ["orders.intent.v1", "orders dot intent, version 1"], ["v0", "version zero"], ["Kubernetes", "Kubernetes"]]
+}

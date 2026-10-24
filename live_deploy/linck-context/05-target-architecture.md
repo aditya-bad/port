@@ -89,8 +89,9 @@ tenant.
 
 ## Exactly-once money
 
-Intent id = hash(deployment, epoch, decision seq, leg) is the idempotency
-key; fencing epochs reject a zombie runner's intents; transactional outbox;
+Intent id = `deployment:batch:n` (the same on every replay; the epoch is a
+separate field) is the idempotency key; fencing epochs reject a zombie
+runner's intents; transactional outbox;
 our order id travels as the broker tag and is reconciled on reconnect;
 positions reconciled with the broker every few minutes (broker wins). Baskets:
 HEDGE_FIRST (default), SIMULTANEOUS (exits), each leg a limit order with price

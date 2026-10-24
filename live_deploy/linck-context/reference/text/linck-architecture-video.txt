@@ -1,0 +1,963 @@
+Linck architecture: the narrated video, as text
+
+The script of reference/explainers/linck-architecture (32 scenes). Each scene's
+narration, in order. Numbers marked measured come from the prototype; targets
+and estimates say so.
+
+1. Linck, in three parts
+
+This video walks through the Linck architecture. First the final design: every
+service, what it is written in, and what it is responsible for. Then how
+things flow through it. Then the smaller first version we build on the way
+there, and what changes between the two.
+
+Everything we write sits in one of three parts.
+
+LinckTrade does the trading. It takes in market data, runs the strategies,
+checks every order and sends it to a broker, and keeps the money records,
+called the ledger.
+
+LinckLens turns that data into what you look at: the screens, Geek mode
+charts, reports, and live P&L.
+
+Linck Platform is shared by both: the front door every request comes through,
+accounts and logins, billing, and notifications.
+
+One rule keeps the parts apart. Lens reads Trade’s data, but never writes it.
+No screen ever writes an order, a fill or a position.
+
+When you press Stop or Pause, Lens doesn’t change anything itself. It passes a
+command to Trade, and Trade decides.
+
+Three services get nicknames, because people will say them all day. Iceberg
+runs the strategies. Heimdall, the gatekeeper, checks and places every order.
+Kraken talks to the brokers, with one arm per broker. Every other service
+keeps its plain name.
+
+2. Words: how software runs
+
+Some words first, so that nothing later is vague. These are about how our
+software runs.
+
+A service, or microservice, is a program that runs on its own, with one job
+and its own data. Other services talk to it over the network. They never read
+its tables.
+
+A module is a part inside a program. It ships and runs with the program, but
+keeps to its own tables, so it can be split out into a service later.
+
+A container image is a program packed with everything it needs to run: a
+Docker, or O C I, image. The same image runs on a laptop and in production.
+
+Kubernetes runs containers on a group of machines, called a cluster, and
+restarts them when they die. EKS is Amazon’s managed Kubernetes.
+
+A pod is one running copy of a container. A Deployment keeps a number of
+identical copies. A StatefulSet gives each copy a fixed name and its own disk.
+A DaemonSet puts exactly one copy on every machine. And a Job runs once, then
+finishes.
+
+A node is one machine, a virtual server. A node pool is a group of identical
+machines, kept for one kind of work.
+
+A region is an AWS location, like Mumbai. A zone is a separate data centre
+inside it. A cell is a full copy of the trading path for one group of
+accounts, so a bad day stays inside one cell.
+
+A sandbox is a fence around a strategy’s code. Inside, it can read its events
+and send back commands, and nothing else: no network, no files, no threads.
+
+3. Words: how the parts talk
+
+Next, the words for how the parts talk to each other.
+
+REST is the plain web way to ask for something: an H T T P request, with the
+answer written as JSON text. Browsers speak it, so the screens use it.
+
+S S E, server-sent events, is one long H T T P response that the server keeps
+adding to. Screens use it for live updates.
+
+gRPC is how our own services call each other: a typed request and answer, or a
+stream of messages. Protobuf is its compact binary message format, with code
+generated for every language.
+
+mTLS, mutual T L S, means both ends of a connection prove who they are with
+certificates, and everything on it is encrypted. Linkerd adds it between our
+services.
+
+An event log, or topic, is an append-only list of messages. Writers add to the
+end; each reader keeps its own place, and can go back and read again.
+Redpanda, which speaks Kafka’s protocol, keeps ours.
+
+NATS is a fast messaging system. We use it for commands to the cells, and for
+live updates where only the latest value matters. JetStream is its mode that
+keeps messages until they are read.
+
+Conflation means keeping only the newest value for a reader that has fallen
+behind, instead of a queue of old ones.
+
+A Temporal workflow is a long job written as steps. If a machine dies halfway
+through, it resumes at the step where it stopped.
+
+4. Words: trading
+
+And the trading words.
+
+A tick is one price update for one instrument: its last price, best bid and
+ask, and volume. An instrument is anything with a price: the NIFTY index, a
+future, or one option.
+
+A strategy is code that decides trades. A deployment is one running copy of
+it, with its own settings, in paper, shadow or live mode.
+
+Paper means simulated fills only. Shadow means every order is also sent to the
+simulator, so the two can be compared. Live means real orders, at a real
+broker.
+
+A batch is the bundle of new events a strategy gets at once: the latest
+prices, its fills, its timers. It answers one batch before it gets the next.
+
+An intent is what a strategy wants, like “buy one lot of this option”. An
+order is an intent that passed the risk checks and went to a broker. A fill is
+the broker saying it traded, in full or in part.
+
+The ledger is the record of money: every order, fill and charge, written once
+and never changed. Positions and cash are worked out from it.
+
+A lease is a claim that must be renewed every few seconds: this machine runs
+this deployment. The epoch counts how many times a deployment has started;
+orders from an older epoch are refused.
+
+A snapshot is a saved copy of a strategy’s state. The journal is every batch
+since that snapshot. Together, they rebuild the strategy exactly.
+
+A tenant is one customer of the platform: a person, or a partner broker with
+its own users. Every row of data carries its tenant.
+
+5. The final architecture, all of it
+
+Here is the whole final architecture on one screen: twenty-one services, and
+the stores underneath them. The lines between them come later, one flow at a
+time.
+
+Across the top is the outside world: you, on the web app, a phone, the
+command-line tool or the SDK; the exchanges, whose prices reach us through a
+licensed data vendor; and the brokers, who carry out the orders.
+
+Linck Platform has four services: the edge gateway, identity, commerce, and
+notifications.
+
+LinckLens has four: the product API, the live gateway, read models, and the
+assistant.
+
+LinckTrade has thirteen. Five run once per region: control, the builder,
+refdata, integrity, and the backtest farm.
+
+Eight run inside every cell, on the trading path: market data ingest, the
+sequencer, computed streams, the tick cache agent, Iceberg, Heimdall, Kraken,
+and the sim venue. Each cell also has its own etcd, its own Redpanda, and its
+own ledger.
+
+The coloured badge on each service is its language. Rust, in red, is for the
+hot path, where every microsecond and every byte counts. Go, in green, is for
+services that must be correct and simple to run. Python, in yellow, is where
+the product changes every day.
+
+Underneath are the stores. Each holds one kind of data, and only the service
+that owns it connects to it.
+
+6. Where it runs
+
+Everything runs on Amazon Web Services, in the Mumbai region, spread over
+three zones. A warm standby in Hyderabad takes over if the whole region fails.
+
+Each region has one platform cluster, on EKS. It runs everything that is not
+on the trading path: the Platform and Lens services, Trade’s region services,
+and shared systems like ClickHouse, NATS, Temporal and Vault.
+
+Each cell is its own cluster, with three node pools. Market data machines are
+pinned to their CPUs, and always on-demand: never spot machines, which Amazon
+can take back.
+
+Runtime machines have 64 virtual CPUs, a fast local NVMe disk for the journal,
+and gVisor installed. They are tainted: marked so that Kubernetes places
+nothing on them except the supervisor and the cache agent.
+
+Strategies are not pods. Kubernetes only sees those two. The supervisor starts
+every strategy itself, as a sandbox: an estimated three to five thousand on
+one machine.
+
+The services pool runs Heimdall, Kraken, the sim venue, and the cell’s own
+etcd and Redpanda.
+
+Amazon runs the heavy stores: Postgres on RDS, with a standby in another zone;
+Redis on ElastiCache; S3 for files; and KMS for keys. Brokers only accept
+orders from registered addresses, so each cell’s orders leave through NAT
+gateways with two fixed IP addresses.
+
+Releases come from Git. Each service becomes a distroless container image,
+holding only the program and no shell, signed with cosign and stored in ECR,
+Amazon’s image registry. Argo CD makes each cluster match the Helm charts in
+Git, and Terraform builds the accounts, networks and clusters themselves.
+
+And one rule for trading days: no production release between 09:00 and 15:35,
+except an approved hotfix. Releases go out after 15:45, one cell at a time.
+
+7. The stores, one job each
+
+Now the stores. Every store has one job, and only the service that owns a
+store connects to it. Nobody reads another service’s tables.
+
+Postgres is the relational database, for anything that needs transactions.
+Amazon RDS runs it, with a standby copy in a second zone. There is one
+database per owner: control, a ledger shard for each cell, product, identity,
+commerce, refdata, and integrity.
+
+Each uses row-level security. Every transaction sets its tenant, and Postgres
+hides every row that belongs to any other tenant, so a query that forgets its
+filter still can’t see someone else’s data.
+
+ClickHouse is a columnar database: it stores each column together, so it can
+scan millions of rows a second for a chart. It holds bars, strategy decisions,
+a copy of every fill, and the read models behind Geek mode and reports.
+
+The lake is Parquet files on S3: every tick, option chain and fill, and the
+reference data as it was on each day. They are organised as Apache Iceberg
+tables, an open table format. Careful: that is a file format, not our Iceberg
+service. Same word, two different things.
+
+Redis, on ElastiCache, keeps small things that expire: login sessions, rate-
+limit counters and small caches. Etcd keeps the leases and epochs in each
+cell; every reader sees its changes in the same order, which is what a lease
+needs. Vault and KMS keep broker tokens and signing keys, and only Kraken can
+unseal a token.
+
+Redpanda keeps the event logs where losing a message would cost money or
+history: intents, orders, the ledger journal, the tick archive, and strategy
+decisions. Each is ordered by its key: the account, the instrument, or the
+deployment.
+
+NATS carries commands to the cells, kept for a day, and live updates to
+screens, where only the latest value matters. Temporal runs long jobs, like
+the end-of-day chain, and resumes them where they stopped.
+
+8. Linck Platform, inside
+
+Linck Platform: four services that both other parts lean on.
+
+The edge gateway is the only door in. It is Envoy, an off-the-shelf proxy,
+plus an authentication plug-in we write in Go. It runs as a Deployment of
+three or more copies, scaled by the number of requests.
+
+A request arrives over HTTPS on port 443, and Envoy ends the encryption. The
+plug-in checks who you are, from a session cookie, an API key or a login
+token, and counts the request against your plan’s rate limit in Redis.
+
+Then it routes: REST requests to the product API, live streams to the live
+gateway, and gRPC from the SDK and the CLI to control. For the public API, it
+also offers every gRPC method as REST.
+
+Identity, in Go, owns users, tenants, API keys and roles, in its own Postgres
+database, and the login sessions, which it keeps in Redis. It is a security
+boundary, so it is kept small and audited on its own.
+
+Commerce, in Go, is money coming in: plans, metering of what each tenant uses,
+invoices, and later marketplace licences and revenue share. Its own database,
+its own team.
+
+Notifications, a Go consumer, reads events off the logs and sends them out:
+push, email, Telegram, WhatsApp and webhooks, with templates per tenant. It
+runs on its own, so a slow email provider can never back up anything else.
+
+9. LinckLens, inside
+
+LinckLens: four services that turn Trade’s data into what you see. None of
+them can write an order, a fill or a position.
+
+The product API, in Python, serves everything the screens read and write: the
+Desk, reports, Geek mode data, journal notes, repair cases and preferences. It
+is today’s API, kept, running three to twenty copies, scaled by CPU.
+
+It reads charts and reports from ClickHouse, positions from a read-only
+replica of the ledger, and deployment details from control over gRPC. The only
+tables it writes are its own, in the product database.
+
+A Stop or Pause button becomes a gRPC command to control. Trade does the rest.
+
+The live gateway, in Go, holds up to a hundred thousand open screens. It
+listens on NATS for live P&L, positions and alerts, and keeps one latest value
+per screen, sent at most every 250 milliseconds over SSE. A slow phone gets
+the newest number, never a backlog.
+
+Read models, a Go consumer, reads the order, ledger and decision logs from
+Redpanda, and builds the ClickHouse tables behind Geek mode, reports and
+leaderboards. If a table is ever wrong, it is rebuilt by reading the logs
+again.
+
+The assistant, in Python, writes SDK code and explains a trading day. Its
+tools are read-only, and its model calls have their own cost limits.
+
+10. Control, builder, refdata
+
+Now LinckTrade, starting with three of the services that run once per region.
+
+Control, in Go, is the system of record for strategies and deployments. Its
+registry holds every strategy and version. Each deployment moves from paper to
+shadow to live, and can be started, stopped or paused.
+
+It also holds each account’s risk limits, and its broker links: which account
+trades at which broker. Three copies run over its own Postgres database.
+
+Its scheduler is leader-elected: the three copies agree on one leader, and
+only the leader places strategies. If the leader dies, another copy takes
+over.
+
+It packs deployments onto runtime machines by their expected CPU, from their
+history, and prefers a machine that already follows the same instruments. Then
+it sends the start command to the cell over NATS.
+
+The builder, in Go, turns a user’s source code into a signed strategy
+artifact. Each build runs as its own Kubernetes Job, inside gVisor, because
+the code isn’t ours.
+
+It builds in a pinned image per language, then certifies: the fault matrix of
+crash and failure cases, a determinism double-run of the same day, and the
+resource budget. A build that passes is signed with Sigstore and stored in the
+artifact registry.
+
+Refdata, in Go, is the instrument master: our id for every instrument, its lot
+size, expiry, strike and freeze quantity, and its symbol at every broker. Each
+morning it loads the exchange files and each broker’s list before 08:30.
+Everyone reads it; only refdata writes it.
+
+11. Market data in
+
+Inside a cell, prices come in through market data ingest, written in Rust.
+There is one ingest service per source: the licensed vendor feed, and a user’s
+broker socket where their live trading needs it.
+
+Each runs as a StatefulSet A and B pair: two copies on the same feed, so if
+one dies, the other already has the data.
+
+Inside, the socket client receives the source’s own format. The decoder turns
+it into our record without allocating memory. The mapper swaps the source’s
+symbol for our instrument id. And the tick filter drops bad prints: zero or
+negative prices, out-of-order and duplicate updates, and spikes, held until
+confirmed.
+
+Our record is 96 bytes, the same in live trading, backtests and replays.
+Prices are whole numbers of ten-thousandths of a rupee, so there is no float
+rounding. Exchange time is the truth; receive time measures our own lag.
+
+The sequencer runs as one active copy with a standby. It gives each
+instrument’s updates a gap-free sequence number, so every reader can tell an
+update it skipped from one that went missing.
+
+When two sources carry the same instrument, it takes whichever arrives first
+and records the other’s lag, so failing over costs nothing.
+
+Then each update goes two ways: to the archive, the Redpanda topic
+md.archive.v1 and then the lake, which keeps every tick; and out over gRPC
+streams, to computed streams and to every runtime machine in the cell.
+
+12. The latest price, never a backlog
+
+Ticks follow one promise: a reader always gets the latest price, never a
+backlog of old ones.
+
+With a plain queue, a slow strategy falls behind and works through old prices.
+In our prototype, measured: a strategy taking 40 milliseconds a decision, fed
+a tick every 5 milliseconds, decided on prices three and a half seconds old,
+with 474 ticks still waiting.
+
+So every hop keeps one slot per instrument, overwritten by each update.
+However slow the reader, the next thing it reads is the newest price. The same
+strategy, measured: prices about 44 milliseconds old, with 500 updates skipped
+and counted.
+
+The rules that make it a promise. One batch in flight per reader. Skipped
+updates are counted and reported, never hidden. A new reader first gets a
+snapshot of everything it follows. An instrument that stops updating is marked
+stale, never quietly repeated. And memory stays bounded: one slot per
+instrument.
+
+Some things are never skipped: fills, order updates, rejects, timers and
+commands queue in order. Bars and indicators are built upstream from every
+tick, so skipping can’t corrupt them, and the archive keeps every tick.
+
+13. Computed streams
+
+Computed streams, in Rust, works out what many strategies would otherwise each
+compute on their own: bars, indicators, implied volatility and greeks, and
+option chain views. It runs as an A and B pair in each cell.
+
+Each series is a node in a DAG: a graph of calculations where each feeds the
+next, and nothing loops back. A node’s id is a hash of its function, its
+parameters and its inputs.
+
+So when two strategies ask for EMA 20 on NIFTY’s one-hour bars, they get the
+same node, computed once.
+
+With each batch of updates, it recalculates only the nodes that changed, in
+order. Bars close on exchange time, not when our machine happens to see the
+tick.
+
+Implied volatility uses Jäckel’s “Let’s Be Rational” method on the future’s
+price, with the Black-76 model, and the greeks come from the same. Chain views
+answer questions like “which strike is at the money, by the future” in memory.
+
+Every output goes back out as a synthetic instrument, so a strategy subscribes
+to EMA 20 exactly the way it subscribes to a price.
+
+When a cell starts, it warms up from the lake, so an indicator is ready at
+09:15, not twenty bars later.
+
+14. The tick cache agent
+
+On every runtime machine, the tick cache agent, in Rust, takes the streams and
+writes them into shared memory: memory that the agent and the supervisor on
+that machine both map. Reading a price is a memory read: no copy, no network.
+
+There is one slot per instrument, 128 bytes, overwritten with each update. The
+slot is the latest price by construction.
+
+Slots use a seqlock. The writer bumps a version number to odd, writes, then
+bumps it to even. A reader copies the slot, then checks the version didn’t
+change; if it did, it simply reads again. Nobody ever waits on a lock.
+
+Beside the slots is a ring of the last million updates, two to the twentieth,
+with a cursor for each reader. A reader that falls a whole lap behind doesn’t
+hold anyone up: it jumps to the slots, and is told how many it skipped.
+
+It runs as a DaemonSet: exactly one copy on every runtime machine.
+
+15. Iceberg: the strategy runtime
+
+Iceberg is the strategy runtime: simple on top, deep underneath. On each
+runtime machine, one supervisor, written in Rust, runs thousands of
+strategies. It runs as a DaemonSet.
+
+Each strategy runs in its own sandbox. Most are processes inside gVisor, a
+kernel in user space from Google that stands between the code and the real
+machine. So a strategy can be written with any SDK: Python, Go, Rust or
+TypeScript.
+
+Python strategies start by forking a zygote: a Python process with the SDK
+already loaded. Each then costs about 2 megabytes instead of 52, measured.
+WASM strategies run in Wasmtime, and remote strategies run on the user’s own
+machine, over a gRPC stream.
+
+When a strategy is ready, the batch builder makes its next batch from the
+latest values in shared memory, plus every fill, order update and timer
+waiting for it.
+
+The protocol codec sends the batch as a protobuf message over a Unix socket.
+The strategy answers with commands: orders, cancels, timers, and what it
+decided and why.
+
+The budget timer gives each batch 50 milliseconds before a warning, and one
+second before the strategy is killed and restarted.
+
+The journal writes each answered batch to a write-ahead log on the machine’s
+local NVMe disk, shipped to S3 every second. The snapshotter saves the
+strategy’s state every 100 batches, every 30 seconds, and before a move.
+
+The lease keeper holds this machine’s lease on each deployment in etcd. The
+intent writer puts every order intent on the Redpanda topic orders.intent.v1
+before anything else happens, and decisions go to strategy.decision.v1.
+
+Strategies must be deterministic: the only clock is ctx.now, the only
+randomness is ctx.random, and Python’s hash seed is fixed. Replaying a day
+gives the same decisions, and certification checks it by comparing hashes.
+
+16. Heimdall: orders and risk
+
+Heimdall, the gatekeeper, is orders and risk, in Go. It is the only thing that
+writes orders, fills, positions and money. It runs as a StatefulSet of three,
+each copy owning a share of the accounts.
+
+Its intake reads intents from the log. Every intent has an id: the deployment,
+the batch, and a number, the same on every replay. The id is unique in the
+database, so a repeated intent finds its first order instead of making a
+second.
+
+The epoch fence refuses any intent whose epoch is older than the deployment’s
+current lease: two machines can never trade one deployment.
+
+Then the risk pipeline, in the same process, in under a millisecond. Static
+checks: lot size, tick size, price band, freeze quantity, market hours.
+Deployment checks: its lot and entry limits, and its own kill switch.
+
+Account checks: margin, the daily loss limit, and the order rate. Global
+checks: the tenant’s and the platform’s kill switches, and rules written in
+CEL, a small expression language from Google. One rule overrides: an exit is
+never blocked by cash or margin, only by the static checks.
+
+The basket planner places trades with several legs. Hedge first, the default,
+places the buy legs and waits for their fills before it sells; simultaneous
+sends every leg at once, for exits. Every leg is a limit order with price
+protection.
+
+Each order moves through a state machine: new, risk checked, routed, open,
+partly filled, filled; or rejected, cancelled, or expired.
+
+The ledger writer records every change in the cell’s Postgres ledger shard as
+double entry: each fill moves cash, position value and charges in lines that
+sum to zero. Charges and slippage are lines of their own, and positions and
+cash are worked out from the journal.
+
+In the same transaction, it writes an outbox row. A relay publishes the outbox
+to Redpanda, so nothing is ever published without being saved, or saved
+without being published.
+
+Every few minutes the reconciler compares positions with the broker’s; the
+broker wins, and any difference becomes an issue. And in shadow mode, every
+order is mirrored to the sim venue too, and both fills land in shadow fills,
+to compare.
+
+17. Kraken: the broker gateway
+
+Kraken is the broker gateway, in Go: one code base, with an arm for each
+broker. The same image is deployed once per broker in each cell, started with
+a flag such as broker equals kite, so one broker’s outage, limits or IP rules
+never touch another.
+
+Logins and tokens: each broker’s login flow and its daily refresh. Tokens are
+sealed in Vault, and opened only in this service’s memory.
+
+The symbol map, loaded from refdata before 08:30, turns our instrument id into
+the broker’s token and trading symbol, and the translator turns our order
+types into the broker’s.
+
+An order above the exchange’s freeze quantity is sliced into child orders
+under the limit. And our order id goes in the broker’s tag field, so a retry
+finds the first attempt instead of placing twice.
+
+A token bucket per app key and per account keeps us under each broker’s
+published rate limits.
+
+The broker’s WebSocket or postbacks become one ordered stream of order updates
+back to Heimdall. On reconnect, it asks the broker for every order tagged
+today, and reconciles before anything new goes out.
+
+Each adapter declares its broker’s capabilities, such as basket margin or
+modify, and Heimdall plans around them. Most adapters run inside the service.
+A broker whose SDK exists only in Python runs as a sidecar in the same pod,
+about 60 microseconds away, measured.
+
+Orders leave the cell through NAT gateways with fixed IP addresses, registered
+with each broker.
+
+18. The sim venue and the backtest farm
+
+The sim venue, in Rust, is a pretend broker. It fills paper and shadow orders
+from real market depth, with models for queue position and latency.
+
+It speaks the same contract as Kraken, so Heimdall can’t tell paper from live.
+It runs two to six copies, so paper load never slows a live order.
+
+Its fill model lives in linck-core, a shared Rust library with a binding for
+each SDK language, so live, backtests and local runs compute the same fills,
+the same indicators, the same everything.
+
+The backtest farm runs the same runtime and the same sim venue in batch, over
+the lake: backtests, parameter sweeps, and replays. Each backtest is a
+Kubernetes Job.
+
+It runs on spot machines: spare AWS capacity at a fraction of the price, which
+Amazon can take back. Karpenter, the node autoscaler, adds machines as the
+queue grows: from nothing to 500 virtual CPUs in minutes.
+
+19. Integrity
+
+Integrity, in Go with Temporal workflows, checks that what happened is what
+should have happened. It runs once per region, mostly after the market closes,
+and owns its own Postgres database.
+
+The day check replays each deployment on the broker’s one-minute candles after
+the 15:45 export, and flags any day where the replay and what actually
+happened differ.
+
+Each difference becomes a repair case, with proof charts and the paths a fix
+could take. Replays run as backtest-farm jobs, on the same Rust runtime as
+live, so a replay is exact by construction.
+
+It also compares shadow fills with real ones, reconciles positions with each
+broker, and collects the issues strategies report about themselves.
+
+Because the end-of-day chain is a Temporal workflow, a chain that stops
+halfway resumes at the step where it stopped. The target: checks and repair
+cases ready by 16:30.
+
+20. Flow: a price reaches a strategy
+
+Now the flows, one at a time. First, one price, from the exchange to a
+strategy.
+
+A trade happens on the exchange. The licensed vendor sends the new price over
+its own TCP or WebSocket connection, and md-ingest decodes it into our 96-byte
+record, maps it to our instrument id, and runs the tick filter.
+
+Over gRPC, like every call between our services, the record reaches the
+sequencer, which gives it the next sequence number for that instrument. A copy
+goes to the archive topic on Redpanda, and from there to the lake.
+
+Then it streams out over gRPC, to computed streams, which updates the bars,
+the EMA and the greeks that depend on it, and to the cache agent on every
+runtime machine. Each stream keeps only the latest value for a reader that has
+fallen behind.
+
+The cache agent writes the price into its slot in shared memory, over the last
+one.
+
+When the strategy is ready, the supervisor reads the latest values from shared
+memory, builds the next batch, and sends it as protobuf over a Unix socket. A
+strategy that was busy simply sees the newest price.
+
+The target, from a tick to the strategy’s intent, is under 50 milliseconds at
+the 99th percentile, inside a cell. That is a design target, not yet a
+measurement.
+
+21. Flow: an order, from decision to your screen
+
+Next, one order: from a strategy’s decision to a fill on your screen.
+
+The strategy answers its batch with an intent, say a hedged basket of two
+legs. The supervisor writes it to orders.intent.v1 on Redpanda, keyed by
+account, before anything else happens, so it can’t be lost.
+
+Heimdall reads it. It checks the id for a duplicate and the epoch fence, runs
+the risk pipeline, and records the order and an outbox row in the ledger
+shard, in one Postgres transaction.
+
+It calls Kraken over gRPC. Kraken translates the order, tags it with our order
+id, and places it through the broker’s REST API, leaving through the cell’s
+fixed IP. For a paper order, the sim venue fills it instead.
+
+The broker’s update comes back over its WebSocket. Kraken turns it into one
+ordered stream of order updates, and Heimdall records the fill in the journal,
+with its outbox row, in one transaction.
+
+The relay publishes the fill to orders.event.v1. Read models write it into
+ClickHouse, for Geek mode and reports.
+
+The cell’s log is copied to the region, the fill reaches the live gateway as a
+live update on NATS, and it is pushed over SSE to your screen. Notifications
+sends a push to your phone.
+
+The target, from intent to broker, is under 30 milliseconds at the 99th
+percentile. Again, a design target, not yet a measurement.
+
+22. Flow: opening a screen
+
+Opening a screen: the Desk, for example.
+
+The browser asks the edge gateway over HTTPS: a REST request, with JSON. The
+edge ends TLS, checks the session cookie against the session kept in Redis,
+and counts the request against the plan’s limit.
+
+It passes the request to the product API, which reads ClickHouse for the
+charts, the ledger’s read-only replica for positions, and asks control over
+gRPC for the deployments.
+
+The answer goes back as JSON, and the screen draws.
+
+The browser also keeps one SSE stream open, through the edge, to the live
+gateway. From then on, live P&L, positions and alerts arrive on it: the latest
+value, at most four times a second.
+
+23. Flow: shipping a strategy
+
+Shipping a strategy, from your laptop to running in a cell.
+
+You run linck push. The command-line tool sends your source over gRPC, through
+the edge, to the builder.
+
+The builder starts a Kubernetes Job in gVisor, with the pinned build image for
+your language. It builds, then certifies: the fault matrix, the determinism
+double-run, and the resource budget. That takes minutes.
+
+The passing artifact is signed with Sigstore and stored in the artifact
+registry: your source, its lockfile and its manifest. It is not a container
+image.
+
+You press Deploy, or run linck deploy. Control checks that this version is
+certified and within your limits, and its scheduler picks a machine with room
+and the right instruments.
+
+Control sends the start command over NATS, on the subject for that cell.
+
+The supervisor on that machine fetches the signed artifact and checks its
+signature, takes the lease in etcd with a new epoch, and starts the sandbox.
+
+The strategy subscribes to its instruments, and the first batch arrives. From
+here on, it is the price journey you saw before.
+
+24. Flow: when things break
+
+Now, what happens when things break. Four cases.
+
+A strategy crashes. The supervisor starts a new process with the next epoch,
+loads the last snapshot, and replays the journal since then, checking every
+state hash. Orders it makes again carry the same ids, so Heimdall refuses them
+as duplicates. The same crash on the same batch twice means quarantine: no new
+entries and no restart loop, while square-off, stops and the kill switch still
+work.
+
+A machine dies. Its leases in etcd expire in about five seconds. The scheduler
+grants them to another machine with the epoch plus one, which loads the
+snapshot and journal shipped to S3 and catches prices up from its own cache,
+in under two seconds.
+
+A zombie: the old copy didn’t really die, and keeps sending intents. Each
+carries the old epoch, so Heimdall’s fence refuses every one. In our
+prototype, measured: a zombie on a feed three minutes late had all 134 of its
+orders refused.
+
+A broker goes down. Its Kraken deployment reports it; Heimdall stops new
+entries for that broker’s accounts, queues their exits, and alerts. Other
+brokers carry on. If a data vendor goes down, the other source already carries
+the instruments.
+
+25. Flow: the end of the day
+
+And the end of each trading day, in order.
+
+By 15:20, the 15:15 exits are drained. By 15:35, zero positions are left
+unreconciled with the brokers.
+
+At 15:45 the day’s data is exported, and from then on releases may go out, one
+cell at a time.
+
+Integrity’s end-of-day chain runs as a Temporal workflow: the day check
+replays every deployment on the one-minute candles, and each difference
+becomes a repair case.
+
+The target: checks and repair cases ready by 16:30. Meanwhile the tick archive
+keeps three days on Redpanda before it lives in the lake, and the read models
+are already up to date.
+
+26. From the final architecture to the first version
+
+Here is the final architecture once more: twenty-one services, in three parts.
+Now watch it fold down into the first version, the one we actually build
+first.
+
+The frames of the three parts go first. In the first version, the parts are
+not yet separate services.
+
+Five services wait for later, on the shelf at the top: commerce, read models,
+the assistant, the builder, and the tick cache agent.
+
+The edge gateway becomes a plain AWS load balancer, with TLS and cookie
+sessions. It is not our code yet.
+
+Notifications becomes a small Python consumer.
+
+The product API, control, identity and refdata fold into one Python program,
+core-api: a modular monolith, where each module keeps its own tables and never
+joins another’s.
+
+The three Rust market-data services fold into one Go service, md, with the
+bars and chain views inside it.
+
+Iceberg’s Rust supervisor becomes runner: Python workers, each holding a share
+of the strategies.
+
+Integrity and the backtest farm fold into Python Temporal workers.
+
+Heimdall stays exactly as it is: the same Go service from day one. Kraken
+stays too, as broker-gw-kite, with only Kite at first. The live gateway stays,
+in Go. And the Rust sim venue becomes sim, a Python fill model.
+
+All of it runs on one Kubernetes cluster, in one region, with one cell. And
+the stores: Redpanda’s logs move onto NATS JetStream, etcd’s leases move into
+Postgres, Vault waits for later, and the lake is plain Parquet files. That
+leaves nine deployables of our own.
+
+27. The first version: nine deployables
+
+The first version has nine deployables of our own. Here is each one, with what
+it is written in and what it does.
+
+Core-api, in Python, is a modular monolith: one program, one team, one
+database. Its modules are the product API for the screens, deployments, which
+is control’s job, identity, and instruments, today’s resolver. Each module
+owns its tables and never joins another’s, so splitting one out later is a
+move, not a rewrite.
+
+The live gateway, in Go, is the same service as in the final: SSE to screens,
+latest values only.
+
+Notifications is a small Python consumer: it reads events from NATS and sends
+the alerts.
+
+Md, in Go, takes Kite’s WebSocket and one licensed vendor, cleans the ticks,
+builds bars and chain views inside itself, keeps the latest prices in Redis,
+and streams ticks over conflated gRPC to the runner workers.
+
+Runner, in Python, runs as a StatefulSet. Each worker holds a lease in
+Postgres for its shard of strategies, keeps one latest slot per instrument,
+and saves each strategy’s state as a deployment_state row. Strategies compute
+their own indicators, and only Python strategies run, in gVisor.
+
+The OMS, in Go, is Heimdall from day one: the single writer, the risk pipeline
+and the outbox, writing the positions and lots tables in the one Postgres.
+
+Broker-gw-kite, in Go, is Kraken with one arm: Kite. Paper orders are routed
+to sim.
+
+Sim, in Python, is a fill model behind the same broker contract that Kraken
+speaks.
+
+The workers are Python Temporal workers running today’s code, moved: the day
+check, repair, replay and backtests.
+
+All nine run on one EKS cluster in Mumbai, across three zones, with three node
+pools: services, runtime with gVisor, and data. About six to ten machines,
+sized for about two thousand strategies, five thousand instruments and twenty
+thousand updates a second at the open: estimates. NATS JetStream on three
+nodes carries every event; there is one Postgres, a primary and a replica, one
+ClickHouse, Redis, and Parquet files on S3.
+
+28. Swapped: the services
+
+Now, what is swapped for what, and why. First the services. Each row: the
+first version, the final, and the language change.
+
+The edge: a plain load balancer first; Envoy with our Go plug-in when the
+public API launches.
+
+The control plane: Python modules inside core-api first; separate Go services
+once marketplace and billing work begins, or a second backend team. They move
+one module at a time: the gateway routes that module’s endpoints to the new Go
+service.
+
+The product API stays Python. It is the rest of core-api, and keeps serving
+the web app.
+
+Market data goes from Go to Rust, for the cost of every message times the
+volume, and no garbage-collector pauses. The switch comes past ten thousand
+instruments, a second vendor, or tick-by-tick feeds; both run on the same feed
+for two weeks first.
+
+Computed streams appear when the same EMA is being computed thousands of
+times: when duplicate work passes thirty percent of runtime CPU.
+
+The runtime goes from Python workers to Iceberg’s Rust supervisor when the SDK
+opens to the public, for isolation per strategy, budgets, any language, and
+faster recovery. Deployments move across by lease handoff at minute
+boundaries.
+
+Orders and risk is built once, in Go, and only grows.
+
+The broker gateway is built once, in Go, and grows an arm per broker.
+
+The sim venue goes from Python to Rust for the backtest farm, with fills equal
+to the paisa on recorded days before the switch.
+
+Integrity goes from Python workers to a Go service once the Rust runtime is
+in, so replays run on the same runtime as live.
+
+And notifications goes from Python to Go when partner brokers need their own
+branding and channels.
+
+29. Swapped: data, events and hosting
+
+Then the data, the events and the hosting.
+
+Events: NATS JetStream carries everything at first. Redpanda takes the orders,
+fills, journal and ticks once retention outgrows JetStream, or more than five
+services read the fills. The outbox relay writes both for a while.
+
+The ledger: today’s positions and lots tables first; then a double-entry
+journal written beside them, checked equal every night, until the tables
+become views of it.
+
+Snapshots: a Postgres row per deployment first; a local write-ahead log once
+snapshot writes pass two hundred a second.
+
+Leases: in Postgres first, in etcd with the Rust runtime.
+
+The lake: plain Parquet files, later registered as Apache Iceberg tables, with
+no rewrite.
+
+Hosting: one cluster first; a cluster per cell with the first partner, or past
+five thousand strategies, with a staff cell first.
+
+And some things exist only in the final: Vault and KMS, the write-once audit
+store, the assistant, commerce, the builder, the public API and the mobile
+apps. They are added beside, and nothing is replaced.
+
+30. Flows in the first version
+
+The same flows, in the first version. The shape is the same; the pieces are
+simpler.
+
+A price: Kite’s WebSocket and the vendor send ticks to md, in Go, which cleans
+them, builds bars and chain views, keeps the latest prices in Redis, and
+streams ticks over conflated gRPC to each runner worker. The worker keeps one
+latest slot per instrument, and each strategy computes its own indicators.
+
+An order: the strategy returns an intent, and its runner worker publishes it
+on NATS JetStream. The OMS checks it and records the order in the positions
+and lots tables in one transaction, then calls broker-gw-kite over gRPC, which
+places it at Kite. A paper order goes to sim instead.
+
+The fill: Kite’s update comes back; the OMS records the fill and publishes it
+on NATS, and the live gateway pushes it over SSE to your screen.
+
+A screen asks core-api through the load balancer, over HTTPS, and core-api
+reads Postgres and ClickHouse.
+
+And a deploy: core-api’s deployments module checks the version and publishes a
+start command on NATS. A runner worker takes the lease in Postgres and starts
+the strategy, in gVisor.
+
+31. The way there, one proven step at a time
+
+Getting there. Every step ships alone, runs beside what it replaces until it
+is proven equal, and leaves trading untouched.
+
+Step P0 happens in today’s app: the tick broadcaster keeps one slot per
+instrument for each subscriber, so a slow runner or screen gets the newest
+tick. A slow-strategy test proves it.
+
+I0 puts today’s app, unchanged, on one EKS cluster as core-api, proven by a
+week of paper days beside the current machine. I1 adds the contracts
+repository, and SDK version zero over today’s strategy base class. I2 moves
+strategies out of the API process into leased Python runner workers, proven by
+a week of identical fills.
+
+I3 brings the Go OMS and the Kite gateway: first writing in shadow beside
+today’s fill path, then the single writer once the journal and today’s tables
+match every night for two weeks. I4 adds the Go market data service, proven by
+bars equal to Kite’s one-minute candles. I5 adds Temporal for the end of day,
+tenants with row-level security, and shadow mode.
+
+Then the final pieces. F1: Rust feed handlers and the tick cache, beside the
+Go service, until every record and bar is equal for two weeks. F2: computed
+streams. F3: the Rust supervisor and sandboxes, with leases in etcd, until
+decision hashes match the Python workers. F4: the Rust sim venue and the
+backtest farm, with fills equal to the paisa.
+
+F5: Redpanda for orders, fills, the journal and ticks. F6: the control plane
+to Go, one module at a time, behind the Envoy gateway, and the public API. F7:
+cells, each with its ledger shard and its own cluster. F8: the Go, Rust and
+TypeScript SDKs, WASM and remote sandboxes, and the marketplace. F9: the
+refdata service, and more brokers.
+
+32. What never changes
+
+Some things never change, from the first version to the final, because users
+and strategies depend on them. So they are designed once, in the first
+version.
+
+The protobuf contracts, which only grow. Strategy code written against the
+SDK. What an order, a fill and a position mean in the ledger. The web app. And
+the decision log, strategy issues, and the repair model.
+
+To recap: three parts, LinckTrade, LinckLens and Linck Platform. Three
+nicknames: Iceberg runs the strategies, Heimdall guards every order, and
+Kraken reaches the brokers. Twenty-one services in the final, nine in the
+first version, and a proven step between them.

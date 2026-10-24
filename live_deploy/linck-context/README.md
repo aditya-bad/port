@@ -20,6 +20,7 @@ wins; then fix this folder.
 | [reference/linck-how-it-works.html](reference/linck-how-it-works.html) | The platform explained from its promises, with proof and what isn't proven yet (plain text in `reference/text/`) |
 | [reference/linck-visual.html](reference/linck-visual.html) | The same, as 16 short animations: open in a browser, no reading needed |
 | [05-target-architecture.md](05-target-architecture.md) | The final and intermediate architectures, and the migration |
+| [reference/explainers/linck-architecture/](reference/explainers/linck-architecture/) | The same as a narrated video (about 50 min, 32 scenes): every service with its components, language and job, every flow, the final folding into the first version, and the migration. `make.sh` builds it; the script is in `reference/text/linck-architecture-video.txt` |
 | [06-runtime-and-languages.md](06-runtime-and-languages.md) | Running strategies in any language: protocol, walk, crash, latest tick |
 | [07-brokers-latency-load.md](07-brokers-latency-load.md) | Brokers without a Go SDK, measured latency, capacity |
 | [08-decisions.md](08-decisions.md) | Every decision, with the alternatives turned down and why |

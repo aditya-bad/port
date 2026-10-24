@@ -518,7 +518,7 @@ message Tick {
 
 // orders/v1/intent.proto: what a strategy proposes; only Orders & risk turns it into money
 message Intent {
- string intent_id = 1; // = hash(deployment_id, epoch, decision_seq, leg): the idempotency key
+ string intent_id = 1; // = "deployment:batch:n", the same on every replay: the idempotency key (the epoch is its own field)
  string deployment_id = 2; uint64 epoch = 3; uint64 decision_seq = 4;
  repeated Leg legs = 5; // one basket: all or nothing, by policy
  BasketPolicy policy = 6; // HEDGE_FIRST, SIMULTANEOUS, SEQUENTIAL; leg timeout
