@@ -1,0 +1,325 @@
+{
+ "title": "Running Linck",
+ "slug": "running-linck",
+ "description": "How Linck runs: today on one machine, how a release ships, changing it without stopping trading, a strategy’s small flows, every failure, a trading day, watching it, and how it grows.",
+ "voice": "af_heart",
+ "speed": 0.95,
+ "say": [
+  [
+   "P&L",
+   "P and L"
+  ],
+  [
+   "gRPC",
+   "G R P C"
+  ],
+  [
+   "Linck",
+   "Link"
+  ],
+  [
+   "NIFTY",
+   "Nifty"
+  ],
+  [
+   "etcd",
+   "E T C D"
+  ],
+  [
+   "Etcd",
+   "E T C D"
+  ],
+  [
+   "NATS",
+   "Nats"
+  ],
+  [
+   "ClickHouse",
+   "Click House"
+  ],
+  [
+   "WASM",
+   "wasm"
+  ],
+  [
+   "EKS",
+   "E K S"
+  ],
+  [
+   "RDS",
+   "R D S"
+  ],
+  [
+   "KMS",
+   "K M S"
+  ],
+  [
+   "NAT gateways",
+   "Nat gateways"
+  ],
+  [
+   "NVMe",
+   "N V M E"
+  ],
+  [
+   "ECR",
+   "E C R"
+  ],
+  [
+   "CEL",
+   "cel"
+  ],
+  [
+   "vCPU",
+   "V C P U"
+  ],
+  [
+   "S3",
+   "S 3"
+  ],
+  [
+   "OMS",
+   "O M S"
+  ],
+  [
+   "API",
+   "A P I"
+  ],
+  [
+   "SDK",
+   "S D K"
+  ],
+  [
+   "CLI",
+   "C L I"
+  ],
+  [
+   "IP",
+   "I P"
+  ],
+  [
+   "09:00",
+   "nine A M"
+  ],
+  [
+   "15:35",
+   "three thirty-five"
+  ],
+  [
+   "15:45",
+   "three forty-five"
+  ],
+  [
+   "08:30",
+   "eight thirty"
+  ],
+  [
+   "09:15",
+   "nine fifteen"
+  ],
+  [
+   "16:30",
+   "four thirty"
+  ],
+  [
+   "15:15",
+   "three fifteen"
+  ],
+  [
+   "15:20",
+   "three twenty"
+  ],
+  [
+   "Jäckel",
+   "Yekel"
+  ],
+  [
+   "Sigstore",
+   "Sig store"
+  ],
+  [
+   "cosign",
+   "co-sign"
+  ],
+  [
+   "DAG",
+   "dag"
+  ],
+  [
+   "IV",
+   "I V"
+  ],
+  [
+   "ctx.now",
+   "context dot now"
+  ],
+  [
+   "ctx.random",
+   "context dot random"
+  ],
+  [
+   "md.archive.v1",
+   "M D dot archive, version 1"
+  ],
+  [
+   "orders.intent.v1",
+   "orders dot intent, version 1"
+  ],
+  [
+   "v0",
+   "version zero"
+  ],
+  [
+   "Kubernetes",
+   "Kubernetes"
+  ],
+  [
+   "redeploy.sh",
+   "redeploy dot S H"
+  ],
+  [
+   "127.0.0.1",
+   "one two seven, zero, zero, one"
+  ],
+  [
+   "systemd",
+   "system D"
+  ],
+  [
+   "FastAPI",
+   "Fast A P I"
+  ],
+  [
+   "uvicorn",
+   "U V icorn"
+  ],
+  [
+   "SAFE TO DEPLOY",
+   "safe to deploy"
+  ],
+  [
+   "P0",
+   "P zero"
+  ],
+  [
+   "SBOM",
+   "S bomb"
+  ],
+  [
+   "Syft",
+   "sift"
+  ],
+  [
+   "Buf",
+   "buff"
+  ],
+  [
+   "OpenFeature",
+   "Open Feature"
+  ],
+  [
+   "OpenTelemetry",
+   "Open Telemetry"
+  ],
+  [
+   "ApplicationSets",
+   "Application Sets"
+  ],
+  [
+   "uv,",
+   "U V,"
+  ],
+  [
+   "PyPI",
+   "pie P I"
+  ],
+  [
+   "crates.io",
+   "crates dot I O"
+  ],
+  [
+   "npm",
+   "N P M"
+  ],
+  [
+   "ICICI",
+   "I C I C I"
+  ],
+  [
+   "DTT",
+   "D T T"
+  ],
+  [
+   "09:10",
+   "nine ten"
+  ],
+  [
+   "09:20",
+   "nine twenty"
+  ],
+  [
+   "15:10",
+   "three ten"
+  ],
+  [
+   "15:25",
+   "three twenty-five"
+  ],
+  [
+   "10:15",
+   "ten fifteen"
+  ],
+  [
+   "15:00",
+   "three P M"
+  ],
+  [
+   "15:30",
+   "three thirty"
+  ],
+  [
+   "10:42",
+   "ten forty-two"
+  ],
+  [
+   "07:00",
+   "seven A M"
+  ],
+  [
+   "ctx",
+   "context"
+  ],
+  [
+   "linck",
+   "link"
+  ],
+  [
+   "Mimir",
+   "Mimeer"
+  ],
+  [
+   "SLO",
+   "S L O"
+  ],
+  [
+   "CI",
+   "C I"
+  ],
+  [
+   "CD",
+   "C D"
+  ],
+  [
+   "DR",
+   "D R"
+  ],
+  [
+   "AWS",
+   "A W S"
+  ],
+  [
+   "v1",
+   "version one"
+  ]
+ ]
+}

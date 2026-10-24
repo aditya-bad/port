@@ -226,22 +226,26 @@ break frame-exact recording.
   `engine/beats.js` steps timed from their words. `engine/base.css`, `tokens.css` (light/dark colours), `fonts.css`
   (Funnel Display/Sans, Martian Mono, inlined).
 - `tools/setup.sh` venv + voice model (Kokoro `af_heart`, from GitHub
-  releases; Hugging Face is blocked here) + Playwright, in `~/.cache/explainer-video`.
+  releases) + Playwright, and Chromium if Playwright can't find one (or set
+  `CHROMIUM=/path/to/chrome`), all in `~/.cache/explainer-video`. Needs
+  python3, node with npm, and curl.
 - `tools/steps.mjs` reads the narration out of `scenes.js`. `tools/narr.py`
   speaks it. `tools/build.py` makes the page. `tools/check.mjs` checks it
   and draws contact sheets. `tools/render.mjs` + `tools/mux.py` make the
   videos. `tools/selftest.sh` tests all of it.
 - `example/` a two-scene project using the camera, the spotlight and the
   effects: the template to copy.
+- `example-system/` a full 16-scene project about a running system (below).
 
-`live_deploy/linck-context/reference/explainers/linck-architecture/` holds
-the scenes of the long architecture explainer built with diagram.js (term
-cards, a full map, services with their components, flows, a map folding
-into another, a migration list); `make.sh` there rebuilds it. Start there
-for anything about a system's design.
+`example-system/` the 16-scene "Running Linck" explainer (about 20 minutes
+with its voice): a system's deployment, release gates, a sequence diagram,
+failure boards, a timeline, tables told row by row. Its `parts/00-common.js`
+has helpers worth copying: `typer`/`typeList` (text that types on as it's
+said, hidden until it starts), `typeAt`, `tableScene` (a table told row by
+row) and `panel`. `./make.sh --no-voice` builds it in place. Start there for
+anything about a system's design or how it runs.
 
-The first explainer made this way, before this engine existed, is
-`live_deploy/docs/linck-visual.html`: 16 scenes on the platform (its
-script is in `live_deploy/linck-context/reference/text/linck-visual.txt`).
-It's a good reference for layouts of systems, timelines and order books.
-It uses the older clock, which holds still while the voice catches up.
+In the Linck repo, `live_deploy/linck-context/reference/explainers/` holds
+three more built with this engine (the architecture, running Linck, and the
+SDK for developers), and `live_deploy/docs/linck-visual.html` is the first
+explainer made this way, with the older clock.

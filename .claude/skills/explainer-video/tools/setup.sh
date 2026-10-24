@@ -20,6 +20,12 @@ if [ ! -f "$EV_HOME/node/node_modules/playwright/index.mjs" ]; then
   (cd "$EV_HOME/node" && [ -f package.json ] || echo '{"private":true}' > package.json
    cd "$EV_HOME/node" && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install --silent --no-audit --no-fund playwright@1.56.1)
 fi
+# a browser for checking and recording: the one Playwright finds, else install
+# Chromium for it (set CHROMIUM=/path/to/chrome to use your own instead)
+if [ -z "${CHROMIUM:-}" ] && ! (cd "$EV_HOME/node" && node -e "import('playwright').then(p => p.chromium.launch()).then(b => b.close()).catch(() => process.exit(1))") >/dev/null 2>&1; then
+  (cd "$EV_HOME/node" && npx --yes playwright install chromium >&2) ||
+    echo "explainer-video: no Chromium. Install one, or set CHROMIUM=/path/to/chrome" >&2
+fi
 FF="$("$EV_HOME/venv/bin/python" -c 'import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())')"
 echo "EV_HOME=$EV_HOME"
 echo "EV_PY=$EV_HOME/venv/bin/python"
