@@ -234,6 +234,9 @@ class RepairCLI:
             if o.blind:
                 self.say(head + "  " + p.warn(f"no prices for {len(o.blind)} leg(s): can't be repaired — pick it to see why"))
                 continue
+            if o.gone:
+                self.say(head + "  " + p.warn(f"{', '.join(o.gone)} expired since: can't be repaired — pick it to see why"))
+                continue
             if not o.fills and not r["legs"]:
                 self.say(head + "  " + p.dim("nothing to repair"))
                 continue
@@ -325,6 +328,10 @@ class RepairCLI:
         s = engine.summarize(o, row["capital"])
         w = self.window.as_dict()
         self.say("\n" + p.bold(f"━━ Repair plan — {row['name']}"))
+        if o.gone:
+            self.say(p.warn(f"⚠ CAN'T BE TRUSTED: {', '.join(o.gone)} expired before this repair, so the strategy "
+                            "couldn't pick its strikes there the way it did that day. It can't be applied; the notes "
+                            "at the end say more."))
         if o.blind:
             self.say(p.warn(f"⚠ CAN'T BE TRUSTED: no prices at all for {', '.join(o.blind)}. The strategy couldn't see "
                             "these legs, so what it did (or didn't do) below means nothing. It can't be applied; the notes "
@@ -384,6 +391,9 @@ class RepairCLI:
             if a in ("a", "apply"):
                 if o.blind:
                     self.say(p.warn("   Not applicable: the replay had no prices for " + ", ".join(o.blind) + "."))
+                    continue
+                if o.gone:
+                    self.say(p.warn("   Not applicable: " + ", ".join(o.gone) + " expired before this repair."))
                     continue
                 return "apply"
             if a == "c":

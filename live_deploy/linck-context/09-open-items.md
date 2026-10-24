@@ -41,6 +41,18 @@ counter reset and post-convergence EOD question.
   monthlies. Owner closed them by hand on 21 Oct and said repair should improve.
 - Repair: a leg that traded earlier in the day but not during a stall keeps
   its last price (could be stale for thin legs).
+- Repair and the day check, where real data can still part from live (the
+  logic itself matches, tested): Kite keeps no order-book history, so a
+  replayed quote has a one-tick spread and every strike passes the spread half
+  of the strangle's liquidity bar (open interest comes from the 1-minute
+  candles, as live); a minute's first tick uses each contract's own 1-minute
+  open; strikes listed after the day are in today's contract list. Contracts
+  that expired since the day are refused, but only when the app stored one
+  of that expiry (any deployment holding one is enough).
+- Until the fill-time fix is deployed, pivot_supertrend_options(_inverse),
+  trend_credit_spread and weekly_ema_st_spread stamp fills at their signal
+  candle's start (5 min early; 1 h for the weekly spread), and the day check
+  flags their correct days as mismatches. Days flagged that way can be ignored.
 - Equity snapshots and marks recorded during a stall keep stale prices; repair
   doesn't rewrite them.
 - Compare groups use full capital for the whole history even before a member

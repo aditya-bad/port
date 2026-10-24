@@ -132,6 +132,13 @@ incident that caused it.
   owner picks; plan is a rolled-back transaction with proof charts and each
   step's reason; push re-runs and commits only if identical; undo restores the
   app's own fills. Only the latest traded day can be repaired.
+  Proven to trade like the strategy: `tests/strategies/test_repair_parity.py`
+  runs each strategy live for a day and again with the day repaired from a
+  stall (before the entry, mid-morning, mid-afternoon; the strangle's rolls
+  through the liquidity tie-break on a trending day): every trade the same
+  contract, tick and price; and the day check finds nothing on a day the app
+  traded as its strategy. A repair run after the day's weekly contracts
+  expired can't see them (Kite drops them) and refuses, naming the expiry.
 - **Self-reporting strategies** and the **fault matrix** (12 failure types).
 - **Crash-proof**: killed anywhere and restarted from the DB, same trades.
 - **Tick stall self-heal**, stale-price guard, tick filter.

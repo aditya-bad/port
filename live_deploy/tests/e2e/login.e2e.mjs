@@ -108,10 +108,19 @@ test('a day marked as a market holiday: the sign-in clock says so, no countdown'
   const ctx = await context(b, { signedIn: false });
   try {
     assert.equal((await admin.request.post(`${BASE}/notifications/mute-today`)).status(), 200);
-    const p = await ctx.newPage();
-    // 11:00 IST today: without the holiday this would read "Market open … CLOSES IN"
+    // the server now calls today a holiday
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
-    await p.clock.setFixedTime(new Date(`${today}T11:00:00+05:30`));
+    const day = await (await ctx.request.get(`${BASE}/notifications/market-day`)).json();
+    assert.equal(day.holiday, true);
+    assert.equal(day.date, today);
+    // The page's clock only says "holiday" on a weekday (a weekend is closed
+    // anyway), so the page is shown a fixed Wednesday at 11:00, which the
+    // server's own answer marks: without the mark it would read "Market open
+    // … CLOSES IN". (Using today failed every Saturday and Sunday.)
+    const wed = '2026-10-14';
+    const p = await ctx.newPage();
+    await p.route('**/notifications/market-day', route => route.fulfill({ json: { ...day, date: wed } }));
+    await p.clock.setFixedTime(new Date(`${wed}T11:00:00+05:30`));
     await p.goto(`${BASE}/linck/`);
     await p.waitForFunction(() => /holiday/i.test(document.querySelector('#side')?.textContent || ''));
     const side = await p.textContent('#side');

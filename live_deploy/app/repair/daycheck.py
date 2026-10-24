@@ -264,7 +264,12 @@ async def check_deployment(pool, dep: dict, day: date, book: MinuteBook, real_ki
         finally:
             await tr.rollback()
     replay = {"start": from_what, "fills": [_fill(f) for f in out.fills], "auto": out.auto, "notes": out.notes,
-              "problems": out.problems, "blind": out.blind, "estimated": out.estimated, "fills_app": len(fills)}
+              "problems": out.problems, "blind": out.blind, "gone": out.gone, "estimated": out.estimated, "fills_app": len(fills)}
+    if out.gone:
+        status, headline = verdict(rule_list, None, None, False,
+                                   f"{', '.join(out.gone)} expired before this check ran, so the replay can't pick the "
+                                   "strategy's strikes there; the end-of-day rules were checked.")
+        return {"status": status, "headline": headline, "rules": rule_list, "diff": {}, "replay": replay}
     if out.blind:
         status, headline = verdict(rule_list, None, None, False,
                                    f"No prices at all for {', '.join(out.blind)}, so the replay can't be trusted; the end-of-day rules were checked.")

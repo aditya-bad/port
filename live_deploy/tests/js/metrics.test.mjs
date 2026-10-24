@@ -43,6 +43,17 @@ test('weekdays and daily series fill gaps with zero', () => {
     [['2026-10-16', 100, true, 100], ['2026-10-19', 0, false, 100], ['2026-10-20', -30, true, 70]]);
 });
 
+test('a weekend day that booked something is kept, and counts in the running total', () => {
+  // a close on Saturday 24 Oct (a special session, Muhurat, or by hand) was dropped
+  const rows = [{ day: '2026-10-23', pnl: 100 }, { day: '2026-10-24', pnl: -40 }, { day: '2026-10-26', pnl: 5 }];
+  const s = M.dailySeries(rows, r => r.pnl, null, new Date('2026-10-26T12:00:00+05:30'));
+  assert.deepEqual(s.map(x => [x.key, x.day, x.has, x.cum]),
+    [['2026-10-23', 100, true, 100], ['2026-10-24', -40, true, 60], ['2026-10-26', 5, true, 65]], 'Sunday 25th booked nothing: still left out');
+  // outside the window it stays out
+  const w = M.dailySeries(rows, r => r.pnl, new Date('2026-10-26T09:00:00+05:30'), new Date('2026-10-26T12:00:00+05:30'));
+  assert.deepEqual(w.map(x => x.key), ['2026-10-26']);
+});
+
 test('period metrics: return, drawdown %, return/DD, consistency', () => {
   const trades = [{ closed_at: '2026-09-10T10:00:00Z', pnl: 5000 }, { closed_at: '2026-10-10T10:00:00Z', pnl: -2000 }];
   const daily = [{ day: '2026-09-10', pnl: 5000 }, { day: '2026-10-10', pnl: -2000 }];

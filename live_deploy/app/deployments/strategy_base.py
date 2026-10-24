@@ -63,6 +63,21 @@ class StrategyBase(ABC):
     # entirely on the Detail page rather than shown empty/misleading.
     ADJUSTMENT_GROUP_BY: Optional[str] = None
 
+    # ── when a fill happened ────────────────────────────────────────────
+    #
+    # A strategy that acts when a candle closes acts at the tick that
+    # closed it, not at the candle's start. Stamping a fill with the
+    # candle's start put it up to one candle early (an hour, on hourly
+    # candles): before the price it was filled at even existed, and on the
+    # wrong side of any time a repair or the day check cuts the day at.
+    # A strategy sets `_tick_at` to each tick's time in on_tick and stamps
+    # its fills with fill_time().
+    _tick_at: Optional[Any] = None
+
+    def fill_time(self, fallback: Optional[Any] = None) -> Optional[Any]:
+        """The time of the tick being handled (else `fallback`)."""
+        return self._tick_at or fallback
+
     @abstractmethod
     async def on_start(self, runner: "Any") -> None: ...
 

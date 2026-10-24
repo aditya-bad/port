@@ -90,14 +90,18 @@ export function weekdays(a, b) {
 }
 
 // Daily rows → one entry per weekday in the running window (0 when
-// nothing closed), each with its running total.
+// nothing closed), plus any weekend day that booked something (a special
+// Saturday session, Muhurat trading, a close by hand), each with its
+// running total.
 export function dailySeries(rows, pnlOf, from, to = new Date()) {
   const map = {};
   rows.forEach(r => { map[r.day] = (map[r.day] || 0) + pnlOf(r); });
   const first = rows.length ? rows.map(r => r.day).sort()[0] : null;
   const start = from || (first ? fromDay(first) : to);
+  const a = dayKey(start), b = dayKey(to);
+  const keys = [...new Set([...weekdays(start, to), ...Object.keys(map).filter(k => k >= a && k <= b)])].sort();
   let cum = 0;
-  return weekdays(start, to).map(k => {
+  return keys.map(k => {
     const has = k in map;
     cum += has ? map[k] : 0;
     return { key: k, date: fromDay(k), day: has ? map[k] : 0, has, cum };

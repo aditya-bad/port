@@ -628,6 +628,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
         price = tick.get("last_price")
         if ts is None or price is None:
             return
+        self._tick_at = ts   # fills on this tick are stamped with it (fill_time)
 
         # Orphan cleanup (Section 7) — highest priority, resolved on the
         # very first tick that can reach it after a resume, before
@@ -688,7 +689,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
         if (self.short_leg is not None and self.current_expiry is not None
                 and self.expiry_day_force_exit_time is not None
                 and candle["date"].date() >= self.current_expiry and t >= self.expiry_day_force_exit_time):
-            await self._exit_spread(runner, candle["date"], "force_exit", {
+            await self._exit_spread(runner, self.fill_time(candle["date"]), "force_exit", {
                 "current_expiry": self.current_expiry.isoformat(),
                 "expiry_day_force_exit_time": self.expiry_day_force_exit_time.isoformat(),
             })
@@ -713,7 +714,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
                         "final_upper": round(self.st.final_upper, 2) if self.st.final_upper is not None else None,
                         "final_lower": round(self.st.final_lower, 2) if self.st.final_lower is not None else None,
                     }
-                    await self._exit_spread(runner, candle["date"], "st_flip", trigger_values)
+                    await self._exit_spread(runner, self.fill_time(candle["date"]), "st_flip", trigger_values)
 
             if (flipped and not stale and self.short_leg is None and before_cutoff and after_open):
                 if self.max_trades_per_day is not None and self.trades_today >= self.max_trades_per_day:
@@ -854,7 +855,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             leg_role="short", strike=short_leg.strike, **common,
         )
         await runner.sell(   # SELL TO OPEN — the premium-collecting leg
-            short_leg.tradingsymbol, short_leg.instrument_token, qty, short_price, candle["date"],
+            short_leg.tradingsymbol, short_leg.instrument_token, qty, short_price, self.fill_time(candle["date"]),
             reason="entry", metadata=short_meta,
         )
 
@@ -869,7 +870,7 @@ class TrendCreditSpreadStrategy(StrategyBase):
             leg_role="long", strike=long_leg.strike, **common,
         )
         await runner.buy(   # BUY TO OPEN — the protective leg
-            long_leg.tradingsymbol, long_leg.instrument_token, qty, long_price, candle["date"],
+            long_leg.tradingsymbol, long_leg.instrument_token, qty, long_price, self.fill_time(candle["date"]),
             reason="entry", metadata=long_meta,
         )
 

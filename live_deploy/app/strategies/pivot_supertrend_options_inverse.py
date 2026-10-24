@@ -463,6 +463,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         price = tick.get("last_price")
         if ts is None or price is None:
             return
+        self._tick_at = ts   # fills on this tick are stamped with it (fill_time)
 
         day = ts.date()
         if self.today is None:
@@ -693,7 +694,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
             entry_candle_date=candle["date"].isoformat(),
         )
         await runner.buy(   # BUY TO OPEN — long premium, opposite of pivot_supertrend_options
-            leg.tradingsymbol, leg.instrument_token, qty, price, candle["date"],
+            leg.tradingsymbol, leg.instrument_token, qty, price, self.fill_time(candle["date"]),
             reason="entry", metadata=meta,
         )
         self.active_leg_token = leg.instrument_token
@@ -744,7 +745,7 @@ class PivotSupertrendOptionsInverseStrategy(StrategyBase):
         )
         closed_symbol = self.active_leg_symbol
         await runner.sell(   # SELL TO CLOSE
-            self.active_leg_symbol, self.active_leg_token, qty, price, candle["date"],
+            self.active_leg_symbol, self.active_leg_token, qty, price, self.fill_time(candle["date"]),
             reason=reason, metadata=meta,
         )
         runner.dispatcher.release_instruments([self.active_leg_token])

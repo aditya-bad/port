@@ -219,6 +219,7 @@ class Outcome:
     notes: list = field(default_factory=list)
     estimated: list = field(default_factory=list)  # legs priced by model: Kite had no trade in them all day
     blind: list = field(default_factory=list)     # legs it held with no price at all: the plan can't be trusted
+    gone: list = field(default_factory=list)      # expiries it needed that expired before the repair ran: can't be trusted either
     index_name: str = "Index"
     start_equity: float = 0.0
     charges: float = 0.0
@@ -290,6 +291,12 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         book.lookup = kite_lookup(real_kite)   # a leg Kite has nothing for by token is asked for by name
     clock = ReplayClock(window.day)
     kite = ReplayKite(real_kite, book, clock)
+    # what was listed on the day, as far as the app knows: every contract a
+    # deployment held is stored with its exact expiry, and outlives Kite's list
+    for r in await conn.fetch("SELECT DISTINCT underlying, expiry FROM contracts "
+                              "WHERE expiry >= $1 AND instrument_type IN ('CE', 'PE')", window.day):
+        if r["underlying"]:
+            kite.known_expiries.setdefault(r["underlying"], set()).add(r["expiry"])
     disp = ReplayDispatcher(book, clock)
     strategy = get_strategy_class(dep["strategy_name"])()
     runner = ReplayRunner(dep, TxPool(conn), disp, strategy, clock, run, window)
@@ -389,6 +396,12 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         if closed:
             out.charges = round(float(await conn.fetchval(
                 "SELECT COALESCE(SUM(estimated_charges), 0) FROM positions WHERE id = ANY($1::uuid[])", closed) or 0), 2)
+    for und, exp in sorted(kite.gone):
+        out.gone.append(f"{und} {exp:%d %b %Y}")
+        out.notes.append(f"{und}'s {exp:%d %b} contracts expired before this repair ran: Kite no longer lists them "
+                         f"or serves their prices, so the strategy couldn't pick its strikes there the way it did on "
+                         f"{window.day:%d %b}. Without this check it would have traded the next expiry instead. A repair "
+                         "can be trusted while the day's contracts are still listed (the day check runs at 15:45 the same day).")
     # every leg it held, before or during the window: one with no price at
     # all left the strategy blind, so nothing it did (or didn't) can be trusted
     held = {int(t) for t in start_positions} | {f["token"] for f in out.fills}
@@ -586,6 +599,7 @@ def summarize(o: Outcome, capital: float = 0.0) -> dict:
         "fills": len(o.fills), "reasons": reasons, "open_after": len(o.end_positions),
         "spikes": sum(1 for f in o.fills if f["phase"] in ("up", "down")),
         "blind": list(o.blind),
+        "gone": list(o.gone),
         "estimated": list(o.estimated),
     }
 
@@ -632,6 +646,8 @@ async def apply(pool, dep_id, window: Window, book: MinuteBook, real_kite, expec
                 raise PlanChanged(f"the replay found an undecided minute ({out.ambiguity.minute})")
             if out.blind:
                 raise PlanChanged(f"no prices for {', '.join(out.blind)}: the replay couldn't see them")
+            if out.gone:
+                raise PlanChanged(f"{', '.join(out.gone)} expired before this repair: the replay couldn't trade them")
             if exact(out.fills) != exact(expected.fills):
                 raise PlanChanged("the replay came out differently from the plan (market data changed?)")
             added = await _added(conn, dep_id, before)

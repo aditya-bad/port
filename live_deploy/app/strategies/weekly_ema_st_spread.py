@@ -802,6 +802,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
         price = tick.get("last_price")
         if ts is None or price is None:
             return
+        self._tick_at = ts   # fills on this tick are stamped with it (fill_time)
 
         # Filtered HERE, before the tick ever reaches the aggregator --
         # not just gated later at candle-close time. NSE genuinely
@@ -1016,7 +1017,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
         # — never naked"). Hedge-first means a failed hedge fill means
         # NOTHING gets entered at all.
         await runner.buy(
-            hedge_leg.tradingsymbol, hedge_leg.instrument_token, qty, hedge_price, candle["date"],
+            hedge_leg.tradingsymbol, hedge_leg.instrument_token, qty, hedge_price, self.fill_time(candle["date"]),
             reason="entry",
             metadata=build_trade_meta(
                 trigger=f"ema_st_{side}", action=f"buy_open_{option_type}_hedge",
@@ -1031,7 +1032,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             ),
         )
         await runner.sell(
-            sold_leg.tradingsymbol, sold_leg.instrument_token, qty, sold_price, candle["date"],
+            sold_leg.tradingsymbol, sold_leg.instrument_token, qty, sold_price, self.fill_time(candle["date"]),
             reason="entry",
             metadata=build_trade_meta(
                 trigger=f"ema_st_{side}", action=f"sell_open_{option_type}",
@@ -1128,7 +1129,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             pos = runner.open_positions.get(self.sold_token)
             if pos is not None:
                 result = await runner.buy(
-                    self.sold_symbol, self.sold_token, float(pos["qty"]), price, candle["date"],
+                    self.sold_symbol, self.sold_token, float(pos["qty"]), price, self.fill_time(candle["date"]),
                     reason=reason,
                     metadata=build_trade_meta(
                         trigger=reason, action=f"buy_close_{self.sold_option_type}",
@@ -1147,7 +1148,7 @@ class WeeklyEmaStSpreadStrategy(StrategyBase):
             pos = runner.open_positions.get(self.hedge_token)
             if pos is not None:
                 result = await runner.sell(
-                    self.hedge_symbol, self.hedge_token, float(pos["qty"]), price, candle["date"],
+                    self.hedge_symbol, self.hedge_token, float(pos["qty"]), price, self.fill_time(candle["date"]),
                     reason=reason,
                     metadata=build_trade_meta(
                         trigger=reason, action="sell_close_hedge",

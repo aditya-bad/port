@@ -180,6 +180,8 @@ async def run(pool, dep_id, day: date, book: MinuteBook, kite, choices: dict, *,
                     raise engine.PlanChanged(f"the replay stopped at an undecided minute ({out.ambiguity.minute})")
                 if out.blind:
                     raise engine.PlanChanged(f"no prices for {', '.join(out.blind)}")
+                if out.gone:
+                    raise engine.PlanChanged(f"{', '.join(out.gone)} expired before this repair: the replay couldn't trade them")
                 if key != expected:
                     raise engine.PlanChanged("the replay came out differently from the plan you reviewed — plan it again")
                 added = await engine._added(conn, dep_id, before)
@@ -229,9 +231,11 @@ async def run(pool, dep_id, day: date, book: MinuteBook, kite, choices: dict, *,
         "fills": out.fills, "fills_key": key, "app_fills": app,
         "replaced": [f for f in app if f["minute"] >= start],
         "decisions": decisions, "auto": out.auto, "notes": out.notes, "problems": out.problems,
-        "blind": out.blind, "estimated": out.estimated,
+        "blind": out.blind, "gone": out.gone, "estimated": out.estimated,
         "end": {"app": app_end, "after": out.end_positions},
         "summary": engine.summarize(out, float(dep["initial_capital"])), "curve": out.curve,
-        "can_apply": not why_not and out.complete and not out.blind, "why_not": why_not,
+        "can_apply": not why_not and out.complete and not out.blind and not out.gone,
+        "why_not": list(why_not or []) + ([f"{', '.join(out.gone)} expired before this repair, so the strategy's "
+                                           "strikes there can't be replayed."] if out.gone else []),
         "series": series(book, day, idx, legs),
     })

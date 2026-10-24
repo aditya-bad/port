@@ -524,6 +524,12 @@ class ReplayKite:
         self.real = real
         self.book = book
         self.clock = clock
+        # Expiries that were listed on the replayed day but may be gone
+        # from Kite's list now (underlying -> {date}), from the contracts
+        # the app stored; and the ones a strategy asked for that Kite no
+        # longer lists (underlying, expiry): the replay can't trade them.
+        self.known_expiries: dict[str, set] = {}
+        self.gone: set[tuple[str, date]] = set()
         self._masters: dict[str, list] = {}
         self._by_key: dict[str, dict] = {}
         self._by_token: dict[int, dict] = {}
@@ -711,6 +717,23 @@ def replaying(kite: ReplayKite, clock: ReplayClock):
     orig = R.OptionsResolver._resolve_from_list
     swap(R.OptionsResolver, "_resolve_from_list",
          lambda self, expiries, selector, reference_date=None: orig(self, expiries, selector, reference_date or clock.day))
+
+    async def resolve_expiry(self, underlying, selector, exchange=None, reference_date=None):
+        # "THIS_WEEK" on the replayed day means that day's nearest expiry,
+        # even if it has expired since and Kite no longer lists it: resolve
+        # against what was listed then, and refuse (rather than quietly
+        # trading next week's contracts) when it's gone
+        listed = await self.list_expiries(underlying, exchange)
+        then = set(listed) | {e for e in kite.known_expiries.get(underlying, ()) if e >= clock.day}
+        if not then:
+            raise ValueError(f"No option expiries found for {underlying!r}")
+        got = self._resolve_from_list(sorted(then), selector, reference_date)
+        if got not in listed:
+            kite.gone.add((underlying, got))
+            raise ValueError(f"{underlying}'s {got:%d %b} contracts have expired since {clock.day:%d %b}: "
+                             "Kite no longer lists them or serves their prices")
+        return got
+    swap(R.OptionsResolver, "resolve_expiry", resolve_expiry)
     swap(app_clock, "now_ist", clock.now_ist)
     caches = dict(R._INSTRUMENT_CACHE)
     R._INSTRUMENT_CACHE.clear()
