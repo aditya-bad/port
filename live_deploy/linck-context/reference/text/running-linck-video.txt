@@ -1,0 +1,427 @@
+Running Linck: the narrated video, as text
+
+The script of reference/explainers/running-linck (16 scenes, about 20
+minutes). Each scene's narration, in order. Numbers marked measured come from
+the prototype or today's app; targets and estimates say so.
+
+1. Running Linck
+
+The first video showed what Linck is made of. This one shows how it runs, in
+nine parts.
+
+How it runs today. How a release ships, and where each thing lands. How it
+changes without stopping trading. A strategy’s life up close, and the walk
+that replays it. What happens when each part fails. A trading day, start to
+end. How we watch it. And how it grows.
+
+Every number comes with what it is. Measured means measured, in the prototype
+or in today’s app. Everything else is a design target or an estimate, and the
+video says which.
+
+2. Today: one machine, one script
+
+Before any of the new design, here is Linck as it runs today, on one machine.
+
+Everything runs in one Docker container, as one Python process: the web app
+and its API, the Kite WebSocket, the tick broadcaster, a runner for each
+deployment, the loops that take snapshots, record prices and watch for dead
+runners, ops health, and the day check and repair workers.
+
+Postgres runs in its own container beside it, on a Docker network. The app
+applies its own database migrations every time it starts.
+
+Nobody reaches it from the internet. The app listens only on the machine’s own
+address, 127.0.0.1, port 8000, and Tailscale Serve is the way in, from the
+owner’s private network.
+
+A release is one command: redeploy.sh. It pulls the code, stops and removes
+the old container, builds the image, starts the new one, and reconnects it to
+the database network. On start, the migrations run and every active deployment
+resumes.
+
+The Redeploy button in the app does the same thing. A container can’t rebuild
+itself, so the app writes a trigger file, and a watcher on the machine itself,
+a systemd service, runs the same script.
+
+The rules for running it: the full test gate must print SAFE TO DEPLOY first.
+Deploy outside market hours. Mid-day only in a quiet window, never 09:15 to
+10:15 or 15:00 to 15:30. And log in to Kite afterwards, if it is before 09:15.
+
+Three things in this shape are what the new design fixes first. The website
+and the strategies share one process. More than one place writes money: the
+fill path, repairs, and one-off fix scripts. And the tick broadcaster queues
+old ticks for a slow reader, which is step P0.
+
+3. A release, gate by gate
+
+Once there is more than one machine, this is how a change reaches production.
+Every stage is a gate, and a release that fails one goes no further.
+
+It starts as a commit. CI runs the linters and the unit tests; the contract
+check, which refuses any breaking change to a version-one protobuf message;
+the fault matrix, today’s 108 cases, grown with every incident; and the
+determinism check: a day replayed twice, with equal decision hashes.
+
+Then the build: an image for each service, built reproducibly and distroless,
+with a software bill of materials, an SBOM, made by Syft, and a signature,
+made with cosign. The clusters run only signed images.
+
+Staging is a full cell, fed a recorded market at real speed, all day, every
+day, so the open and the 15:15 exits are rehearsed every hour.
+
+Then the yesterday diff. Production’s previous day is replayed through the new
+build. If any decision comes out different, the release stops, until a person
+marks the difference as intended.
+
+Only then does it reach production: a canary cell first, then waves of cells,
+then all of them, and only after 15:45. Between 09:00 and 15:35 nothing goes
+out, except an approved hotfix.
+
+There are three environments. Every pull request gets a dev namespace with
+seeded data: today’s browser-test server, grown up. Staging is that one
+recorded cell. And production is cells in Mumbai, with disaster recovery in
+Hyderabad.
+
+4. What ships where
+
+Not everything ships the same way. Here is each kind of thing: what it is
+packaged as, where it goes, and how it reaches production.
+
+Our services ship as signed container images, kept in ECR, Amazon’s image
+registry. Argo CD rolls them out cell by cell, after the gates.
+
+A user’s strategy is not an image. It is a signed artifact, its source,
+lockfile and manifest, in the artifact registry. It is pinned to a deployment,
+and the supervisor fetches that exact version.
+
+The runtime images that strategies run in, one per language version, roll out
+like a service, but each strategy keeps the image it was certified on.
+
+The SDKs are packages, on PyPI, the Go module proxy, crates.io and npm, with
+semantic versions, and none ships unless the conformance suite passes.
+
+The CLI is one binary per operating system, from GitHub releases and Homebrew.
+It updates itself, and refuses to run a version older than the platform
+supports.
+
+The web app is static files on S3, behind a CDN. A release is an atomic
+switch, and the old version stays, for an instant rollback.
+
+And the mobile apps go through the Play Store and the App Store, in staged
+rollouts, with new features behind flags.
+
+5. One cluster, then many; one repository
+
+Where releases land, and where the code lives.
+
+In the first version: a Helm chart for each service, and Argo CD makes the one
+EKS cluster match what is in Git. On a laptop, Docker Compose runs the same
+services.
+
+In the final version: the same charts, with Argo CD ApplicationSets rolling
+out cell by cell, and Terraform building the AWS accounts, the networks and
+the clusters themselves.
+
+About fifteen AWS accounts, an estimate: one for each cell, and one each for
+control, data and security. A broker partner’s cells can sit in an account of
+their own.
+
+All the code lives in one repository. contracts, with Buf. services, the Go
+services. engine, the Rust workspace, built with Cargo. python, the product
+API and the assistant, with uv. sdks, the four SDKs. web. And deploy:
+Terraform, Helm and Argo CD.
+
+Each language keeps its own tools, with one task runner, just, on top. And CI
+filters by path, so a change to the web app doesn’t rebuild any Rust.
+
+6. Changing things without stopping trading
+
+Linck keeps changing while it trades. Six rules keep trading from noticing.
+
+Database changes go in three steps, over at least two releases: expand, adding
+the new column or table; migrate, filling it in; and contract, removing the
+old one, a release later. So every release runs against both the old schema
+and the new one.
+
+New behaviour hides behind feature flags, with OpenFeature, per tenant and per
+cell. It reaches staff first, then one cell, then everyone.
+
+A strategy moves between machines by lease handoff, at a minute boundary. It
+never sees a restart, only its next batch, on a new machine.
+
+Moves never happen from 09:10 to 09:20, or from 15:10 to 15:25: the open and
+the exits. And when Kubernetes drains a machine, its supervisor hands its
+leases away first.
+
+A strategy version is never upgraded under a running deployment. A new version
+is a new pin, and the user chooses it.
+
+And the runtime keeps every protocol version it ever shipped for at least
+twelve months, so old strategies keep running on new supervisors.
+
+7. A strategy’s life: the conversation
+
+Now the small flows inside one strategy’s life. First, how the supervisor and
+a strategy talk: length-prefixed protobuf frames, on a Unix socket the
+supervisor opens for that one strategy.
+
+Hello comes first: the protocol version, the deployment, its parameters, its
+last saved state, and its instruments.
+
+The strategy answers Ready: its SDK’s name and version, and what it subscribes
+to: instruments, bars, computed streams and timers.
+
+Then the batches. Each has a sequence number, the time, the latest value of
+each instrument that changed, with how many updates were skipped, and every
+bar, fill, order update and timer since the last one.
+
+While it handles a batch, the strategy can ask: Request, for an option chain,
+a quote, some history or a lookup. The Reply comes from caches on the same
+machine, within the same batch, never from the network.
+
+Done ends the batch: its sequence number, the commands, meaning orders,
+baskets, cancels and timers, the decisions, and the change to its state, with
+a hash. Then the next batch.
+
+Around them: Snapshot, its state with a sequence number. Stop, for a clean
+stop. Log. Heartbeat, to show it is alive. And Error, with the batch, the
+message and the stack.
+
+The user never sees any of this. The SDK owns main: it reads Hello, builds the
+user’s class with its parameters and state, says Ready, and loops: batch,
+handlers, Done. The user’s code only sees ctx.
+
+8. Request and Reply: the delay they remove
+
+Request and Reply remove the biggest delay in today’s app, and it isn’t
+computing.
+
+Today a strategy picks its strikes by asking Kite: quotes to find a strike by
+premium, last prices, liquidity. Every Kite call goes through one throttle for
+the whole app, at least 0.35 seconds apart.
+
+So an entry waits for its calls. Counted in today’s code: a SuperTrend entry
+makes 2 to 4 calls; a trend spread, 3 to 8; a DTT entry, 5, at least 1.75
+seconds; a strangle entry, 11, at least 3.85 seconds. Plus Kite’s own response
+time.
+
+And deployments that enter at 09:20 all queue behind each other, at that one
+throttle.
+
+With an instant fake Kite, our own work for the same entries takes 29 to 76
+milliseconds, measured.
+
+In the design, option chains and prices are streams, already cached on the
+machine. The strike nearest 100 rupees becomes a local Request, answered in
+microseconds. The only remote call left is the order itself.
+
+9. The walk: replaying a strategy exactly
+
+The walk is how the design answers “what happened at 10:42?”, and it is how
+the day check and repairs work.
+
+The journal keeps every batch exactly as it was given, written before it is
+sent: references to the latest values seen, the fills, order updates and
+timers, and the time. It is indexed by sequence number and by time. A batch
+takes about 60 to 120 bytes: an estimated 8 gigabytes a day, compressed, for
+2,000 strategies.
+
+To walk, find the batch range by time, and start a fresh process of the same
+strategy version, from the snapshot just before it.
+
+Feed it the journal’s batches, with the sim venue as its broker. After every
+batch, its state hash must match the one live recorded.
+
+The first batch whose decisions differ is what went wrong. In the prototype,
+measured: a walk from snapshot 300 matched live exactly, all the way to batch
+600.
+
+A stretch the app never saw, a stall, has no journal. Its batches are built
+from one-minute candles, four ticks a minute, as today’s repair does.
+
+And a minute that can be read two ways starts two processes from the same
+snapshot, one for each reading. If they part, the owner chooses which one
+happened, on the Repair page.
+
+10. Everything that can fail: the services
+
+The first video showed four breakdowns: a strategy crash, a dead machine, a
+zombie, and a broker outage. Here is every service, and what happens while it
+is down.
+
+If the product API goes down, the screens go dark, and nothing trades any
+differently.
+
+If control goes down, nothing can be changed, but running strategies keep
+running.
+
+If one market data source fails, the other source takes over its instruments.
+Strategies that lose their prices hold, and report it.
+
+The sequencer runs as one active copy and a standby. If the active one dies,
+the standby takes over.
+
+If computed streams fails, its series are marked stale, and the strategies
+that use them hold.
+
+If Heimdall goes down, intents wait on the log. Nothing is lost, and nothing
+is doubled.
+
+If a broker gateway goes down, that broker’s accounts stop new entries and
+queue their exits. Other brokers carry on.
+
+If the sim venue goes down, paper orders queue. Live trading is not affected.
+
+And if integrity goes down, its findings come late, but never wrong.
+
+11. When a strategy itself fails
+
+And when the strategy itself is what fails, this is how each case is seen, and
+what happens next.
+
+An exception or a panic in a handler: the SDK sends Error, with the batch and
+the stack, and exits. The supervisor restarts it from the last snapshot and
+catches it up.
+
+If the process simply dies, its socket closes, and it is restarted and caught
+up the same way.
+
+A hang shows up as no Done within the budget. It is killed and restarted.
+
+Measured in the prototype: a strategy killed at batch 458 was restored from
+snapshot 400, and caught up 57 batches in 14 milliseconds in Go, and 38 in
+Python. The one order it made again was refused as a duplicate.
+
+A strategy that has lost track of a leg is caught by checking its legs against
+the book, after every failure and every five minutes. It restarts clean from
+the book, as today’s app does.
+
+The same error on the same batch twice is a bug, not bad luck. The deployment
+is quarantined: no new entries and no restart loop, while the square-off, the
+stops and the kill switch still work.
+
+Different errors make the restarts back off: 1, 2, 4 and 8 minutes, then every
+15 minutes. That is today’s breaker, applied from outside the process.
+
+And to reproduce one on a laptop: linck replay, with the deployment and a
+range of batches, say 200 to 250.
+
+12. A trading day, start to end
+
+A trading day, by the clock. This is the final design; at the end, what
+today’s app already does.
+
+Before 08:30, reference data loads the exchanges’ contract files and every
+broker’s instrument list. New expiries appear, and each broker gateway loads
+its symbol map.
+
+Each broker’s daily login runs, and its token is refreshed. Today, that is the
+owner’s Kite login in the app, before 09:15.
+
+Market data subscribes to every instrument that running strategies need, the
+union, taken from control, new expiries included. And every broker gets a
+smoke test before 09:00.
+
+From 09:00 no releases go out, and from 09:10 to 09:20 no strategy moves. At
+09:15 the indicators are already warm, from the lake. The burst at the open is
+assumed to be ten times normal, until it is logged.
+
+All day, positions are reconciled with each broker every few minutes, and no
+running deployment may be silent for more than 60 seconds.
+
+At 15:15 come the exits. The design allows for about 150,000 orders in
+minutes, split by account, within each broker’s limits, risk-reducing orders
+first. They are drained by 15:20.
+
+By 15:35, zero positions are unreconciled, and the freeze lifts.
+
+At 15:45 the day is exported, and releases may go out, a cell at a time. The
+end-of-day checks and repair cases are ready by 16:30.
+
+Today’s app already keeps this clock, in a smaller way. Every minute it turns
+problems into issues, and alerts until they clear. It records each
+deployment’s state at the open and after the close, and starts the day check
+after the 15:45 export. Mark as holiday mutes the alerts until 07:00 the next
+day.
+
+13. Watching it
+
+How we watch all of this.
+
+Every service sends its traces, metrics and logs through OpenTelemetry: traces
+to Tempo, metrics to Prometheus and Mimir, logs to Loki, and all of it shows
+on Grafana.
+
+One trace follows a tick all the way to a fill: ingest, the sequencer, the
+cache, the strategy’s batch and its decision, the intent, Heimdall, Kraken,
+the broker, and the fill coming back. So a slow trade shows exactly which hop
+was slow.
+
+Dashboards show every SLO, per cell and per tenant. Tick to intent under 50
+milliseconds, and intent to broker under 30, at the 99th percentile. No
+running deployment silent for more than 60 seconds. Exits drained by 15:20.
+Zero unreconciled positions at 15:35. End-of-day checks by 16:30. And 99.95
+percent availability in market hours. All of them are targets.
+
+And nothing is silent. Every failure the code handles becomes an issue, with a
+day attached, like today’s strategy issues and ops issues. Every failure it
+doesn’t handle is an alert.
+
+14. If a region fails, and who owns what
+
+If a whole region fails, and who looks after what.
+
+Production runs in Mumbai, across three zones. Hyderabad is a warm standby.
+
+The ledger has a synchronous replica inside Mumbai, so a zone can fail without
+losing a money record. Its copy in Hyderabad is asynchronous.
+
+The target for bringing back a whole region is 30 minutes.
+
+Six teams own it. Market data: the feeds, computed streams and reference data.
+Runtime: the supervisor, sandboxes, the scheduler and the SDK. Money: orders
+and risk, the adapters, the ledger and the sim venue. Integrity: the day
+check, repair, shadow and reconciliation. Product: web, mobile, the product
+API and analytics. And platform: the clusters, CI and CD, observability and
+security.
+
+15. How it grows: brokers, vendors, languages
+
+Last: how Linck grows. A new broker touches only two places: the broker
+gateway, and reference data.
+
+First, write the adapter, in Go, against the broker contract: one to two
+weeks, an estimate.
+
+Add its symbol-map loader to reference data: days.
+
+Pass the adapter conformance suite in CI: recorded order conversations,
+rejects, partial fills and reconnects.
+
+Then a paper week through the broker’s real API, with shadow orders, and from
+then on a smoke test every morning before 09:00.
+
+Then it is turned on per tenant, with a feature flag: minutes. The order: Kite
+today, then Upstox, Dhan, Angel One, Fyers, ICICI Direct, and then FIX, for
+institutions.
+
+A new data vendor is one more feed handler. Everything after it reads our own
+record, so nothing downstream changes.
+
+And a new strategy language is a new SDK, a build image and a runtime image,
+and a pass of the conformance suite. Nothing else in the platform changes. The
+SDK video covers that part.
+
+16. Running Linck, in short
+
+To recap. Today, Linck is one machine, one container and one script. In the
+new design, a release passes CI, the build, staging and the yesterday diff,
+then a canary cell and waves, after 15:45.
+
+Changes go out in steps, behind flags, and by lease handoff, so trading
+doesn’t notice. A strategy talks in Hello, Ready, Batch, Request, Reply and
+Done, and the walk replays it exactly.
+
+Every part fails in a known way and recovers in a known way. The day runs to
+the clock, from 08:30 to 16:30. And everything is traced, measured against its
+targets, and never silent.
