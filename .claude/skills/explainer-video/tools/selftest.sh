@@ -4,14 +4,16 @@
 # its subject (a creeping camera makes everything look like it's shaking);
 # checks the still fixture fails (so check.mjs really catches a pause);
 # renders one scene of the example to video with its voice. Run after
-# changing the engine or the tools.
+# changing the engine or the tools. Also checks the diagram helpers:
+# beats() and flowScene() steps are extracted, and a service, a flow and
+# close rows spotlit with a small pad check clean.
 set -euo pipefail
 S="$(cd "$(dirname "$0")/.." && pwd)"
 eval "$(bash "$S/tools/setup.sh" | grep '=')"
 export EV_HOME FF
 W="$(mktemp -d)"
 trap 'rm -rf "$W"' EXIT
-cp -r "$S/example" "$W/example"; cp -r "$S/tools/fixture-still" "$W/still"; cp -r "$S/tools/fixture-spot" "$W/spot"
+cp -r "$S/example" "$W/example"; cp -r "$S/tools/fixture-still" "$W/still"; cp -r "$S/tools/fixture-spot" "$W/spot"; cp -r "$S/tools/fixture-diagram" "$W/diagram"
 cd "$W/example"
 node "$S/tools/steps.mjs" scenes.js > steps.json
 "$EV_PY" "$S/tools/narr.py" . 2>/dev/null | tail -1
@@ -36,6 +38,12 @@ need 'grep -q "scene 1 .*spotlight.s edge cuts through the \"Server\" box" check
 need '! grep -q "scene 2 .*spotlight.s edge" check.log' "a spotlight by name fits what it names"
 need 'grep -q "nothing is named \"nope\"" check.log' "a name nothing has fails, saying which"
 need 'grep -q "scene 4 .*\"message\" crosses the spotlight.s edge" check.log' "a message travelling out of the spotlight is caught"
+cd "$W/diagram"
+node "$S/tools/steps.mjs" scenes.js > steps.json
+need '[[ "$(python3 -c "import json; print([len(s[\"steps\"]) for s in json.load(open(\"steps.json\"))])")" == "[2, 2, 3]" ]]' "beats() and flowScene() steps are read without drawing"
+python3 "$S/tools/build.py" . --no-voice >/dev/null
+node "$S/tools/check.mjs" out/diagram.html --fast > check.log || { tail -20 check.log; echo "FAIL: the diagram fixture has failures"; exit 1; }
+need 'grep -q "^0 warning(s)" check.log' "services, flows, a 1 s loop and close rows spotlit with pad: no warnings"
 cd "$W/example"
 node "$S/tools/render.mjs" out/example.html 1 >/dev/null
 "$EV_PY" "$S/tools/mux.py" . >/dev/null

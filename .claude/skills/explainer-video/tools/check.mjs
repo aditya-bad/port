@@ -31,7 +31,10 @@ const stage = await p.locator('#stage').boundingBox();
 const shot = async () => { await p.evaluate(() => { const g = document.querySelector('#hud .prog'); if (g) g.style.display = 'none'; }); return p.screenshot({ clip: stage }); };
 const labels = () => p.evaluate(() => {
   const vis = el => { let o = 1; for (let e = el; e && e.tagName !== 'svg'; e = e.parentNode) { const c = getComputedStyle(e); o *= +(e.getAttribute('opacity') ?? 1) * +c.opacity; if (c.display === 'none') return 0; } return o; };
-  const ts = [...document.querySelectorAll('#layer text, #hud text')].filter(t => t.textContent.trim() && vis(t) > 0.3).map(t => ({ t: t.textContent, p: t.parentNode, r: t.getBoundingClientRect() }));
+  // zoomed in, the title has its own ground: whatever slides under it is hidden, not overlapping
+  const bd = document.querySelector('#hud .hud-ground'), under = bd && +bd.getAttribute('opacity') > 0.5 ? bd.getBoundingClientRect().bottom : -Infinity;
+  const ts = [...document.querySelectorAll('#layer text, #hud text')].filter(t => t.textContent.trim() && vis(t) > 0.3).map(t => ({ t: t.textContent, p: t.parentNode, r: t.getBoundingClientRect(), hud: !!t.closest('#hud') }))
+    .filter(x => x.hud || (x.r.top + x.r.bottom) / 2 > under);
   const st = document.getElementById('stage').getBoundingClientRect(), outl = [];
   const zoomed = /scale\(([\d.]+)\)/.test(document.getElementById('cam').getAttribute('transform') || '') && +RegExp.$1 > 1.05;   // cropping is the point of a zoom
   for (let i = 0; i < ts.length; i++) for (let j = i + 1; j < ts.length; j++) {
@@ -55,7 +58,8 @@ const spotEdges = () => p.evaluate(() => {
     if (vis(g) < 0.3 || g.X == null) return;
     const [x, y, w, h] = sp, inX = g.X >= x - 1 && g.R <= x + w + 1 && g.Y >= y - 1 && g.B <= y + h + 1;
     const meets = g.X < x + w && g.R > x && g.Y < y + h && g.B > y;
-    if (meets && !inX) outl.push(`the spotlight's edge cuts through the "${(g.querySelector('text') || {}).textContent || 'unnamed'}" box`);
+    const holds = g.X <= x + 1 && g.R >= x + w - 1 && g.Y <= y + 1 && g.B >= y + h - 1;   // a frame around the lit part: not cut
+    if (meets && !inX && !holds) outl.push(`the spotlight's edge cuts through the "${(g.querySelector('text') || {}).textContent || 'unnamed'}" box`);
   });
   // …and a message travelling across its edge is half dimmed: light where it goes, or don't spotlight
   if (sp) document.querySelectorAll('#layer .pk').forEach(g => {
@@ -109,9 +113,10 @@ async function checkScene(s) {
     await p.evaluate(([s, t]) => window.__seek(s, t), [s, st.T0 + st.D - 0.1]);
     if (early !== await frameOf()) fails.push(`scene ${s} step ${j + 1}: the camera keeps moving after it has framed its subject — everything on screen will look like it's shaking`);
   }
-  // nothing still for long: compare frames every half second; a run of
+  // nothing still for long: compare frames about every half second; a run of
   // identical ones is a stretch where the picture waits for the voice
-  const last = plan.steps[plan.steps.length - 1], end = last.T0 + last.D, dt = fast ? 1 : 0.5;
+  // a step that doesn't divide a round period, so a stream looping every 1 s isn't seen at the same phase every time
+  const last = plan.steps[plan.steps.length - 1], end = last.T0 + last.D, dt = fast ? 0.97 : 0.47;
   let prev = null, from = null;
   const runs = [];
   for (let tau = 0.5; tau <= end + 1e-6; tau += dt) {

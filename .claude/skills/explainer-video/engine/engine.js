@@ -10,6 +10,7 @@
 //   at  the scene time where that step's animation begins
 //   focus 'name' | ['name', …] | [x, y, w, h] | 'all'   the camera eases to frame it (kept until changed)
 //   spot  'name' | ['name', …] | [x, y, w, h]           dim everything else while this step is spoken
+//   pad   how far the spotlight reaches past what it names (16); less for rows packed close together
 //   Names are things the scene's build gave a name: named('server', box(…)).
 //   Prefer names: the frame is then measured from the things themselves.
 const NS = 'http://www.w3.org/2000/svg';
@@ -191,7 +192,7 @@ function plan(i) {
     const span = (j + 1 < s.steps.length ? s.steps[j + 1][0] : s.dur) - at;
     const D = Math.max(span / SLOW, v.dur + PAD);
     if (o.focus) focus = o.focus;
-    const r = { at, text, span, D, rate: Math.max(span / D, MIN_RATE), T0, dur: v.dur, caps: v.caps, src: v.src, file: v.file, focus, spot: o.spot || null };
+    const r = { at, text, span, D, rate: Math.max(span / D, MIN_RATE), T0, dur: v.dur, caps: v.caps, src: v.src, file: v.file, focus, spot: o.spot || null, pad: o.pad ?? 16 };
     T0 += D;
     return r;
   });
@@ -234,7 +235,7 @@ function rectOf(target, pad = 0) {
 }
 // a step's frame and spotlight, measured once, the first time they're drawn
 const focusOf = st => (st._focus === undefined ? (st._focus = rectOf(st.focus)) : st._focus);
-const spotOf = st => (st._spot === undefined ? (st._spot = typeof (st.spot || [])[0] === 'number' ? st.spot : rectOf(st.spot, 16)) : st._spot);
+const spotOf = st => (st._spot === undefined ? (st._spot = typeof (st.spot || [])[0] === 'number' ? st.spot : rectOf(st.spot, st.pad)) : st._spot);
 const FULL = [0, 0, 1600, 900];
 function view(rect) {                                     // a rect → scale and centre that frame it
   const [x, y, w, h] = rect || FULL;

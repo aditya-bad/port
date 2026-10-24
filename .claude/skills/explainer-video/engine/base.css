@@ -173,3 +173,49 @@ body.record *, body.record *::before { transition: none !important; animation: n
 .lf-rocket .fin { fill: var(--r); }
 .lf-rocket .flame { fill: var(--wt); }
 .lf-bit { stroke: none; }
+
+/* diagram pieces (engine/diagram.js): databases, event logs, badges, services, term cards */
+.db-body { fill: var(--soft); stroke: var(--ink); stroke-width: 1.8; }
+.db-rim { fill: none; stroke: var(--ink); stroke-width: 1.8; }
+.topic-pipe { fill: var(--card); stroke-width: 2.2; }
+.topic-entry { stroke-width: 2; opacity: .45; }
+.topic.t-ink > * { stroke: var(--ink); } .topic.t-b > * { stroke: var(--b); } .topic.t-g > * { stroke: var(--g); }
+.topic.t-pu > * { stroke: var(--pu); } .topic.t-wt > * { stroke: var(--wt); } .topic.t-r > * { stroke: var(--r); }
+.topic > text { stroke: none; }
+.badge rect { fill: var(--ink); }
+#stage .bdg { font: 600 12px var(--f-mono); fill: var(--paper); }
+.badge.kind rect { fill: var(--card); stroke: var(--line2); stroke-width: 1.2; }
+#stage .badge.kind .bdg { fill: var(--mute); }
+/* a language badge names its language in its colour: Rust red, Go green, Python yellow */
+.badge.l-rust rect { fill: var(--r); } .badge.l-go rect { fill: var(--g); }
+.badge.l-python rect { fill: var(--y); } #stage .badge.l-python .bdg { fill: var(--ink); }
+.svc-body { fill: var(--card); stroke: var(--ink); stroke-width: 1.8; }
+.svc-band { fill: var(--line2); }
+.svc.part-trade .svc-body { stroke: var(--b); } .svc.part-trade .svc-band { fill: var(--b); }
+.svc.part-lens .svc-body { stroke: var(--pu); } .svc.part-lens .svc-band { fill: var(--pu); }
+.svc.part-platform .svc-body { stroke: var(--wt); } .svc.part-platform .svc-band { fill: var(--wt); }
+.svc.part-infra .svc-body { stroke: var(--line2); stroke-dasharray: 6 4; }
+.svc.hot .svc-body { fill: var(--ys); stroke-width: 3; }
+.svc.gone { opacity: .25; }
+#stage .svc-name { font: 700 22px var(--f-display); letter-spacing: -.01em; }
+#stage .svc-plain { font: 500 14px var(--f-mono); fill: var(--mute); }
+.bx.comp > rect { fill: var(--soft); stroke: var(--line2); rx: 5px; }
+.bx.comp.hot > rect { fill: var(--y) !important; stroke: var(--ink); }
+#stage .cmp { font: 500 13px var(--f-mono); }
+.term-card { fill: var(--card); stroke: var(--ink); stroke-width: 1.6; }
+.term-top { fill: var(--y); }
+#stage .term-word { font: 700 24px var(--f-display); }
+#stage .term-text { font: 400 20px var(--f-body); }
+.part-frame { fill: none; stroke-width: 2; stroke-dasharray: 8 6; }
+.part-frame.trade { stroke: var(--b); fill: color-mix(in oklch, var(--b) 5%, transparent); }
+.part-frame.lens { stroke: var(--pu); fill: color-mix(in oklch, var(--pu) 5%, transparent); }
+.part-frame.platform { stroke: var(--wt); fill: color-mix(in oklch, var(--wt) 5%, transparent); }
+.part-frame.cell { stroke: var(--ink); fill: none; stroke-dasharray: 3 5; }
+#stage .part-t { font: 700 24px var(--f-display); }
+#stage .part-t.trade { fill: var(--b); } #stage .part-t.lens { fill: var(--pu); } #stage .part-t.platform { fill: var(--wt); }
+#stage .mname { font: 650 17px var(--f-body); }
+#stage .mnick { font: 700 19px var(--f-display); }
+#stage .tlab { font: 500 15px var(--f-mono); }
+#stage .svc-does { font: 400 16px var(--f-body); fill: var(--mute); }
+.svc.part-mixed .svc-body { stroke: var(--ink); } .svc.part-mixed .svc-band { fill: var(--ink); }
+#stage .txt { font: 400 17px var(--f-body); }

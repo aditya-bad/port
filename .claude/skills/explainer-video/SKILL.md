@@ -87,6 +87,15 @@ scene({
 });
 ```
 
+- **Time steps from their words** with `beats()` (engine/beats.js) instead
+  of typing every `at`: each step gets about 0.2 s of motion per spoken
+  word, so the clock rarely holds.
+  ```js
+  const S = beats([['Here is the whole system.', { focus: 'all' }], ['The desk checks every order.', { spot: ['desk'] }, 3]]);
+  scene({ title: '…', dur: S.dur, steps: S.steps }, p => { …; return (t, rt) => { pop(desk, t, S.at[1]); walk(chips, t, S.at[1], S.to[1]); }; });
+  ```
+  `S.at[i]`/`S.to[i]` are when step i's motion starts and ends; spread a
+  step's motion over that whole span.
 - **Stage:** 1600×900. The title sits at the top (y < 100); keep content
   in y 110–860 and x 40–1560. Labels are 18–22 px, subs 13 px mono; big
   numbers use `big`/`huge`. Colours are `ink b g pu wt r` (and `y` for
@@ -124,7 +133,10 @@ scene({
   box in half. Light everything the sentence is about, including where
   anything moves while it's said: `check.mjs` warns when the spotlight's
   edge cuts a box or a moving packet. Use these to say "look here" when
-  the stage is busy, not on every step.
+  the stage is busy, not on every step. A spotlight reaches 16 px past what
+  it names; for rows packed closer than that pass `pad` (`{ spot: ['r3'], pad: 3 }`),
+  or its edge cuts the neighbours. Don't spotlight one chip inside a dense
+  grid: flash it (`walk`) and keep the light for separate areas.
 - **Words.** Plain, short sentences, from the listener's side ("the order
   goes to the broker", not "the OMS dispatches"). The caption is exactly
   what's said; pronunciations go in `meta.say` or a step's `{ say: '…' }`.
@@ -142,6 +154,44 @@ timing: `fade(el, t, a, d, out)` `reveal(path, t, a, b)` `travel(el, path, t, a,
 `chain(el, paths, t, t0, seg)` `stream(p, path, color, n, period)` → `(time, from, to)`
 `flash(el, t, a, d)` (yellow highlight) `txt(el, s)` `quake(t, a, d, amp)` (shake the picture)
 · `k(t, a, b)` 0→1 · `ke` eased · `lerp` · `fmt` (Indian digit grouping).
+
+## Architecture diagrams (engine/diagram.js)
+
+For explaining a system: what each service is, what it's written in, what
+it owns, and how things flow through it. Every piece returns a group with
+`.X .Y .W .H .cx .cy .R .B`, starts hidden (pop it), and can be named.
+
+- `svc(p, x, y, w, h, name, { nick, lang, kind, part, does, comps, cols, ch })`
+  a service box: name (or nickname with the plain name beside it), a
+  language badge, how it runs (`kind`: 'StatefulSet · 3'), its part's colour
+  band (`part`: trade b, lens pu, platform wt, mixed ink, infra dashed), a
+  sentence of what it does, and its components as chips in `g.comp[name]`
+  (flash them with `walk` as each is described). `g.top` is where the free
+  space under the chips starts.
+- `node(p, x, y, w, name, lang, part, { nick, kind, sub })` a smaller service
+  for maps and flows; `area(p, x, y, w, h, title, kind, sub)` a dashed frame
+  for a part (`trade lens platform cell`).
+- `db(p, x, y, w, h, label, sub)` a database cylinder · `topic(p, x, y, w, label, color, { h, lcls })`
+  an event log (dots can flow along `g.pipe`) · `badge(p, x, y, text, 'lang' | 'kind', anchor)`
+  (a language badge is coloured by its first word: Rust red, Go green, Python yellow).
+- `term(p, x, y, w, word, meaning)` / `termH(w, meaning)` a card that defines a
+  word: explain every term the first time it appears, so nothing is vague.
+- `link(p, a, b, color, { label, sides, d1, d2, d, at, lx, ly, anchor, dash })`
+  a curved arrow edge to edge, with a label kept clear of a packet on it;
+  `show(l, t, a, b)` draws it and its label · `route(p, pts)` an invisible
+  path to travel · `walk(list, t, a, b)` light things up in turn · `pops(list, t, a, gap)`.
+- `flowScene(title, build, narr)` one journey told hop by hop: `build(L, B, M, S)`
+  draws the boxes and returns `{ edges: [[path, from, to, color], …] }`; each
+  narration row `[text, opts, [edge indexes], 'packet label']` sends a packet
+  along those edges while it's said, flashes the box it reaches, and leaves
+  dots flowing on every edge it has travelled.
+- `mbox(p, name, lang, part)` + `m.set(x, y, w, h, { name, lang, part, label })`
+  a box that moves and resizes every frame, for one map folding into another.
+  Fade its words (`label` near 0) while it travels, change its name past
+  halfway, and move each group only into space the groups before it have
+  already left, or boxes land on top of each other. To slide anything that
+  pops, wrap it in a group and move the group: a pop's CSS transform
+  overrides an SVG `transform` attribute on the same element.
 
 ## Life (engine/life.js), and when it fits
 
@@ -172,7 +222,8 @@ break frame-exact recording.
 - `engine/engine.js` the helpers, the clock (steps, slowing, holds), the
   camera, spotlight, captions, start screen (sound needs one click),
   keyboard, and `__plan`/`__seek` for recording. `engine/life.js` the
-  effects. `engine/base.css`, `tokens.css` (light/dark colours), `fonts.css`
+  effects. `engine/diagram.js` architecture pieces and flows.
+  `engine/beats.js` steps timed from their words. `engine/base.css`, `tokens.css` (light/dark colours), `fonts.css`
   (Funnel Display/Sans, Martian Mono, inlined).
 - `tools/setup.sh` venv + voice model (Kokoro `af_heart`, from GitHub
   releases; Hugging Face is blocked here) + Playwright, in `~/.cache/explainer-video`.
@@ -182,6 +233,12 @@ break frame-exact recording.
   videos. `tools/selftest.sh` tests all of it.
 - `example/` a two-scene project using the camera, the spotlight and the
   effects: the template to copy.
+
+`live_deploy/linck-context/reference/explainers/linck-architecture/` holds
+the scenes of the long architecture explainer built with diagram.js (term
+cards, a full map, services with their components, flows, a map folding
+into another, a migration list); `make.sh` there rebuilds it. Start there
+for anything about a system's design.
 
 The first explainer made this way, before this engine existed, is
 `live_deploy/docs/linck-visual.html`: 16 scenes on the platform (its

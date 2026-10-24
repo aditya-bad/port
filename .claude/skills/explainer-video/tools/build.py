@@ -29,7 +29,7 @@ if voice:
         narr.append([{**st, "src": "data:audio/mpeg;base64," + base64.b64encode((P / "narr" / f"{st['file']}.mp3").read_bytes()).decode()}
                      for st in row])
 js = (f"const NARR = {json.dumps(narr, ensure_ascii=False) if voice else 'null'};\n"
-      + (SKILL / "engine" / "engine.js").read_text() + "\n" + (SKILL / "engine" / "life.js").read_text() + "\n"
+      + "\n".join((SKILL / "engine" / f).read_text() for f in ("engine.js", "life.js", "diagram.js", "beats.js")) + "\n"
       + (P / "scenes.js").read_text())
 title, desc = meta["title"], meta.get("description", "")
 page = f"""<!doctype html>
