@@ -631,6 +631,10 @@ OTHER_SIDE = {"CE": "PE", "PE": "CE"}
 # STALE-PRICE GUARD (module docstring): a leg last traded before this
 # session's open is carrying the previous session's price.
 _SESSION_OPEN = time(9, 15)
+# The market's close. Kite keeps sending a few ticks after it, at the
+# closing prices; nothing is traded on them (23 Oct: a 15:13 check held
+# back until a 15:36 tick rolled a leg at prices no order could get).
+_SESSION_CLOSE = time(15, 30)
 # How long a trigger refuted by live quotes is treated as not fired.
 _CONFIRM_COOLDOWN = timedelta(seconds=15)
 # A trigger that keeps being refuted is noted in the decision log at most this often.
@@ -915,6 +919,15 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             # intraday_dtt_adjusted, a position (and a checkpoint cycle)
             # here can span many trading days; there is no daily boundary
             # reset in this strategy at all.
+
+        if _naive_ist(ts).time() >= _SESSION_CLOSE:
+            await self._decide_once_a_day(
+                runner, ts, "market_closed", "blocked",
+                "The market has closed: no entry, adjustment or end-of-day check until tomorrow's open"
+                + ("" if self._eod_fired_today or not (self.legs["CE"] or self.legs["PE"])
+                   else f" (today's {self.eod_check_time:%H:%M} end-of-day check didn't run before the close: skipped)"))
+            self._eod_fired_today = True
+            return
 
         await self._maybe_enter(runner, ts)
         if self.legs["CE"] or self.legs["PE"]:

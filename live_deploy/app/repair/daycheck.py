@@ -326,7 +326,7 @@ async def check_deployment(pool, dep: dict, day: date, book: MinuteBook, real_ki
         finally:
             await tr.rollback()
     replay = {"start": from_what, "fills": [_fill(f) for f in out.fills], "auto": out.auto, "notes": out.notes,
-              "followed": out.followed,
+              "followed": out.followed, "edge_only": out.edge_only,
               "problems": out.problems, "blind": out.blind, "gone": out.gone, "estimated": out.estimated, "fills_app": len(fills)}
     if out.gone:
         status, headline = verdict(rule_list, None, None, False,

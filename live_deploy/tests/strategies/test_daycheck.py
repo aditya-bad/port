@@ -343,3 +343,58 @@ def test_a_strike_no_moment_of_the_minute_explains_stays_a_difference(pool_run, 
         assert ("10:15", "NIFTY26OCT2024850PE") in {(f["minute"], f["symbol"]) for f in r["diff"]["missed"]}
         assert ("10:15", "NIFTY26OCT2024800PE") in {(f["minute"], f["symbol"]) for f in r["diff"]["extra"]}
     pool_run(go)
+
+
+# ── A trade only the candle's extremes make ──────────────────────────────
+# Straddle BankNifty Advanced, 23 Oct: the replay adjusted at 11:36 (and
+# unwound at 11:46) where the app never did. A 1-minute candle puts every
+# contract at its high or low at the same moment; live, each reached its
+# own at its own time.
+
+def spiked_day(past: float):
+    """An adjusted straddle on a flat 25,000 day; Kite's 11:36 index candle
+    opens and closes at 25,000 and reaches `past` points beyond the spot
+    where the adjustment triggers."""
+    async def go(pool, monkeypatch):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_adjusted", cfg("intraday_dtt_adjusted"))
+        day = sim.market.today
+        await D.capture_states(pool, day, "open")
+        await sim.walk("09:15", "15:29", every_min=1)
+        assert not await pool.fetchval("SELECT count(*) FROM position_lots WHERE deployment_id = $1 AND reason = 'adjustment'",
+                                       sim.dep_id), "the app never adjusted"
+        m = sim.market
+        m.now = datetime.combine(day, time(11, 36))
+        ce, pe = (m.by_key[f"NFO:NIFTY26OCT2025000{t}"] for t in ("CE", "PE"))
+        trigger = 25000
+        while True:
+            m.spot["NIFTY"] = trigger
+            if m.price_of(pe) <= 0.5 * m.price_of(ce):
+                break
+            trigger += 1
+        m.spot["NIFTY"] = 25000
+        spike = (25000, trigger + past, 24996, 25000)
+        path = lambda t: spike if f"{t:%H:%M}" == "11:36" else (25000, 25004, 24996, 25000)   # noqa: E731
+        book = MinuteBook(day, candles_source(sim, path))
+        return await D.check_deployment(pool, await dep_row(pool, sim), day, book, sim.kite)
+    return go
+
+
+def test_a_trade_only_every_candle_at_its_extreme_together_makes_is_left_out_as_the_app_did(pool_run, monkeypatch):
+    async def go(pool):
+        r = await spiked_day(3)(pool, monkeypatch)
+        assert r["status"] == "ok", (r["headline"], r["diff"].get("missed"))
+        assert [c["minute"] for c in r["replay"]["edge_only"]] == ["11:36"]
+        assert r["replay"]["edge_only"][0]["left_out"][0]["reason"] == "adjustment"
+        assert any("so the replay keeps to the app" in n for n in r["replay"]["notes"])
+    pool_run(go)
+
+
+def test_a_trade_made_well_inside_the_minutes_range_stays_a_difference(pool_run, monkeypatch):
+    """As are the strangle's ±600 swings in the tests above: 25,600 pulled in
+    a tenth of the way to 25,000 still rolls."""
+    async def go(pool):
+        r = await spiked_day(150)(pool, monkeypatch)
+        assert r["status"] in ("mismatch", "ambiguous"), r["headline"]
+        assert r["replay"]["edge_only"] == []
+        assert ("11:36", "adjustment") in {(f["minute"], f["reason"]) for f in r["diff"]["missed"]}
+    pool_run(go)

@@ -191,6 +191,9 @@ class _Snapshot:
         s.runner, s.dispatcher = runner, dispatcher
         return s
 
+    async def keep(self) -> None:
+        await self.sp.commit()
+
     async def restore(self) -> None:
         await self.sp.rollback()
         r = self.runner
@@ -236,10 +239,17 @@ class Outcome:
     fingerprint: str = ""
     end_state: Optional[dict] = None   # the strategy's saved state at the window's end
     followed: list = field(default_factory=list)   # strikes the app picked that a moment of the minute explains
+    edge_only: list = field(default_factory=list)  # minutes a trade only the very edge of the candle made was left out, as the app did
 
     @property
     def complete(self) -> bool:
         return self.ambiguity is None
+
+
+# A trade the app didn't make, made only in the last tenth of the way from
+# a minute's open/close to its high or low, is the app's call (settle).
+EDGE = 0.9
+APP_WITHIN = timedelta(minutes=3)   # as the day check matches trades (daycheck.MATCH_WITHIN)
 
 
 def fill_key(f: dict) -> tuple:
@@ -377,8 +387,16 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         runner.started = True
         await runner.checkpoint_state()
 
-        async def play(m: datetime, order: str) -> list[dict]:
-            seq, n = ORDERS[order], len(runner.log)
+        app_trades = [(minute_of(f["at"]), minute_of(f.get("until") or f["at"]), f["action"], f["symbol"],
+                       round(float(f["qty"]), 6)) for f in app_fills or []]
+
+        def app_made(f: dict, m: datetime) -> bool:
+            q = round(float(f["qty"]), 6)
+            return any(a == f["action"] and s_ == f["symbol"] and q_ == q and lo - APP_WITHIN <= m <= hi + APP_WITHIN
+                       for lo, hi, a, s_, q_ in app_trades)
+
+        async def play(m: datetime, order) -> list[dict]:
+            seq, n = (ORDERS[order] if isinstance(order, str) else order), len(runner.log)
             for step in range(4):
                 clock.set(m, seq, step)
                 disp.publish()
@@ -389,6 +407,39 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
                                                    "exchange_timestamp": clock.now})
             return runner.log[n:]
 
+        async def settle(m: datetime, order: str) -> tuple[list[dict], bool]:
+            """Play `m` in `order`. Against the app's own day (a day check):
+            a trade the app didn't make, made at an extreme of the candle,
+            that the same minute with every extreme pulled in to EDGE of
+            the way from its open/close doesn't make, is left out. The candle puts every
+            contract at its own high or low at one moment; live, each
+            reached it at its own time, and a trigger only that last tenth
+            sets off is one the app could rightly not have seen. One made
+            further in is a real difference. (True when it was left out.)"""
+            if not app_trades:
+                return await play(m, order), False
+            snap = await _Snapshot.take(conn, runner, disp)
+            got = await play(m, order)
+            lone = [f for f in got if f["phase"] in ("up", "down") and not app_made(f, m)]
+            if not lone:
+                await snap.keep()
+                return got, False
+            await snap.restore()
+            snap = await _Snapshot.take(conn, runner, disp)
+            book.edge = EDGE
+            try:
+                inner = await play(m, order)
+            finally:
+                book.edge = 1.0
+            made = lambda fs: sorted((f["action"], f["symbol"], f["qty"]) for f in fs if app_made(f, m))   # noqa: E731
+            if all(app_made(f, m) for f in inner) and made(inner) == made(got):
+                await snap.keep()
+                out.edge_only.append({"minute": f"{m:%H:%M}", "left_out": [
+                    {k: f[k] for k in ("phase", "action", "symbol", "qty", "price", "reason")} for f in lone]})
+                return inner, True
+            await snap.restore()
+            return await play(m, order), False
+
         def view(fills: list) -> dict:
             return {"fills": [dict(f) for f in fills], "pnl": round(_equity(runner, disp) - out.start_equity, 2),
                     "open": _legs(runner, disp)}
@@ -397,7 +448,7 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
             key = f"{m:%H:%M}"
             idx = book.candle(idx_tok, m) if idx_tok is not None else None
             if key in choices:
-                await play(m, choices[key])
+                await settle(m, choices[key])
             else:
                 nat = natural_order(idx)
                 snap = await _Snapshot.take(conn, runner, disp)
@@ -405,8 +456,8 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
                 alt_view = view(alt)
                 held = set(runner.open_positions) | {f["token"] for f in alt}
                 await snap.restore()
-                got = await play(m, nat)
-                if not same_trades(alt, got):
+                got, settled = await settle(m, nat)
+                if not settled and not same_trades(alt, got):
                     held |= set(runner.open_positions) | {f["token"] for f in got}
                     if not auto:
                         out.ambiguity = Ambiguity(
@@ -444,6 +495,13 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
                          f"With the app's own target premium ({f['target']:,.2f}; the candle's {f['replay_target']:,.2f}) "
                          f"and every price {f['moment'] * 100:.0f}% of the way through its candle's range, the strategy "
                          "picks the app's strike too: a near-tie inside the minute, so the replay follows the app.")
+    for c in out.edge_only:
+        out.notes.append(f"{c['minute']}: the candle's usual reading made "
+                         + ", ".join(f"{f['action']} {f['symbol']} ({f['reason']}, with the index at its {'high' if f['phase'] == 'up' else 'low'})"
+                                     for f in c["left_out"])
+                         + f", which the app didn't. That takes every contract to its high or low at one moment; live, "
+                         f"each reached its own at its own time. With every price going {EDGE:.0%} of the way there the strategy "
+                         "makes no such trade: only the very edge of the minute sets it off, so the replay keeps to the app.")
     same = [f for f in out.fills if f["app_price"]]
     if same:
         out.notes.append(f"{len(same)} trade(s) the app also made in the same minute are at the app's own fill price, "

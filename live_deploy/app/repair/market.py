@@ -150,6 +150,10 @@ class MinuteBook:
         self.errors: dict[int, str] = {}
         self.inverse: dict[int, bool] = {}
         self.symbols: dict[int, str] = {}
+        # how far a candle's "up"/"down" tick goes from its open/close
+        # toward its high/low: 1 is all the way; less pulls every extreme
+        # in (engine.replay's check of a trade only the edge makes)
+        self.edge = 1.0
         self._lock = threading.RLock()
 
     def note(self, token: int, symbol: Optional[str]) -> None:
@@ -460,7 +464,11 @@ class MinuteBook:
         token = int(token)
         c = self.candle(token, minute)
         if c is not None:
-            return c[field_for(phase, self.inverse.get(token, False))], now
+            f = field_for(phase, self.inverse.get(token, False))
+            if self.edge < 1 and phase in ("up", "down"):
+                body = max(c["open"], c["close"]) if f == "high" else min(c["open"], c["close"])
+                return body + self.edge * (c[f] - body), now
+            return c[f], now
         prev = self.last_before(token, minute)
         if prev is None:   # no trade yet today: Kite's last trade before it
             if self.symbols.get(token) in INDEX_LABELS.values():

@@ -86,6 +86,27 @@ def test_eod_check_rebalances_a_gap_below_80_pct_at_15_13_only(pool_run, monkeyp
     pool_run(go)
 
 
+def test_nothing_is_traded_on_the_ticks_after_the_close(pool_run, monkeypatch):
+    """DTT BankNifty Strangle, 23 Oct: its 15:13 check was held back until
+    a 15:36 tick, after the close, then rolled a leg at closing prices no
+    order could have got. A check that missed its window is skipped."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        mid = await find_spot(sim, lambda p: 0.58 <= side_sum(p, "PE") / side_sum(p, "CE") <= 0.75, step=10)
+        await sim.tick("14:00", spot=mid)
+        n = len(await sim.fills())
+        await sim.tick("15:36", spot=mid)
+        await sim.tick("15:38", spot=mid * 1.01)
+        assert len(await sim.fills()) == n, "no EOD roll, no adjustment after 15:30"
+        rows = await pool.fetch("SELECT rule, outcome, summary FROM strategy_decisions WHERE deployment_id = $1 "
+                                "AND rule = 'market_closed'", sim.dep_id)
+        assert len(rows) == 1 and "end-of-day check didn't run before the close: skipped" in rows[0]["summary"]
+        d2 = sim.market.today + timedelta(days=1)
+        await sim.tick(f"{d2} 15:13", spot=mid)
+        assert len(await sim.fills()) > n, "the next day's check runs as usual"
+    pool_run(go)
+
+
 def test_checkpoint_profit_flattens_and_re_enters_a_new_cycle(pool_run, monkeypatch):
     async def go(pool):
         sim = await start(pool, monkeypatch)
