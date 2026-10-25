@@ -295,6 +295,24 @@ reading; the conflation rules are from `06-runtime-and-languages.md`.) In
 the final: one stream per machine into the tick cache agent's shared memory,
 then the supervisor feeds each sandbox over a Unix socket.
 
+### First version: different strategies, different instruments
+
+Slots exist only for what was asked for. Each strategy declares its
+instruments when it starts (NIFTY and this week's strikes; this month's;
+a list of stocks) and can add or drop them during the day as strikes move.
+A runner worker subscribes to the union of its strategies' instruments, and
+`market-data` keeps slots per stream only for those; an instrument nobody
+follows never leaves `market-data`. Each instrument is subscribed from Kite
+or the vendor once, however many workers want it (Kite allows 3 WebSockets ×
+3,000 instruments per API key). Inside a worker an index maps each
+instrument to the strategies that follow it, so a change wakes only those
+strategies. **Proposal:** assign runner shards by what they trade
+(underlying and expiry; options vs equity), so each worker's union stays
+small, as the final scheduler prefers a machine that follows the same
+instruments. Cost: a slot is ~128 bytes in the design (5,000 instruments ≈
+640 KB per stream); the slot-and-changed-set core measured 3–19M updates/s
+on one core, against ~20k/s expected at the open (estimate).
+
 Each stand-in has a swap trigger (e.g. Rust market data when >10k
 instruments or a second vendor; Rust supervisor when the SDK opens to the
 public; Redpanda when retention outgrows JetStream; cells at ~5k strategies or
