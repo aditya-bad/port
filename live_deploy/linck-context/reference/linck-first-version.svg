@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1150" width="1800" height="1150"><defs><marker id="a-md" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2b6cb0"/></marker><marker id="a-ord" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f855a"/></marker><marker id="a-scr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7b5ea7"/></marker><marker id="a-cmd" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#c47f17"/></marker><marker id="a-st" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6b6b6b"/></marker></defs><rect width="1800" height="1150" fill="#f7f6f2"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1170" width="1800" height="1170"><defs><marker id="a-md" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2b6cb0"/></marker><marker id="a-ord" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f855a"/></marker><marker id="a-scr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7b5ea7"/></marker><marker id="a-cmd" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#c47f17"/></marker><marker id="a-st" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6b6b6b"/></marker></defs><rect width="1800" height="1170" fill="#f7f6f2"/>
 <text x="40" y="52" class="title" text-anchor="start">Linck, first version</text>
-<text x="40" y="82" class="subtitle" text-anchor="start">The intermediate architecture we build first: one region (Mumbai), one EKS cluster across 3 zones, nine deployables of our own. Sized for ~2,000 strategies, ~5,000 instruments, ~20k updates/s at the open (estimates).</text>
+<text x="40" y="82" class="subtitle" text-anchor="start">The intermediate architecture we build first: one site you choose (any cloud or your own servers), one Kubernetes cluster, nine deployables of our own. Sized for ~2,000 strategies, ~5,000 instruments, ~20k updates/s at the open (estimates).</text>
 <rect x="40" y="108" width="440" height="74" rx="8" class="ext"/>
 <text x="260.0" y="140" class="name" text-anchor="middle">Clients</text>
 <text x="260.0" y="164" class="kind" text-anchor="middle">web app · phone app · CLI and SDK</text>
@@ -11,12 +11,10 @@
 <text x="1110.0" y="140" class="name" text-anchor="middle">Kite Connect</text>
 <text x="1110.0" y="164" class="kind" text-anchor="middle">WebSocket ticks · REST orders · order updates</text>
 <rect x="40" y="208" width="440" height="62" rx="8" class="aws"/>
-<text x="60" y="236" class="name" text-anchor="start">AWS load balancer</text>
-<text x="60" y="257" class="kind" text-anchor="start">TLS · cookie sessions · not our code</text>
-<rect x="425" y="220" width="43" height="22" rx="4" fill="#d9d9d9"/>
-<text x="446.5" y="236" class="bdg" fill="#333" text-anchor="middle">AWS</text>
+<text x="60" y="236" class="name" text-anchor="start">Load balancer</text>
+<text x="60" y="257" class="kind" text-anchor="start">the site’s own: a provider’s, MetalLB · TLS</text>
 <rect x="20" y="292" width="1760" height="756" rx="16" class="cluster"/>
-<text x="40" y="1036" class="frame" text-anchor="start">ONE EKS CLUSTER · MUMBAI, 3 ZONES · NODE POOLS: SERVICES · RUNTIME (gVisor) · DATA · ~6–10 MACHINES (ESTIMATE)</text>
+<text x="40" y="1036" class="frame" text-anchor="start">ONE KUBERNETES CLUSTER · ANY PROVIDER OR OWN SERVERS · NODE POOLS: SERVICES · RUNTIME (gVisor) · DATA · ~6–10 MACHINES (ESTIMATE)</text>
 <rect x="40" y="336" width="440" height="304" rx="8" class="svc"/>
 <rect x="40" y="336" width="6" height="304" rx="3" fill="#e9c46a"/>
 <text x="60" y="366" class="name" text-anchor="start">core-api</text>
@@ -81,7 +79,7 @@
 <text x="1330" y="416" class="line" text-anchor="start">end-of-day day check</text>
 <text x="1330" y="438" class="line" text-anchor="start">repair and replay</text>
 <text x="1330" y="460" class="line" text-anchor="start">backtests</text>
-<text x="1330" y="482" class="line" text-anchor="start">read Postgres, ClickHouse, S3</text>
+<text x="1330" y="482" class="line" text-anchor="start">read Postgres, ClickHouse, the lake</text>
 <text x="1330" y="504" class="line" text-anchor="start">a repair commits through the OMS</text>
 <rect x="530" y="570" width="1230" height="62" rx="31" class="bus"/>
 <text x="560" y="598" class="name" text-anchor="start">NATS JetStream · 3 nodes</text>
@@ -114,13 +112,13 @@
 <text x="1330" y="690" class="name" text-anchor="start">Not in the first version</text>
 <text x="1330" y="720" class="line" text-anchor="start">commerce · read models · assistant · builder</text>
 <text x="1330" y="746" class="line" text-anchor="start">tick cache agent · computed streams</text>
-<text x="1330" y="772" class="line" text-anchor="start">Redpanda · etcd · Vault and KMS</text>
+<text x="1330" y="772" class="line" text-anchor="start">Redpanda · etcd · Vault</text>
 <text x="1330" y="798" class="line" text-anchor="start">Envoy edge · cells · the public API</text>
 <text x="1330" y="824" class="line" text-anchor="start">Rust market data, runtime and sim venue</text>
 <path d="M40 906V1002A230.0 10 0 0 0 500 1002V906A230.0 10 0 0 0 40 906Z" class="db"/>
 <path d="M40 906A230.0 10 0 0 0 500 906" class="dbrim"/>
 <text x="270.0" y="940" class="name" text-anchor="middle">Postgres</text>
-<text x="270.0" y="964" class="kind" text-anchor="middle">RDS · primary + replica</text>
+<text x="270.0" y="964" class="kind" text-anchor="middle">self-run or managed · primary + replica</text>
 <text x="270.0" y="984" class="kind" text-anchor="middle">app tables · positions + lots · leases · state</text>
 <path d="M530 906V1002A135.0 10 0 0 0 800 1002V906A135.0 10 0 0 0 530 906Z" class="db"/>
 <path d="M530 906A135.0 10 0 0 0 800 906" class="dbrim"/>
@@ -129,16 +127,17 @@
 <path d="M830 906V1002A125.0 10 0 0 0 1080 1002V906A125.0 10 0 0 0 830 906Z" class="db"/>
 <path d="M830 906A125.0 10 0 0 0 1080 906" class="dbrim"/>
 <text x="955.0" y="940" class="name" text-anchor="middle">Redis</text>
-<text x="955.0" y="964" class="kind" text-anchor="middle">ElastiCache</text>
+<text x="955.0" y="964" class="kind" text-anchor="middle">Valkey or Redis</text>
 <text x="955.0" y="984" class="kind" text-anchor="middle">latest prices</text>
-<path d="M1110 906V1002A145.0 10 0 0 0 1400 1002V906A145.0 10 0 0 0 1110 906Z" class="db"/>
-<path d="M1110 906A145.0 10 0 0 0 1400 906" class="dbrim"/>
-<text x="1255.0" y="940" class="name" text-anchor="middle">S3</text>
-<text x="1255.0" y="964" class="kind" text-anchor="middle">Parquet files: the lake</text>
-<path d="M1430 906V1002A165.0 10 0 0 0 1760 1002V906A165.0 10 0 0 0 1430 906Z" class="db"/>
-<path d="M1430 906A165.0 10 0 0 0 1760 906" class="dbrim"/>
-<text x="1595.0" y="940" class="name" text-anchor="middle">Temporal</text>
-<text x="1595.0" y="964" class="kind" text-anchor="middle">end-of-day workflows</text>
+<path d="M1110 906V1002A170.0 10 0 0 0 1450 1002V906A170.0 10 0 0 0 1110 906Z" class="db"/>
+<path d="M1110 906A170.0 10 0 0 0 1450 906" class="dbrim"/>
+<text x="1280.0" y="940" class="name" text-anchor="middle">Object storage</text>
+<text x="1280.0" y="964" class="kind" text-anchor="middle">Parquet files: the lake</text>
+<text x="1280.0" y="984" class="kind" text-anchor="middle">S3 · Azure Blob · GCS · MinIO</text>
+<path d="M1480 906V1002A140.0 10 0 0 0 1760 1002V906A140.0 10 0 0 0 1480 906Z" class="db"/>
+<path d="M1480 906A140.0 10 0 0 0 1760 906" class="dbrim"/>
+<text x="1620.0" y="940" class="name" text-anchor="middle">Temporal</text>
+<text x="1620.0" y="964" class="kind" text-anchor="middle">end-of-day workflows</text>
 <path d="M270 182V204" fill="none" stroke="#7b5ea7" stroke-width="2.6" marker-end="url(#a-scr)"/>
 <path d="M270 270V332" fill="none" stroke="#7b5ea7" stroke-width="2.6" marker-end="url(#a-scr)"/>
 <text x="282" y="306" class="lab" fill="#7b5ea7" text-anchor="start">HTTPS · REST/JSON · gRPC (CLI, SDK)</text>
@@ -188,4 +187,5 @@
 <text x="983.0" y="1088" class="bdg" fill="#3a2f00" text-anchor="middle">Python</text>
 <rect x="1074" y="1072" width="34" height="22" rx="4" fill="#2f9e6e"/>
 <text x="1091.0" y="1088" class="bdg" fill="#ffffff" text-anchor="middle">Go</text>
-<text x="40" y="1124" class="note" text-anchor="start">Ticks never go through NATS: md streams them to the runners over gRPC, keeping only the latest price. Every boundary already speaks its final contract, so each piece can later be swapped alone. Sizes are estimates.</text></svg>
+<text x="40" y="1124" class="note" text-anchor="start">Ticks never go through NATS: md streams them to the runners over gRPC, keeping only the latest price. Every boundary already speaks its final contract, so each piece can later be swapped alone. Sizes are estimates.</text>
+<text x="40" y="1146" class="note" text-anchor="start">No provider is assumed: every store is self-run or a managed one on the same protocol, and later parts can sit at other sites (Lens, the farm, more cells).</text></svg>
