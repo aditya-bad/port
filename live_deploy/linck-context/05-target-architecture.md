@@ -230,6 +230,42 @@ Sized for ~2k strategies, ~5k instruments, ~20k updates/s. It fixes today's
 two structural risks first: the website and strategies share a process, and
 several places write money.
 
+### First version: where each part can run (proposal, 25 Oct)
+
+The owner wants the first version designed first; the final is paused.
+The same deploy-anywhere rules apply, limited by one fact of the first
+version: `core-api` is one process that holds the product API, deployments,
+identity and instruments, and it shares the one Postgres with the OMS. A
+database is never shared across sites, so everything that writes to that
+Postgres lives at one **home site**. Any provider or the owner's own servers
+can be the home site; today's box with k3s or Docker Compose works.
+
+| Part | Product | Where it can run in the first version | How it talks across a site boundary |
+|---|---|---|---|
+| `md`, `runner`, `oms`, `broker-gw-kite`, `sim` | LinckTrade | Home site (the trading path) | — |
+| `workers`: day check, repair, replay | LinckTrade | Home site (they read Postgres; a repair commits through the OMS) | — |
+| `workers`: backtests (their own Temporal task queue) | LinckTrade | **Any site**: spare machines anywhere | Temporal over gRPC with mTLS; read the lake; results back through `core-api` |
+| `core-api` (product API, deployments, identity, instruments) | Lens, Trade control, core | Home site (writes the one Postgres) | — |
+| `live-gateway` | LinckLens | **Any site**, e.g. near the users | NATS leaf node to the home JetStream; checks signed session tokens with identity's cached keys |
+| Web app files | LinckLens | **Any site** or any CDN | static files |
+| `notifications` | Linck core | **Any site** | NATS leaf node |
+| Load balancer | Linck core | Wherever the parts it fronts run | — |
+| SDK v0 + CLI | Linck SDK | A developer's laptop | gRPC with TLS to the home site's edge |
+| Lake (object storage) | LinckTrade | **Any site**, any S3-API, Azure Blob or GCS store, or MinIO | object-store reads |
+| NATS JetStream, Postgres, Redis, Temporal, ClickHouse | — | Home site | — |
+| Standby site | — | **Any site** the owner picks | Postgres streaming replica over TLS, JetStream mirror, object-store replication |
+
+So in the first version, the owner chooses one home site and may put the
+screens' live feed, the web files, notifications, backtests, the lake and the
+standby anywhere else. **Lens moves to its own site only when the product API
+leaves `core-api`** (it then reads a Postgres replica and ClickHouse at its
+own site and sends writes as gRPC commands); that is a migration step, not
+day one. Kite's static IP is the home site's egress IP.
+
+Installed from one site file per site: the same images and settings render
+to a Helm chart (any Kubernetes, k3s included) or a Compose file (one
+machine). The site check runs before the home site trades.
+
 Each stand-in has a swap trigger (e.g. Rust market data when >10k
 instruments or a second vendor; Rust supervisor when the SDK opens to the
 public; Redpanda when retention outgrows JetStream; cells at ~5k strategies or

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1170" width="1800" height="1170"><defs><marker id="a-md" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2b6cb0"/></marker><marker id="a-ord" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f855a"/></marker><marker id="a-scr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7b5ea7"/></marker><marker id="a-cmd" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#c47f17"/></marker><marker id="a-st" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6b6b6b"/></marker></defs><rect width="1800" height="1170" fill="#f7f6f2"/>
 <text x="40" y="52" class="title" text-anchor="start">Linck, first version</text>
-<text x="40" y="82" class="subtitle" text-anchor="start">The intermediate architecture we build first: one site you choose (any cloud or your own servers), one Kubernetes cluster, nine deployables of our own. Sized for ~2,000 strategies, ~5,000 instruments, ~20k updates/s at the open (estimates).</text>
+<text x="40" y="82" class="subtitle" text-anchor="start">The intermediate architecture we build first: a home site you choose (any cloud or your own servers), one Kubernetes cluster, nine deployables of our own. Sized for ~2,000 strategies, ~5,000 instruments, ~20k updates/s at the open (estimates).</text>
 <rect x="40" y="108" width="440" height="74" rx="8" class="ext"/>
 <text x="260.0" y="140" class="name" text-anchor="middle">Clients</text>
 <text x="260.0" y="164" class="kind" text-anchor="middle">web app · phone app · CLI and SDK</text>
@@ -14,7 +14,7 @@
 <text x="60" y="236" class="name" text-anchor="start">Load balancer</text>
 <text x="60" y="257" class="kind" text-anchor="start">the site’s own: a provider’s, MetalLB · TLS</text>
 <rect x="20" y="292" width="1760" height="756" rx="16" class="cluster"/>
-<text x="40" y="1036" class="frame" text-anchor="start">ONE KUBERNETES CLUSTER · ANY PROVIDER OR OWN SERVERS · NODE POOLS: SERVICES · RUNTIME (gVisor) · DATA · ~6–10 MACHINES (ESTIMATE)</text>
+<text x="40" y="1036" class="frame" text-anchor="start">HOME SITE · ANY PROVIDER OR OWN SERVERS · ONE KUBERNETES CLUSTER (OR COMPOSE) · NODE POOLS: SERVICES · RUNTIME (gVisor) · DATA · ~6–10 MACHINES (ESTIMATE)</text>
 <rect x="40" y="336" width="440" height="304" rx="8" class="svc"/>
 <rect x="40" y="336" width="6" height="304" rx="3" fill="#e9c46a"/>
 <text x="60" y="366" class="name" text-anchor="start">core-api</text>
@@ -132,7 +132,7 @@
 <path d="M1110 906V1002A170.0 10 0 0 0 1450 1002V906A170.0 10 0 0 0 1110 906Z" class="db"/>
 <path d="M1110 906A170.0 10 0 0 0 1450 906" class="dbrim"/>
 <text x="1280.0" y="940" class="name" text-anchor="middle">Object storage</text>
-<text x="1280.0" y="964" class="kind" text-anchor="middle">Parquet files: the lake</text>
+<text x="1280.0" y="964" class="kind" text-anchor="middle">the lake: Parquet · any site</text>
 <text x="1280.0" y="984" class="kind" text-anchor="middle">S3 · Azure Blob · GCS · MinIO</text>
 <path d="M1480 906V1002A140.0 10 0 0 0 1760 1002V906A140.0 10 0 0 0 1480 906Z" class="db"/>
 <path d="M1480 906A140.0 10 0 0 0 1760 906" class="dbrim"/>
@@ -173,6 +173,12 @@
 <path d="M537 632C522 760 510 816 484 818" fill="none" stroke="#7b5ea7" stroke-width="2.6" marker-end="url(#a-scr)"/>
 <path d="M480 600H526" fill="none" stroke="#c47f17" stroke-width="2.6" marker-end="url(#a-cmd)"/>
 <path d="M480 520H505V892" fill="none" stroke="#6b6b6b" stroke-width="2.6" marker-end="url(#a-st)"/>
+<rect x="383.2" y="697" width="86.8" height="21" rx="10" fill="#fff" stroke="#2f855a" stroke-width="1.5"/>
+<text x="426.6" y="712" class="bdg" fill="#2f855a" text-anchor="middle">any site</text>
+<rect x="383.2" y="813" width="86.8" height="21" rx="10" fill="#fff" stroke="#2f855a" stroke-width="1.5"/>
+<text x="426.6" y="828" class="bdg" fill="#2f855a" text-anchor="middle">any site</text>
+<rect x="1568.6" y="515" width="181.4" height="21" rx="10" fill="#fff" stroke="#2f855a" stroke-width="1.5"/>
+<text x="1659.3" y="530" class="bdg" fill="#2f855a" text-anchor="middle">backtests: any site</text>
 <line x1="40" y1="1083" x2="80" y2="1083" stroke="#2b6cb0" stroke-width="3"/>
 <text x="90" y="1088" class="leg" text-anchor="start">market data</text>
 <line x1="209" y1="1083" x2="249" y2="1083" stroke="#2f855a" stroke-width="3"/>
@@ -188,4 +194,4 @@
 <rect x="1074" y="1072" width="34" height="22" rx="4" fill="#2f9e6e"/>
 <text x="1091.0" y="1088" class="bdg" fill="#ffffff" text-anchor="middle">Go</text>
 <text x="40" y="1124" class="note" text-anchor="start">Ticks never go through NATS: md streams them to the runners over gRPC, keeping only the latest price. Every boundary already speaks its final contract, so each piece can later be swapped alone. Sizes are estimates.</text>
-<text x="40" y="1146" class="note" text-anchor="start">No provider is assumed: every store is self-run or a managed one on the same protocol, and later parts can sit at other sites (Lens, the farm, more cells).</text></svg>
+<text x="40" y="1146" class="note" text-anchor="start">No provider is assumed; every store is self-run or managed on the same protocol. “Any site” parts can run elsewhere from day one; Lens gets its own site when the product API leaves core-api.</text></svg>

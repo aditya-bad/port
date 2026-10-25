@@ -23,6 +23,9 @@ run `custom_scripts/shadow_backfill.py --dry-run`.
 
 ## Deploy anywhere: open questions (25 Oct)
 
+- The first version is the focus; the final architecture's deploy-anywhere
+  rework is paused (owner, 25 Oct). The first version's placement table in
+  `05` is a proposal, not yet confirmed.
 - Which places to certify first (proposal: own servers with k3s, then the
   providers the first users ask for). Each one costs a release-time test run.
 - Whether the shared parts (edge gateway, identity, commerce, notifications)
