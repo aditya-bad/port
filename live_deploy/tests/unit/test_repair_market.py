@@ -509,6 +509,31 @@ def test_a_strike_ladder_is_one_quote_and_no_history_for_contracts_that_didnt_tr
     assert len(asked) == 1, "quoted once per run"
 
 
+def test_a_never_traded_contract_reads_as_not_traded_this_session_so_the_strangle_holds_as_it_did_live():
+    """23 Oct, DTT Sensex Strangle: SENSEX26NOV77900CE had never traded. Live,
+    Kite's ticks carried its empty (1970) trade time, the strangle's
+    stale-price guard held all day and the app made no trade. The replay
+    stamped it at the session open, the guard let it through, and the day
+    check flagged four trades the strategy could never have made."""
+    from datetime import time as _t
+    from app.strategies.strangle_monthly_v2 import StrangleMonthlyV2Strategy as StrangleMonthlyV2
+    epoch = datetime(1970, 1, 1, 5, 30)
+    b, k, calls, asked = quoted_book({"BFO:SENSEX26NOV77900CE": (139.9, epoch)})
+    tok = k.ltp("BFO:SENSEX26NOV77900CE")["BFO:SENSEX26NOV77900CE"]["instrument_token"]
+    px, traded = b.price(tok, at("09:30"), "close", at("09:30"))
+    assert px == 139.9 and tok in b.never_traded
+    assert traded < datetime.combine(DAY, _t(9, 15)), "before the open, as live: not traded this session"
+
+    s = StrangleMonthlyV2.__new__(StrangleMonthlyV2)   # only the guard's own state
+    s.legs = {"CE": [{"token": tok, "symbol": "SENSEX26NOV77900CE"}], "PE": []}
+    s._stale_logged, s._stale_report = set(), None
+    class R:
+        deployment_name = "t"
+        class dispatcher:
+            last_price_times = {tok: traded}
+    assert s._stale_legs(R, at("09:30")) == ["SENSEX26NOV77900CE"], "the guard holds, as it did live"
+
+
 def test_a_contract_that_traded_on_the_day_gets_its_real_candles():
     rows = {900: [{"date": at("11:00"), "open": 50, "high": 55, "low": 48, "close": 52}]}
     b, k, calls, asked = quoted_book({"BFO:SENSEX26NOV77700CE": (60.0, datetime(2026, 10, 21, 15, 20))}, rows)

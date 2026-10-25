@@ -27,7 +27,10 @@ for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     assert.match(text, /India VIX/);
     assert.match(await p.innerText('.rv-vix'), /VIX (rose to|fell to|held at) \d+\.\d{2} from \d+\.\d{2}/);
     // the total is what the day bars add up to
-    assert.equal(Math.round(api.days.reduce((a, d) => a + d.pnl, 0)), Math.round(api.totals.pnl));
+    // (each day and the total are rounded to the paisa on their own, so they can part by a few paise;
+    // rounding both to rupees parted them by ₹1 when the total sat on a half)
+    const daysSum = api.days.reduce((a, d) => a + d.pnl, 0);
+    assert.ok(Math.abs(daysSum - api.totals.pnl) < 0.05, `days add to ${daysSum}, total ${api.totals.pnl}`);
     // each deployment that booked or traded is listed
     assert.equal(await p.locator('.rv-tbl a.tr').count(), api.deployments.length);
     // every bar has a tip; hovering one shows the day

@@ -50,6 +50,7 @@ from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
 SESSION_OPEN, SESSION_CLOSE = time(9, 15), time(15, 30)
+KITE_NEVER_TRADED = datetime(1970, 1, 1, 5, 30)   # Kite's trade time for a contract that never traded (epoch, in IST)
 
 UP_FIRST = ("open", "up", "down", "close")
 DOWN_FIRST = ("open", "down", "up", "close")
@@ -225,7 +226,11 @@ class MinuteBook:
             return None   # no price, or it traded on/after the day: its history has the day
         if ltt is None:
             self.never_traded.add(token)
-        return px, (ltt or open_)
+        # never traded: Kite's ticks carry its empty (1970) trade time, which
+        # the strangle's stale-price guard reads as "not traded this session"
+        # and holds on; a time at the open here would let the replay trade
+        # where live held all day
+        return px, (ltt or KITE_NEVER_TRADED)
 
     def load(self, token: int) -> dict[datetime, dict]:
         token = int(token)

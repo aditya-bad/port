@@ -240,9 +240,13 @@ def test_the_quotes_for_fills_close_together_are_one_kite_call(pool_run):
         d = await dep(pool)
         disp = Disp({t: fresh(book(bids=[(100.0, 500)])) for t in (1, 2, 3)})
         s = svc(pool, disp, QUOTE)
-        for t, sym in ((1, "NIFTY26OCT25800CE"), (2, "NIFTY26OCT24800PE"), (3, "NIFTY26OCT26000CE")):
-            r = await fill(pool, d, sym, t, "sell", 75, 100.0, T0)
-            s.submit(handed(d, r, sym, t, "sell", 75, 100.0))
+        legs = ((1, "NIFTY26OCT25800CE"), (2, "NIFTY26OCT24800PE"), (3, "NIFTY26OCT26000CE"))
+        # the fills are written first and handed over together: writing each
+        # between submits could outlast the 50 ms window on a busy machine
+        # and split them, which isn't what this test is about
+        handed_over = [handed(d, await fill(pool, d, sym, t, "sell", 75, 100.0, T0), sym, t, "sell", 75, 100.0) for t, sym in legs]
+        for h in handed_over:
+            s.submit(h)
         await s.drain()
         assert s.asked == [["NFO:NIFTY26OCT24800PE", "NFO:NIFTY26OCT25800CE", "NFO:NIFTY26OCT26000CE"]]
         rows = await pool.fetch("SELECT checks FROM shadow_checks WHERE deployment_id = $1", d)
