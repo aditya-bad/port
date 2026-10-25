@@ -247,7 +247,7 @@ test('the switch day: a positional cycle closed today shows under the new one', 
   assert.match(await cell.getAttribute('data-tip'), /Closed today[\s\S]*\+₹6,000[\s\S]*Open cycle since/);
   // the Deployments list says the same
   await p.goto(`${BASE}/linck/#/deployments`);
-  await p.locator(`[data-closed-today]`).first().waitFor();
+  await p.locator(`[data-closed-today]:visible`).first().waitFor();   // the table's (the phone cards' copy is hidden)
   // the next day: the cycle closed yesterday no longer shows
   closed.at = new Date(now - 864e5);
   await p.goto(`${BASE}/linck/#/desk`);

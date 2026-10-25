@@ -40,7 +40,7 @@ from ..deployments.runner import DeploymentRunner
 from ..strategies.registry import get_strategy_class
 from .market import (
     IST, ORDERS, VIX_TOKEN, MinuteBook, ReplayClock, ReplayDispatcher, ReplayKite,
-    kite_lookup, naive_ist, natural_order, replaying, session_minutes,
+    kite_lookup, minute_of, naive_ist, natural_order, replaying, session_minutes,
 )
 
 
@@ -121,6 +121,9 @@ class ReplayRunner(DeploymentRunner):
         self.window = window
         self.log: list[dict] = []
         self.problems: list[str] = []
+        # (minute, action, symbol, qty) -> the app's own fill prices for
+        # that trade in that minute (a day check), in the order it made them
+        self.app_prices: dict[tuple, list[float]] = {}
         # a replay revisits minutes (both ways through one) and runs on
         # candles: no tick filter, no breaker resting the strategy, and
         # what it reports stays with the replay, not the live deployment
@@ -144,6 +147,13 @@ class ReplayRunner(DeploymentRunner):
         meta = dict(metadata or {})
         meta["repair"] = {"run": self.run, "source": "replay-1m", **self.window.as_dict(),
                           "minute": f"{self.clock.minute:%H:%M}", "phase": self.clock.phase}
+        # the same trade the app made in this minute: at the price it really got
+        key = (f"{self.clock.minute:%H:%M}", action, symbol, round(float(qty), 6))
+        real = self.app_prices.get(key, [])
+        n = sum(1 for f in self.log if (f["minute"], f["action"], f["symbol"], round(f["qty"], 6)) == key)
+        app_price = n < len(real)
+        if app_price:
+            price = real[n]
         res = await super()._fill(action, symbol, instrument_token, qty, price, at, reason, meta)
         self.log.append({
             "minute": f"{self.clock.minute:%H:%M}", "phase": self.clock.phase, "at": at.astimezone(IST).isoformat(),
@@ -151,7 +161,7 @@ class ReplayRunner(DeploymentRunner):
             "price": round(float(price), 2), "reason": reason or "",
             "trigger": (metadata or {}).get("trigger"), "realized": res.get("realized_pnl"),
             "meta": {k: v for k, v in (metadata or {}).items() if k != "repair"},
-            "position_id": str(res["position_id"]),
+            "position_id": str(res["position_id"]), "app_price": app_price,
         })
         return res
 
@@ -225,6 +235,7 @@ class Outcome:
     charges: float = 0.0
     fingerprint: str = ""
     end_state: Optional[dict] = None   # the strategy's saved state at the window's end
+    followed: list = field(default_factory=list)   # strikes the app picked that a moment of the minute explains
 
     @property
     def complete(self) -> bool:
@@ -280,17 +291,46 @@ def _prime_session(runner: ReplayRunner, book: MinuteBook, before: datetime) -> 
                                     "last": rows[-1]["close"], "prev_close": None, "partial": False}
 
 
+def _real_prices(app_fills: list) -> tuple[dict, dict, dict]:
+    """The app's own fills as ({(token, minute): price}, {(HH:MM, action,
+    symbol, qty): [prices]}, {minute: [strikes it picked by premium]}). A
+    fill stamped at its candle's start (`timed` False, daycheck.actual_day)
+    is left out: the minute it really happened in isn't known."""
+    from ..candles import parse_contract
+    quoted, filled, picks = {}, {}, {}
+    for f in sorted(app_fills, key=lambda f: f["at"]):
+        if f.get("timed") is False:
+            continue
+        m = minute_of(f["at"])
+        quoted.setdefault((int(f["token"]), m), float(f["price"]))
+        filled.setdefault((f"{m:%H:%M}", f["action"], f["symbol"], round(float(f["qty"]), 6)), []).append(float(f["price"]))
+        basis, c = f.get("basis") or {}, parse_contract(f["symbol"]) or {}
+        if basis.get("target_premium") is not None and c.get("instrument_type") in ("CE", "PE"):
+            picks.setdefault(m, []).append({"symbol": f["symbol"], "underlying": c["underlying"],
+                                            "type": c["instrument_type"], "target": float(basis["target_premium"])})
+    return quoted, filled, picks
+
+
 async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices: dict,
-                 auto: bool = False, run: str = "dry-run") -> Outcome:
+                 auto: bool = False, run: str = "dry-run", app_fills: Optional[list] = None) -> Outcome:
     """Replay `dep` over `window` on `conn` (already inside a transaction
     the caller commits or rolls back). `choices`: {"HH:MM": order} for
     minutes already decided. `auto`: settle ambiguous minutes by the usual
-    reading of the candle instead of stopping (a quick scan)."""
+    reading of the candle instead of stopping (a quick scan). `app_fills`:
+    what the app itself did that day (a day check, daycheck.actual_day): a
+    contract it filled in a minute is quoted at its fill price in that
+    minute, and the same trade (action, contract, qty) made in the same
+    minute fills at that price, so the strategy carries the real price
+    (a stop set off its entry) rather than the candle's. And where the
+    strategy picks a strike by premium in a minute the app picked a
+    different one, the app's is taken when some moment of the minute
+    explains it (ReplayKite.follow_app)."""
     out = Outcome(deployment_id=dep["id"], window=window, choices=dict(choices))
     if book.lookup is None and real_kite is not None:
         book.lookup = kite_lookup(real_kite)   # a leg Kite has nothing for by token is asked for by name
     clock = ReplayClock(window.day)
     kite = ReplayKite(real_kite, book, clock)
+    kite.app_quotes, app_prices, kite.app_picks = _real_prices(app_fills or [])
     # what was listed on the day, as far as the app knows: every contract a
     # deployment held is stored with its exact expiry, and outlives Kite's list
     for r in await conn.fetch("SELECT DISTINCT underlying, expiry FROM contracts "
@@ -300,6 +340,7 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     disp = ReplayDispatcher(book, clock)
     strategy = get_strategy_class(dep["strategy_name"])()
     runner = ReplayRunner(dep, TxPool(conn), disp, strategy, clock, run, window)
+    runner.app_prices = app_prices
     minutes = window.minutes
     if not minutes:
         out.notes.append("The window has no minutes.")
@@ -396,6 +437,19 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         if closed:
             out.charges = round(float(await conn.fetchval(
                 "SELECT COALESCE(SUM(estimated_charges), 0) FROM positions WHERE id = ANY($1::uuid[])", closed) or 0), 2)
+    made = {(f["minute"], f["symbol"]) for f in out.fills}
+    out.followed = [v for k, v in sorted(kite.followed.items()) if k in made]
+    for f in out.followed:
+        out.notes.append(f"{f['minute']}: the app picked {f['app']} where the candle's usual reading picked {f['replay']}. "
+                         f"With the app's own target premium ({f['target']:,.2f}; the candle's {f['replay_target']:,.2f}) "
+                         f"and every price {f['moment'] * 100:.0f}% of the way through its candle's range, the strategy "
+                         "picks the app's strike too: a near-tie inside the minute, so the replay follows the app.")
+    same = [f for f in out.fills if f["app_price"]]
+    if same:
+        out.notes.append(f"{len(same)} trade(s) the app also made in the same minute are at the app's own fill price, "
+                         "what Kite really quoted then, not the candle's: "
+                         + ", ".join(f"{f['minute']} {f['action']} {f['symbol']} ₹{f['price']:,.2f}" for f in same[:6])
+                         + (" …" if len(same) > 6 else "") + ".")
     for und, exp in sorted(kite.gone):
         out.gone.append(f"{und} {exp:%d %b %Y}")
         out.notes.append(f"{und}'s {exp:%d %b} contracts expired before this repair ran: Kite no longer lists them "

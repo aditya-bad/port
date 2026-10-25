@@ -40,6 +40,7 @@ have seen live.
 from __future__ import annotations
 
 import bisect
+import dataclasses
 import sys
 import threading
 import time as _time
@@ -56,6 +57,7 @@ UP_FIRST = ("open", "up", "down", "close")
 DOWN_FIRST = ("open", "down", "up", "close")
 ORDERS = {"up_first": UP_FIRST, "down_first": DOWN_FIRST}
 STEP_SECONDS = (0, 20, 40, 59)   # where in the minute each of the four ticks lands
+MOMENTS = 20   # a minute's range checked at 0, 5%, ... 100% (ReplayKite.follow_app)
 
 # Spot keys Kite answers ltp()/quote() for, as the resolver asks them.
 INDEX_KEYS = {
@@ -535,6 +537,17 @@ class ReplayKite:
         # longer lists (underlying, expiry): the replay can't trade them.
         self.known_expiries: dict[str, set] = {}
         self.gone: set[tuple[str, date]] = set()
+        # (token, minute) -> the price the app itself filled that contract
+        # at in that minute (a day check): what Kite really quoted then,
+        # where the candle only says where the minute went
+        self.app_quotes: dict[tuple[int, datetime], float] = {}
+        # minute -> the strikes the app picked by premium in it ({symbol,
+        # underlying, type, target}); the ones the replay followed it to
+        # (keyed (HH:MM, symbol)); and, while that's being checked, a moment
+        # of the minute: every price at that fraction of its candle's range
+        self.app_picks: dict[datetime, list[dict]] = {}
+        self.followed: dict[tuple, dict] = {}
+        self.moment: Optional[float] = None
         self._masters: dict[str, list] = {}
         self._by_key: dict[str, dict] = {}
         self._by_token: dict[int, dict] = {}
@@ -591,6 +604,13 @@ class ReplayKite:
                 continue
             self.book.note(tok, self._symbol(tok, str(k)))
             got = self.book.price(tok, self.clock.minute, self.clock.phase, self.clock.now)
+            c = self.book.candle(tok, self.clock.minute) if self.moment is not None else None
+            if c is not None:
+                # the index this far up its range, a CE as far up its own, a PE as far down
+                span = (c["high"] - c["low"]) * self.moment
+                got = (c["high"] - span if self.book.inverse.get(tok) else c["low"] + span, self.clock.now)
+            elif self.moment is None and (tok, self.clock.minute) in self.app_quotes:
+                got = (self.app_quotes[(tok, self.clock.minute)], self.clock.now)
             if got is None:
                 continue
             out[str(k)] = (tok, got[0], got[1])
@@ -598,6 +618,36 @@ class ReplayKite:
 
     def ltp(self, keys):
         return {k: {"instrument_token": tok, "last_price": p} for k, (tok, p, _) in self._priced(keys).items()}
+
+    async def follow_app(self, pick_by_premium, resolver, pick, underlying, selector, option_type, target, args, kwargs):
+        """The strike the app picked by premium in this minute, in place of
+        `pick` (the replay's own), when it was a pick some moment of the
+        minute could have made: the app's own target premium, with the
+        index and every contract at the same point of its candle's range.
+        A near-tie the candle can't settle is the app's call; a strike no
+        moment explains is left to show as a difference."""
+        picks = [p for p in self.app_picks.get(self.clock.minute, ())
+                 if p["type"] == option_type.upper() and p["underlying"] == underlying]
+        if not picks or any(p["symbol"] == pick.tradingsymbol for p in picks):
+            return pick
+        for p in picks:
+            for i in range(MOMENTS + 1):
+                self.moment = i / MOMENTS
+                try:
+                    got = await pick_by_premium(resolver, underlying, selector, option_type, p["target"], *args, **kwargs)
+                except Exception:
+                    got = None
+                finally:
+                    self.moment = None
+                if got is not None and got.tradingsymbol == p["symbol"]:
+                    px = (self.ltp([got.key]).get(got.key) or {}).get("last_price", got.last_price)
+                    minute = f"{self.clock.minute:%H:%M}"
+                    self.followed[(minute, p["symbol"])] = {
+                        "minute": minute, "app": p["symbol"], "replay": pick.tradingsymbol,
+                        "target": round(p["target"], 2), "replay_target": round(float(target), 2),
+                        "moment": round(i / MOMENTS, 2)}
+                    return dataclasses.replace(got, last_price=px)
+        return pick
 
     def quote(self, keys):
         out = {}
@@ -739,6 +789,14 @@ def replaying(kite: ReplayKite, clock: ReplayClock):
                              "Kite no longer lists them or serves their prices")
         return got
     swap(R.OptionsResolver, "resolve_expiry", resolve_expiry)
+    pick_by_premium = R.OptionsResolver.get_leg_by_premium
+
+    async def get_leg_by_premium(self, underlying, expiry_selector, option_type, target_price, *args, **kwargs):
+        # a near-tie between two strikes the app settled one way: see follow_app
+        leg = await pick_by_premium(self, underlying, expiry_selector, option_type, target_price, *args, **kwargs)
+        return await kite.follow_app(pick_by_premium, self, leg, underlying, expiry_selector, option_type, target_price,
+                                     args, kwargs)
+    swap(R.OptionsResolver, "get_leg_by_premium", get_leg_by_premium)
     swap(app_clock, "now_ist", clock.now_ist)
     caches = dict(R._INSTRUMENT_CACHE)
     R._INSTRUMENT_CACHE.clear()

@@ -69,13 +69,16 @@ async def state_at(pool, dep_id, day: date, at: str, book: MinuteBook, kite) -> 
             raise engine.PlanChanged("no start-of-day state is kept for this day, so the morning can't be replayed")
         if _t(at) <= OPEN:
             return state, from_what
+        dep = dict(await conn.fetchrow("SELECT * FROM deployments WHERE id = $1", dep_id))
+        fills, _ = await D.actual_day(conn, dep_id, day, dep)
         tr = conn.transaction()
         await tr.start()
         try:
             await D.rewind(conn, dep_id, D._at(day, OPEN), state)
             fresh = dict(await conn.fetchrow("SELECT * FROM deployments WHERE id = $1", dep_id))
+            # the morning as the day check replayed it, at the app's own prices
             out = await engine.replay(conn, fresh, engine.Window(day, OPEN, _t(at)), book, kite, {}, auto=True,
-                                      run=f"state-{uuid.uuid4().hex[:8]}")
+                                      run=f"state-{uuid.uuid4().hex[:8]}", app_fills=fills)
         finally:
             await tr.rollback()
     return out.end_state, f"{from_what}, the morning replayed to {at}"
@@ -154,7 +157,8 @@ async def run(pool, dep_id, day: date, book: MinuteBook, kite, choices: dict, *,
         raise engine.PlanChanged("the check found nothing to repair")
     dep = dict(await queries.get_deployment(pool, dep_id))
     async with pool.acquire() as conn:
-        start = D.repair_from((await D.actual_day(conn, dep_id, day, dep))[0], day, start)
+        app_day = (await D.actual_day(conn, dep_id, day, dep))[0]
+        start = D.repair_from(app_day, day, start)
     state, from_what = await state_at(pool, dep_id, day, start, book, kite)
     window = engine.Window(day, _t(start), CLOSE)
     run_id = uuid.uuid4().hex[:12]
@@ -172,7 +176,7 @@ async def run(pool, dep_id, day: date, book: MinuteBook, kite, choices: dict, *,
             touched = await _touched(conn, dep_id, window.start_at)
             await D.rewind(conn, dep_id, window.start_at, state)
             fresh = dict(await conn.fetchrow("SELECT * FROM deployments WHERE id = $1", dep_id))
-            out = await engine.replay(conn, fresh, window, book, kite, choices, run=run_id)
+            out = await engine.replay(conn, fresh, window, book, kite, choices, run=run_id, app_fills=app_day)
             decisions = await _decisions(conn, dep_id, before["max_decision"])
             key = fills_key(out.fills)
             if not commit:

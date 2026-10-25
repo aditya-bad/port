@@ -13,10 +13,17 @@ it can't share the running app's process). For each deployment:
   2. THE REPLAY: the deployment's own strategy, from the state it had at
      that morning's open (deployment_state_days) and its book rewound to
      the open, through the whole session on Kite's 1-minute candles
-     (app/repair/engine.py, everything rolled back). Its trades are matched
-     to the app's — same action, contract and quantity within a few
-     minutes; prices differ, a 1-minute candle isn't the tick it filled at
-     — and so are the end states.
+     (app/repair/engine.py, everything rolled back). Where the app traded
+     a contract in a minute, the replay is quoted the app's own fill price
+     in that minute, and the same trade there fills at it: what Kite really
+     quoted, not the candle (a stop set 40% off the entry sits where the
+     app's did). Where the strategy picks a strike by premium in a minute
+     the app picked a neighbouring one, the app's pick stands when some
+     moment of that minute (the index and every contract the same way
+     through their candles' ranges, the app's own target premium) makes
+     it the strategy's pick too; a pick no moment explains stays a
+     difference. Its trades are matched to the app's — same action,
+     contract and quantity within a few minutes — and so are the end states.
        - the same: ok
        - different, and no minute in the day could be read two ways: mismatch
        - different, and some minute could (the usual reading was used):
@@ -146,16 +153,18 @@ async def actual_day(conn, dep_id, day: date, dep: Optional[dict] = None) -> tup
     start, end = _at(day, time(0)), _at(day + timedelta(days=1), time(0))
     fills = [{"at": r["executed_at"].astimezone(IST), "minute": f"{r['executed_at'].astimezone(IST):%H:%M}",
               "action": r["action"], "symbol": r["symbol"], "token": int(r["instrument_token"]), "qty": float(r["qty"]),
-              "price": round(float(r["price"]), 2), "reason": r["reason"] or ""}
+              "price": round(float(r["price"]), 2), "reason": r["reason"] or "",
+              "basis": (r["metadata"] or {}).get("target_basis")}
              for r in await conn.fetch(
                  "SELECT l.*, p.symbol, p.instrument_token FROM position_lots l JOIN positions p ON p.id = l.position_id "
                  "WHERE l.deployment_id = $1 AND l.executed_at >= $2 AND l.executed_at < $3 ORDER BY l.executed_at",
                  dep_id, start, end)]
     candle = candle_of(dep) if dep is not None else None
     since = await tick_stamped_since(conn) if candle is not None else None
-    if since is not None:
-        for f in fills:
-            if f["at"] < since:
+    for f in fills:
+        if candle is not None and (since is None or f["at"] < since):
+            f["timed"] = False   # not the minute it happened in: the replay doesn't take its price as that minute's
+            if since is not None:
                 f["until"] = f["at"] + candle
     held = []
     for p in await conn.fetch(
@@ -313,10 +322,11 @@ async def check_deployment(pool, dep: dict, day: date, book: MinuteBook, real_ki
             await rewind(conn, dep_id, _at(day, OPEN), state)
             fresh = dict(await conn.fetchrow("SELECT * FROM deployments WHERE id = $1", dep_id))
             out = await engine.replay(conn, fresh, engine.Window(day, OPEN, CLOSE), book, real_kite, {}, auto=True,
-                                      run=f"daycheck-{uuid.uuid4().hex[:8]}")
+                                      run=f"daycheck-{uuid.uuid4().hex[:8]}", app_fills=fills)
         finally:
             await tr.rollback()
     replay = {"start": from_what, "fills": [_fill(f) for f in out.fills], "auto": out.auto, "notes": out.notes,
+              "followed": out.followed,
               "problems": out.problems, "blind": out.blind, "gone": out.gone, "estimated": out.estimated, "fills_app": len(fills)}
     if out.gone:
         status, headline = verdict(rule_list, None, None, False,

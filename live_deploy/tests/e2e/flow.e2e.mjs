@@ -27,8 +27,16 @@ test('pause, then undo', async () => {
   const id = IDS['BankNifty DTT Plain'];
   await p.goto(`${BASE}/linck/#/d/${id}`);
   await p.waitForSelector('[data-act=primary]');
+  // a test server starved of CPU (the gate runs everything at once) can
+  // briefly show its runner as not running: Restart / Review, not Pause
+  const label = await until(async () => {
+    const t = await p.textContent('[data-act=primary]').catch(() => null);
+    return t === 'Pause' ? t : null;
+  }, 45000) || await p.textContent('[data-act=primary]');
+  assert.equal(label, 'Pause', 'the primary action of a running deployment');
   await p.click('[data-act=primary]');
-  assert.equal(await until(async () => (await dep(ctx, 'BankNifty DTT Plain')).status === 'paused' && 'paused'), 'paused');
+  const got = await until(async () => (await dep(ctx, 'BankNifty DTT Plain')).status === 'paused' && 'paused');
+  assert.equal(got, 'paused', `after clicking ${label}: ${JSON.stringify(await dep(ctx, 'BankNifty DTT Plain'))?.slice(0, 300)}`);
   await p.click('.toast [data-undo]');
   assert.equal(await until(async () => (await dep(ctx, 'BankNifty DTT Plain')).status === 'active' && 'active'), 'active');
 });

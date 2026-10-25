@@ -43,6 +43,39 @@ def test_a_healthy_day_replays_the_same_and_is_ok(pool_run, monkeypatch):
     pool_run(go)
 
 
+def test_the_replay_trades_at_the_apps_own_price_when_it_makes_the_same_trade_in_the_same_minute(pool_run, monkeypatch):
+    """Straddle Simple Sensex, 23 Oct: the app sold the PE at 10:00 at 670.0,
+    the candle said 655.1. The replay's 40% stop sat at 917 instead of 938,
+    so it stopped at 10:17 (PE 932.2) where the app rightly held. Here: the
+    PE's 10:00 candle 15 below the app's fill, a 10:17 high between the two
+    stops, and a 15:00 candle 3 above the app's force exit."""
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_simple", cfg("intraday_dtt_simple"))
+        day = sim.market.today
+        await D.capture_states(pool, day, "open")
+        await sim.walk("09:15", "15:29", every_min=1)
+        lots = await pool.fetch(
+            "SELECT l.action, l.price, l.executed_at, p.symbol, p.instrument_token FROM position_lots l "
+            "JOIN positions p ON p.id = l.position_id WHERE l.deployment_id = $1 ORDER BY l.executed_at", sim.dep_id)
+        pe_in = next(l for l in lots if l["symbol"].endswith("PE") and l["action"] == "sell")
+        pe_out = next(l for l in lots if l["symbol"].endswith("PE") and l["action"] == "buy")
+        tok, p_in, p_out = int(pe_in["instrument_token"]), float(pe_in["price"]), float(pe_out["price"])
+        assert f"{pe_in['executed_at'].astimezone(IST):%H:%M}" == "10:00" and f"{pe_out['executed_at'].astimezone(IST):%H:%M}" == "15:00"
+        stop_candle, stop_app = (p_in - 15) * 1.4, p_in * 1.4
+        hi = round((stop_candle + stop_app) / 2, 2)
+        book = MinuteBook(day, candles_source(sim, flat(25000), overrides={
+            (tok, "10:00"): (p_in - 15,) * 4,
+            (tok, "10:17"): (p_in, hi, p_in, p_in),
+            (tok, "15:00"): (p_out + 3,) * 4,
+        }))
+        r = await D.check_deployment(pool, await dep_row(pool, sim), day, book, sim.kite)
+        assert r["status"] == "ok", r["headline"]
+        assert not r["diff"]["missed"] and not r["diff"]["extra"] and len(r["diff"]["matched"]) == 4
+        assert {m["price_diff"] for m in r["diff"]["matched"]} == {0.0}, "the app's own prices, entry and exit"
+        assert any("the app's own fill" in n for n in r["replay"]["notes"])
+    pool_run(go)
+
+
 def test_a_stalled_day_breaks_the_cutoff_rule_and_shows_the_missed_exits(pool_run, monkeypatch):
     async def go(pool):
         sim = await Sim.create(pool, monkeypatch, "intraday_dtt_simple", cfg("intraday_dtt_simple"))
@@ -251,4 +284,62 @@ def test_the_startup_recheck_leaves_other_strategies_and_checks_run_after_the_fi
         assert {r["status"] for r in await pool.fetch("SELECT status FROM day_checks")} == {"mismatch"}
         await pool.execute("DELETE FROM app_marks")
         assert await D.recheck_candle_stamped(pool) == [], "no mark (the fix not live): nothing to recheck"
+    pool_run(go)
+
+
+# ── A strike picked by premium, in a minute the candle can't settle ─────
+# The straddles' first adjustment on 23 Oct (BankNifty 55100 vs 55000,
+# Nifty 22850 vs 22800, Sensex 74200 vs 74100) and the strangle's 10:03
+# roll: the app picked one strike, the candle's usual reading the next.
+
+def adjusted_day(override_app_strike: bool):
+    """An adjusted straddle that adjusted at 10:15 (the index jumped 250):
+    the app sold the 24800 PE for a target of 25% of the CE. Kite's 10:15
+    candle has the CE higher, so the candle's target is exactly the 24850
+    PE's price; with `override_app_strike`, the 24800 PE's 10:15 candle is
+    nowhere near the app's target either."""
+    async def go(pool, monkeypatch):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_adjusted", cfg("intraday_dtt_adjusted"))
+        day = sim.market.today
+        jump = lambda t: 25000 if t.time() < time(10, 15) else 25250   # noqa: E731
+        await D.capture_states(pool, day, "open")
+        await sim.walk("09:15", "15:29", every_min=1, spot_fn=jump)
+        lots = await pool.fetch(
+            "SELECT l.*, p.symbol, p.instrument_token FROM position_lots l JOIN positions p ON p.id = l.position_id "
+            "WHERE l.deployment_id = $1 AND l.reason = 'adjustment'", sim.dep_id)
+        assert [l["symbol"] for l in lots] == ["NIFTY26OCT2024800PE"]
+        target = lots[0]["metadata"]["target_basis"]["target_premium"]
+        m = sim.market
+        row = lambda sym: m.by_key[f"NFO:{sym}"]   # noqa: E731
+        m.now, m.spot["NIFTY"] = datetime.combine(day, time(10, 15)), 25250
+        near = m.price_of(row("NIFTY26OCT2024850PE"))
+        ce = int(row("NIFTY26OCT2025000CE")["instrument_token"])
+        over = {(ce, "10:15"): (near / 0.25,) * 4}
+        if override_app_strike:
+            over[(int(lots[0]["instrument_token"]), "10:15")] = (target + 40,) * 4
+        path = lambda t: (jump(t), jump(t) + 4, jump(t) - 4, jump(t))   # noqa: E731
+        book = MinuteBook(day, candles_source(sim, path, overrides=over))
+        return await D.check_deployment(pool, await dep_row(pool, sim), day, book, sim.kite)
+    return go
+
+
+def test_a_strike_the_app_picked_that_a_moment_of_the_minute_explains_is_followed(pool_run, monkeypatch):
+    async def go(pool):
+        r = await adjusted_day(False)(pool, monkeypatch)
+        assert r["status"] == "ok", (r["headline"], r["diff"].get("missed"), r["diff"].get("extra"))
+        f = r["replay"]["followed"]
+        assert [(x["minute"], x["app"], x["replay"]) for x in f] == [("10:15", "NIFTY26OCT2024800PE", "NIFTY26OCT2024850PE")]
+        assert any("the replay follows the app" in n for n in r["replay"]["notes"])
+        adj = next(m for m in r["diff"]["matched"] if m["app"]["reason"] == "adjustment")
+        assert adj["minutes_apart"] == 0 and adj["price_diff"] == 0
+    pool_run(go)
+
+
+def test_a_strike_no_moment_of_the_minute_explains_stays_a_difference(pool_run, monkeypatch):
+    async def go(pool):
+        r = await adjusted_day(True)(pool, monkeypatch)
+        assert r["status"] == "mismatch", r["headline"]
+        assert r["replay"]["followed"] == []
+        assert ("10:15", "NIFTY26OCT2024850PE") in {(f["minute"], f["symbol"]) for f in r["diff"]["missed"]}
+        assert ("10:15", "NIFTY26OCT2024800PE") in {(f["minute"], f["symbol"]) for f in r["diff"]["extra"]}
     pool_run(go)
