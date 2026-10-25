@@ -210,9 +210,10 @@ body.record *, body.record *::before { transition: none !important; animation: n
 .part-frame.trade { stroke: var(--b); fill: color-mix(in oklch, var(--b) 5%, transparent); }
 .part-frame.lens { stroke: var(--pu); fill: color-mix(in oklch, var(--pu) 5%, transparent); }
 .part-frame.platform { stroke: var(--wt); fill: color-mix(in oklch, var(--wt) 5%, transparent); }
+.part-frame.sdk { stroke: var(--g); fill: color-mix(in oklch, var(--g) 5%, transparent); }
 .part-frame.cell { stroke: var(--ink); fill: none; stroke-dasharray: 3 5; }
 #stage .part-t { font: 700 24px var(--f-display); }
-#stage .part-t.trade { fill: var(--b); } #stage .part-t.lens { fill: var(--pu); } #stage .part-t.platform { fill: var(--wt); }
+#stage .part-t.trade { fill: var(--b); } #stage .part-t.lens { fill: var(--pu); } #stage .part-t.platform { fill: var(--wt); } #stage .part-t.sdk { fill: var(--g); }
 #stage .mname { font: 650 17px var(--f-body); }
 #stage .mnick { font: 700 19px var(--f-display); }
 #stage .tlab { font: 500 15px var(--f-mono); }
