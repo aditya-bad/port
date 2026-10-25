@@ -1,0 +1,191 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1150" width="1800" height="1150"><defs><marker id="a-md" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2b6cb0"/></marker><marker id="a-ord" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#2f855a"/></marker><marker id="a-scr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7b5ea7"/></marker><marker id="a-cmd" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#c47f17"/></marker><marker id="a-st" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#6b6b6b"/></marker></defs><rect width="1800" height="1150" fill="#f7f6f2"/>
+<text x="40" y="52" class="title" text-anchor="start">Linck, first version</text>
+<text x="40" y="82" class="subtitle" text-anchor="start">The intermediate architecture we build first: one region (Mumbai), one EKS cluster across 3 zones, nine deployables of our own. Sized for ~2,000 strategies, ~5,000 instruments, ~20k updates/s at the open (estimates).</text>
+<rect x="40" y="108" width="440" height="74" rx="8" class="ext"/>
+<text x="260.0" y="140" class="name" text-anchor="middle">Clients</text>
+<text x="260.0" y="164" class="kind" text-anchor="middle">web app · phone app · CLI and SDK</text>
+<rect x="530" y="108" width="330" height="74" rx="8" class="ext"/>
+<text x="695.0" y="140" class="name" text-anchor="middle">Licensed data vendor</text>
+<text x="695.0" y="164" class="kind" text-anchor="middle">one feed: TCP or WebSocket</text>
+<rect x="900" y="108" width="420" height="74" rx="8" class="ext"/>
+<text x="1110.0" y="140" class="name" text-anchor="middle">Kite Connect</text>
+<text x="1110.0" y="164" class="kind" text-anchor="middle">WebSocket ticks · REST orders · order updates</text>
+<rect x="40" y="208" width="440" height="62" rx="8" class="aws"/>
+<text x="60" y="236" class="name" text-anchor="start">AWS load balancer</text>
+<text x="60" y="257" class="kind" text-anchor="start">TLS · cookie sessions · not our code</text>
+<rect x="425" y="220" width="43" height="22" rx="4" fill="#d9d9d9"/>
+<text x="446.5" y="236" class="bdg" fill="#333" text-anchor="middle">AWS</text>
+<rect x="20" y="292" width="1760" height="756" rx="16" class="cluster"/>
+<text x="40" y="1036" class="frame" text-anchor="start">ONE EKS CLUSTER · MUMBAI, 3 ZONES · NODE POOLS: SERVICES · RUNTIME (gVisor) · DATA · ~6–10 MACHINES (ESTIMATE)</text>
+<rect x="40" y="336" width="440" height="304" rx="8" class="svc"/>
+<rect x="40" y="336" width="6" height="304" rx="3" fill="#e9c46a"/>
+<text x="60" y="366" class="name" text-anchor="start">core-api</text>
+<rect x="398" y="350" width="70" height="22" rx="4" fill="#e9c46a"/>
+<text x="433.0" y="366" class="bdg" fill="#3a2f00" text-anchor="middle">Python</text>
+<text x="60" y="388" class="kind" text-anchor="start">modular monolith · today’s app, moved</text>
+<rect x="60" y="404" width="400" height="42" rx="6" class="chip"/>
+<text x="76" y="423" class="chipname" text-anchor="start">product API</text>
+<text x="76" y="440" class="chipsub" text-anchor="start">screens · reports · Geek · repair</text>
+<rect x="60" y="454" width="400" height="42" rx="6" class="chip"/>
+<text x="76" y="473" class="chipname" text-anchor="start">deployments</text>
+<text x="76" y="490" class="chipsub" text-anchor="start">lifecycle · start/stop (control’s job)</text>
+<rect x="60" y="504" width="400" height="42" rx="6" class="chip"/>
+<text x="76" y="523" class="chipname" text-anchor="start">identity</text>
+<text x="76" y="540" class="chipsub" text-anchor="start">users · tenants · sessions</text>
+<rect x="60" y="554" width="400" height="42" rx="6" class="chip"/>
+<text x="76" y="573" class="chipname" text-anchor="start">instruments</text>
+<text x="76" y="590" class="chipsub" text-anchor="start">today’s resolver · expiries</text>
+<text x="60" y="622" class="note" text-anchor="start">each module owns its tables and never joins another’s</text>
+<rect x="40" y="660" width="440" height="100" rx="8" class="svc"/>
+<rect x="40" y="660" width="6" height="100" rx="3" fill="#2f9e6e"/>
+<text x="60" y="690" class="name" text-anchor="start">live-gateway</text>
+<rect x="434" y="674" width="34" height="22" rx="4" fill="#2f9e6e"/>
+<text x="451.0" y="690" class="bdg" fill="#ffffff" text-anchor="middle">Go</text>
+<text x="60" y="712" class="kind" text-anchor="start">Deployment</text>
+<text x="60" y="740" class="line" text-anchor="start">SSE to screens: latest values only, ≤ every 250 ms</text>
+<rect x="40" y="776" width="440" height="92" rx="8" class="svc"/>
+<rect x="40" y="776" width="6" height="92" rx="3" fill="#e9c46a"/>
+<text x="60" y="806" class="name" text-anchor="start">notifications</text>
+<rect x="398" y="790" width="70" height="22" rx="4" fill="#e9c46a"/>
+<text x="433.0" y="806" class="bdg" fill="#3a2f00" text-anchor="middle">Python</text>
+<text x="60" y="828" class="kind" text-anchor="start">event consumer</text>
+<text x="60" y="856" class="line" text-anchor="start">push · email · Telegram</text>
+<rect x="530" y="336" width="300" height="210" rx="8" class="svc"/>
+<rect x="530" y="336" width="6" height="210" rx="3" fill="#2f9e6e"/>
+<text x="550" y="366" class="name" text-anchor="start">md</text>
+<rect x="784" y="350" width="34" height="22" rx="4" fill="#2f9e6e"/>
+<text x="801.0" y="366" class="bdg" fill="#ffffff" text-anchor="middle">Go</text>
+<text x="550" y="388" class="kind" text-anchor="start">market data · Deployment</text>
+<text x="550" y="416" class="line" text-anchor="start">Kite WebSocket + one vendor</text>
+<text x="550" y="438" class="line" text-anchor="start">tick filter, sequence numbers</text>
+<text x="550" y="460" class="line" text-anchor="start">bars and option-chain views</text>
+<text x="550" y="482" class="line" text-anchor="start">bars → ClickHouse</text>
+<text x="550" y="504" class="line" text-anchor="start">latest prices → Redis</text>
+<rect x="950" y="336" width="310" height="210" rx="8" class="svc"/>
+<rect x="950" y="336" width="6" height="210" rx="3" fill="#e9c46a"/>
+<text x="970" y="366" class="name" text-anchor="start">runner</text>
+<rect x="1178" y="350" width="70" height="22" rx="4" fill="#e9c46a"/>
+<text x="1213.0" y="366" class="bdg" fill="#3a2f00" text-anchor="middle">Python</text>
+<text x="970" y="388" class="kind" text-anchor="start">StatefulSet · leased workers</text>
+<text x="970" y="416" class="line" text-anchor="start">a lease per shard, in Postgres</text>
+<text x="970" y="438" class="line" text-anchor="start">one latest slot per instrument</text>
+<text x="970" y="460" class="line" text-anchor="start">Python strategies, in gVisor</text>
+<text x="970" y="482" class="line" text-anchor="start">indicators inside each strategy</text>
+<text x="970" y="504" class="line" text-anchor="start">state → a deployment_state row</text>
+<rect x="1310" y="336" width="450" height="210" rx="8" class="svc"/>
+<rect x="1310" y="336" width="6" height="210" rx="3" fill="#e9c46a"/>
+<text x="1330" y="366" class="name" text-anchor="start">workers</text>
+<rect x="1678" y="350" width="70" height="22" rx="4" fill="#e9c46a"/>
+<text x="1713.0" y="366" class="bdg" fill="#3a2f00" text-anchor="middle">Python</text>
+<text x="1330" y="388" class="kind" text-anchor="start">Temporal workers · today’s code, moved</text>
+<text x="1330" y="416" class="line" text-anchor="start">end-of-day day check</text>
+<text x="1330" y="438" class="line" text-anchor="start">repair and replay</text>
+<text x="1330" y="460" class="line" text-anchor="start">backtests</text>
+<text x="1330" y="482" class="line" text-anchor="start">read Postgres, ClickHouse, S3</text>
+<text x="1330" y="504" class="line" text-anchor="start">a repair commits through the OMS</text>
+<rect x="530" y="570" width="1230" height="62" rx="31" class="bus"/>
+<text x="560" y="598" class="name" text-anchor="start">NATS JetStream · 3 nodes</text>
+<text x="560" y="620" class="kind" text-anchor="start">intents · fills and order events · commands · live updates</text>
+<rect x="530" y="660" width="300" height="208" rx="8" class="svc"/>
+<rect x="530" y="660" width="6" height="208" rx="3" fill="#2f9e6e"/>
+<text x="550" y="690" class="name" text-anchor="start">oms</text>
+<rect x="784" y="674" width="34" height="22" rx="4" fill="#2f9e6e"/>
+<text x="801.0" y="690" class="bdg" fill="#ffffff" text-anchor="middle">Go</text>
+<text x="550" y="712" class="kind" text-anchor="start">StatefulSet · Heimdall, day one</text>
+<text x="550" y="740" class="line" text-anchor="start">the only writer of money</text>
+<text x="550" y="762" class="line" text-anchor="start">dedupe · epoch fence · risk</text>
+<text x="550" y="784" class="line" text-anchor="start">order + ledger + outbox:</text>
+<text x="550" y="806" class="line" text-anchor="start">   one transaction</text>
+<text x="550" y="828" class="line" text-anchor="start">positions and lots tables</text>
+<rect x="950" y="660" width="310" height="116" rx="8" class="svc"/>
+<rect x="950" y="660" width="6" height="116" rx="3" fill="#2f9e6e"/>
+<text x="970" y="690" class="name" text-anchor="start">broker-gw-kite</text>
+<rect x="1214" y="674" width="34" height="22" rx="4" fill="#2f9e6e"/>
+<text x="1231.0" y="690" class="bdg" fill="#ffffff" text-anchor="middle">Go</text>
+<text x="970" y="712" class="kind" text-anchor="start">Kraken with one arm: Kite</text>
+<text x="970" y="740" class="line" text-anchor="start">token bucket · our order id as tag</text>
+<rect x="950" y="790" width="310" height="78" rx="8" class="svc"/>
+<rect x="950" y="790" width="6" height="78" rx="3" fill="#e9c46a"/>
+<text x="970" y="820" class="name" text-anchor="start">sim</text>
+<rect x="1178" y="804" width="70" height="22" rx="4" fill="#e9c46a"/>
+<text x="1213.0" y="820" class="bdg" fill="#3a2f00" text-anchor="middle">Python</text>
+<text x="970" y="842" class="kind" text-anchor="start">paper fills · broker contract</text>
+<rect x="1310" y="660" width="450" height="208" rx="8" class="later"/>
+<text x="1330" y="690" class="name" text-anchor="start">Not in the first version</text>
+<text x="1330" y="720" class="line" text-anchor="start">commerce · read models · assistant · builder</text>
+<text x="1330" y="746" class="line" text-anchor="start">tick cache agent · computed streams</text>
+<text x="1330" y="772" class="line" text-anchor="start">Redpanda · etcd · Vault and KMS</text>
+<text x="1330" y="798" class="line" text-anchor="start">Envoy edge · cells · the public API</text>
+<text x="1330" y="824" class="line" text-anchor="start">Rust market data, runtime and sim venue</text>
+<path d="M40 906V1002A230.0 10 0 0 0 500 1002V906A230.0 10 0 0 0 40 906Z" class="db"/>
+<path d="M40 906A230.0 10 0 0 0 500 906" class="dbrim"/>
+<text x="270.0" y="940" class="name" text-anchor="middle">Postgres</text>
+<text x="270.0" y="964" class="kind" text-anchor="middle">RDS · primary + replica</text>
+<text x="270.0" y="984" class="kind" text-anchor="middle">app tables · positions + lots · leases · state</text>
+<path d="M530 906V1002A135.0 10 0 0 0 800 1002V906A135.0 10 0 0 0 530 906Z" class="db"/>
+<path d="M530 906A135.0 10 0 0 0 800 906" class="dbrim"/>
+<text x="665.0" y="940" class="name" text-anchor="middle">ClickHouse</text>
+<text x="665.0" y="964" class="kind" text-anchor="middle">bars · reports · Geek</text>
+<path d="M830 906V1002A125.0 10 0 0 0 1080 1002V906A125.0 10 0 0 0 830 906Z" class="db"/>
+<path d="M830 906A125.0 10 0 0 0 1080 906" class="dbrim"/>
+<text x="955.0" y="940" class="name" text-anchor="middle">Redis</text>
+<text x="955.0" y="964" class="kind" text-anchor="middle">ElastiCache</text>
+<text x="955.0" y="984" class="kind" text-anchor="middle">latest prices</text>
+<path d="M1110 906V1002A145.0 10 0 0 0 1400 1002V906A145.0 10 0 0 0 1110 906Z" class="db"/>
+<path d="M1110 906A145.0 10 0 0 0 1400 906" class="dbrim"/>
+<text x="1255.0" y="940" class="name" text-anchor="middle">S3</text>
+<text x="1255.0" y="964" class="kind" text-anchor="middle">Parquet files: the lake</text>
+<path d="M1430 906V1002A165.0 10 0 0 0 1760 1002V906A165.0 10 0 0 0 1430 906Z" class="db"/>
+<path d="M1430 906A165.0 10 0 0 0 1760 906" class="dbrim"/>
+<text x="1595.0" y="940" class="name" text-anchor="middle">Temporal</text>
+<text x="1595.0" y="964" class="kind" text-anchor="middle">end-of-day workflows</text>
+<path d="M270 182V204" fill="none" stroke="#7b5ea7" stroke-width="2.6" marker-end="url(#a-scr)"/>
+<path d="M270 270V332" fill="none" stroke="#7b5ea7" stroke-width="2.6" marker-end="url(#a-scr)"/>
+<text x="282" y="306" class="lab" fill="#7b5ea7" text-anchor="start">HTTPS · REST/JSON · gRPC (CLI, SDK)</text>
+<path d="M40 712H30V146H36" fill="none" stroke="#7b5ea7" stroke-width="2.6" marker-end="url(#a-scr)"/>
+<text x="24" y="430" class="lab" fill="#7b5ea7" text-anchor="middle" transform="rotate(-90 24 430)">SSE to screens, through the load balancer</text>
+<path d="M695 182V332" fill="none" stroke="#2b6cb0" stroke-width="2.6" marker-end="url(#a-md)"/>
+<text x="707" y="306" class="lab" fill="#2b6cb0" text-anchor="start">feed</text>
+<path d="M960 182C960 260 790 270 790 332" fill="none" stroke="#2b6cb0" stroke-width="2.6" marker-end="url(#a-md)"/>
+<text x="972" y="222" class="lab" fill="#2b6cb0" text-anchor="start">WebSocket ticks</text>
+<path d="M830 440H946" fill="none" stroke="#2b6cb0" stroke-width="2.6" marker-end="url(#a-md)"/>
+<text x="890" y="430" class="lab" fill="#2b6cb0" text-anchor="middle">gRPC stream</text>
+<text x="890" y="460" class="lab" fill="#2b6cb0" text-anchor="middle">latest only</text>
+<path d="M830 520H880V892" fill="none" stroke="#2b6cb0" stroke-width="2.6" marker-end="url(#a-md)"/>
+<text x="886" y="852" class="lab" fill="#2b6cb0">latest</text>
+<path d="M1010 546V566" fill="none" stroke="#2f855a" stroke-width="2.6" marker-end="url(#a-ord)"/>
+<text x="1002" y="562" class="lab" fill="#2f855a" text-anchor="end">intents</text>
+<path d="M1180 570V550" fill="none" stroke="#c47f17" stroke-width="2.6" marker-end="url(#a-cmd)"/>
+<text x="1170" y="562" class="lab" fill="#c47f17" text-anchor="end">fills · commands</text>
+<path d="M600 632V656" fill="none" stroke="#2f855a" stroke-width="2.6" marker-end="url(#a-ord)"/>
+<text x="608" y="650" class="lab" fill="#2f855a" text-anchor="start">intents</text>
+<path d="M770 660V636" fill="none" stroke="#2f855a" stroke-width="2.6" marker-end="url(#a-ord)"/>
+<text x="778" y="650" class="lab" fill="#2f855a" text-anchor="start">fills</text>
+<path d="M830 712H946" fill="none" stroke="#2f855a" stroke-width="2.6" marker-end="url(#a-ord)"/>
+<text x="892" y="702" class="lab" fill="#2f855a" text-anchor="start">gRPC</text>
+<path d="M1105 776V786" fill="none" stroke="#2f855a" stroke-width="2.6" marker-end="url(#a-ord)"/>
+<text x="1114" y="786" class="lab" fill="#2f855a">paper</text>
+<path d="M1268 690H1286V190" fill="none" stroke="#2f855a" stroke-width="2.6" marker-end="url(#a-ord)"/>
+<path d="M1300 182V700H1264" fill="none" stroke="#2f855a" stroke-width="2.6" marker-end="url(#a-ord)"/>
+<text x="1279" y="440" class="lab" fill="#2f855a" text-anchor="middle" transform="rotate(-90 1279 440)">orders · order updates</text>
+<path d="M560 868C560 882 520 884 470 892" fill="none" stroke="#2f855a" stroke-width="2.6" marker-end="url(#a-ord)"/>
+<text x="590" y="884" class="lab" fill="#2f855a" text-anchor="start">one transaction</text>
+<path d="M545 632C545 680 520 700 484 704" fill="none" stroke="#7b5ea7" stroke-width="2.6" marker-end="url(#a-scr)"/>
+<path d="M537 632C522 760 510 816 484 818" fill="none" stroke="#7b5ea7" stroke-width="2.6" marker-end="url(#a-scr)"/>
+<path d="M480 600H526" fill="none" stroke="#c47f17" stroke-width="2.6" marker-end="url(#a-cmd)"/>
+<path d="M480 520H505V892" fill="none" stroke="#6b6b6b" stroke-width="2.6" marker-end="url(#a-st)"/>
+<line x1="40" y1="1083" x2="80" y2="1083" stroke="#2b6cb0" stroke-width="3"/>
+<text x="90" y="1088" class="leg" text-anchor="start">market data</text>
+<line x1="209" y1="1083" x2="249" y2="1083" stroke="#2f855a" stroke-width="3"/>
+<text x="259" y="1088" class="leg" text-anchor="start">orders and fills</text>
+<line x1="423" y1="1083" x2="463" y2="1083" stroke="#7b5ea7" stroke-width="3"/>
+<text x="473" y="1088" class="leg" text-anchor="start">screens and requests</text>
+<line x1="673" y1="1083" x2="713" y2="1083" stroke="#c47f17" stroke-width="3"/>
+<text x="723" y="1088" class="leg" text-anchor="start">commands</text>
+<line x1="815" y1="1083" x2="855" y2="1083" stroke="#6b6b6b" stroke-width="3"/>
+<text x="865" y="1088" class="leg" text-anchor="start">storage</text>
+<rect x="948" y="1072" width="70" height="22" rx="4" fill="#e9c46a"/>
+<text x="983.0" y="1088" class="bdg" fill="#3a2f00" text-anchor="middle">Python</text>
+<rect x="1074" y="1072" width="34" height="22" rx="4" fill="#2f9e6e"/>
+<text x="1091.0" y="1088" class="bdg" fill="#ffffff" text-anchor="middle">Go</text>
+<text x="40" y="1124" class="note" text-anchor="start">Ticks never go through NATS: md streams them to the runners over gRPC, keeping only the latest price. Every boundary already speaks its final contract, so each piece can later be swapped alone. Sizes are estimates.</text></svg>
