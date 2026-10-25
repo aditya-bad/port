@@ -102,3 +102,15 @@ From `git log` (328 commits, 7 Aug – 23 Oct 2026). For details of the first
   Alerts panel; cycle P&L everywhere; shadow mode in four stages; doc on
   brokers, languages and load (with benchmarks); doc and prototype for the
   any-language runtime; this handoff folder.
+
+## 24–25 October
+
+- Architecture video (final → intermediate), "Running Linck" and "Linck SDK"
+  videos, the explainer-video skill, the first-version picture. Repair parity
+  audit of all nine strategies; old-timed fills handled by the day check and
+  repair; weekend repairs.
+- **Correction (25 Oct)**: every architecture doc, video and picture had
+  assumed AWS (EKS in Mumbai, RDS, S3, KMS, NAT, DR in Hyderabad). The owner
+  never chose that. Linck Platform (LinckTrade, LinckLens, Linck SDK) must
+  deploy on any cloud or own servers, mixed. The design now names protocols
+  with self-run options ("Deploy anywhere" in `05-target-architecture.md`).

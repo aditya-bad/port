@@ -51,6 +51,12 @@
 - **Lead with the answer**, then details. Give exact commands to run on the
   box, with `--dry-run` first for anything that writes.
 - **Correct yourself openly** when the owner pushes back and you were wrong.
+- **Don't assume a provider.** Never write a cloud, a region or a vendor's
+  managed service into the design as if it were chosen. Name the protocol,
+  give the self-run option, list managed ones as alternatives. On 25 Oct the
+  owner found AWS assumed across every architecture doc, video and picture:
+  "Did I tell you?" They hadn't. Linck Platform must deploy on any cloud or
+  own servers, mixed.
 - When the owner sends screenshots of bugs, fix that bug **and** look for the
   same class of bug elsewhere (e.g. one green-for-loss bug → check every
   chart).

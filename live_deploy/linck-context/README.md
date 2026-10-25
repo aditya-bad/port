@@ -19,7 +19,7 @@ wins; then fix this folder.
 | [04-features.md](04-features.md) | Every user-facing feature, how it behaves and why |
 | [reference/linck-how-it-works.html](reference/linck-how-it-works.html) | The platform explained from its promises, with proof and what isn't proven yet (plain text in `reference/text/`) |
 | [reference/linck-visual.html](reference/linck-visual.html) | The same, as 16 short animations: open in a browser, no reading needed |
-| [05-target-architecture.md](05-target-architecture.md) | The final and intermediate architectures, and the migration |
+| [05-target-architecture.md](05-target-architecture.md) | The final and intermediate architectures, the migration, and **deploy anywhere**: each part on any cloud or own servers, mixed |
 | [reference/explainers/linck-architecture/](reference/explainers/linck-architecture/) | The same as a narrated video (about 50 min, 32 scenes): every service with its components, language and job, every flow, the final folding into the first version, and the migration. `make.sh` builds it; the script is in `reference/text/linck-architecture-video.txt`. Its “3–5 thousand strategies a machine” is a placeholder from an assumed ~1 ms per event: the SDK video's last scene explains how to read it |
 | [reference/explainers/running-linck/](reference/explainers/running-linck/) | Running Linck, as a narrated video (about 20 min, 16 scenes): today's one-machine deploy, a release gate by gate and where each thing ships, changing it without stopping trading, a strategy's conversation with the supervisor, Request/Reply, the walk, every failure, a trading day, watching it, recovery and teams, adding brokers. Script in `reference/text/running-linck-video.txt` |
 | [reference/explainers/linck-sdk/](reference/explainers/linck-sdk/) | The SDK for developers, as a narrated video (about 15 min, 15 scenes): the one idea, a strategy in Python and Go, ctx, the manifest, what the SDK does, determinism, laptop to live, each language measured, WASM and remote, indicators, the conformance suite, and how many strategies fit on a machine. Script in `reference/text/linck-sdk-video.txt` |
@@ -54,7 +54,9 @@ wins; then fix this folder.
 8. The long-term plan is a platform company: users write strategies with an
    SDK in any language and Linck runs them, through backtest, paper, shadow and
    live, on one engine.
-9. The target architecture is designed and documented; only step P0 of the
+9. Linck Platform is LinckTrade, LinckLens and the Linck SDK; each part can
+   be deployed on any cloud or the user's own servers, mixed. No provider is
+   chosen. The target architecture is designed and documented; only step P0 of the
    migration is next, and not built yet.
 10. The owner deploys. An agent commits and pushes to the branch, never deploys.
 

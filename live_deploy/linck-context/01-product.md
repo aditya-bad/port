@@ -64,6 +64,12 @@ and Linck runs them, the way cloud agent platforms run other people's agents.
 The **trust layer is the moat**: no other platform proves paper matches live
 or lists every place a strategy's day went wrong.
 
+**Linck Platform is three products together: LinckTrade (trading and the
+money), LinckLens (what people see) and the Linck SDK (what strategy
+developers use).** Whoever runs it chooses where each part runs: any cloud,
+their own servers, or a mix, and it must work the same in every mix (owner,
+25 Oct). See "Deploy anywhere" in `05-target-architecture.md`.
+
 Four ways in, each built on the one before:
 
 1. **Linck App** (first): today's Linck, for many retail option traders.

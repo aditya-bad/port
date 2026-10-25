@@ -39,10 +39,15 @@
 | Journal (UI) | Trade notes and tags (`journal_entries`) |
 | Epoch | Number bumped on every strategy (re)start; old-epoch intents are refused |
 | Zygote | Preloaded Python parent that forks strategy processes |
-| Cell | Self-contained copy of the runtime, market cache, OMS partition and ledger shard |
+| Cell | Self-contained copy of the runtime, market cache, OMS partition and ledger shard; lives in one site, and different cells may live on different providers |
 | OMS | Orders & risk service, the only writer of money (target) |
 | Sim venue | Paper fills as just another broker (target) |
-| LinckTrade · LinckLens · Linck Platform | The three parts of the target architecture, as used in the architecture video: Trade does the trading and keeps the money (market data, runtime, OMS, broker gateway, sim venue, control, builder, refdata, integrity, backtest farm); Lens turns its data into what you see (product API, live gateway, read models, assistant) and never writes an order, fill or position; Platform is shared (edge gateway, identity, commerce, notifications). Proposed Oct 2026; placing integrity in Trade and the product API in Lens are recommendations, not yet confirmed |
+| Linck Platform | The whole product: LinckTrade, LinckLens and the Linck SDK together (owner, 25 Oct). Each part can be deployed on any cloud or the user's own servers, mixed |
+| LinckTrade · LinckLens · Linck SDK | The three products. Trade does the trading and keeps the money (market data, runtime, OMS, broker gateway, sim venue, control, builder, refdata, integrity, backtest farm); Lens turns its data into what you see (web, mobile, product API, live gateway, read models, assistant) and never writes an order, fill or position; the SDK is what strategy developers use (SDKs, CLI, protocol, conformance suite, linck-core). Placing integrity in Trade and the product API in Lens are recommendations, not yet confirmed |
+| Linck core | Edge gateway, identity, commerce, notifications: shared by all three products, installed with whichever site the user picks. Proposed 25 Oct (earlier docs called this group "Linck Platform") |
+| Site | One place Linck runs: a cloud region or a data centre, with one Kubernetes cluster or one Compose host. A deployment of Linck can span several sites on different providers |
+| Trading path | A cell's market data, tick cache, computed streams, runtime, OMS, broker gateway, ledger and event log: the parts that must share one site |
+| Site check | The test a site passes before it trades: store versions, mTLS to other sites, the broker-visible egress IP, latency to the broker and feed |
 | Iceberg · Heimdall · Kraken | Internal nicknames, services only: Iceberg = the strategy runtime (supervisor + sandboxes), Heimdall = orders & risk (OMS), Kraken = the broker gateway (one arm per broker). Every other service keeps its plain name. Proposed Oct 2026. Iceberg clashes with Apache Iceberg, the lake's table format: say "Iceberg tables" for the lake |
 | DTT | The intraday straddle family's name (`intraday_dtt_*`) |
 | BTST | Buy today, sell tomorrow (`calendar_btst`) |

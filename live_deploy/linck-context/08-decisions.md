@@ -55,8 +55,13 @@ when its reason stops being true, and ask the owner first.
 | SSE to screens | WebSocket | Screens only listen; today's app already moved to SSE |
 | Redpanda for money/history logs, NATS for commands/live signals | Kafka only, NATS only, Pulsar | Kafka API without JVM; cheap fan-out for control |
 | Postgres double-entry ledger | TigerBeetle | Write rates are well inside Postgres; SQL reporting |
-| ClickHouse analytics; lake on S3 | TimescaleDB, BigQuery | Fast scans, data in India |
-| Kubernetes (EKS), strategies as sandboxes not pods | Compose, ECS, Nomad, serverless; pod per strategy | Operators, gVisor runtime classes; 50k pods is too many |
+| ClickHouse analytics; lake in object storage as Iceberg tables (S3 API, Azure Blob, GCS, or MinIO/Ceph on own servers) | TimescaleDB, BigQuery | Fast scans, data in India, any provider |
+| **Deploy anywhere**: each part of Linck Platform (LinckTrade, LinckLens, Linck SDK) runs on any cloud or the user's own servers, mixed (owner, 25 Oct) | One provider. Earlier docs assumed AWS (EKS Mumbai, RDS, S3, KMS, NAT); the owner never chose it | The person running Linck decides where each part runs |
+| Any conformant Kubernetes (k3s on one server, own hardware, EKS/AKS/GKE); a Compose bundle for one machine; strategies as sandboxes not pods | One provider's Kubernetes, ECS, Nomad, serverless; pod per strategy | The same charts on every provider and on own servers; gVisor runtime classes; 50k pods is too many |
+| Every dependency reached by an open protocol that has a self-run version; a managed service only if it passes our conformance tests for that protocol | Provider-only services (DynamoDB, SQS, Kinesis, Cosmos DB, Lambda) | Any part must move between providers without a rewrite |
+| A cell's trading path in one site; every other part may be anywhere | Splitting market data, runtime, OMS and broker gateway across sites | The 50 ms + 30 ms budget and the OMS transaction don't survive a hop between providers |
+| Between sites only gRPC (mTLS), mirrored event streams and object-store reads; SPIFFE/SPIRE identity federated between sites; works over the plain internet | Shared databases across sites, provider IAM, VPC peering as the only link | Works between any two providers and own servers |
+| Trade never waits on another site to trade; it caches what it needs and has its own door (CLI, OMS loss limits) | Trade calling Lens or a remote identity on the order path | A cut link between sites must not stop trading |
 | etcd leases (Postgres in intermediate) | Redis locks | Linearizable with fencing |
 | Temporal for the EOD chain | Cron + queues, Airflow | Resume at the step that stopped |
 | Cells | One big cluster, per-tenant stacks | Bounded blast radius |

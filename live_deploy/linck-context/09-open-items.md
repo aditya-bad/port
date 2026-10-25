@@ -21,6 +21,20 @@ run `custom_scripts/shadow_backfill.py --dry-run`.
 3. **Benchmark NATS JetStream publish/ack and a gRPC stream hop** so those
    rows become measured (needs `nats-server` and gRPC libs to be downloadable).
 
+## Deploy anywhere: open questions (25 Oct)
+
+- Which places to certify first (proposal: own servers with k3s, then the
+  providers the first users ask for). Each one costs a release-time test run.
+- Whether the shared parts (edge gateway, identity, commerce, notifications)
+  are a fourth install, *Linck core*, or ship inside one of the three products.
+- Whether a Compose bundle is supported beyond one machine (proposal: no; one
+  machine and laptops only).
+- Real latency between providers and between Indian cities (estimates in
+  `05`: 1–3 ms same city, 10–30 ms between cities); measure before placing
+  anything on a site boundary.
+- Which managed Kafka-API services pass the conformance tests (transactions,
+  idempotent producer, retention); none checked yet.
+
 ## Parked by the owner (don't start without asking)
 
 What-if replay (needs the full option chain stored); account-level loss

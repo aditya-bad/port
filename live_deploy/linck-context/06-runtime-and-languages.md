@@ -47,7 +47,8 @@ hard (then killed and restarted).
 - **Start**: Python is forked from a preloaded parent ("zygote"); measured
   ~2 MB private per strategy vs 52 MB for a fresh interpreter. Go/Rust binaries
   exec directly (2–4 MB). Node is 42 MB a process (WASM later for density).
-  In the cloud inside gVisor; on a laptop the CLI is the supervisor.
+  On the platform (whatever site runs the runtime) inside gVisor; on a
+  laptop the CLI is the supervisor.
 - **The SDK owns `main()`**: Hello → build the user's class with params and
   state → Ready → loop Batch → handlers → Done. User code only sees `ctx`.
 
