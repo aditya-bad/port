@@ -1,6 +1,6 @@
 Linck, first version: the narrated video, as text
 
-The script of reference/explainers/linck-first-version (10 scenes, about 15
+The script of reference/explainers/linck-first-version (11 scenes, about 17
 minutes). Each scene's narration, in order. Numbers marked measured come from
 the prototype or today's app; targets and estimates say so.
 
@@ -199,7 +199,42 @@ At first, the strategies run inside the worker as Python objects, as they do
 today. Later each one becomes its own process, fed the same batches over a
 local socket. The path stays the same.
 
-7. Where each part can run
+7. Different strategies, different instruments
+
+Strategies don’t all need the same prices. A weekly-options strategy, a
+monthly-options strategy and an equity strategy each need a different set of
+instruments. Here is how that stays efficient.
+
+Each strategy declares its instruments when it starts: NIFTY and this week’s
+strikes, or this month’s, or a list of stocks. Nothing else is ever sent to
+it.
+
+The plan is to place strategies that need the same instruments on the same
+runner worker: weekly options on worker A, monthly on worker B, equities on
+worker C. So each worker asks for a small set, not the whole market.
+
+Market-data keeps slots only for what each stream asked for. Worker A’s slots
+hold weekly strikes, worker B’s hold monthly ones, worker C’s hold stocks. An
+instrument nobody asked for never leaves market-data.
+
+And each instrument comes from Kite or the vendor only once, however many
+workers want it. NIFTY goes to two workers here, from one subscription;
+copying it into a second slot is cheap.
+
+Inside a worker, an index says which strategies follow each instrument. When a
+weekly strike changes, only the weekly strategies holding it get it in their
+next batch. The others aren’t woken.
+
+Option strategies move strikes as the market moves. When a strategy asks for a
+new strike, its worker adds it to the stream and market-data opens a slot. A
+strike nobody follows any more is dropped.
+
+And it is cheap. A slot is small, about 128 bytes in the design, so even five
+thousand instruments in one worker’s set is under a megabyte. The slot updates
+measured three to nineteen million a second on one core; the first version
+expects about twenty thousand a second at the open, an estimate.
+
+8. Where each part can run
 
 Now, where each part runs. The owner picks one home site: a region of any
 cloud, or a data centre of their own. Everything that writes to the one
@@ -237,7 +272,7 @@ LinckLens gets a site of its own later, when the product API moves out of
 core-api. Then it reads its own copy of the data, and sends its writes as
 commands. That is a later step, not day one.
 
-8. Installing a site
+9. Installing a site
 
 Each site is installed from one site file. It says where the site is, which
 parts run there, which stores it uses, and where the other sites are.
@@ -261,7 +296,7 @@ and three thirty-five, except an approved fix. Releases go out after three
 forty-five, and each one first replays yesterday, to show nothing changed that
 shouldn’t.
 
-9. The way there
+10. The way there
 
 Getting there from today’s app. Each step ships on its own, runs beside what
 it replaces until it is proven equal, and never stops trading.
@@ -290,7 +325,7 @@ Temporal for the end of day, tenants with row-level security, and shadow mode.
 After I5, the first version is complete. The final architecture builds on it
 later, and that part is paused for now.
 
-10. The first version, in short
+11. The first version, in short
 
 To recap. The first version is nine deployables of our own, built from today’s
 code, over six stores that each have a version you can run yourself.
