@@ -1,6 +1,6 @@
 Linck, first version: the narrated video, as text
 
-The script of reference/explainers/linck-first-version (9 scenes, about 13
+The script of reference/explainers/linck-first-version (10 scenes, about 15
 minutes). Each scene's narration, in order. Numbers marked measured come from
 the prototype or today's app; targets and estimates say so.
 
@@ -82,9 +82,9 @@ latest values only.
 Notifications is a small Python consumer: it reads events from NATS and sends
 the alerts.
 
-Md, in Go, takes Kite’s WebSocket and one licensed vendor, cleans the ticks,
-builds bars and chain views inside itself, keeps the latest prices in Redis,
-and streams ticks over conflated gRPC to the runner workers.
+Market-data, in Go, takes Kite’s WebSocket and one licensed vendor, cleans the
+ticks, builds bars and chain views inside itself, keeps the latest prices in
+Redis, and streams ticks over conflated gRPC to the runner workers.
 
 Runner, in Python, runs as a StatefulSet. Each worker holds a lease in
 Postgres for its shard of strategies, keeps one latest slot per instrument,
@@ -95,10 +95,11 @@ The OMS, in Go, is Heimdall from day one: the single writer, the risk pipeline
 and the outbox, writing the positions and lots tables in the one Postgres.
 
 Broker-gw-kite, in Go, is Kraken with one arm: Kite. Paper orders are routed
-to sim.
+to paper-broker.
 
-Sim, in Python, is a fill model behind the same broker contract that Kraken
-speaks.
+Paper-broker, in Python, is a pretend broker: a fill model behind the same
+broker contract that Kraken speaks, so paper orders are filled the way a
+broker would.
 
 The workers are Python Temporal workers running today’s code, moved: the day
 check, repair, replay and backtests.
@@ -141,15 +142,16 @@ needs a store that only one provider has.
 Now how things flow through it: a price, an order, its fill, a screen, and a
 deploy.
 
-A price: Kite’s WebSocket and the vendor send ticks to md, in Go, which cleans
-them, builds bars and chain views, keeps the latest prices in Redis, and
-streams ticks over conflated gRPC to each runner worker. The worker keeps one
-latest slot per instrument, and each strategy computes its own indicators.
+A price: Kite’s WebSocket and the vendor send ticks to market-data, in Go,
+which cleans them, builds bars and chain views, keeps the latest prices in
+Redis, and streams ticks over conflated gRPC to each runner worker. The worker
+keeps one latest slot per instrument, and each strategy computes its own
+indicators.
 
 An order: the strategy returns an intent, and its runner worker publishes it
 on NATS JetStream. The OMS checks it and records the order in the positions
 and lots tables in one transaction, then calls broker-gw-kite over gRPC, which
-places it at Kite. A paper order goes to sim instead.
+places it at Kite. A paper order goes to paper-broker instead.
 
 The fill: Kite’s update comes back; the OMS records the fill and publishes it
 on NATS, and the live gateway pushes it over SSE to your screen.
@@ -161,14 +163,50 @@ And a deploy: core-api’s deployments module checks the version and publishes a
 start command on NATS. A runner worker takes the lease in Postgres and starts
 the strategy, in gVisor.
 
-6. Where each part can run
+6. A live price, to a strategy
+
+Now follow one live price all the way to a strategy. Who connects to whom, and
+how the newest price always wins.
+
+Ticks arrive from Kite and the data vendor at market-data. It cleans them, and
+keeps one slot per instrument. Each new tick overwrites the one before.
+
+Strategies never connect to market-data. Each runner worker does, once. A
+worker holds the lease on a share of the strategies, and opens one gRPC
+stream, asking for every instrument its strategies need.
+
+So two thousand strategies don’t mean two thousand connections: there are only
+as many streams as runner workers. Market-data keeps one set of slots for each
+stream.
+
+Each stream has one batch in flight. When a worker is ready, it gets every
+instrument that changed, at its newest price, and a count of the ticks it
+skipped. A slow worker never gets a queue of old prices.
+
+Inside the worker, the same idea again. It keeps its own slot per instrument,
+and each strategy has one batch in flight. When a strategy finishes, its next
+batch holds only its own instruments that changed, at their newest price.
+
+Fills, order updates and timers are different. They are never skipped, and
+always arrive in order.
+
+If a stream drops, the worker reconnects and gets a snapshot of the latest
+prices, never a replay of old ones. Every instrument carries a sequence
+number, so an older tick can never overwrite a newer one. And a price that
+stops moving is marked stale.
+
+At first, the strategies run inside the worker as Python objects, as they do
+today. Later each one becomes its own process, fed the same batches over a
+local socket. The path stays the same.
+
+7. Where each part can run
 
 Now, where each part runs. The owner picks one home site: a region of any
 cloud, or a data centre of their own. Everything that writes to the one
 Postgres lives there.
 
-That is the trading path: md, runner, the OMS, the Kite gateway and sim. Then
-core-api, the day check and repair workers, and the stores.
+That is the trading path: market-data, runner, the OMS, the Kite gateway and
+paper-broker. Then core-api, the day check and repair workers, and the stores.
 
 Why one place? Core-api is still one program, and it shares the one Postgres
 with the OMS. A database is never shared between two sites, so everything that
@@ -199,7 +237,7 @@ LinckLens gets a site of its own later, when the product API moves out of
 core-api. Then it reads its own copy of the data, and sends its writes as
 commands. That is a later step, not day one.
 
-7. Installing a site
+8. Installing a site
 
 Each site is installed from one site file. It says where the site is, which
 parts run there, which stores it uses, and where the other sites are.
@@ -223,7 +261,7 @@ and three thirty-five, except an approved fix. Releases go out after three
 forty-five, and each one first replays yesterday, to show nothing changed that
 shouldn’t.
 
-8. The way there
+9. The way there
 
 Getting there from today’s app. Each step ships on its own, runs beside what
 it replaces until it is proven equal, and never stops trading.
@@ -252,7 +290,7 @@ Temporal for the end of day, tenants with row-level security, and shadow mode.
 After I5, the first version is complete. The final architecture builds on it
 later, and that part is paused for now.
 
-9. The first version, in short
+10. The first version, in short
 
 To recap. The first version is nine deployables of our own, built from today’s
 code, over six stores that each have a version you can run yourself.

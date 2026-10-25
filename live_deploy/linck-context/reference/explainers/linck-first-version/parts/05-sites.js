@@ -2,7 +2,7 @@
 {
   const S = beats([
     ['Now, where each part runs. The owner picks one home site: a region of any cloud, or a data centre of their own. Everything that writes to the one Postgres lives there.', { focus: 'all', spot: ['home'] }],
-    ['That is the trading path: md, runner, the OMS, the Kite gateway and sim. Then core-api, the day check and repair workers, and the stores.', { spot: ['home'] }],
+    ['That is the trading path: market-data, runner, the OMS, the Kite gateway and paper-broker. Then core-api, the day check and repair workers, and the stores.', { spot: ['home'] }],
     ['Why one place? Core-api is still one program, and it shares the one Postgres with the OMS. A database is never shared between two sites, so everything that writes to it stays together.', { spot: ['home'] }],
     ['Some parts can run anywhere from day one. The live gateway and the web app’s files can sit close to your users. The gateway hears the home site’s events through a NATS leaf node, and checks logins with keys it keeps a copy of.', { spot: ['o0'] }],
     ['Notifications can run anywhere too. It only reads events, through its own leaf node.', { spot: ['o1'] }],
@@ -16,7 +16,7 @@
     const L = G(p), B = G(p), M = G(p);
     const home = named('home', area(B, 40, 116, 820, 590, 'Home site', 'cell', 'any cloud, or your own servers'));
     const tp = box(B, 60, 166, 780, 176, '', { cls: 'frame key' }); T(tp, 80, 192, 'the trading path · LinckTrade', 'bs', 'start');
-    const tpc = ['md', 'runner', 'oms', 'broker-gw-kite', 'sim'].map((s, i) => { const b = box(B, 76 + i * 152, 210, 144, 52, s, { cls: 'chip', lcls: 'cmp' }); if (s === 'oms') named('oms', b); return b; });
+    const tpc = ['market-data', 'runner', 'oms', 'broker-gw-kite', 'paper-broker'].map((s, i) => { const b = box(B, 76 + i * 152, 210, 144, 52, s, { cls: 'chip', lcls: 'cmp' }); if (s === 'oms') named('oms', b); return b; });
     const kite = T(tp, 80, 316, 'Kite’s registered static IP = this site’s own outgoing address', 'bs', 'start');
     const core = named('core', box(B, 60, 360, 380, 96, 'core-api', { sub: 'screens · deployments · logins', cls: 'chip' }));
     const wk = box(B, 460, 360, 380, 96, 'workers', { sub: 'day check · repair · replay', cls: 'chip' });

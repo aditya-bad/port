@@ -6,7 +6,7 @@
     ['I1', 'A contracts repository; SDK v0 over today’s StrategyBase', 'the protobuf contracts every part will speak', 'the fault matrix and crash suites unchanged'],
     ['I2', 'Strategies out of the API, into leased runner workers', 'conflated gRPC ticks; intents and fills on NATS', 'a week of identical fills, run side by side'],
     ['I3', 'The Go OMS and the Kite gateway', 'shadow-write first, then the only writer of money', 'its journal equals today’s tables, every night for two weeks'],
-    ['I4', 'Go market data; latest prices in Redis; bars in ClickHouse', 'md takes over the feeds', 'bars equal Kite’s one-minute candles'],
+    ['I4', 'Go market data; latest prices in Redis; bars in ClickHouse', 'market-data takes over the feeds', 'bars equal Kite’s one-minute candles'],
     ['I5', 'Temporal end of day; tenants with row-level security; shadow mode', 'the workers move into Temporal', 'end-of-day outputs equal; tenancy tests'],
   ];
   const S = beats([

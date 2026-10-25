@@ -1,11 +1,11 @@
 // 5. The flows.
 flowScene('How things flow', (L, B, M) => {
   const kt = out(B, 0, 0, 'Kite + one vendor', 'WebSocket ticks; orders');
-  const md = svcAt(B, 1, 0, 'md', 'Go', 'trade', 'clean · bars · chains · Redis');
+  const md = svcAt(B, 1, 0, 'market-data', 'Go', 'trade', 'clean · bars · chains · Redis');
   const rn = svcAt(B, 2, 0, 'runner', 'Python', 'trade', 'latest slot · runs strategies');
   const na = store(B, 2, 1, 'NATS JetStream', 'intents, fills, commands');
   const om = svcAt(B, 1, 1, 'oms', 'Go', 'trade', 'risk · ledger tables · outbox');
-  const bg = svcAt(B, 0, 1, 'broker-gw-kite', 'Go', 'trade', 'Kite; paper → sim');
+  const bg = svcAt(B, 0, 1, 'broker-gw-kite', 'Go', 'trade', 'Kite; paper → paper-broker');
   const pg = store(B, 1, 2, 'Postgres', 'positions + lots · leases');
   const lv = svcAt(B, 2, 2, 'live-gateway', 'Go', 'lens', 'SSE to screens');
   const br = out(B, 0, 3, 'Browser', 'through the load balancer');
@@ -31,8 +31,8 @@ flowScene('How things flow', (L, B, M) => {
   return { edges: e };
 }, [
   ['Now how things flow through it: a price, an order, its fill, a screen, and a deploy.', { focus: 'all' }],
-  ['A price: Kite’s WebSocket and the vendor send ticks to md, in Go, which cleans them, builds bars and chain views, keeps the latest prices in Redis, and streams ticks over conflated gRPC to each runner worker. The worker keeps one latest slot per instrument, and each strategy computes its own indicators.', {}, [0, 1], 'tick'],
-  ['An order: the strategy returns an intent, and its runner worker publishes it on NATS JetStream. The OMS checks it and records the order in the positions and lots tables in one transaction, then calls broker-gw-kite over gRPC, which places it at Kite. A paper order goes to sim instead.', {}, [2, 3, 4, 5, 6], 'intent'],
+  ['A price: Kite’s WebSocket and the vendor send ticks to market-data, in Go, which cleans them, builds bars and chain views, keeps the latest prices in Redis, and streams ticks over conflated gRPC to each runner worker. The worker keeps one latest slot per instrument, and each strategy computes its own indicators.', {}, [0, 1], 'tick'],
+  ['An order: the strategy returns an intent, and its runner worker publishes it on NATS JetStream. The OMS checks it and records the order in the positions and lots tables in one transaction, then calls broker-gw-kite over gRPC, which places it at Kite. A paper order goes to paper-broker instead.', {}, [2, 3, 4, 5, 6], 'intent'],
   ['The fill: Kite’s update comes back; the OMS records the fill and publishes it on NATS, and the live gateway pushes it over SSE to your screen.', {}, [7, 8, 9, 10, 11], 'fill'],
   ['A screen asks core-api through the load balancer, over HTTPS, and core-api reads Postgres and ClickHouse.', {}, [12, 13], 'request'],
   ['And a deploy: core-api’s deployments module checks the version and publishes a start command on NATS. A runner worker takes the lease in Postgres and starts the strategy, in gVisor.', {}, [14, 15], 'start'],

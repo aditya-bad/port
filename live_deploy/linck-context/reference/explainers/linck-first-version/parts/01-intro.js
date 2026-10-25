@@ -19,7 +19,7 @@
     // the first version, by product
     const products = named('products', bounds(G(B), 640, 116, 920, 420));
     const trade = area(B, 640, 116, 920, 150, 'LinckTrade', 'trade', 'the trading, the money');
-    const tc = ['md', 'runner', 'oms', 'broker-gw-kite', 'sim', 'workers'].map((s, i) => box(B, 658 + i * 148, 166, 140, 44, s, { cls: 'chip', lcls: 'cmp' }));
+    const tc = ['market-data', 'runner', 'oms', 'broker-gw-kite', 'paper-broker', 'workers'].map((s, i) => box(B, 658 + i * 148, 166, 140, 44, s, { cls: 'chip', lcls: 'cmp' }));
     const lens = area(B, 640, 280, 450, 120, 'LinckLens', 'lens', 'what you see');
     const lc = ['live-gateway', 'core-api: screens'].map((s, i) => box(B, 658 + i * 212, 324, 204, 44, s, { cls: 'chip', lcls: 'cmp' }));
     const core = area(B, 1110, 280, 450, 120, 'Linck core', 'platform', 'shared');

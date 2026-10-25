@@ -3,8 +3,8 @@
   const FILE = [
     'site: home',
     'where: own servers        # or any cloud',
-    'runs: [core-api, md, runner, oms,',
-    '       broker-gw-kite, sim, workers]',
+    'runs: [core-api, market-data, runner,',
+    '       oms, broker-gw-kite, paper-broker, workers]',
     'stores:',
     '  postgres: self-run      # or a managed one',
     '  lake: s3://linck-lake   # any object store',
