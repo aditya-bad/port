@@ -292,7 +292,7 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
       <div><b>Market data is licensed</b><span>A user’s Kite feed is for that user. A shared feed for thousands of users needs an exchange-authorised data vendor and a redistribution licence. Market data is built as a set of plug-in feeds so this is a contract, not a rewrite. It is likely our largest bill: get quotes early.</span></div>
       <div><b>Broker limits</b><span>Brokers cap sockets, instruments per socket, orders per second and orders per day. Kite, for example, allows 3 WebSocket connections of 3,000 instruments each per API key. These limits live only in the broker adapters and the risk engine.</span></div>
       <div><b>Records are kept for years</b><span>Order, algo and audit trails are kept for the regulatory period on write-once storage. Deleting a user’s account never deletes those records; their personal data is separated so it can be erased.</span></div>
-      <div><b>Personal data</b><span>India’s DPDP Act covers consent, purpose and erasure. Data stays in India (Mumbai, with disaster recovery in Hyderabad). Brokers buying the B2B product will also ask for SOC 2 or ISO 27001 and the cyber-resilience controls they themselves must meet.</span></div>
+      <div><b>Personal data</b><span>India’s DPDP Act covers consent, purpose and erasure. Data stays in India, at sites the user picks (any provider or own servers), with disaster recovery at a second one. Brokers buying the B2B product will also ask for SOC 2 or ISO 27001 and the cyber-resilience controls they themselves must meet.</span></div>
       <div><b>Paper is unregulated, live isn’t</b><span>Paper trading for anyone is simple. Live trading with each user’s own broker account, for their own strategy, is the cleanest first live path. Running our strategies with other people’s money comes later, with the broker partnership.</span></div>
     </div>
   </div>
@@ -321,7 +321,7 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
       <div class="diagram">
 <svg viewBox="0 0 1200 990" role="img" aria-labelledby="f1t f1d" xmlns="http://www.w3.org/2000/svg">
   <title id="f1t">Linck platform: final architecture</title>
-  <desc id="f1d">Clients (web, mobile, SDK and CLI, public API, partner brokers) reach an edge gateway, then a Go control plane for identity, the strategy registry, deployments and scheduling, the marketplace, risk policies, billing, broker connections and audit. An event backbone of Redpanda and NATS connects the control plane to cells. Each cell holds a Rust market data fabric, Rust computed streams, a strategy runtime with sandboxes, a Go order and risk service, a Rust simulated venue, broker adapters, state snapshots and a ledger shard. Shared platform services for integrity, research, analytics, notifications and an assistant sit below, over data stores (Postgres, ClickHouse, a lake on S3, Redis, a key vault and a write-once audit store) and outside systems (exchange and vendor feeds, brokers, payments and messaging).</desc>
+  <desc id="f1d">Clients (web, mobile, SDK and CLI, public API, partner brokers) reach an edge gateway, then a Go control plane for identity, the strategy registry, deployments and scheduling, the marketplace, risk policies, billing, broker connections and audit. An event backbone of Redpanda and NATS connects the control plane to cells. Each cell holds a Rust market data fabric, Rust computed streams, a strategy runtime with sandboxes, a Go order and risk service, a Rust simulated venue, broker adapters, state snapshots and a ledger shard. Shared platform services for integrity, research, analytics, notifications and an assistant sit below, over data stores (Postgres, ClickHouse, a lake in object storage, Redis, a key vault and a write-once audit store) and outside systems (exchange and vendor feeds, brokers, payments and messaging).</desc>
   <defs>
     <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
     <marker id="a1b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah md" d="M0 0L10 5L0 10z"/></marker>
@@ -339,7 +339,7 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
   <g class="n core"><rect class="box" x="20" y="120" width="1160" height="40"/><text class="t" x="36" y="146">Edge &amp; API gateway</text><text class="m" x="1164" y="145" text-anchor="end">Envoy · OIDC sign-in, 2FA · API keys · per-plan limits · WAF · REST and gRPC · WebSocket</text></g>
   <path class="e" d="M600 160V190" marker-end="url(#a1)"/>
 
-  <text class="row" x="20" y="184">CONTROL PLANE · ONE PER REGION · NEVER ON THE TICK PATH</text>
+  <text class="row" x="20" y="184">CONTROL PLANE · ANY SITE · NEVER ON THE TICK PATH</text>
   <g class="n core"><rect class="box" x="20" y="192" width="1160" height="124"/>
     <text class="t" x="36" y="216">Control plane</text><text class="m" x="1164" y="215" text-anchor="end">Go · Postgres</text>
     <text class="s" x="36" y="234">Who may run what, where, and on which terms.</text>
@@ -382,10 +382,10 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
   <text class="row" x="20" y="814">DATA</text>
   <g class="n store"><rect x="20" y="822" width="180" height="62"/><text class="t" x="32" y="846">Postgres</text><text class="s" x="32" y="866">control · ledger shards</text></g>
   <g class="n store"><rect x="216" y="822" width="180" height="62"/><text class="t" x="228" y="846">ClickHouse</text><text class="s" x="228" y="866">bars · decisions · analytics</text></g>
-  <g class="n store"><rect x="412" y="822" width="180" height="62"/><text class="t" x="424" y="846">Lake</text><text class="s" x="424" y="866">S3 · Iceberg · Parquet</text></g>
+  <g class="n store"><rect x="412" y="822" width="180" height="62"/><text class="t" x="424" y="846">Lake</text><text class="s" x="424" y="866">object store · Iceberg · Parquet</text></g>
   <g class="n store"><rect x="608" y="822" width="180" height="62"/><text class="t" x="620" y="846">Redis</text><text class="s" x="620" y="866">sessions · limits · cache</text></g>
-  <g class="n store"><rect x="804" y="822" width="180" height="62"/><text class="t" x="816" y="846">Vault &amp; KMS</text><text class="s" x="816" y="866">broker tokens · keys</text></g>
-  <g class="n store"><rect x="1000" y="822" width="180" height="62"/><text class="t" x="1012" y="846">Audit store</text><text class="s" x="1012" y="866">S3 Object Lock · write-once</text></g>
+  <g class="n store"><rect x="804" y="822" width="180" height="62"/><text class="t" x="816" y="846">Vault</text><text class="s" x="816" y="866">broker tokens · keys</text></g>
+  <g class="n store"><rect x="1000" y="822" width="180" height="62"/><text class="t" x="1012" y="846">Audit store</text><text class="s" x="1012" y="866">object lock · write-once</text></g>
 
   <text class="row" x="20" y="908">OUTSIDE OUR CONTROL</text>
   <g class="n ext"><rect x="20" y="916" width="275" height="56"/><text class="t" x="32" y="940">Exchange &amp; vendor feeds</text><text class="s" x="32" y="959">NSE · BSE · MCX via licensed vendors</text></g>
@@ -614,7 +614,7 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
     <div class="tbl"><table>
       <thead><tr><th>Path</th><th>Mechanism</th><th>Guarantee</th><th>Why</th></tr></thead>
       <tbody>
-        <tr><td>Feeds → handlers → cells</td><td>Binary records over UDP multicast or Aeron inside the region</td><td>Sequenced; gaps refilled from the log</td><td>Hundreds of thousands a second with no broker in the way</td></tr>
+        <tr><td>Feeds → handlers → cells</td><td>Binary records over UDP multicast or Aeron inside the site</td><td>Sequenced; gaps refilled from the log</td><td>Hundreds of thousands a second with no broker in the way</td></tr>
         <tr><td>Tick cache → strategies</td><td>Shared memory (seqlock + ring) on the host</td><td>Latest value; ring for “everything since”</td><td>No copies, no syscalls per tick</td></tr>
         <tr><td>Strategy ⇄ supervisor</td><td>Local socket, flatbuffers or protobuf</td><td>In order per strategy</td><td>Sandboxes have no network</td></tr>
         <tr><td>Runtime → orders</td><td>Redpanda <span class="mono">orders.intent</span>, keyed by account</td><td>At least once + idempotency key + lease epoch</td><td>An order can never be lost, doubled or sent by two runners</td></tr>
@@ -638,10 +638,10 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
         <tr><td>Postgres (control)</td><td>Tenants, users, versions, deployments, policies, licences</td><td>Relational, small, transactional</td></tr>
         <tr><td>Postgres (ledger shards)</td><td>Orders, fills, positions, lots, cash: one shard per cell</td><td>Money needs transactions and constraints; sharding by cell keeps each one small. TigerBeetle was considered for double-entry speed and isn’t needed at these rates.</td></tr>
         <tr><td>ClickHouse</td><td>Bars, decisions, fills copy, analytics read models</td><td>Columnar scans over billions of rows for Geek mode and reports</td></tr>
-        <tr><td>Lake (S3 · Iceberg · Parquet)</td><td>Every tick, chain snapshots, corporate actions, lot sizes over time</td><td>Cheap, permanent, point-in-time; the backtest farm reads it directly</td></tr>
+        <tr><td>Lake (object storage · Iceberg · Parquet)</td><td>Every tick, chain snapshots, corporate actions, lot sizes over time</td><td>Cheap, permanent, point-in-time; the backtest farm reads it directly</td></tr>
         <tr><td>Redis</td><td>Sessions, rate-limit buckets, small caches</td><td>Expiry built in</td></tr>
-        <tr><td>Vault &amp; KMS</td><td>Broker tokens, signing keys</td><td>Only the broker adapters can decrypt a token</td></tr>
-        <tr><td>Audit store</td><td>Order and algo trails, admin actions</td><td>S3 Object Lock: write-once for the regulatory period</td></tr>
+        <tr><td>Vault</td><td>Broker tokens, signing keys</td><td>Only the broker adapters can decrypt a token</td></tr>
+        <tr><td>Audit store</td><td>Order and algo trails, admin actions</td><td>Object lock (S3, Azure Blob or self-run): write-once for the regulatory period</td></tr>
       </tbody></table></div>
     <div class="cols">
       <div><h3>Tenancy</h3><p>Every row carries its tenant, Postgres row-level security enforces it, and a tenant lives in one cell. Brokers (B2B) get their own cells, and their own database if they ask.</p></div>
@@ -697,7 +697,7 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
         <tr><td colspan="2" class="label">The platform</td></tr>
         <tr><td>A bad release at 10:00</td><td>No releases 09:00–15:35 except hotfixes; each release replays yesterday first; a canary cell; rollback in one step.</td></tr>
         <tr><td>A cell or zone lost</td><td>Leases move hosts within seconds; a cell spans three zones; the ledger fails over with no lost commits.</td></tr>
-        <tr><td>Region lost</td><td>Hyderabad standby: exits through the brokers’ own tools first, then the platform restored.</td></tr>
+        <tr><td>Site lost</td><td>The standby site: exits through the brokers’ own tools first, then the platform restored.</td></tr>
         <tr><td>Noisy neighbour</td><td>Budgets per strategy, quotas per tenant, cells per broker partner.</td></tr>
         <tr><td>Clock drift</td><td>Hosts sync to a disciplined time source; exchange timestamps are the truth; drift alarms.</td></tr>
         <tr><td colspan="2" class="label">Money and people</td></tr>
@@ -717,7 +717,7 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
       <div>
         <h3>Running it</h3>
         <ul class="plain">
-          <li><b>Where:</b> AWS Mumbai across three zones, disaster recovery in Hyderabad, Kubernetes per cell, Terraform for everything, GitOps (Argo CD) for releases.</li>
+          <li><b>Where:</b> the user chooses: any cloud, their own servers, or a mix. Kubernetes per cell (any conformant one), disaster recovery at a second site of their choosing, Helm charts and GitOps (Argo CD or Flux) for releases. No provider is assumed.</li>
           <li><b>SLOs:</b> tick to intent p99 under 50 ms in a cell; no strategy silent for over 60 s in market hours; 15:15 exits drained by 15:20; end-of-day checks by 16:30; zero unreconciled positions.</li>
           <li><b>Observability:</b> OpenTelemetry from tick to decision to order to fill, in one trace; Prometheus, Grafana, Loki; one dashboard per cell.</li>
           <li><b>Practice:</b> every release replays yesterday’s open and close; game days in the evening break a feed, a broker and a cell on purpose.</li>
@@ -727,7 +727,7 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
         <h3>Keeping it safe</h3>
         <ul class="plain">
           <li><b>Untrusted code:</b> gVisor or Wasmtime sandboxes, no network, read-only file system, seccomp, budgets; it can only talk to the supervisor.</li>
-          <li><b>Secrets:</b> broker tokens encrypted per tenant with KMS; only the adapters can decrypt them; strategies never see one.</li>
+          <li><b>Secrets:</b> broker tokens encrypted per tenant in Vault; only the adapters can decrypt them; strategies never see one.</li>
           <li><b>Supply chain:</b> signed builds, SBOMs and dependency pinning, for our code and for uploaded strategies.</li>
           <li><b>People:</b> SSO with hardware keys for staff, just-in-time production access, every admin action audited.</li>
           <li><b>Proof:</b> SOC 2 Type II and ISO 27001 before selling to brokers; yearly penetration tests; a bug bounty.</li>
@@ -738,13 +738,13 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
 </section>
 
 <section id="intermediate">
-  <div class="head"><span class="label">15</span><h2>Intermediate architecture</h2><p class="sub">What we build first: one region, one cell, today’s code carried over, with every boundary already speaking the final contracts.</p></div>
+  <div class="head"><span class="label">15</span><h2>Intermediate architecture</h2><p class="sub">What we build first: one site (any provider or own servers), one cell, today’s code carried over, with every boundary already speaking the final contracts.</p></div>
   <div class="body">
     <figure>
       <div class="diagram">
 <svg viewBox="0 0 1200 680" role="img" aria-labelledby="f3t f3d" xmlns="http://www.w3.org/2000/svg">
   <title id="f3t">Intermediate architecture</title>
-  <desc id="f3d">Clients (Linck web, the phone app, the SDK and CLI) go through an edge to the Core API, today's Python modular monolith with identity, deployments, strategy versions, book and reports, Geek, repair and ops modules. A Go live gateway and Temporal workers in Python sit beside it. NATS JetStream connects them to a Go market data service, Python runner workers, a Go order and risk service with Kite and sim adapters, and notifications. Stores are Postgres, ClickHouse, Redis and S3. Outside are each user's Kite Connect and one licensed data vendor.</desc>
+  <desc id="f3d">Clients (Linck web, the phone app, the SDK and CLI) go through an edge to the Core API, today's Python modular monolith with identity, deployments, strategy versions, book and reports, Geek, repair and ops modules. A Go live gateway and Temporal workers in Python sit beside it. NATS JetStream connects them to a Go market data service, Python runner workers, a Go order and risk service with Kite and sim adapters, and notifications. Stores are Postgres, ClickHouse, Redis and object storage. Outside are each user's Kite Connect and one licensed data vendor.</desc>
   <defs>
     <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
     <marker id="a3b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah md" d="M0 0L10 5L0 10z"/></marker>
@@ -787,7 +787,7 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
   <g class="n store"><rect x="20" y="540" width="280" height="54"/><text class="t" x="34" y="563">Postgres</text><text class="s" x="34" y="582">ledger · control · row-level security</text></g>
   <g class="n store"><rect x="320" y="540" width="280" height="54"/><text class="t" x="334" y="563">ClickHouse</text><text class="s" x="334" y="582">bars · decisions · analytics</text></g>
   <g class="n store"><rect x="620" y="540" width="280" height="54"/><text class="t" x="634" y="563">Redis</text><text class="s" x="634" y="582">latest prices · sessions</text></g>
-  <g class="n store"><rect x="920" y="540" width="260" height="54"/><text class="t" x="934" y="563">S3</text><text class="s" x="934" y="582">tick archive (Parquet) · backups</text></g>
+  <g class="n store"><rect x="920" y="540" width="260" height="54"/><text class="t" x="934" y="563">Object storage</text><text class="s" x="934" y="582">tick archive (Parquet) · backups</text></g>
 
   <text class="row" x="20" y="620">OUTSIDE</text>
   <g class="n ext"><rect x="20" y="628" width="580" height="44"/><text class="t" x="34" y="656">Kite Connect</text><text class="s" x="160" y="656">each user’s own key: their orders, their data</text></g>
@@ -828,7 +828,7 @@ svg .cellf { fill: none; stroke: var(--ink); stroke-width: 1.2; stroke-dasharray
         <tr><td>Rust runtime supervisor + sandboxes</td><td>Python runner workers with leases; gVisor for invited code</td><td>The SDK opens to the public</td></tr>
         <tr><td>Rust sim venue</td><td>Python fill model behind the same contract</td><td>The backtest farm needs throughput, or fill models need queue simulation</td></tr>
         <tr><td>Redpanda + NATS</td><td>NATS JetStream</td><td>Fills and ticks must be replayable for longer than JetStream keeps them</td></tr>
-        <tr><td>Cells</td><td>One cell, the whole region</td><td>~5k running strategies, or the first broker partner</td></tr>
+        <tr><td>Cells</td><td>One cell, one site</td><td>~5k running strategies, or the first broker partner</td></tr>
         <tr><td>Control plane in Go</td><td>Modules inside the Python API</td><td>Marketplace and billing complexity, or the team grows past one API team</td></tr>
       </tbody></table></div>
   </div>

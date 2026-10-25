@@ -210,7 +210,7 @@ footer { margin: 72px 0 0; padding: 22px 0 40px; border-top: 1.5px solid var(--i
         <tr><td>A strategy bug can’t take the site down</td><td>No</td><td>Yes</td><td>Yes: runners are separate processes</td></tr>
         <tr><td>Shipping a page doesn’t restart trading</td><td>No</td><td>Yes</td><td>Yes</td></tr>
         <tr><td>Scale ticks, CPU and requests separately</td><td>No</td><td>Yes</td><td>Yes, for the three that need it</td></tr>
-        <tr><td>Things to run and watch</td><td>1</td><td>15–25</td><td>6 plus managed stores</td></tr>
+        <tr><td>Things to run and watch</td><td>1</td><td>15–25</td><td>6 plus the stores (self-run or managed)</td></tr>
         <tr><td>Following one trade end to end</td><td>One log</td><td>Distributed tracing required</td><td>One trace through four hops</td></tr>
       </tbody>
     </table></div>
@@ -239,13 +239,13 @@ footer { margin: 72px 0 0; padding: 22px 0 40px; border-top: 1.5px solid var(--i
 </section>
 
 <section id="picture">
-  <div class="head"><span class="label">03</span><h2>The picture</h2><p class="sub">Six things we run, four managed stores, three things outside our control. Blue is the market-data path, green is the money path.</p></div>
+  <div class="head"><span class="label">03</span><h2>The picture</h2><p class="sub">Six things we run, four stores (self-run or managed, the user’s choice), three things outside our control. Blue is the market-data path, green is the money path.</p></div>
   <div class="body">
     <figure>
       <div class="diagram">
 <svg viewBox="0 0 1200 852" role="img" aria-labelledby="dgt dgd" xmlns="http://www.w3.org/2000/svg">
   <title id="dgt">Linck at scale: services and how they connect</title>
-  <desc id="dgd">The browser talks to an edge layer and a core API (a modular monolith), and receives live prices from a live gateway over WebSocket. An event bus (NATS JetStream) connects the core API, market data, strategy runners, the order and risk service, workers and notifications. Market data comes from a vendor feed or Kite; the order service is the only writer to Postgres and sends live orders to Kite. Workers write candles and analytics to ClickHouse; market data keeps the latest prices in Redis; S3 holds archives; notifications go to push, email and Telegram.</desc>
+  <desc id="dgd">The browser talks to an edge layer and a core API (a modular monolith), and receives live prices from a live gateway over WebSocket. An event bus (NATS JetStream) connects the core API, market data, strategy runners, the order and risk service, workers and notifications. Market data comes from a vendor feed or Kite; the order service is the only writer to Postgres and sends live orders to Kite. Workers write candles and analytics to ClickHouse; market data keeps the latest prices in Redis; object storage holds archives; notifications go to push, email and Telegram.</desc>
   <defs>
     <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0L10 5L0 10z"/></marker>
     <marker id="ahb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah md" d="M0 0L10 5L0 10z"/></marker>
@@ -266,7 +266,7 @@ footer { margin: 72px 0 0; padding: 22px 0 40px; border-top: 1.5px solid var(--i
   <g class="n"><rect x="20" y="40" width="160" height="84"/>
     <text class="t" x="34" y="66">Linck web</text><text class="s" x="34" y="86">browser · phone (PWA)</text><text class="m" x="34" y="112">TypeScript</text></g>
   <g class="n"><rect x="210" y="40" width="190" height="84"/>
-    <text class="t" x="224" y="66">Edge</text><text class="s" x="224" y="86">CDN · load balancer</text><text class="s" x="224" y="102">TLS · sign-in · limits</text><text class="m" x="224" y="117">managed</text></g>
+    <text class="t" x="224" y="66">Edge</text><text class="s" x="224" y="86">CDN · load balancer</text><text class="s" x="224" y="102">TLS · sign-in · limits</text><text class="m" x="224" y="117">off the shelf</text></g>
   <g class="n core"><rect class="box" x="430" y="32" width="480" height="176"/>
     <text class="t" x="446" y="58">Core API · modular monolith</text><text class="m" x="894" y="57" text-anchor="end">Python · FastAPI</text>
     <text class="s" x="446" y="80">Everything people click. Stateless copies behind the load balancer.</text>
@@ -298,13 +298,13 @@ footer { margin: 72px 0 0; padding: 22px 0 40px; border-top: 1.5px solid var(--i
   <g class="n store"><rect x="20" y="598" width="210" height="96"/>
     <text class="t" x="34" y="624">Redis</text><text class="s" x="34" y="644">latest price per instrument</text><text class="s" x="34" y="660">sessions · rate-limit buckets</text></g>
   <g class="n store"><rect x="256" y="598" width="504" height="96"/>
-    <text class="t" x="270" y="624">Postgres · the ledger</text><text class="m" x="746" y="623" text-anchor="end">RDS Multi-AZ + read replica</text>
+    <text class="t" x="270" y="624">Postgres · the ledger</text><text class="m" x="746" y="623" text-anchor="end">replicated, plus a read replica</text>
     <text class="s" x="270" y="644">users · deployments · strategy versions · orders · fills · positions · lots · journal</text>
     <text class="s" x="270" y="660">partitioned by month · every row carries its tenant · row-level security</text></g>
   <g class="n store"><rect x="800" y="598" width="200" height="96"/>
     <text class="t" x="814" y="624">ClickHouse</text><text class="s" x="814" y="644">1-minute candles · ticks</text><text class="s" x="814" y="660">analytics · leaderboards</text></g>
   <g class="n store"><rect x="1030" y="598" width="150" height="96"/>
-    <text class="t" x="1044" y="624">S3</text><text class="s" x="1044" y="644">Parquet tick archive</text><text class="s" x="1044" y="660">exports · backups</text></g>
+    <text class="t" x="1044" y="624">Object storage</text><text class="s" x="1044" y="644">Parquet tick archive</text><text class="s" x="1044" y="660">exports · backups</text></g>
 
   <!-- row D: outside -->
   <g class="n ext"><rect x="20" y="758" width="210" height="80"/>
@@ -358,18 +358,18 @@ footer { margin: 72px 0 0; padding: 22px 0 40px; border-top: 1.5px solid var(--i
 </section>
 
 <section id="services">
-  <div class="head"><span class="label">04</span><h2>Services and what each one owns</h2><p class="sub">Boxes with a dark border are split out on purpose. The rest live inside the Core API as modules, or are managed for us.</p></div>
+  <div class="head"><span class="label">04</span><h2>Services and what each one owns</h2><p class="sub">Boxes with a dark border are split out on purpose. The rest live inside the Core API as modules, or are off-the-shelf stores, self-run or managed.</p></div>
   <div class="body">
     <div class="cards">
       <article class="card">
         <div class="top"><h3>Linck web</h3><span class="tag">TypeScript</span></div>
         <p>Today’s app: the pages, charts, Geek mode and the Repair page. It holds no state the server doesn’t have.</p>
-        <dl><dt>Scales by</dt><dd>A CDN; it’s static files</dd><dt>Talks</dt><dd>REST to the Core API, WebSocket to the Live gateway</dd><dt>If it fails</dt><dd>Nothing trades differently</dd></dl>
+        <dl><dt>Scales by</dt><dd>Static files; a CDN is optional</dd><dt>Talks</dt><dd>REST to the Core API, WebSocket to the Live gateway</dd><dt>If it fails</dt><dd>Nothing trades differently</dd></dl>
       </article>
       <article class="card">
-        <div class="top"><h3>Edge</h3><span class="tag">managed</span></div>
+        <div class="top"><h3>Edge</h3><span class="tag">off the shelf</span></div>
         <p>CDN for the app, load balancer, TLS, sign-in (sessions and 2FA), API keys and per-user request limits.</p>
-        <dl><dt>Owns</dt><dd>Nothing; sessions live in Redis</dd><dt>Scales by</dt><dd>The provider</dd><dt>If it fails</dt><dd>Screens go dark; strategies keep trading and exits still fire</dd></dl>
+        <dl><dt>Owns</dt><dd>Nothing; sessions live in Redis</dd><dt>Scales by</dt><dd>More copies behind the site’s load balancer</dd><dt>If it fails</dt><dd>Screens go dark; strategies keep trading and exits still fire</dd></dl>
       </article>
       <article class="card">
         <div class="top"><h3>Core API</h3><span class="tag">Python · FastAPI</span></div>
@@ -477,10 +477,10 @@ footer { margin: 72px 0 0; padding: 22px 0 40px; border-top: 1.5px solid var(--i
     <div class="tbl"><table>
       <thead><tr><th>Store</th><th>Holds</th><th>Why this one</th></tr></thead>
       <tbody>
-        <tr><td>Postgres</td><td>Users, tenants, deployments, strategy versions, orders, fills, positions, lots, cash, journal, repair cases, audit</td><td>Money needs transactions and constraints. 25M fills a year is small with monthly partitions. RDS Multi-AZ, PgBouncer, plus a read replica for reports.</td></tr>
+        <tr><td>Postgres</td><td>Users, tenants, deployments, strategy versions, orders, fills, positions, lots, cash, journal, repair cases, audit</td><td>Money needs transactions and constraints. 25M fills a year is small with monthly partitions. A synchronous replica, PgBouncer, plus a read replica for reports; self-run or any managed Postgres.</td></tr>
         <tr><td>ClickHouse</td><td>1-minute candles, optional ticks, decision logs, analytics tables (leaderboards, cycles, Geek views)</td><td>Columnar scans over billions of rows in milliseconds. Candles alone would outgrow the ledger database within a year.</td></tr>
         <tr><td>Redis</td><td>Latest price per instrument, sessions, rate-limit buckets</td><td>Microsecond reads and expiry built in</td></tr>
-        <tr><td>S3 (Parquet)</td><td>Raw tick archive, exports, backups</td><td>Cheap, and replayable years later</td></tr>
+        <tr><td>Object storage (Parquet)</td><td>Raw tick archive, exports, backups</td><td>Cheap, and replayable years later</td></tr>
         <tr><td>NATS JetStream</td><td>The last day of events</td><td>Catch-up after a restart. It isn’t a database.</td></tr>
       </tbody>
     </table></div>
@@ -527,11 +527,11 @@ footer { margin: 72px 0 0; padding: 22px 0 40px; border-top: 1.5px solid var(--i
   <div class="body">
     <div class="cols">
       <ul class="plain">
-        <li><b>Region:</b> AWS Mumbai (ap-south-1) across three availability zones, next to the brokers and exchanges. One region is enough for an Indian-market product.</li>
-        <li><b>Start small:</b> Docker Compose on two VMs is fine for the first few hundred users. Move to Kubernetes (EKS) once there are five or more services to roll out safely.</li>
-        <li><b>Managed stores:</b> RDS Postgres, ClickHouse Cloud (or three nodes), ElastiCache Redis, a three-node NATS cluster, S3.</li>
-        <li><b>Static egress IP:</b> every broker call goes out through a NAT gateway with a fixed address, as the exchanges’ API rules require.</li>
-        <li><b>Secrets:</b> broker tokens are encrypted with KMS. Only the login flow and the OMS can decrypt them.</li>
+        <li><b>Where:</b> wherever the user chooses: any cloud, their own servers, or a mix (the trading path in one place; the screens and reports may be elsewhere). Trading close to the brokers and exchanges (Mumbai) keeps the order hop short. No provider is assumed.</li>
+        <li><b>Start small:</b> Docker Compose on two VMs is fine for the first few hundred users. Move to Kubernetes (any conformant one, k3s included) once there are five or more services to roll out safely.</li>
+        <li><b>Stores:</b> Postgres, ClickHouse, Redis, a three-node NATS cluster, object storage: each self-run, or a managed one on the same protocol where the user prefers.</li>
+        <li><b>Static egress IP:</b> every broker call goes out through a fixed address at its site (a provider’s NAT with a reserved IP, or the server’s own), as the exchanges’ API rules require.</li>
+        <li><b>Secrets:</b> broker tokens are encrypted in Vault, unsealed by whatever key service the site has. Only the login flow and the OMS can decrypt them.</li>
       </ul>
       <ul class="plain">
         <li><b>Tracing:</b> OpenTelemetry follows one trace from tick → decision → intent → fill. Prometheus and Grafana for metrics, Loki for logs.</li>
@@ -576,7 +576,7 @@ footer { margin: 72px 0 0; padding: 22px 0 40px; border-top: 1.5px solid var(--i
       <li>Kafka, Kubernetes and a service mesh on day one.</li>
       <li>Rewrite the strategies in Go or Rust “for speed”. The latency is in the network and the broker, not in Python.</li>
       <li>Event-source everything. Only the order and fill stream needs it.</li>
-      <li>Multi-region active-active. The market is in Mumbai.</li>
+      <li>Active-active trading across sites. A cell trades from one site; the exchanges are in Mumbai.</li>
       <li>Let the UI enforce risk. The OMS does.</li>
     </ul>
   </div>

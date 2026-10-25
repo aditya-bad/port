@@ -44,7 +44,7 @@ Split a piece out only when it scales on a different axis, must fail on its own,
  
 | Scale ticks, CPU and requests separately | No | Yes | Yes, for the three that need it | 
  
-| Things to run and watch | 1 | 15–25 | 6 plus managed stores | 
+| Things to run and watch | 1 | 15–25 | 6 plus the stores (self-run or managed) | 
  
 | Following one trade end to end | One log | Distributed tracing required | One trace through four hops | 
 
@@ -80,9 +80,9 @@ This isn’t high-frequency trading. A tick-to-paper-fill budget of ~200 ms is p
 
 ## The picture
 
-Six things we run, four managed stores, three things outside our control. Blue is the market-data path, green is the money path.
+Six things we run, four stores (self-run or managed, the user’s choice), three things outside our control. Blue is the market-data path, green is the money path.
 
-[Diagram: Linck at scale: services and how they connect. The browser talks to an edge layer and a core API (a modular monolith), and receives live prices from a live gateway over WebSocket. An event bus (NATS JetStream) connects the core API, market data, strategy runners, the order and risk service, workers and notifications. Market data comes from a vendor feed or Kite; the order service is the only writer to Postgres and sends live orders to Kite. Workers write candles and analytics to ClickHouse; market data keeps the latest prices in Redis; S3 holds archives; notifications go to push, email and Telegram.]
+[Diagram: Linck at scale: services and how they connect. The browser talks to an edge layer and a core API (a modular monolith), and receives live prices from a live gateway over WebSocket. An event bus (NATS JetStream) connects the core API, market data, strategy runners, the order and risk service, workers and notifications. Market data comes from a vendor feed or Kite; the order service is the only writer to Postgres and sends live orders to Kite. Workers write candles and analytics to ClickHouse; market data keeps the latest prices in Redis; object storage holds archives; notifications go to push, email and Telegram.]
 
  requests and eventsmarket dataorders and fillsoutside our control
 
@@ -90,19 +90,19 @@ Six things we run, four managed stores, three things outside our control. Blue i
 
 ## Services and what each one owns
 
-Boxes with a dark border are split out on purpose. The rest live inside the Core API as modules, or are managed for us.
+Boxes with a dark border are split out on purpose. The rest live inside the Core API as modules, or are off-the-shelf stores, self-run or managed.
 
 ### Linck web
 TypeScript
  
 Today’s app: the pages, charts, Geek mode and the Repair page. It holds no state the server doesn’t have.
- Scales byA CDN; it’s static filesTalksREST to the Core API, WebSocket to the Live gatewayIf it failsNothing trades differently
+ Scales byStatic files; a CDN is optionalTalksREST to the Core API, WebSocket to the Live gatewayIf it failsNothing trades differently
 
 ### Edge
-managed
+off the shelf
  
 CDN for the app, load balancer, TLS, sign-in (sessions and 2FA), API keys and per-user request limits.
- OwnsNothing; sessions live in RedisScales byThe providerIf it failsScreens go dark; strategies keep trading and exits still fire
+ OwnsNothing; sessions live in RedisScales byMore copies behind the site’s load balancerIf it failsScreens go dark; strategies keep trading and exits still fire
 
 ### Core API
 Python · FastAPI
@@ -230,13 +230,13 @@ Each store does one job. The ledger is the only one that holds money.
 
 | Store | Holds | Why this one | 
 
-| Postgres | Users, tenants, deployments, strategy versions, orders, fills, positions, lots, cash, journal, repair cases, audit | Money needs transactions and constraints. 25M fills a year is small with monthly partitions. RDS Multi-AZ, PgBouncer, plus a read replica for reports. | 
+| Postgres | Users, tenants, deployments, strategy versions, orders, fills, positions, lots, cash, journal, repair cases, audit | Money needs transactions and constraints. 25M fills a year is small with monthly partitions. A synchronous replica, PgBouncer, plus a read replica for reports; self-run or any managed Postgres. | 
  
 | ClickHouse | 1-minute candles, optional ticks, decision logs, analytics tables (leaderboards, cycles, Geek views) | Columnar scans over billions of rows in milliseconds. Candles alone would outgrow the ledger database within a year. | 
  
 | Redis | Latest price per instrument, sessions, rate-limit buckets | Microsecond reads and expiry built in | 
  
-| S3 (Parquet) | Raw tick archive, exports, backups | Cheap, and replayable years later | 
+| Object storage (Parquet) | Raw tick archive, exports, backups | Cheap, and replayable years later | 
  
 | NATS JetStream | The last day of events | Catch-up after a restart. It isn’t a database. | 
 
@@ -288,15 +288,15 @@ Stale data stops tradingNo decision on a price older than its limit. The day che
 
 ## Running it
 
-- Region: AWS Mumbai (ap-south-1) across three availability zones, next to the brokers and exchanges. One region is enough for an Indian-market product.
+- Where: wherever the user chooses: any cloud, their own servers, or a mix (the trading path in one place; the screens and reports may be elsewhere). Trading close to the brokers and exchanges (Mumbai) keeps the order hop short. No provider is assumed.
  
-- Start small: Docker Compose on two VMs is fine for the first few hundred users. Move to Kubernetes (EKS) once there are five or more services to roll out safely.
+- Start small: Docker Compose on two VMs is fine for the first few hundred users. Move to Kubernetes (any conformant one, k3s included) once there are five or more services to roll out safely.
  
-- Managed stores: RDS Postgres, ClickHouse Cloud (or three nodes), ElastiCache Redis, a three-node NATS cluster, S3.
+- Stores: Postgres, ClickHouse, Redis, a three-node NATS cluster, object storage: each self-run, or a managed one on the same protocol where the user prefers.
  
-- Static egress IP: every broker call goes out through a NAT gateway with a fixed address, as the exchanges’ API rules require.
+- Static egress IP: every broker call goes out through a fixed address at its site (a provider’s NAT with a reserved IP, or the server’s own), as the exchanges’ API rules require.
  
-- Secrets: broker tokens are encrypted with KMS. Only the login flow and the OMS can decrypt them.
+- Secrets: broker tokens are encrypted in Vault, unsealed by whatever key service the site has. Only the login flow and the OMS can decrypt them.
 
 - Tracing: OpenTelemetry follows one trace from tick → decision → intent → fill. Prometheus and Grafana for metrics, Loki for logs.
  
@@ -374,7 +374,7 @@ What carries over unchanged: the strategy classes and their decision logging; th
  
 - Event-source everything. Only the order and fill stream needs it.
  
-- Multi-region active-active. The market is in Mumbai.
+- Active-active trading across sites. A cell trades from one site; the exchanges are in Mumbai.
  
 - Let the UI enforce risk. The OMS does.
 

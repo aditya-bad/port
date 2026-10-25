@@ -2,6 +2,8 @@ Linck · Technical architecture · v222 Oct 2026
 
 # Linck architecture
 
+Correction, 25 Oct. Earlier versions of this doc assumed AWS (EKS in Mumbai, RDS, S3, KMS, NAT gateways, DR in Hyderabad). That was never chosen. Linck Platform (LinckTrade, LinckLens, Linck SDK) must run on any cloud or the user’s own servers, mixed; every store is named by its protocol, with a self-run option. The rules are in linck-context/05-target-architecture.md, “Deploy anywhere”.
+
 The engineering design behind the platform plan: the final architecture and the intermediate one, with every component marked as kept, changed or new, and why. What each component is and what it’s called elsewhere, which ones are services, where REST, gRPC and events are used, how it all runs on Kubernetes, the broker and feed connectors, how strategies in Python, Go, Rust and TypeScript run on one runtime, the contracts, the tick path, the strategy runtime, orders and the ledger, the SDK and how it’s built, how we ship, what production looks like at the end, the order we build it in, and the decisions with the alternatives we turned down.
  
  How to read itDesign driversComponentsFinalIntermediateWhat changesServicesProtocolsDeploymentContractsMarket dataLatest ticksConnectorsStrategy runtimeLanguagesOrders, risk, ledgerThe SDKMessagingDataShippingEnd stateMigrationDecisionsOpen questions
@@ -140,7 +142,7 @@ Coloured by what happens to each component between the intermediate architecture
 
 FollowEverythingA tickAn orderOpening a screenDeploying a strategyPause
 
-[Diagram: Final architecture, coloured by change. Five kinds of client reach one edge gateway over HTTPS. Behind it the Python product API, the Go control plane and the Go live gateway; a regional backbone of NATS and Redpanda; and cells. In each cell, ticks flow from market data ingest to computed streams and to a cache agent on every runtime host over gRPC streams that always deliver the latest value, which writes shared memory read by the strategy runtime. Intents go through the cell log to orders and risk, then over gRPC to the broker gateway and the brokers or the sim venue. Platform services, data stores and outside parties below.]
+[Diagram: Final architecture, coloured by change. Five kinds of client reach one edge gateway over HTTPS. Behind it the Python product API, the Go control plane and the Go live gateway; a shared backbone of NATS and Redpanda; and cells. In each cell, ticks flow from market data ingest to computed streams and to a cache agent on every runtime host over gRPC streams that always deliver the latest value, which writes shared memory read by the strategy runtime. Intents go through the cell log to orders and risk, then over gRPC to the broker gateway and the brokers or the sim venue. Platform services, data stores and outside parties below.]
 
 keptchangednewmarket dataorders and fillsscreens and requestscommands that start and move strategiesoutside our control
 
@@ -158,7 +160,7 @@ The labels on each line say how the two sides talk and what travels between them
 - Orders & risk reads it, checks limits, margin and the kill switch, and records the order in the ledger shard in one transaction.OMS · Go
 - It calls the broker gateway over gRPC. The gateway places it through that broker’s API; for paper, the sim venue fills it.broker gateway
 - The broker’s updates come back over its WebSocket. The OMS records the fill and writes it to the cell log.OMS
-- The cell log is copied to the region; the live gateway pushes the fill over SSE to your screen.live gateway
+- The cell log is mirrored to wherever Lens runs; the live gateway pushes the fill over SSE to your screen.live gateway
 
 - The browser asks the edge over HTTPS with REST/JSON, and keeps an SSE stream open for live updates (as today’s app does).browser
 - The edge checks the session and the plan’s limits and passes the request to the product API.edge
@@ -195,7 +197,7 @@ The labels on each line say how the two sides talk and what travels between them
 
 ## Intermediate architecture
 
-What we build first: one region, one cell, today’s code carried over. The colour says what each piece becomes.
+What we build first: one site (any provider or own servers), one cell, today’s code carried over. The colour says what each piece becomes.
 
 FollowEverythingA tickAn orderOpening a screenDeploying a strategyPause
 
@@ -266,13 +268,13 @@ Each row: what it is in the intermediate architecture, what it becomes, why, the
  
 | Ledger | One Postgres, positions + lots tables | One Postgres shard per cell; double-entry journal with positions as projections | Blast radius; write volume | First partner cell, or >5k strategies | Journal written alongside today’s tables first; projections verified equal nightly; then tables become views | 
  
-| State snapshots | deployment_state row in Postgres | Local NVMe WAL + async S3; event-log replay since the snapshot | Per-event snapshots at 50k strategies would flood Postgres | >200 snapshot writes/s | Dual write, read from new, drop old | 
+| State snapshots | deployment_state row in Postgres | Local NVMe WAL + async object storage; event-log replay since the snapshot | Per-event snapshots at 50k strategies would flood Postgres | >200 snapshot writes/s | Dual write, read from new, drop old | 
  
 | Edge | Load balancer, TLS, cookie sessions | Envoy gateway: OIDC, API keys, scopes, per-plan limits, gRPC transcoding | Public API and partners | Public API launch | Gateway in front of the same backends; sessions migrate on next login | 
  
 | SDK | v0: Python package over today’s StrategyBase | v1+: Python, WASM components, remote gRPC; certification; signed artifacts | Open to developers | Public SDK | v0 strategies run unchanged on v1 (an adapter in the SDK core) | 
  
-| Lake | Parquet files on S3 | Iceberg tables (partitioned, versioned, schema evolution) | Point-in-time queries, compaction, many readers | Backtest farm | Register existing Parquet as Iceberg tables; no rewrite | 
+| Lake | Parquet files in object storage | Iceberg tables (partitioned, versioned, schema evolution) | Point-in-time queries, compaction, many readers | Backtest farm | Register existing Parquet as Iceberg tables; no rewrite | 
  
 | Notifications | Python consumer | Go service with templates and channels per tenant | Partner branding, more channels | Partner brokers | Same subjects; swap the consumer | 
  
@@ -286,9 +288,9 @@ Each row: what it is in the intermediate architecture, what it becomes, why, the
  
 | Backtest farm, read models, tick cache agent | Backtests in Python workers; reports query Postgres; no shared memory | Rust jobs on spot nodes; Go consumers filling ClickHouse; a Rust agent per runtime host | Scale and cost | With F3–F4 | Added beside; old paths retired after equal results | 
  
-| Hosting | One EKS cluster, three node pools | A platform cluster per region + a cluster per cell | Blast radius; partners | First partner, or >5k strategies | A staff cell first, then tenants move cell by cell | 
+| Hosting | One Kubernetes cluster at one site, three node pools | A core cluster + a cluster per cell, each at any site | Blast radius; partners | First partner, or >5k strategies | A staff cell first, then tenants move cell by cell | 
  
-| Vault & KMS, audit store, assistant, public API, mobile apps | — | New | Platform scope | Stage 2–3 of the roadmap | Added beside, nothing replaced | 
+| Vault, audit store, assistant, public API, mobile apps | — | New | Platform scope | Stage 2–3 of the roadmap | Added beside, nothing replaced | 
 
 What never changes
  
@@ -307,7 +309,7 @@ A part becomes its own service only if it must fail on its own, scale on its own
 
 | Deployable | Kind | Why it stands alone | Runs as (Kubernetes) | Copies | Owns | 
 
-| Platform cluster, one per region | 
+| Core cluster, at any site | 
  
 | edge-gateway | off the shelf | The only door in; scales with requests | Deployment | 3+, by requests | — | 
  
@@ -417,7 +419,7 @@ The tick path: latest value, never a backloggRPC streams from the ingest to ever
  
 | Broker gateway → brokers | Each broker’s REST API for orders; its WebSocket or postback for updates; FIX 4.4 for institutions | The broker’s protocol, behind our one contract | 
  
-| Services → stores | Postgres wire protocol, ClickHouse native, S3 API, etcd gRPC, Vault over HTTPS | Each store’s own; only the owning service connects | 
+| Services → stores | Postgres wire protocol, ClickHouse native, S3 API / Azure Blob / GCS, etcd gRPC, Vault over HTTPS | Each store’s own; only the owning service connects | 
 
 ### Why not one protocol everywhere
 
@@ -445,24 +447,38 @@ The tick path: latest value, never a backloggRPC streams from the ingest to ever
 
 What gets packaged how, where it runs, and why strategies are the one exception.
 
-Every service ships as a container image (Docker / OCI) and runs on Kubernetes (AWS EKS in Mumbai), deployed by Argo CD from Git.
+Every service ships as a container image (Docker / OCI) and runs on any conformant Kubernetes (k3s on one server, own hardware, or a provider’s: EKS, AKS, GKE), installed from Helm charts by any GitOps tool. Each part can run at a different site: any cloud or the user’s own servers, mixed.
  Strategies are not containers and not pods. They are sandboxes the supervisor starts on its own host; Kubernetes only sees the supervisor.
+
+### Any cloud, own servers, or a mix
+
+- A site is one place: a cloud region or a data centre, with one Kubernetes cluster. The user picks each site’s provider: AWS, Azure, GCP, another, or their own servers. Different parts can run at different sites.
+ 
+- Must share a site: a cell’s trading path (market data, tick cache, computed streams, runtime, OMS, broker gateway, its ledger and event log). The 50 ms and 30 ms budgets and the OMS transaction don’t survive a hop between providers.
+ 
+- May be anywhere: each cell on its own; all of LinckLens; control, builder, reference data, integrity; the backtest farm and the lake; identity, commerce, notifications; the SDK and CLI.
+ 
+- Between sites only gRPC with mTLS (SPIFFE identities, federated), mirrored event streams and object-store reads. No shared database, no cluster network across sites. It works over the plain internet; a private link is optional.
+ 
+- Trade never waits on another site to trade. It caches identity keys, deployments and the day’s reference data. If a link drops, trading goes on, Lens shows its data’s age, and the mirrors catch up from their offsets.
+ 
+- Every store has a self-run version; a provider’s managed one may stand in if it speaks the same protocol and passes our tests.
 
 | Stage | Where it runs | How a release goes out | Why | 
 
 | Today | One machine; one Docker container running one Python process; Postgres beside it; Tailscale in front | ./redeploy.sh: git pull, docker build, restart | One user; the simplest thing that works | 
  
-| Intermediate | One EKS cluster in Mumbai across 3 zones, three node pools (services, runtime with gVisor, data); RDS Postgres | A Helm chart per service; Argo CD applies what’s in Git; Docker Compose on laptops | Several services, rolling deploys without a gap, machines that replace themselves | 
+| Intermediate | One Kubernetes cluster at one site the owner picks (k3s on today’s box works), three node pools (services, runtime with gVisor, data); Postgres self-run or managed | A Helm chart per service; Argo CD or Flux applies what’s in Git; Docker Compose on laptops | Several services, rolling deploys without a gap, machines that replace themselves | 
  
-| Final | A platform cluster per region, a cluster per cell, partner cells in their own AWS accounts | The same charts; Argo CD ApplicationSets roll out cell by cell; Terraform builds accounts, networks and clusters | A bad release or a bad day stays in one cell | 
+| Final | A core cluster and a cluster per cell, each at any site (own servers or any provider, mixed); partner cells where the partner wants them | The same charts; Argo CD ApplicationSets roll out cell by cell; optional OpenTofu modules build clusters and networks on AWS, Azure, GCP or own servers | A bad release or a bad day stays in one cell | 
 
-[Diagram: Where everything runs. A platform cluster per region with service, data and job node pools, and a cell cluster per cell with market-data, runtime and service node pools. On runtime nodes Kubernetes runs only the supervisor and the cache agent; the strategy sandboxes are processes and WASM instances the supervisor starts. AWS-managed Postgres, Redis, S3, KMS, NAT with fixed IPs and load balancers sit outside the clusters.]
+[Diagram: Where everything runs. A core cluster with service, data and job node pools, and a cell cluster per cell with market-data, runtime and service node pools. On runtime nodes Kubernetes runs only the supervisor and the cache agent; the strategy sandboxes are processes and WASM instances the supervisor starts. Postgres, Redis, object storage, the key service, fixed egress IPs and the way in sit beside the clusters at each site: self-run, or a provider’s managed one on the same protocol.]
 
 ### Why Kubernetes, and not…
 
 - Docker Compose: one machine, no rolling deploys or recovery across machines. We keep it for laptops and for today.
  
-- ECS: good for stateless services, but no operators for Redpanda, NATS and ClickHouse, no runtime classes for gVisor, and partner cells may one day run outside AWS.
+- ECS: good for stateless services, but no operators for Redpanda, NATS and ClickHouse, no runtime classes for gVisor, and it runs only on AWS, while every part of Linck must run anywhere.
  
 - Nomad: lighter, but the operators, tools and people we need are on Kubernetes.
  
@@ -478,13 +494,13 @@ Every service ships as a container image (Docker / OCI) and runs on Kubernetes (
  
 - Kubernetes still manages the machines: draining a node tells its supervisor to hand its leases away first.
 
-### What we run, what AWS runs
+### What runs where: self-run or managed, per site
 
-- AWS runs: Postgres (RDS, multi-zone, a ledger shard per cell), Redis (ElastiCache), S3, KMS, load balancers, NAT gateways.
+- The user’s choice at each site, self-run or managed: Postgres (CloudNativePG or Patroni; or RDS, Azure Database, Cloud SQL), Redis (Valkey; or ElastiCache, Azure Cache, Memorystore), object storage (MinIO or Ceph; or S3, Azure Blob, GCS), the key service that unseals Vault (Shamir shares or an HSM; or AWS KMS, Azure Key Vault, GCP KMS), the way in (MetalLB or a public IP; or the provider’s load balancer).
  
 - We run, with an operator: Redpanda, ClickHouse, NATS, etcd, Vault, Temporal. They want our NVMe nodes or sit inside a cell, and at our size running them costs less than the managed versions. Revisited store by store; switching to a managed one changes a connection string, not code.
  
-- Egress: brokers require registered fixed IPs for API orders, so each cell’s broker gateways leave through NAT gateways with fixed addresses.
+- Egress: brokers require registered fixed IPs for API orders, so each cell’s broker gateways leave through fixed addresses at their own site: a provider’s NAT with a reserved IP, or the server’s own public IP. Moving a gateway to another site starts with registering the new IP.
  
 - Images: distroless, built reproducibly, signed (cosign); the clusters run only signed images.
  
@@ -733,7 +749,7 @@ async def writer():
 
 | Option | Was planned for | Why we dropped it | We’d look again if | 
 
-| Aeron | Final: ingest → every runtime host | It doesn’t give latest-wins by itself, so conflation is needed anyway. Its gain is microseconds, which a strategy that takes milliseconds to decide can’t use. No official Rust client (the C client through community bindings), a media driver to run and tune, and no native multicast in an AWS VPC. | The ingest → host hop measures above 5 ms at the 99th percentile at peak, or fan-out costs more than a core per cell, with conflation already in place | 
+| Aeron | Final: ingest → every runtime host | It doesn’t give latest-wins by itself, so conflation is needed anyway. Its gain is microseconds, which a strategy that takes milliseconds to decide can’t use. No official Rust client (the C client through community bindings), a media driver to run and tune, and no multicast in most cloud networks. | The ingest → host hop measures above 5 ms at the 99th percentile at peak, or fan-out costs more than a core per cell, with conflation already in place | 
  
 | NATS for ticks | Intermediate: market data → runner workers | A slow consumer makes NATS drop incoming messages, possibly the newest, or disconnect it; the extra server hop buys nothing for point-to-point streams. JetStream is a replay log: a backlog by design. | Not for ticks. NATS stays for commands and live-update signals, where it fits. | 
  
@@ -803,13 +819,13 @@ Order: Kite (today), Upstox, Dhan, Angel One, Fyers, ICICI Direct, then FIX for 
 
 Where untrusted code runs next to money, so it’s built around isolation, recovery and determinism.
 
-[Diagram: A runtime host. On a runtime host, the tick cache and computed streams in shared memory feed a Rust supervisor. The supervisor sends event batches to sandboxes over Unix sockets: process sandboxes in gVisor (any SDK language), WASM strategies in Wasmtime, and a gateway for remote strategies over gRPC. Sandboxes return commands. The supervisor writes state to a local write-ahead log shipped to S3, holds leases in etcd, and sends intents to the order log.]
+[Diagram: A runtime host. On a runtime host, the tick cache and computed streams in shared memory feed a Rust supervisor. The supervisor sends event batches to sandboxes over Unix sockets: process sandboxes in gVisor (any SDK language), WASM strategies in Wasmtime, and a gateway for remote strategies over gRPC. Sandboxes return commands. The supervisor writes state to a local write-ahead log shipped to object storage, holds leases in etcd, and sends intents to the order log.]
 
 ### Recovery, exactly
 
 - Every event batch has a sequence number; after the strategy answers, its state is written to the local WAL with that number.each batch
  
-- The WAL ships to S3 every second; fills and timers are also on the durable log.1 s
+- The WAL ships to object storage every second; fills and timers are also on the durable log.1 s
  
 - A host dies: its leases expire, the scheduler grants them elsewhere with epoch + 1.~5 s
  
@@ -1068,13 +1084,13 @@ Each store does one job; tenancy is enforced in the database, not only in code.
  
 | ClickHouse | Bars, decisions, fills copy, read models | By month and tenant | Columnar scans for Geek mode and reports | 
  
-| Lake · Iceberg on S3 | Ticks, chains, reference data over time, fills | By date, then underlying | Point-in-time, cheap, read directly by the backtest farm | 
+| Lake · Iceberg in object storage | Ticks, chains, reference data over time, fills | By date, then underlying | Point-in-time, cheap, read directly by the backtest farm | 
  
 | Redis | Sessions, rate limits, small caches | Cluster mode | Expiry built in | 
  
 | etcd | Leases, epochs | Per cell | Linearizable leases are what it’s for | 
  
-| Vault + KMS | Broker tokens, signing keys | Per tenant keys | Only the adapters can decrypt a token | 
+| Vault (unsealed by the site’s key service) | Broker tokens, signing keys | Per tenant keys | Only the adapters can decrypt a token | 
 
 -- every tenant-owned table, in every Postgres
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
@@ -1093,23 +1109,23 @@ How a change gets from a laptop to production without touching a trading day.
 
 | What | Packaged as | Goes to | How it reaches production | 
 
-| Our services | Container images, signed | Our image registry (ECR) | Argo CD, cell by cell, after the gates below | 
+| Our services | Container images, signed | Any OCI registry (Harbor, or ECR, ACR, GHCR) | Argo CD, cell by cell, after the gates below | 
  
 | Users’ strategies | Signed artifacts (source, lockfile, manifest), not images | The artifact registry | Pinned to a deployment; the supervisor fetches the exact version | 
  
-| Runtime images | One pinned image per language version, for process sandboxes | ECR, on every runtime node | Rolled out like a service; strategies keep the one they were certified on | 
+| Runtime images | One pinned image per language version, for process sandboxes | The registry, cached on every runtime node | Rolled out like a service; strategies keep the one they were certified on | 
  
 | SDKs | Packages | PyPI, the Go module proxy, crates.io, npm | Semver; release notes; the conformance suite must pass | 
  
 | CLI | One binary per OS | GitHub releases, Homebrew | Self-updates; refuses versions older than the platform supports | 
  
-| Web app | Static files | S3 + CDN | Atomic switch; the old version stays for instant rollback | 
+| Web app | Static files | The edge gateway; a CDN optional | Atomic switch; the old version stays for instant rollback | 
  
 | Mobile apps | App bundles | Play Store, App Store | Staged rollout; features behind flags | 
 
 ### Repository and build
 
-- One monorepo: contracts/ (Buf), services/ (Go: control, identity, commerce, refdata, oms, broker-gw, integrity, read-models, notifications, live-gateway), engine/ (Cargo: ingest, computed streams, supervisor, sim venue, linck-core, CLI), python/ (uv: product API, assistant), sdks/ (python, go, rust, ts), web/, deploy/ (Terraform, Helm, Argo CD).
+- One monorepo: contracts/ (Buf), services/ (Go: control, identity, commerce, refdata, oms, broker-gw, integrity, read-models, notifications, live-gateway), engine/ (Cargo: ingest, computed streams, supervisor, sim venue, linck-core, CLI), python/ (uv: product API, assistant), sdks/ (python, go, rust, ts), web/, deploy/ (Helm charts, site files, optional OpenTofu modules per provider).
  
 - Native tools per language, one task runner on top (just), CI with path filters so a web change doesn’t rebuild Rust.
  
@@ -1145,7 +1161,7 @@ How a change gets from a laptop to production without touching a trading day.
  
 - Staging: a full cell fed by a recorded market at real speed, all day, every day, so 09:15 and 15:15 are rehearsed hourly.
  
-- Production: cells in Mumbai; disaster recovery in Hyderabad.
+- Production: cells at the sites the user picks, on any provider or own servers, with data in India; disaster recovery at a second site of their choosing.
 
 20
 
@@ -1155,21 +1171,21 @@ What production looks like when the final architecture is fully in place. Sizes 
 
 | Piece | Shape | Size at 50k strategies | 
 
-| Regions | AWS ap-south-1 (3 AZs) primary; ap-south-2 warm standby | RPO 0 for the ledger (synchronous replica in-region, async cross-region); RTO 30 min region-wide | 
+| Sites | A primary site per cell and a warm standby site, each on any provider or own servers, in India | RPO 0 for the ledger (synchronous replica in the site, async to the standby); RTO 30 min for a lost site | 
  
-| Accounts | AWS Organizations: one account per cell, one for control, one for data, one for security | ~15 accounts | 
+| Accounts | Separate credentials and networks per cell, for control, for data and for security, on whatever each provider calls them (accounts, subscriptions, projects) or separate machines | ~15 separate scopes | 
  
-| Control cluster | EKS: edge gateway, identity, control, commerce, builder, reference data, product API, live gateway, integrity, read models, notifications, assistant, Temporal, ClickHouse, NATS, Vault | ~12 nodes | 
+| Control cluster | Any Kubernetes, any site: edge gateway, identity, control, commerce, builder, reference data, product API, live gateway, integrity, read models, notifications, assistant, Temporal, ClickHouse, NATS, Vault | ~12 nodes | 
  
-| Cells | Each its own EKS cluster: market data ingest, sequencer, computed streams, runtime hosts (supervisor + cache agent), OMS, a broker gateway per broker, sim venue, etcd, Redpanda (3 brokers); its ledger shard on RDS | 10 cells × (2 fabric + 6 runtime hosts of 64 vCPU + 3 OMS + 3 Redpanda) | 
+| Cells | Each its own Kubernetes cluster at its own site: market data ingest, sequencer, computed streams, runtime hosts (supervisor + cache agent), OMS, a broker gateway per broker, sim venue, etcd, Redpanda (3 brokers); its ledger shard on Postgres at the same site | 10 cells × (2 fabric + 6 runtime hosts of 64 vCPU + 3 OMS + 3 Redpanda) | 
  
-| Partner cells | A broker partner gets dedicated cells, optionally in its own account | 1–3 per partner | 
+| Partner cells | A broker partner gets dedicated cells, optionally on its own servers or its own cloud | 1–3 per partner | 
  
-| Data | ClickHouse cluster (3 shards × 2 replicas), Iceberg on S3, Redis cluster | ~2 TB ClickHouse/year; lake grows ~15–25 GB/day compressed | 
+| Data | ClickHouse cluster (3 shards × 2 replicas), Iceberg in object storage, Redis cluster | ~2 TB ClickHouse/year; lake grows ~15–25 GB/day compressed | 
  
-| Backtest farm | Spot instances via Karpenter, scaled from zero by queue depth | 0 → 500 vCPU in minutes | 
+| Backtest farm | Spot or spare machines on any provider or own servers, scaled from zero by queue depth | 0 → 500 vCPU in minutes | 
  
-| Egress | NAT gateways with fixed IPs per cell, registered with brokers | 2 IPs per cell | 
+| Egress | Fixed egress IPs per cell at its site (provider NAT or own public IP), registered with brokers | 2 IPs per cell | 
  
 | Observability | OpenTelemetry → Tempo, Prometheus/Mimir, Loki, Grafana; one trace from tick to fill | SLO dashboards per cell and per tenant | 
 
@@ -1209,7 +1225,7 @@ Every step ships alone, runs beside what it replaces until proven equal, and lea
 
 | P0 | Latest-value delivery in today’s app: the tick broadcaster conflates per subscriber (one slot per instrument, one batch in flight), so a slow runner or screen gets the newest tick, never a backlog | A slow-strategy test: after a stall, the next tick processed is the newest; fills and events still arrive in order | Today’s app | 
  
-| I0 | An image per service, one EKS cluster, Helm + Argo CD; today’s app runs there unchanged as core-api | A week of paper days on the cluster beside the current box | Intermediate | 
+| I0 | An image per service, one Kubernetes cluster at a site the owner picks, Helm + Argo CD; today’s app runs there unchanged as core-api | A week of paper days on the cluster beside the current box | Intermediate | 
  
 | I1 | Contracts repo; SDK v0 as a facade over today’s StrategyBase; our strategies run through it | Fault matrix and crash-recovery suites unchanged | Intermediate | 
  
@@ -1255,7 +1271,7 @@ Short decision records. Each can be revisited when its reason stops being true.
  
 | Running many languages | One protocol, thin SDKs, three sandbox kinds | A runtime per language · one C core loaded into every language | A runtime per language multiplies the hardest code; a shared C core brings crashes and FFI into every SDK. | 
  
-| Hosting | Containers on Kubernetes (EKS) | Compose on VMs · ECS · Nomad · serverless | Operators for our stores, gVisor runtime classes, rolling deploys, the same setup per cell and per partner. | 
+| Hosting | Containers on any conformant Kubernetes, at any site; Compose for one machine | One provider’s Kubernetes · ECS · Nomad · serverless | Operators for our stores, gVisor runtime classes, rolling deploys, the same setup per cell and per partner, on any provider or own servers. | 
  
 | Strategy unit | A sandbox under the supervisor | A pod per strategy | 50k pods is past what Kubernetes handles well; pods start in seconds, sandboxes in under one. | 
  
