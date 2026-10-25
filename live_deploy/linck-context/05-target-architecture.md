@@ -221,9 +221,9 @@ contract.
 
 One site (wherever the owner chooses; today's box with k3s works), one cell,
 today's code carried over. Nine deployables:
-`core-api` (Python modular monolith: today's app), `live-gateway`, `md`,
+`core-api` (Python modular monolith: today's app), `live-gateway`, `market-data`,
 `oms`, `broker-gw-kite` (Go), `runner` (Python StatefulSet of leased
-workers), `sim` (Python fill model behind the broker contract), `workers`
+workers), `paper-broker` (Python fill model behind the broker contract), `workers`
 (Temporal), `notifications`. NATS JetStream, Postgres, ClickHouse, Redis, object
 storage.
 Sized for ~2k strategies, ~5k instruments, ~20k updates/s. It fixes today's
@@ -242,7 +242,7 @@ can be the home site; today's box with k3s or Docker Compose works.
 
 | Part | Product | Where it can run in the first version | How it talks across a site boundary |
 |---|---|---|---|
-| `md`, `runner`, `oms`, `broker-gw-kite`, `sim` | LinckTrade | Home site (the trading path) | — |
+| `market-data`, `runner`, `oms`, `broker-gw-kite`, `paper-broker` | LinckTrade | Home site (the trading path) | — |
 | `workers`: day check, repair, replay | LinckTrade | Home site (they read Postgres; a repair commits through the OMS) | — |
 | `workers`: backtests (their own Temporal task queue) | LinckTrade | **Any site**: spare machines anywhere | Temporal over gRPC with mTLS; read the lake; results back through `core-api` |
 | `core-api` (product API, deployments, identity, instruments) | Lens, Trade control, core | Home site (writes the one Postgres) | — |
@@ -265,6 +265,35 @@ day one. Kite's static IP is the home site's egress IP.
 Installed from one site file per site: the same images and settings render
 to a Helm chart (any Kubernetes, k3s included) or a Compose file (one
 machine). The site check runs before the home site trades.
+
+Names (owner, 25 Oct): the first version's market-data service is
+`market-data` (was `md`) and its paper-fill service is `paper-broker` (was
+`sim`). In the final they become the Rust feed handlers + sequencer and the
+sim venue.
+
+### First version: how a live tick reaches a strategy
+
+Strategies never connect to `market-data`. Each runner worker (it holds the
+lease on a shard of strategies) opens **one** gRPC server stream to
+`market-data`, subscribed to the union of its strategies' instruments; the
+worker starts the call, `market-data` streams back. `market-data` keeps one
+slot per instrument for that stream, overwritten by every tick, with one batch
+in flight: when the worker is ready it gets the changed instruments at their
+newest value plus a skipped count. The worker keeps its own slot per
+instrument and gives each strategy a batch of only its changed instruments,
+one batch in flight per strategy; fills, order updates and timers are never
+skipped and stay in order. A dropped stream resumes from a snapshot of latest
+values, never a backlog; per-instrument sequence numbers stop an older tick
+overwriting a newer one; a silent instrument is marked stale.
+
+Path: Kite / vendor → `market-data` → one gRPC stream per runner worker →
+the worker's slots → each strategy's batch. At first strategies run inside
+the worker as Python objects (today's model); with protocol v1's process mode
+each is a forked process fed the same Batch messages over a Unix socket.
+(Per worker rather than per machine, and in-process first, are this doc's
+reading; the conflation rules are from `06-runtime-and-languages.md`.) In
+the final: one stream per machine into the tick cache agent's shared memory,
+then the supervisor feeds each sandbox over a Unix socket.
 
 Each stand-in has a swap trigger (e.g. Rust market data when >10k
 instruments or a second vendor; Rust supervisor when the SDK opens to the
