@@ -125,6 +125,7 @@ def test_a_resting_limit_is_followed_for_the_next_seconds(pool_run):
 
 def test_a_quote_that_hangs_or_fails_leaves_the_band_unchecked(pool_run, monkeypatch):
     monkeypatch.setattr(shadow, "QUOTE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(shadow, "QUOTE_QUEUE_S", 0.3)
 
     async def go(pool):
         d = await dep(pool)

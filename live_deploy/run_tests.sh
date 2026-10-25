@@ -17,7 +17,9 @@
 #   sudo -u postgres psql -c 'ALTER ROLE t CREATEDB'
 # Without it the Python tests run on one worker. PY_WORKERS=0 forces that.
 # Python: $PYTHON, else .venv/bin/python, else python3, with requirements-dev.txt installed.
-# Coverage report: htmlcov/index.html. Set MIN_COVERAGE to fail below a percentage.
+# Coverage (COVERAGE=1): report in htmlcov/index.html. It doubles the Python
+# tests' time, so it's off unless asked for; MIN_COVERAGE (fail below a
+# percentage) turns it on.
 
 set -u
 cd "$(dirname "$0")"
@@ -61,8 +63,10 @@ else
       echo "note: $(cat "$LOGS/dbs") — running Python tests on one worker"; W=0; }
   fi
   echo "Python: unit, database, API and strategy simulations ($([ "$W" = 0 ] && echo 1 || echo "$W") workers)…"
-  "$PY" -m pytest --require-db -p no:cacheprovider -n "$W" $([ "$W" = 0 ] || echo --dist worksteal) --durations=15 --cov --cov-report=term:skip-covered --cov-report=html \
-    ${MIN_COVERAGE:+--cov-fail-under=$MIN_COVERAGE} > "$LOGS/py" 2>&1 &
+  COV=(); if [ -n "${COVERAGE:-}${MIN_COVERAGE:-}" ]; then
+    COV=(--cov --cov-report=term:skip-covered --cov-report=html ${MIN_COVERAGE:+--cov-fail-under=$MIN_COVERAGE}); fi
+  "$PY" -m pytest --require-db -p no:cacheprovider -n "$W" $([ "$W" = 0 ] || echo --dist worksteal) --durations=15 \
+    "${COV[@]}" > "$LOGS/py" 2>&1 &
   PY_PID=$!
 fi
 

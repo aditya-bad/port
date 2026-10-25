@@ -47,6 +47,7 @@ FOLLOW_S = 60               # how long a resting limit is given to fill
 WORSE_FROM = 1.0            # ₹: a shortfall under this is "about the paper price"
 DEFAULT_TICK = 0.05
 QUOTE_TIMEOUT_S = 5.0
+QUOTE_QUEUE_S = 30.0   # beyond that, how long a quote may wait its turn behind the strategies' own Kite calls
 QUOTE_BATCH_S = 2.0         # fills' quotes are asked for together, once per this
 MAX_BOOK_AGE = timedelta(seconds=30)
 NSE_FREEZE_URL = "https://nsearchives.nseindia.com/content/fo/qtyfreeze.csv"
@@ -682,7 +683,7 @@ class ShadowService:
         await asyncio.sleep(self.batch_s)
         asked, self._asked = self._asked, {}
         try:
-            got = await asyncio.wait_for(self.quotes(list(asked)), QUOTE_TIMEOUT_S + 30)
+            got = await asyncio.wait_for(self.quotes(list(asked)), QUOTE_TIMEOUT_S + QUOTE_QUEUE_S)
         except BaseException as e:
             for futs in asked.values():
                 for f in futs:
@@ -707,7 +708,7 @@ class ShadowService:
         quote = None
         try:
             quote = await asyncio.wait_for(self.quote(f"{exchange}:{meta.get('tradingsymbol') or symbol}"),
-                                           self.batch_s + QUOTE_TIMEOUT_S + 31)
+                                           self.batch_s + QUOTE_TIMEOUT_S + QUOTE_QUEUE_S + 1)
         except Exception as e:
             logger.info("Shadow: no quote for %s (%s)", symbol, e)
         quote = quote or {}

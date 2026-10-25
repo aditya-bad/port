@@ -103,15 +103,33 @@ def _ensure_db(request):
         pytest.skip(msg)
 
 
+_WIPE: dict = {}   # the tables a test may fill, and the sequences they own (found once)
+
+
 async def truncate_all():
+    """Every domain table emptied and its ids restarted. Only the tables
+    holding rows are truncated (TRUNCATE costs per table, filled or not:
+    about 0.1s a test for all of them), and every sequence one of them
+    owns that has moved is restarted (a test may empty a table itself)."""
     import asyncpg
     conn = await asyncpg.connect(TEST_DB)
     try:
-        tables = [r["tablename"] for r in await conn.fetch(
-            "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")]
-        wipe = [t for t in tables if t not in _KEEP]
+        if not _WIPE:
+            tables = [r["tablename"] for r in await conn.fetch(
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'")]
+            _WIPE["tables"] = [t for t in tables if t not in _KEEP]
+            _WIPE["seqs"] = [r["seq"] for r in await conn.fetch(
+                "SELECT s.relname AS seq FROM pg_class s JOIN pg_depend d ON d.objid = s.oid AND d.deptype IN ('a', 'i') "
+                "JOIN pg_class t ON t.oid = d.refobjid WHERE s.relkind = 'S' AND t.relname = ANY($1::text[])", _WIPE["tables"])]
+        wipe = _WIPE["tables"]
         if wipe:
-            await conn.execute(f"TRUNCATE {', '.join(wipe)} RESTART IDENTITY CASCADE")
+            full = [r[0] for r in await conn.fetch(
+                " UNION ALL ".join(f"SELECT '{t}' FROM (SELECT 1 FROM {t} LIMIT 1) x" for t in wipe))]
+            if full:
+                await conn.execute(f"TRUNCATE {', '.join(full)} CASCADE")
+            await conn.execute(
+                "SELECT setval(format('%I', sequencename)::regclass, start_value, false) FROM pg_sequences "
+                "WHERE schemaname = 'public' AND last_value IS NOT NULL AND sequencename = ANY($1::text[])", _WIPE["seqs"])
         await conn.execute("DELETE FROM users WHERE username <> 'admin'")
     finally:
         await conn.close()
