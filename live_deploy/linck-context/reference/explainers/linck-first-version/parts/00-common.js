@@ -1,0 +1,113 @@
+// Linck, first version: the architecture we build first, as a narrated
+// explainer. Colours: LinckTrade blue, LinckLens purple, Linck core orange,
+// Linck SDK green; language badges Go green, Python yellow.
+
+// Text that types on line by line between a and b, as it's said.
+function typer(p, x, y, s, n, cls = 'txt', lh = 22, anchor = 'start') {
+  const lines = wrapLines(s, n), els = lines.map((l, i) => { const e = T(p, x, y + i * lh, '', cls, anchor); op(e, 0); return e; });
+  const total = lines.reduce((a, l) => a + l.length, 0) || 1;
+  return {
+    lines, els, h: lines.length * lh,
+    go(t, a, b, rt) { let c = a; lines.forEach((l, i) => { const d = (b - a) * l.length / total; if (t < c) txt(els[i], ''); else typeOn(els[i], t, c, c + d, l, rt); op(els[i], els[i].textContent ? 1 : 0); c += d; }); },
+    full() { lines.forEach((l, i) => { txt(els[i], l); op(els[i], 1); }); },
+  };
+}
+
+// Several lines, each its own typer, typed one after another.
+function typeList(p, x, y, lines, n, cls = 'txt', lh = 26, gap = 6) {
+  let yy = y;
+  const ts = lines.map(s => { const tp = typer(p, x, yy, s, n, cls, lh); yy += tp.h + gap; return tp; });
+  const total = lines.reduce((a, s) => a + s.length, 0) || 1;
+  return {
+    ts, h: yy - y,
+    go(t, a, b, rt) { let c = a; ts.forEach((tp, i) => { const d = (b - a) * lines[i].length / total; tp.go(t, c, c + d, rt); c += d; }); },
+  };
+}
+
+// A table told row by row: each row's first cell is there from the start,
+// the rest type on while that row is said.
+//   cols: [[header, x, chars a line]], rows: [[first, …cells, said]]
+function tableScene(title, intro, cols, rows, o = {}) {
+  const S = beats([[intro, { focus: 'all' }, o.min0 || 1.2], ...rows.map((r, i) => [r[r.length - 1], { spot: ['r' + i], pad: 3 }])]);
+  scene({ title, dur: S.dur, steps: S.steps }, p => {
+    const B = G(p);
+    const y0 = o.y0 || 160;
+    const hdr = G(B); cols.forEach(([h, x]) => T(hdr, x, y0 - 18, h, 'fl', 'start')); op(hdr, 0);
+    const rh = o.rh || Math.min(104, (850 - y0) / rows.length);
+    const rs = rows.map((r, i) => {
+      const y = y0 + i * rh, g = named('r' + i, box(B, 40, y, 1520, rh - 10, '', { cls: 'chip' }));
+      const cells = cols.map(([, x, n], j) => {
+        const nl = wrapLines(r[j], n).length, cy = y + (rh - 10) / 2 + 6 - (nl - 1) * 10;
+        return typer(g, x, cy, r[j], n, j === 0 ? 'cl' : 'txt', 20);
+      });
+      cells[0].full();
+      return { g, cells };
+    });
+    return (t, rt) => {
+      fade(hdr, t, 0.2);
+      rs.forEach(({ g }, i) => pop(g, t, 0.3 + i * Math.max(0.1, (S.to[0] - 1) / rs.length)));
+      rs.forEach(({ g, cells }, i) => {
+        flash(g, t, S.at[i + 1], 0.6);
+        const rest = cells.slice(1), n = rest.length, a = S.at[i + 1] + 0.2, b = S.to[i + 1] - 0.3;
+        rest.forEach((c, j) => c.go(t, a + (b - a) * j / n, a + (b - a) * (j + 1) / n, rt));
+      });
+    };
+  });
+}
+
+// A panel: a dashed frame with a heading, for content that changes per step.
+function panel(p, x, y, w, h, title) {
+  const g = box(p, x, y, w, h, '', { cls: 'frame' });
+  if (title) T(g, x + 20, y + 30, title, 'fl', 'start');
+  return g;
+}
+
+// typeOn, hidden until it starts (no cursor blinking on an empty line).
+function typeAt(el, t, a, b, s, rt) {
+  if (t < a) txt(el, ''); else typeOn(el, t, a, b, s, rt);
+  op(el, el.textContent ? 1 : 0);
+}
+
+// A block of code that types on line by line; hl(t, from, to, a, b) lights
+// lines from..to (inclusive) between a and b.
+function codeBlock(p, x, y, w, lines, lh = 25, title = '', cls = 'mono') {
+  const g = panel(p, x, y, w, lines.length * lh + (title ? 64 : 34), title);
+  const top = y + (title ? 58 : 30);
+  const band = G(g);
+  const els = lines.map((s, i) => { const e = T(g, x + 22, top + i * lh, '', cls, 'start'); e.setAttribute('xml:space', 'preserve'); e.style.whiteSpace = 'pre'; op(e, 0); return e; });
+  const bands = lines.map((_, i) => { const r = E('rect', { x: x + 8, y: top + i * lh - lh + 7, width: w - 16, height: lh, class: 'f-y', opacity: 0 }, band); return r; });
+  const total = lines.reduce((a, s) => a + Math.max(4, s.length), 0) || 1;
+  return Object.assign(g, {
+    lines, els,
+    type(t, a, b, rt) { let c = a; lines.forEach((s, i) => { const d = (b - a) * Math.max(4, s.length) / total; typeAt(els[i], t, c, c + d, s, rt); c += d; }); },
+    hl(t, from, to, a, b) { for (let i = from; i <= to; i++) { const f = Math.min(k(t, a, a + 0.3), 1 - k(t, b - 0.3, b)); bands[i].setAttribute('opacity', (0.45 * f).toFixed(3)); } },
+    lineY: i => top + i * lh - lh / 2 + 2,
+  });
+}
+
+// Word cards, one spotlit per sentence.
+function cardGrid(p, list, y0 = 118) {
+  const w = 488, gap = 20, out = [];
+  for (let r = 0; r * 3 < list.length; r++) {
+    const row = list.slice(r * 3, r * 3 + 3), h = Math.max(...row.map(([, m]) => termH(w, m)));
+    row.forEach(([word, m], i) => out.push(named('c' + (r * 3 + i), term(p, 40 + i * (w + 18), y0, w, word, m, { h }))));
+    y0 += h + gap;
+  }
+  return out;
+}
+function wordScene(title, intro, list) {
+  const S = beats([[intro, { focus: 'all' }], ...list.map(([, , said], i) => [said, { spot: ['c' + i] }])]);
+  scene({ title, dur: S.dur, steps: S.steps }, p => {
+    const cards = cardGrid(G(p), list);
+    return (t, rt) => {
+      cards.forEach((c, i) => { pop(c, t, 0.2 + i * (S.to[0] - 0.6) / cards.length); if (t < S.at[i + 1]) op(c, Math.min(0.35, +c.getAttribute('opacity'))); });
+      cards.forEach((c, i) => flash(c, t, S.at[i + 1], 0.8));
+    };
+  });
+}
+
+// Flows: a 3 × 4 grid of boxes.
+const CX = [40, 620, 1200], CW = 360, RY = [120, 330, 540, 750];
+const out = (B, c, r, label, sub) => box(B, CX[c], RY[r], CW, 96, label, { sub, cls: 'out' });
+const store = (B, c, r, label, sub) => box(B, CX[c], RY[r], CW, 96, label, { sub, cls: 'store' });
+const svcAt = (B, c, r, name, lang, part, sub, nick) => node(B, CX[c], RY[r], CW, name, lang, part, { sub, nick });

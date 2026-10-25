@@ -1,0 +1,265 @@
+Linck, first version: the narrated video, as text
+
+The script of reference/explainers/linck-first-version (9 scenes, about 13
+minutes). Each scene's narration, in order. Numbers marked measured come from
+the prototype or today's app; targets and estimates say so.
+
+1. Linck, first version
+
+This video is about the first version of Linck: the architecture we build
+first, starting from today’s app. The final architecture comes later. This is
+the step we take now.
+
+Today, Linck is one Python program in one Docker container, on one machine.
+The website and the strategies share that program, and several places write
+money. The first version fixes those two risks first.
+
+It is built from Linck Platform’s three products. LinckTrade does the trading
+and keeps the money. LinckLens is what you see. The Linck SDK is what strategy
+developers use. And Linck core is shared by all three: the way in, logins, and
+notifications.
+
+It is sized for about two thousand strategies, five thousand instruments, and
+twenty thousand price updates a second at the open. Those are estimates, to be
+measured.
+
+And it is not tied to any provider. It runs wherever the owner chooses: AWS,
+Azure, Google Cloud, another cloud, or their own servers, even today’s
+machine.
+
+2. Words first
+
+A few words first, so nothing later is vague.
+
+A site is one place Linck runs: a region of any cloud, or a data centre of
+your own. The home site is where the first version keeps the money, and its
+one database.
+
+Kubernetes runs containers on a group of machines, and restarts them when they
+die. Every cloud offers it, and k3s is a small Kubernetes for a single server.
+Docker Compose runs the same containers on one machine, without Kubernetes.
+
+A deployable is one program we build and ship on its own, as a container
+image. The first version has nine of them.
+
+A modular monolith is one program made of modules. Each module keeps its own
+tables and never reads another’s, so it can be moved out into its own service
+later.
+
+NATS JetStream is a messaging system that keeps each message until it is read.
+It carries the first version’s events: intents, fills, commands and live
+updates.
+
+Conflation means keeping only the newest price for a reader that has fallen
+behind, instead of a queue of old ones.
+
+A lease is a claim, renewed every few seconds, that one runner worker runs one
+strategy. If the worker dies, the lease runs out, and another worker takes
+over.
+
+A Temporal workflow is a long job written as steps. If a machine dies halfway
+through, it resumes at the step where it stopped.
+
+An intent is what a strategy wants, like “sell one lot of this option”. A fill
+is the broker, or the simulator, saying it traded.
+
+3. The first version: nine deployables
+
+The first version has nine deployables of our own. Here is each one: what it
+is written in, and what it does. The colour band says which product it belongs
+to: blue for LinckTrade, purple for LinckLens, orange for Linck core, and
+black for core-api, which holds a little of each.
+
+Core-api, in Python, is a modular monolith: one program, one team, one
+database. Its modules are the product API for the screens, deployments, which
+is control’s job, identity, and instruments, today’s resolver. Each module
+owns its tables and never joins another’s, so splitting one out later is a
+move, not a rewrite.
+
+The live gateway, in Go, is the same service as in the final: SSE to screens,
+latest values only.
+
+Notifications is a small Python consumer: it reads events from NATS and sends
+the alerts.
+
+Md, in Go, takes Kite’s WebSocket and one licensed vendor, cleans the ticks,
+builds bars and chain views inside itself, keeps the latest prices in Redis,
+and streams ticks over conflated gRPC to the runner workers.
+
+Runner, in Python, runs as a StatefulSet. Each worker holds a lease in
+Postgres for its shard of strategies, keeps one latest slot per instrument,
+and saves each strategy’s state as a deployment_state row. Strategies compute
+their own indicators, and only Python strategies run, in gVisor.
+
+The OMS, in Go, is Heimdall from day one: the single writer, the risk pipeline
+and the outbox, writing the positions and lots tables in the one Postgres.
+
+Broker-gw-kite, in Go, is Kraken with one arm: Kite. Paper orders are routed
+to sim.
+
+Sim, in Python, is a fill model behind the same broker contract that Kraken
+speaks.
+
+The workers are Python Temporal workers running today’s code, moved: the day
+check, repair, replay and backtests.
+
+All nine run on one Kubernetes cluster, or one Compose host, at a home site
+the owner chooses. It has three node pools: services, runtime with gVisor, and
+data. About six to ten machines, an estimate. NATS JetStream on three nodes
+carries every event, beside one Postgres, ClickHouse, Redis, Temporal and the
+lake.
+
+4. The stores
+
+Under the nine sit six stores. Each is reached by an open protocol, so each
+can run on your own servers, or as a provider’s managed version that speaks
+the same protocol.
+
+One Postgres, a primary and a replica, holds everything that needs a
+transaction: today’s tables, the positions and lots the OMS writes,
+deployments, the leases that say which runner worker runs which strategy, and
+each strategy’s saved state.
+
+NATS JetStream, on three nodes, carries every event: intents, fills and order
+updates, commands, and live updates for the screens. It keeps each message
+until it is read. Prices never go through it.
+
+ClickHouse holds the bars, reports and Geek mode charts, where scanning
+millions of rows fast matters. Redis keeps the latest price of each
+instrument, and the login sessions.
+
+Temporal runs the end-of-day chain, the day check and repair, and resumes it
+where it stopped. And the lake is plain Parquet files in object storage: every
+tick, kept for replays and backtests.
+
+A provider’s managed store can stand in for any of them, but only if it speaks
+the same protocol and passes our tests for it. Nothing in the first version
+needs a store that only one provider has.
+
+5. How things flow
+
+Now how things flow through it: a price, an order, its fill, a screen, and a
+deploy.
+
+A price: Kite’s WebSocket and the vendor send ticks to md, in Go, which cleans
+them, builds bars and chain views, keeps the latest prices in Redis, and
+streams ticks over conflated gRPC to each runner worker. The worker keeps one
+latest slot per instrument, and each strategy computes its own indicators.
+
+An order: the strategy returns an intent, and its runner worker publishes it
+on NATS JetStream. The OMS checks it and records the order in the positions
+and lots tables in one transaction, then calls broker-gw-kite over gRPC, which
+places it at Kite. A paper order goes to sim instead.
+
+The fill: Kite’s update comes back; the OMS records the fill and publishes it
+on NATS, and the live gateway pushes it over SSE to your screen.
+
+A screen asks core-api through the load balancer, over HTTPS, and core-api
+reads Postgres and ClickHouse.
+
+And a deploy: core-api’s deployments module checks the version and publishes a
+start command on NATS. A runner worker takes the lease in Postgres and starts
+the strategy, in gVisor.
+
+6. Where each part can run
+
+Now, where each part runs. The owner picks one home site: a region of any
+cloud, or a data centre of their own. Everything that writes to the one
+Postgres lives there.
+
+That is the trading path: md, runner, the OMS, the Kite gateway and sim. Then
+core-api, the day check and repair workers, and the stores.
+
+Why one place? Core-api is still one program, and it shares the one Postgres
+with the OMS. A database is never shared between two sites, so everything that
+writes to it stays together.
+
+Some parts can run anywhere from day one. The live gateway and the web app’s
+files can sit close to your users. The gateway hears the home site’s events
+through a NATS leaf node, and checks logins with keys it keeps a copy of.
+
+Notifications can run anywhere too. It only reads events, through its own leaf
+node.
+
+Backtests run on their own Temporal queue, so they can use spare machines
+anywhere. They read the lake, which can be any object storage, and send their
+results back over gRPC.
+
+A standby site, wherever the owner chooses, keeps a copy of everything: a
+Postgres replica over TLS, a mirror of the JetStream events, and a copy of the
+lake.
+
+And the SDK and the command-line tool run on a developer’s laptop, talking to
+the home site over gRPC with TLS.
+
+If a link to another site drops, the home site keeps trading. Screens
+elsewhere show how old their data is, and catch up when the link comes back.
+
+LinckLens gets a site of its own later, when the product API moves out of
+core-api. Then it reads its own copy of the data, and sends its writes as
+commands. That is a later step, not day one.
+
+7. Installing a site
+
+Each site is installed from one site file. It says where the site is, which
+parts run there, which stores it uses, and where the other sites are.
+
+The same images and settings turn into one of two things: a Helm chart for any
+Kubernetes, k3s on a single server included, or a Compose file for one
+machine.
+
+Before the home site trades, a site check proves it. Each store answers with
+the version and the features we need. Mutual TLS works to every other site.
+The broker sees the outgoing address we expect. And the delay to Kite and to
+the data feed is measured.
+
+Kite only accepts orders from registered static addresses. In the first
+version, that is the home site’s own outgoing address: a provider’s gateway
+with a reserved IP, or your server’s public IP. Moving the home site starts
+with registering the new one.
+
+And releases follow the trading day. Nothing ships between nine in the morning
+and three thirty-five, except an approved fix. Releases go out after three
+forty-five, and each one first replays yesterday, to show nothing changed that
+shouldn’t.
+
+8. The way there
+
+Getting there from today’s app. Each step ships on its own, runs beside what
+it replaces until it is proven equal, and never stops trading.
+
+P0 happens inside today’s app. The tick broadcaster keeps one slot per
+instrument for each subscriber, with one batch in flight, so a slow strategy
+always reads the newest price. A slow-strategy test proves it.
+
+I0 puts today’s app, unchanged, on one Kubernetes cluster at the home site, as
+core-api, proven by a week of paper days beside the current machine. I1 adds
+the contracts repository, and SDK version zero over today’s strategy base
+class.
+
+I2 moves the strategies out of the API, into leased Python runner workers, fed
+by conflated gRPC ticks, with intents and fills on NATS. A week of identical
+fills, side by side, proves it.
+
+I3 brings the Go OMS and the Kite gateway. They write in shadow first, beside
+today’s fill path, and become the only writer of money once the journal and
+today’s tables match every night for two weeks.
+
+I4 adds the Go market data service, with the latest prices in Redis and bars
+in ClickHouse, proven by bars equal to Kite’s one-minute candles. I5 adds
+Temporal for the end of day, tenants with row-level security, and shadow mode.
+
+After I5, the first version is complete. The final architecture builds on it
+later, and that part is paused for now.
+
+9. The first version, in short
+
+To recap. The first version is nine deployables of our own, built from today’s
+code, over six stores that each have a version you can run yourself.
+
+It runs at one home site, on any cloud or your own servers. Everything that
+writes the one Postgres stays together there; the live gateway, notifications,
+backtests, the lake, a standby and the SDK can be anywhere from day one.
+
+And it gets built one proven step at a time: P0, then I0 to I5, each running
+beside what it replaces until it is equal, without ever stopping trading.

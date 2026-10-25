@@ -1,0 +1,249 @@
+{
+  "title": "Linck, first version",
+  "slug": "linck-first-version",
+  "description": "The first version of Linck, the architecture we build first: the nine deployables, the stores, how things flow, where each part can run (one home site on any cloud or your own servers, the rest anywhere), installing a site, and the steps from today’s app.",
+  "voice": "af_heart",
+  "speed": 0.95,
+  "say": [
+    [
+      "P&L",
+      "P and L"
+    ],
+    [
+      "gRPC",
+      "G R P C"
+    ],
+    [
+      "Linck",
+      "Link"
+    ],
+    [
+      "NIFTY",
+      "Nifty"
+    ],
+    [
+      "etcd",
+      "E T C D"
+    ],
+    [
+      "Etcd",
+      "E T C D"
+    ],
+    [
+      "NATS",
+      "Nats"
+    ],
+    [
+      "ClickHouse",
+      "Click House"
+    ],
+    [
+      "WASM",
+      "wasm"
+    ],
+    [
+      "NVMe",
+      "N V M E"
+    ],
+    [
+      "CEL",
+      "cel"
+    ],
+    [
+      "vCPU",
+      "V C P U"
+    ],
+    [
+      "OMS",
+      "O M S"
+    ],
+    [
+      "API",
+      "A P I"
+    ],
+    [
+      "SDK",
+      "S D K"
+    ],
+    [
+      "CLI",
+      "C L I"
+    ],
+    [
+      "IP",
+      "I P"
+    ],
+    [
+      "09:00",
+      "nine A M"
+    ],
+    [
+      "15:35",
+      "three thirty-five"
+    ],
+    [
+      "15:45",
+      "three forty-five"
+    ],
+    [
+      "08:30",
+      "eight thirty"
+    ],
+    [
+      "09:15",
+      "nine fifteen"
+    ],
+    [
+      "16:30",
+      "four thirty"
+    ],
+    [
+      "15:15",
+      "three fifteen"
+    ],
+    [
+      "15:20",
+      "three twenty"
+    ],
+    [
+      "Jäckel",
+      "Yekel"
+    ],
+    [
+      "Sigstore",
+      "Sig store"
+    ],
+    [
+      "cosign",
+      "co-sign"
+    ],
+    [
+      "DAG",
+      "dag"
+    ],
+    [
+      "IV",
+      "I V"
+    ],
+    [
+      "ctx.now",
+      "context dot now"
+    ],
+    [
+      "ctx.random",
+      "context dot random"
+    ],
+    [
+      "md.archive.v1",
+      "M D dot archive, version 1"
+    ],
+    [
+      "orders.intent.v1",
+      "orders dot intent, version 1"
+    ],
+    [
+      "v0",
+      "version zero"
+    ],
+    [
+      "Kubernetes",
+      "Kubernetes"
+    ],
+    [
+      "AKS",
+      "A K S"
+    ],
+    [
+      "GKE",
+      "G K E"
+    ],
+    [
+      "k3s",
+      "K three S"
+    ],
+    [
+      "OpenTofu",
+      "Open Tofu"
+    ],
+    [
+      "MetalLB",
+      "Metal L B"
+    ],
+    [
+      "Valkey",
+      "Val key"
+    ],
+    [
+      "MinIO",
+      "Min I O"
+    ],
+    [
+      "GitOps",
+      "Git ops"
+    ],
+    [
+      "LinckTrade",
+      "Link Trade"
+    ],
+    [
+      "LinckLens",
+      "Link Lens"
+    ],
+    [
+      "mTLS",
+      "M T L S"
+    ],
+    [
+      "site.yaml",
+      "site dot yaml"
+    ],
+    [
+      "core-api",
+      "core A P I"
+    ],
+    [
+      "broker-gw-kite",
+      "broker gateway Kite"
+    ],
+    [
+      "StrategyBase",
+      "strategy base"
+    ],
+    [
+      "TLS",
+      "T L S"
+    ],
+    [
+      "v0",
+      "version zero"
+    ],
+    [
+      "P0",
+      "P zero"
+    ],
+    [
+      "I0",
+      "I zero"
+    ],
+    [
+      "I1",
+      "I one"
+    ],
+    [
+      "I2",
+      "I two"
+    ],
+    [
+      "I3",
+      "I three"
+    ],
+    [
+      "I4",
+      "I four"
+    ],
+    [
+      "I5",
+      "I five"
+    ]
+  ]
+}
