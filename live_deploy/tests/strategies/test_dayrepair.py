@@ -186,3 +186,35 @@ def test_a_friday_planned_on_saturday_and_applied_on_sunday_repairs_friday_and_n
         late = await R.run(pool, sim.dep_id, friday, book, sim.kite, {})
         assert not late["can_apply"] and "traded 1 time(s) since that day" in late["why_not"][0]
     pool_run(go)
+
+
+def test_a_repair_from_after_the_close_takes_out_the_trades_made_after_it(pool_run, monkeypatch):
+    """DTT BankNifty Strangle, 23 Oct: the app rolled a leg at 15:36, after
+    the close, at prices no order could get. The replay stops at 15:30, so
+    the check flags the roll; the repair starts there with no minute left
+    to replay, takes the two trades out and leaves the leg it rolled away."""
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "strangle_monthly_v2", cfg("strangle_monthly_v2"), mode="positional", spot=25000)
+        await D.capture_states(pool, sim.market.today, "open")
+        await sim.walk("09:15", "15:29", every_min=5)
+        legs = await sim.open_positions()
+        ce = next(p for p in legs if p["symbol"].endswith("CE"))
+        held = sorted(p["symbol"] for p in legs)
+        before = await book_state(pool, sim.dep_id)
+        late = datetime.combine(sim.market.today, time(15, 36), IST)
+        await fill(pool, sim.dep_id, ce["symbol"], int(ce["instrument_token"]), "buy", float(ce["qty"]), 224.0, late, "eod_gap_check")
+        await fill(pool, sim.dep_id, "NIFTY_LATE_CE", 999003, "sell", float(ce["qty"]), 290.6, late, "eod_gap_check")
+        day, book = await checked(pool, sim)
+        row = dict(await pool.fetchrow("SELECT * FROM day_checks WHERE deployment_id = $1", sim.dep_id))
+        assert row["status"] == "mismatch" and R.divergence(row) == "15:36"
+        assert {f["minute"] for f in row["diff"]["extra"]} == {"15:36"} and not row["diff"]["missed"]
+        plan = await R.run(pool, sim.dep_id, day, book, sim.kite, {})
+        assert plan["complete"] and plan["can_apply"], plan["why_not"]
+        assert plan["fills"] == [] and [f["minute"] for f in plan["replaced"]] == ["15:36", "15:36"]
+        assert sorted(p["symbol"] for p in plan["end"]["after"]) == held, "the strategy's own legs, as at the close"
+        await R.run(pool, sim.dep_id, day, book, sim.kite, {}, commit=True, expected=plan["fills_key"])
+        assert sorted(p["symbol"] for p in await sim.open_positions()) == held
+        after = await book_state(pool, sim.dep_id)
+        assert (after[0], after[2]) == (before[0], before[2]), "positions and cash as before the late trades"
+        await assert_book_consistent(pool, sim.dep_id)
+    pool_run(go)

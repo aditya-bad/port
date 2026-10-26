@@ -398,3 +398,72 @@ def test_a_trade_made_well_inside_the_minutes_range_stays_a_difference(pool_run,
         assert r["replay"]["edge_only"] == []
         assert ("11:36", "adjustment") in {(f["minute"], f["reason"]) for f in r["diff"]["missed"]}
     pool_run(go)
+
+
+# ── A moment the 1-minute candles can't show ─────────────────────────────
+# Straddle BankNifty Breakeven Adjustments and the two Nifty straddles, 26
+# Oct: the app took its profit target when both legs dipped together for
+# a moment (BankNifty: CE 194.25 + PE 331.10 = 525.35 at 13:47). A candle
+# moves the CE and the PE opposite ways, so the replay only got there at
+# 13:51 (Nifty: never, and adjusted instead).
+
+def test_the_moment_the_app_traded_is_replayed_with_the_prices_it_saw(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_simple", cfg("intraday_dtt_simple"))
+        day = sim.market.today
+        await D.capture_states(pool, day, "open")
+        await sim.walk("09:15", "12:37", every_min=1)
+        sim.market.vol = 0.08          # both legs fall together, for one tick
+        await sim.tick("12:38")
+        sim.market.vol = 0.16
+        await sim.walk("12:39", "15:29", every_min=1)
+        exits = await pool.fetch("SELECT l.reason, l.executed_at FROM position_lots l WHERE l.deployment_id = $1 "
+                                 "AND l.action = 'buy'", sim.dep_id)
+        assert {(r["reason"], f"{r['executed_at'].astimezone(IST):%H:%M}") for r in exits} == {("profit_target_decay", "12:38")}
+        book = MinuteBook(day, candles_source(sim, flat(25000)))   # the candles never show the dip
+        r = await D.check_deployment(pool, await dep_row(pool, sim), day, book, sim.kite)
+        assert r["status"] == "ok", (r["headline"], r["diff"].get("missed"), r["diff"].get("extra"))
+        assert {(m["app"]["minute"], m["app"]["reason"], m["price_diff"]) for m in r["diff"]["matched"]} >= {
+            ("12:38", "profit_target_decay", 0.0)}
+    pool_run(go)
+
+
+def test_a_stored_expiry_still_to_come_that_kite_does_not_list_is_no_expiry(pool_run, monkeypatch):
+    """Straddle BTST, 26 Oct: NIFTY's October monthlies were stored with the
+    month's last day (31 Oct, a Saturday) as their expiry, a guess from the
+    symbol. The replay took it for a listed expiry that had since gone, and
+    the day couldn't be checked. Only stored expiries that have passed
+    count; one still to come is in Kite's own list or isn't one."""
+    from app.repair import engine
+
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, "intraday_dtt_simple", cfg("intraday_dtt_simple"))
+        day = sim.market.today
+        monkeypatch.setattr(engine, "_today", lambda: day)        # the check runs that evening
+        await D.capture_states(pool, day, "open")
+        await sim.walk("09:15", "15:29", every_min=5)
+        await pool.execute("INSERT INTO contracts (instrument_token, tradingsymbol, underlying, expiry, instrument_type) "
+                           "VALUES (999101, 'NIFTY26OCT25000CE', 'NIFTY', $1, 'CE')", day + timedelta(days=2))
+        book = MinuteBook(day, candles_source(sim, flat(25000)))
+        r = await D.check_deployment(pool, await dep_row(pool, sim), day, book, sim.kite)
+        assert r["status"] == "ok", r["headline"]
+    pool_run(go)
+
+
+def test_a_problem_that_lasts_is_listed_once_at_the_minute_it_began():
+    """The strangles on 26 Oct: a leg not traded all day listed the same
+    stale-price line four times a minute, 1,500 lines."""
+    import asyncio
+    from types import SimpleNamespace
+    from app.repair.engine import ReplayRunner
+    r = ReplayRunner.__new__(ReplayRunner)
+    r.problems, r.clock = [], SimpleNamespace(minute=datetime(2026, 10, 26, 9, 25))
+
+    async def go():
+        for m in (25, 25, 26, 40):
+            r.clock.minute = r.clock.minute.replace(minute=m)
+            await r.report("blocked", "“stale price guard” has been blocked since 09:15", "Holding all management")
+        await r.report("blocked", "Something else")
+    asyncio.run(go())
+    assert r.problems == ["09:25 “stale price guard” has been blocked since 09:15: Holding all management",
+                          "09:40 Something else"]

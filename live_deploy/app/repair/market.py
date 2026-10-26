@@ -504,6 +504,7 @@ class ReplayClock:
         self.minute = datetime.combine(day, SESSION_OPEN)
         self.order = DOWN_FIRST
         self.step = 0
+        self.moment: Optional[datetime] = None   # an app's own moment inside the minute (engine.replay)
 
     def set(self, minute: datetime, order: tuple = None, step: int = 0) -> None:
         self.minute = minute
@@ -522,7 +523,7 @@ class ReplayClock:
     @property
     def now(self) -> datetime:
         """Naive IST, as Kite stamps ticks."""
-        return self.minute + timedelta(seconds=STEP_SECONDS[self.step])
+        return self.moment or self.minute + timedelta(seconds=STEP_SECONDS[self.step])
 
     def now_ist(self) -> datetime:
         return self.now.replace(tzinfo=IST)

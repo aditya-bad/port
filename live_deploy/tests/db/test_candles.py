@@ -498,3 +498,40 @@ def test_backfill_also_keeps_the_future_of_every_held_legs_month(pool_run, monke
         assert futs == [7001, 7002, 7003], "October and November, plus December for the December leg; not January"
         assert (await queries.get_contract(pool, 7003))["instrument_type"] == "FUT"
     pool_run(go)
+
+
+# ── What a contract is ──────────────────────────────────────────────────
+
+def test_a_monthly_contract_is_stored_with_kites_expiry_or_none_never_the_months_last_day(pool_run, monkeypatch):
+    """NIFTY26OCT22550CE: the symbol says October, not the day. Kite says
+    27 Oct; the month's last day (31 Oct) was stored as fact and read back
+    as an expiry by the end-of-day check."""
+    from app.options import resolver as R
+
+    async def go(pool):
+        svc = service(pool)
+        monkeypatch.setitem(R._INSTRUMENT_CACHE, "NFO", {"date": DAY, "by_name": {}, "data": [
+            {"instrument_token": 801, "tradingsymbol": "NIFTY26OCT22550CE", "expiry": date(2026, 10, 27)}]})
+        await svc.remember_contracts([(801, "NIFTY26OCT22550CE"), (802, "NIFTY26OCT22600CE"), (803, "NIFTY26O2025000CE")])
+        got = {r["instrument_token"]: r["expiry"] for r in await pool.fetch("SELECT instrument_token, expiry FROM contracts")}
+        assert got == {801: date(2026, 10, 27), 802: None, 803: date(2026, 10, 20)}, \
+            "Kite's word; none when Kite isn't loaded; a weekly symbol's own day"
+    pool_run(go)
+
+
+def test_the_migration_clears_monthly_expiries_guessed_from_the_symbol(pool_run):
+    from pathlib import Path
+    sql = (Path(C.__file__).parent / "db" / "migrations" / "0039_monthly_expiry_guesses.sql").read_text()
+
+    async def go(pool):
+        rows = [(901, "NIFTY26OCT22550CE", date(2026, 10, 31), "CE"),     # the guess
+                (902, "NIFTY26NOV22550PE", date(2026, 11, 24), "PE"),     # Kite's own
+                (903, "NIFTY26O2025000CE", date(2026, 10, 20), "CE"),     # a weekly symbol's day
+                (904, "NIFTY26OCTFUT", date(2026, 10, 27), "FUT")]
+        for tok, sym, exp, typ in rows:
+            await pool.execute("INSERT INTO contracts (instrument_token, tradingsymbol, underlying, expiry, instrument_type) "
+                               "VALUES ($1, $2, 'NIFTY', $3, $4)", tok, sym, exp, typ)
+        await pool.execute(sql)
+        got = {r["instrument_token"]: r["expiry"] for r in await pool.fetch("SELECT instrument_token, expiry FROM contracts")}
+        assert got == {901: None, 902: date(2026, 11, 24), 903: date(2026, 10, 20), 904: date(2026, 10, 27)}
+    pool_run(go)

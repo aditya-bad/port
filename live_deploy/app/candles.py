@@ -408,12 +408,26 @@ class CandleService:
         }
 
     async def remember_contracts(self, items: list[tuple[int, str]]) -> None:
-        """Record what each (token, tradingsymbol) is, from the symbol."""
+        """Record what each (token, tradingsymbol) is, from the symbol, with
+        its expiry from Kite's instrument list when the app has it loaded.
+        A monthly symbol carries no day, and the month's last day (what
+        parse_contract gives, a bound) is not its expiry: NIFTY's October
+        2026 monthly expired on Tuesday the 27th, not the 31st. Without
+        Kite's word, its expiry is left empty rather than stored as fact."""
+        from .options.resolver import _INSTRUMENT_CACHE
+        listed = {int(r["instrument_token"]): r.get("expiry")
+                  for c in list(_INSTRUMENT_CACHE.values()) for r in c.get("data") or []}
         rows = []
         for token, symbol in items:
             p = parse_contract(symbol or "")
-            if p:
-                rows.append({"instrument_token": token, "tradingsymbol": symbol, **p})
+            if not p:
+                continue
+            e = listed.get(int(token))
+            if e:
+                p["expiry"] = e.date() if isinstance(e, datetime) else e
+            elif not _WEEKLY.match(symbol or ""):
+                p["expiry"] = None
+            rows.append({"instrument_token": token, "tradingsymbol": symbol, **p})
         await queries.upsert_contracts(self.pool, rows)
 
 

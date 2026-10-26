@@ -40,7 +40,7 @@ from ..deployments.runner import DeploymentRunner
 from ..strategies.registry import get_strategy_class
 from .market import (
     IST, ORDERS, VIX_TOKEN, MinuteBook, ReplayClock, ReplayDispatcher, ReplayKite,
-    kite_lookup, minute_of, naive_ist, natural_order, replaying, session_minutes,
+    STEP_SECONDS, kite_lookup, minute_of, naive_ist, natural_order, replaying, session_minutes,
 )
 
 
@@ -136,7 +136,11 @@ class ReplayRunner(DeploymentRunner):
         return False   # replayed ticks are in the past by design
 
     async def report(self, kind, title, detail=None, **kw):
-        self.problems.append(f"{self.clock.minute:%H:%M} {title}{f': {detail}' if detail else ''}")
+        # once, at the minute it first came up: a problem that lasts is
+        # reported on every tick (four a minute, 1,500 lines a day)
+        what = f"{title}{f': {detail}' if detail else ''}"
+        if not any(p[6:] == what for p in self.problems):
+            self.problems.append(f"{self.clock.minute:%H:%M} {what}")
 
     async def _report(self, kind, title, detail=None, **kw):
         await self.report(kind, title, detail, **kw)
@@ -145,8 +149,9 @@ class ReplayRunner(DeploymentRunner):
         at = self.clock.now_ist() if executed_at is None else \
             executed_at.replace(tzinfo=IST) if executed_at.tzinfo is None else executed_at
         meta = dict(metadata or {})
+        phase = "app" if self.clock.moment else self.clock.phase
         meta["repair"] = {"run": self.run, "source": "replay-1m", **self.window.as_dict(),
-                          "minute": f"{self.clock.minute:%H:%M}", "phase": self.clock.phase}
+                          "minute": f"{self.clock.minute:%H:%M}", "phase": phase}
         # the same trade the app made in this minute: at the price it really got
         key = (f"{self.clock.minute:%H:%M}", action, symbol, round(float(qty), 6))
         real = self.app_prices.get(key, [])
@@ -156,7 +161,7 @@ class ReplayRunner(DeploymentRunner):
             price = real[n]
         res = await super()._fill(action, symbol, instrument_token, qty, price, at, reason, meta)
         self.log.append({
-            "minute": f"{self.clock.minute:%H:%M}", "phase": self.clock.phase, "at": at.astimezone(IST).isoformat(),
+            "minute": f"{self.clock.minute:%H:%M}", "phase": phase, "at": at.astimezone(IST).isoformat(),
             "action": action, "symbol": symbol, "token": int(instrument_token), "qty": float(qty),
             "price": round(float(price), 2), "reason": reason or "",
             "trigger": (metadata or {}).get("trigger"), "realized": res.get("realized_pnl"),
@@ -301,24 +306,31 @@ def _prime_session(runner: ReplayRunner, book: MinuteBook, before: datetime) -> 
                                     "last": rows[-1]["close"], "prev_close": None, "partial": False}
 
 
-def _real_prices(app_fills: list) -> tuple[dict, dict, dict]:
+def _today() -> date:
+    return datetime.now(IST).date()
+
+
+def _real_prices(app_fills: list) -> tuple[dict, dict, dict, dict]:
     """The app's own fills as ({(token, minute): price}, {(HH:MM, action,
-    symbol, qty): [prices]}, {minute: [strikes it picked by premium]}). A
-    fill stamped at its candle's start (`timed` False, daycheck.actual_day)
-    is left out: the minute it really happened in isn't known."""
+    symbol, qty): [prices]}, {minute: [strikes it picked by premium]},
+    {minute: {second: {token: price}}}: the prices it really saw, at the
+    moment it traded). A fill stamped at its candle's start (`timed`
+    False, daycheck.actual_day) is left out: the minute it really happened
+    in isn't known."""
     from ..candles import parse_contract
-    quoted, filled, picks = {}, {}, {}
+    quoted, filled, picks, moments = {}, {}, {}, {}
     for f in sorted(app_fills, key=lambda f: f["at"]):
         if f.get("timed") is False:
             continue
         m = minute_of(f["at"])
         quoted.setdefault((int(f["token"]), m), float(f["price"]))
+        moments.setdefault(m, {}).setdefault(naive_ist(f["at"]).second, {}).setdefault(int(f["token"]), float(f["price"]))
         filled.setdefault((f"{m:%H:%M}", f["action"], f["symbol"], round(float(f["qty"]), 6)), []).append(float(f["price"]))
         basis, c = f.get("basis") or {}, parse_contract(f["symbol"]) or {}
         if basis.get("target_premium") is not None and c.get("instrument_type") in ("CE", "PE"):
             picks.setdefault(m, []).append({"symbol": f["symbol"], "underlying": c["underlying"],
                                             "type": c["instrument_type"], "target": float(basis["target_premium"])})
-    return quoted, filled, picks
+    return quoted, filled, picks, moments
 
 
 async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices: dict,
@@ -334,17 +346,24 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     (a stop set off its entry) rather than the candle's. And where the
     strategy picks a strike by premium in a minute the app picked a
     different one, the app's is taken when some moment of the minute
-    explains it (ReplayKite.follow_app)."""
+    explains it (ReplayKite.follow_app). And each moment the app traded
+    is played too, between the candle's ticks, with the prices the app
+    really saw then: a 1-minute candle can't show two legs falling
+    together for a moment, and a profit target the app took there would
+    otherwise be missed."""
     out = Outcome(deployment_id=dep["id"], window=window, choices=dict(choices))
     if book.lookup is None and real_kite is not None:
         book.lookup = kite_lookup(real_kite)   # a leg Kite has nothing for by token is asked for by name
     clock = ReplayClock(window.day)
     kite = ReplayKite(real_kite, book, clock)
-    kite.app_quotes, app_prices, kite.app_picks = _real_prices(app_fills or [])
+    kite.app_quotes, app_prices, kite.app_picks, app_moments = _real_prices(app_fills or [])
     # what was listed on the day, as far as the app knows: every contract a
-    # deployment held is stored with its exact expiry, and outlives Kite's list
+    # deployment held is stored with its exact expiry, and outlives Kite's
+    # list. Only expiries that have passed since: one still to come is in
+    # Kite's own list, and a stored one that isn't there is no expiry at all
     for r in await conn.fetch("SELECT DISTINCT underlying, expiry FROM contracts "
-                              "WHERE expiry >= $1 AND instrument_type IN ('CE', 'PE')", window.day):
+                              "WHERE expiry >= $1 AND expiry < $2 AND instrument_type IN ('CE', 'PE')",
+                              window.day, _today()):
         if r["underlying"]:
             kite.known_expiries.setdefault(r["underlying"], set()).add(r["expiry"])
     disp = ReplayDispatcher(book, clock)
@@ -353,7 +372,12 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     runner.app_prices = app_prices
     minutes = window.minutes
     if not minutes:
-        out.notes.append("The window has no minutes.")
+        # nothing left to replay (a repair from after the close): the book
+        # as it stands, so the plan doesn't show legs still held as flat
+        await runner._reload_positions()
+        out.start_positions = out.end_positions = _legs(runner, disp)
+        out.end_state = await conn.fetchval("SELECT state FROM deployment_state WHERE deployment_id = $1", dep["id"])
+        out.notes.append("Nothing left to replay after the window's start: the legs stand as they were then.")
         return out
     idx_tok = next(iter(sorted(runner.tokens)), None)
     from .market import INDEX_LABELS
@@ -395,16 +419,31 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
             return any(a == f["action"] and s_ == f["symbol"] and q_ == q and lo - APP_WITHIN <= m <= hi + APP_WITHIN
                        for lo, hi, a, s_, q_ in app_trades)
 
+        async def feed() -> None:
+            for tok in sorted(runner.tokens):
+                px = disp.last_prices.get(tok)
+                if px is not None:
+                    await runner.process_tick({"instrument_token": tok, "last_price": px,
+                                               "exchange_timestamp": clock.now})
+
         async def play(m: datetime, order) -> list[dict]:
             seq, n = (ORDERS[order] if isinstance(order, str) else order), len(runner.log)
+            moments = sorted((app_moments.get(m) or {}).items())
             for step in range(4):
                 clock.set(m, seq, step)
                 disp.publish()
-                for tok in sorted(runner.tokens):
-                    px = disp.last_prices.get(tok)
-                    if px is not None:
-                        await runner.process_tick({"instrument_token": tok, "last_price": px,
-                                                   "exchange_timestamp": clock.now})
+                await feed()
+                # the app's own moments before the next tick: what it really saw then
+                upto = STEP_SECONDS[step + 1] if step < 3 else 60
+                while moments and moments[0][0] < upto:
+                    sec, prices = moments.pop(0)
+                    clock.moment = m + timedelta(seconds=sec)
+                    try:
+                        for tok, px in prices.items():
+                            disp.last_prices[tok], disp.last_price_times[tok] = px, clock.now
+                        await feed()
+                    finally:
+                        clock.moment = None
             return runner.log[n:]
 
         async def settle(m: datetime, order: str) -> tuple[list[dict], bool]:
