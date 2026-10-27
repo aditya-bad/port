@@ -490,3 +490,50 @@ def test_old_fill_times_are_read_across_their_candle_only_for_the_strategies_tha
     assert D.repair_from([old], day, "10:17") == "10:15"
     assert D.repair_from([old, f2], day, "10:17") == "10:10", "f2 really happened at 10:15: it goes too"
     assert D.repair_from([old], day, "10:15") == "10:15" and D.repair_from([old], day, "10:21") == "10:21"
+
+
+# ST_PV_INV_SENSEX, 27 Oct, once more: with only the close the app logged,
+# the check still flagged the day. The replay's SuperTrend had drifted on
+# earlier candles (built from Kite's minutes, the app's own not kept), so
+# the app's close at 10:05 didn't cross the replay's band. The app logs
+# its SuperTrend at each flip (trend, bands, ATR) with the candle: the
+# replay's takes those on that candle, and goes on from the app's.
+def test_where_the_app_logged_its_supertrend_the_replays_takes_it_on_that_candle():
+    import copy
+    from app.strategies.pivot_supertrend import CandleAggregator, SuperTrendState
+
+    class Strategy:
+        def __init__(self):
+            self.aggregator = CandleAggregator(interval_minutes=5)
+            self.st = SuperTrendState()
+            self.st.seed_from_state("down", 73650.0, 73100.0, 60.0, 73400.0)   # the replay's, drifted
+
+    day = datetime(2026, 10, 27)
+    start = day.replace(hour=10)
+    logged = {"close": 73620.0, "candle": {"open": 73420.0, "high": 73640.0, "low": 73410.0, "close": 73620.0},
+              "new_trend": "up", "prev_trend": "down", "final_upper": 73890.0, "final_lower": 73350.0, "atr": 64.0}
+
+    def run(evidence):
+        s = Strategy()
+        used, turned = {}, {}
+        engine._use_app_candles(s, evidence, used, turned)
+        s = copy.deepcopy(s)          # a minute replayed again runs on a copy: the hand-over goes with it
+        for i, px in enumerate((73420.0, 73640.0, 73410.0, 73560.0)):    # Kite's minutes close it at 73,560
+            assert s.aggregator.add_tick(start + timedelta(minutes=i), px) is None
+        done = s.aggregator.add_tick(start + timedelta(minutes=5), 73600.0)
+        return s, done, s.st.update(done), used, turned
+
+    # the close alone: 73,620 is below the replay's band (73,650): no flip, as on 27 Oct
+    s, done, trend, used, turned = run({start: {"close": 73620.0}})
+    assert done["close"] == 73620.0 and trend == "down" and not turned
+    # the candle and SuperTrend it logged at the flip: the replay flips with it, and goes on from the app's
+    ev = {start: {**logged["candle"], "st": {k: logged[k] for k in ("final_upper", "final_lower", "atr")} | {"trend": "up"}}}
+    s, done, trend, used, turned = run(ev)
+    assert trend == "up" and (s.st.final_upper, s.st.final_lower, s.st.atr, s.st.prev_close) == (73890.0, 73350.0, 64.0, 73620.0)
+    mine, app = turned[start]
+    assert mine["trend"] == "down" and app == {"trend": "up", "final_upper": 73890.0, "final_lower": 73350.0, "atr": 64.0}
+    assert used[start][1]["close"] == 73620.0 and used[start][0]["close"] == 73560.0
+    # the next candle is the replay's own again, from the app's state
+    assert s.aggregator.add_tick(start + timedelta(minutes=9, seconds=59), 73700.0) is None
+    nxt = s.aggregator.add_tick(start + timedelta(minutes=10), 73710.0)
+    assert "app_st" not in nxt and s.st.update(nxt) == "up"

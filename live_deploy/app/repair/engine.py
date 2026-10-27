@@ -246,6 +246,7 @@ class Outcome:
     followed: list = field(default_factory=list)   # strikes the app picked that a moment of the minute explains
     edge_only: list = field(default_factory=list)  # minutes a trade only the very edge of the candle made was left out, as the app did
     app_candles: list = field(default_factory=list)  # the strategy's candles where the app's own ticks made them other than Kite's minutes
+    app_turns: list = field(default_factory=list)    # where the replay's SuperTrend took the app's logged one
 
     @property
     def complete(self) -> bool:
@@ -347,17 +348,23 @@ async def _app_refusals(conn, dep_id, day: date, app_fills: list) -> dict[str, l
     return out
 
 
+OHLC = ("open", "high", "low", "close")
+
+
 async def _app_candles(conn, dep_id, day: date, app_fills: list, strategy, tokens) -> dict[datetime, dict]:
     """{a candle's start: what the app's strategy saw of it}, for a
     strategy that builds candles from its own ticks (a CandleAggregator).
     Kite's minutes can close a candle a few points from where the app's
     last tick did, and a SuperTrend flip or a level break can hinge on
     that. Each candle it completed, as it completed it (strategy_candles,
-    since migration 0040); before that, only the close of each candle it
-    acted on, or flipped on and declined: in a fill's trigger_values or a
-    decision's data, from the tick that closed it (a fill stamped at its
-    candle's start, or a candle closed by a late tick, says nothing sure).
-    Only for a strategy fed one token, its index."""
+    since migration 0040). And for each candle it acted on, or flipped on
+    and declined, what it logged then (a fill's trigger_values, a
+    decision's data): the candle (or its close) and its SuperTrend after
+    it ("st": trend, bands, ATR), so a SuperTrend that drifted on candles
+    nobody logged is the app's again from there. Only from the tick that
+    closed the candle (a fill stamped at its candle's start, or a candle
+    closed by a late tick, says nothing sure), and only for a strategy fed
+    one token, its index."""
     agg = getattr(strategy, "aggregator", None)
     if agg is None or not hasattr(agg, "_floor") or len(tokens) != 1:
         return {}
@@ -365,27 +372,39 @@ async def _app_candles(conn, dep_id, day: date, app_fills: list, strategy, token
     out: dict[datetime, dict] = {}
     for r in await conn.fetch("SELECT start, open, high, low, close FROM strategy_candles WHERE deployment_id = $1 "
                               "AND start >= $2 AND start < $3", dep_id, start, start + timedelta(days=1)):
-        out[naive_ist(r["start"])] = {k: float(r[k]) for k in ("open", "high", "low", "close")}
-    seen = [(f["at"], f.get("close")) for f in app_fills if f.get("timed") is not False and f.get("close") is not None]
+        out[naive_ist(r["start"])] = {k: float(r[k]) for k in OHLC}
+    seen = [(f["at"], f.get("signal") or {}) for f in app_fills if f.get("timed") is not False and f.get("signal")]
     for r in await conn.fetch("SELECT decided_at, data FROM strategy_decisions WHERE deployment_id = $1 "
                               "AND decided_at >= $2 AND decided_at < $3 AND data ? 'close'",
                               dep_id, start, start + timedelta(days=1)):
-        data = json.loads(r["data"]) if isinstance(r["data"], str) else r["data"]
-        seen.append((r["decided_at"], data.get("close")))
-    for at, close in seen:
+        seen.append((r["decided_at"], json.loads(r["data"]) if isinstance(r["data"], str) else r["data"]))
+    for at, v in seen:
         t = naive_ist(at)
         bucket = agg._floor(t)
-        if close is None or t - bucket >= timedelta(minutes=1):
+        if t - bucket >= timedelta(minutes=1):
             continue
-        out.setdefault(bucket - timedelta(minutes=agg.interval_minutes), {"close": float(close)})
+        candle = {k: float(x) for k, x in (v.get("candle") or {}).items() if k in OHLC and x is not None}
+        if not candle and v.get("close") is not None:
+            candle = {"close": float(v["close"])}
+        if not candle:
+            continue
+        rec = out.setdefault(bucket - timedelta(minutes=agg.interval_minutes), {})
+        for k, x in candle.items():
+            rec.setdefault(k, x)
+        st = {k: float(v[k]) for k in ("final_upper", "final_lower", "atr") if v.get(k) is not None}
+        if v.get("new_trend") in ("up", "down"):
+            rec.setdefault("st", {**st, "trend": v["new_trend"]})
     return out
 
 
-def _use_app_candles(strategy, candles: dict, used: dict) -> None:
+def _use_app_candles(strategy, candles: dict, used: dict, turned: dict) -> None:
     """The strategy's aggregator hands it the app's own candle wherever
     there is one (_app_candles), in place of the one the replay's ticks
-    made; with only the close known, the rest stands, widened to take
-    it. `used`: {start: (the replay's, the app's)} where they differ."""
+    made (with only the close known, the rest stands, widened to take
+    it); and where the app logged its SuperTrend after a candle, the
+    strategy's SuperTrend takes those values on that candle. `used`:
+    {start: (the replay's candle, the app's)} where they differ;
+    `turned`: {start: (the replay's SuperTrend, the app's)} where those do."""
     agg = getattr(strategy, "aggregator", None)
     if agg is None or not candles:
         return
@@ -399,13 +418,36 @@ def _use_app_candles(strategy, candles: dict, used: dict) -> None:
         rec = candles.get(start)
         if rec is None:
             return done
-        app = {**done, **rec}
+        app = {**done, **{k: rec[k] for k in OHLC if k in rec}}
         app["high"], app["low"] = max(app["high"], app["close"]), min(app["low"], app["close"])
-        if any(abs(float(app[k]) - float(done[k])) >= 0.005 for k in ("open", "high", "low", "close")):
-            used[start] = (dict(done), app)
+        if any(abs(float(app[k]) - float(done[k])) >= 0.005 for k in OHLC):
+            used[start] = (dict(done), dict(app))
+        if rec.get("st"):
+            app["app_st"] = {**rec["st"], "start": start}
         return app
 
     agg.__class__ = type(f"AppCandles{base.__name__}", (base,), {"add_tick": add_tick})
+    st = getattr(strategy, "st", None)
+    if st is None or not hasattr(st, "final_upper"):
+        return
+    st_base = type(st)
+
+    def update(self, candle):
+        trend = st_base.update(self, candle)
+        app = candle.get("app_st") if isinstance(candle, dict) else None
+        if not app:
+            return trend
+        mine = {"trend": trend, "final_upper": self.final_upper, "final_lower": self.final_lower, "atr": self.atr}
+        for k in ("final_upper", "final_lower", "atr"):
+            if k in app:
+                setattr(self, k, app[k])
+        self.trend, self.prev_close = app["trend"], candle["close"]
+        if mine["trend"] != app["trend"] or any(
+                k in app and (mine[k] is None or abs(mine[k] - app[k]) >= 0.01) for k in ("final_upper", "final_lower")):
+            turned[app["start"]] = (mine, {k: app[k] for k in ("trend", "final_upper", "final_lower", "atr") if k in app})
+        return self.trend
+
+    st.__class__ = type(f"AppSuperTrend{st_base.__name__}", (st_base,), {"update": update})
 
 
 def _honour_refusals(strategy, refusals: dict, held: list) -> None:
@@ -533,8 +575,9 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         await runner.checkpoint_state()
         # the strategy's candles as the app built them from its own ticks
         app_candles: dict = {}
+        app_turns: dict = {}
         _use_app_candles(runner.strategy, await _app_candles(conn, dep["id"], window.day, app_fills or [],
-                                                             runner.strategy, runner.tokens), app_candles)
+                                                             runner.strategy, runner.tokens), app_candles, app_turns)
 
         app_trades = [(minute_of(f["at"]), minute_of(f.get("until") or f["at"]), f["action"], f["symbol"],
                        round(float(f["qty"]), 6)) for f in app_fills or []]
@@ -677,6 +720,15 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
                 if abs(c["app"][k] - c["replay"][k]) >= 0.005]
         out.notes.append(f"The {c['start']}–{end:%H:%M} candle, as the app built it from its own ticks: " + ", ".join(diff)
                          + ". The strategy decided on the app's, so the replay gives it the app's.")
+    for start, (mine, app) in sorted(app_turns.items()):
+        end = start + timedelta(minutes=interval or 0)
+        def bands(x):
+            return ", ".join(f"{w} {x[k]:,.2f}" for k, w in (("final_upper", "upper band"), ("final_lower", "lower band"), ("atr", "ATR"))
+                             if x.get(k) is not None)
+        out.app_turns.append({"at": f"{end:%H:%M}", "replay": mine, "app": app})
+        out.notes.append(f"At {end:%H:%M} the app's SuperTrend was {app['trend']} ({bands(app)}), as it logged it then; on "
+                         f"Kite's minutes the replay's was {mine['trend']} ({bands(mine)}). Its earlier candles were built "
+                         "from the app's own ticks and weren't kept, so the replay takes the app's SuperTrend from there.")
     for s in held_off:
         def px_view(px: dict) -> str:
             return ", ".join(f"{k} ₹{float(v):,.2f}" for k, v in px.items())
