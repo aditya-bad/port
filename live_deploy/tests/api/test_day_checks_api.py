@@ -37,7 +37,8 @@ class FakeLauncher:
 
     async def start(self, day, trigger="auto", deployment=None):
         self.started.append((day, trigger, deployment))
-        return await self.pool.fetchval("INSERT INTO day_check_runs (day, trigger) VALUES ($1, $2) RETURNING id", day, trigger)
+        return await self.pool.fetchval("INSERT INTO day_check_runs (day, trigger, deployment_id) VALUES ($1, $2, $3::uuid) RETURNING id",
+                                        day, trigger, deployment)
 
 
 @pytest.fixture
@@ -135,7 +136,7 @@ def test_a_failed_check_is_an_issue_until_a_run_of_that_day_succeeds(client, lau
 # ── /v2/day-checks ────────────────────────────────────────────────────
 
 def test_day_checks_api_lists_a_day_worst_first(client, launcher):
-    assert client.get("/v2/day-checks").json() == {"day": None, "days": [], "run": None, "results": [], "counts": {}}
+    assert client.get("/v2/day-checks").json() == {"day": None, "days": [], "run": None, "results": [], "counts": {}, "rechecks": {}}
     names = {}
     for name, st in (("Calm", "ok"), ("Broken", "rule"), ("Drift", "mismatch"), ("Maybe", "ambiguous")):
         names[st] = make_deployment(client, name=name)
@@ -172,6 +173,7 @@ def test_the_launcher_runs_the_check_as_its_own_process_and_notices_it_dying(cli
     dead.write_text("import sys\nprint('loading…')\nprint('boom: no such module')\nsys.exit(3)\n")
     ok = tmp_path / "ok.py"
     ok.write_text("import sys\nprint(' '.join(sys.argv[1:]))\n")
+    dep = make_deployment(client, name="One")["id"]
 
     async def go():
         L = DayCheckLauncher(pool, script=dead)
@@ -180,10 +182,74 @@ def test_the_launcher_runs_the_check_as_its_own_process_and_notices_it_dying(cli
         await L.tasks[rid]
         failed = await pool.fetchrow("SELECT * FROM day_check_runs WHERE id = $1", rid)
         L2 = DayCheckLauncher(pool, script=ok)
-        rid2 = await L2.start(WED + timedelta(days=1), "manual", "abc")
+        rid2 = await L2.start(WED + timedelta(days=1), "manual", dep)
         await L2.tasks[rid2]
         still = await pool.fetchrow("SELECT * FROM day_check_runs WHERE id = $1", rid2)
         return failed, still
     failed, still = client.portal.call(go)
     assert failed["status"] == "failed" and "exit 3" in failed["error"] and "boom: no such module" in failed["error"]
     assert still["status"] == "running", "a worker that exits cleanly reports for itself (this fake doesn't)"
+
+
+# ── Checking one deployment again ─────────────────────────────────────
+# After a fix: its day checked again on its own, without replaying every
+# deployment. It shows on its row; it isn't the day's run.
+
+def test_checking_one_deployment_again_shows_on_its_row_not_as_the_days_run(client, launcher):
+    a, b = make_deployment(client, name="A"), make_deployment(client, name="B")
+    day_run = seed_check(client, a["id"], "mismatch")
+    sql(client, "INSERT INTO day_checks (run_id, day, deployment_id, status, headline) VALUES ($1, $2, $3::uuid, 'ok', 'h')",
+        day_run, WED, b["id"])
+    r = client.post("/v2/day-checks/run", json={"day": WED.isoformat(), "deployment_id": a["id"]})
+    assert r.status_code == 202 and r.json()["deployment_id"] == a["id"] and r.json()["status"] == "running"
+    got = client.get(f"/v2/day-checks?day={WED}").json()
+    assert got["run"]["id"] == day_run and got["run"]["deployment_id"] is None, "the day's run stays the day's"
+    assert list(got["rechecks"]) == [a["id"]] and got["rechecks"][a["id"]]["status"] == "running"
+    # it finishes: the row has the new result, nothing left running
+    sql(client, "UPDATE day_check_runs SET status = 'done', finished_at = now() WHERE id = $1", r.json()["id"])
+    sql(client, "UPDATE day_checks SET status = 'ok', checked_at = now(), run_id = $1 WHERE deployment_id = $2::uuid",
+        r.json()["id"], a["id"])
+    got = client.get(f"/v2/day-checks?day={WED}").json()
+    assert got["rechecks"] == {} and {x["name"]: x["status"] for x in got["results"]} == {"A": "ok", "B": "ok"}
+    # one that fails says so on its row until a later check of it succeeds
+    r2 = client.post("/v2/day-checks/run", json={"day": WED.isoformat(), "deployment_id": b["id"]}).json()
+    sql(client, "UPDATE day_check_runs SET status = 'failed', error = 'No Kite session', finished_at = now() WHERE id = $1", r2["id"])
+    got = client.get(f"/v2/day-checks?day={WED}").json()
+    assert got["rechecks"][b["id"]]["status"] == "failed" and got["rechecks"][b["id"]]["error"] == "No Kite session"
+
+
+def test_one_deployments_check_is_not_the_days_for_the_health_monitor(client, launcher, pushes):
+    a = make_deployment(client, name="A")
+    pool = client.app.state.db_pool
+    sql(client, "INSERT INTO day_check_runs (day, status, finished_at, deployment_id) VALUES ($1, 'done', now(), $2::uuid)", WED, a["id"])
+    sql(client, "INSERT INTO day_check_runs (day, status, error, finished_at, deployment_id) VALUES ($1, 'failed', 'x', now(), $2::uuid)",
+        WED, a["id"])
+    client.portal.call(lambda: queries.set_app_scratch(pool, "candle_backfill_last", {
+        "day": WED.isoformat(), "instruments": 3, "fetched": 3, "rows": 900, "seconds": 2.0, "error": None, "complete": True}))
+    check(client, at("15:51"))
+    assert launcher.started == [(WED, "auto", None)], "the day's own check still starts after the export"
+    assert not [p for p in pushes if p[0].startswith("Day check")], "no phone alert for checking one again"
+    assert not [x for x in client.get("/v2/ops").json()["open"] if x["key"].startswith("daycheck:")]
+
+
+def test_the_launcher_reuses_only_a_run_that_covers_the_deployment(client, tmp_path):
+    from app.repair.launcher import DayCheckLauncher
+    pool = client.app.state.db_pool
+    slow = tmp_path / "slow.py"
+    slow.write_text("import time\ntime.sleep(0.5)\n")
+    a, b, c = (make_deployment(client, name=n)["id"] for n in "ABC")
+
+    async def go():
+        L = DayCheckLauncher(pool, script=slow)
+        ra = await L.start(WED, "manual", a)
+        assert await L.start(WED, "manual", a) == ra, "A is already being checked"
+        rb = await L.start(WED, "manual", b)
+        assert rb != ra, "B isn't: its own run"
+        day = await L.start(WED, "manual")
+        assert day not in (ra, rb), "one deployment's run doesn't cover the whole day"
+        assert await L.start(WED, "manual", c) == day, "the whole day's covers C"
+        rows = {r["id"]: r for r in await pool.fetch("SELECT id, deployment_id FROM day_check_runs")}
+        await asyncio.gather(*L.tasks.values())
+        return rows[ra]["deployment_id"], rows[day]["deployment_id"]
+    dep_a, dep_day = client.portal.call(go)
+    assert str(dep_a) == a and dep_day is None

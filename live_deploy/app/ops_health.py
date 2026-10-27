@@ -294,7 +294,7 @@ class OpsMonitor:
         except Exception:
             logger.exception("Keeping the day's strategy states failed")
         if export_done is not None and self.launcher is not None and not await self.pool.fetchval(
-                "SELECT 1 FROM day_check_runs WHERE day = $1", n.date()):
+                "SELECT 1 FROM day_check_runs WHERE day = $1 AND deployment_id IS NULL", n.date()):
             try:
                 await self.launcher.start(n.date(), "auto")
             except Exception:
@@ -303,7 +303,8 @@ class OpsMonitor:
 
     async def _announce_day_checks(self) -> None:
         for run in await self.pool.fetch(
-                "SELECT * FROM day_check_runs WHERE status = 'done' AND finished_at > now() - interval '1 day' ORDER BY id"):
+                "SELECT * FROM day_check_runs WHERE status = 'done' AND deployment_id IS NULL "
+                "AND finished_at > now() - interval '1 day' ORDER BY id"):
             if not await queries.mark_health_alert_sent(self.pool, None, f"daycheck-done:{run['id']}"):
                 continue
             rows = await self.pool.fetch(
@@ -318,7 +319,8 @@ class OpsMonitor:
         out = []
         since = _ist(now).date() - timedelta(days=4)
         for run in await self.pool.fetch(
-                "SELECT DISTINCT ON (day) * FROM day_check_runs WHERE day >= $1 ORDER BY day, id DESC", since):
+                "SELECT DISTINCT ON (day) * FROM day_check_runs WHERE day >= $1 AND deployment_id IS NULL "
+                "ORDER BY day, id DESC", since):
             if run["status"] == "failed":
                 out.append(Problem(f"daycheck:{run['day']}", "daycheck_failed", "The day check failed",
                                    f"The end-of-day check of {run['day']:%d %b} stopped: {run['error'] or 'no reason given'}. "

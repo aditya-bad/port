@@ -155,7 +155,7 @@ export default {
   title: p => `Repair · ${dDay(fromDay(p.day))}`,
   render(main, params) {
     const { day, dep } = params;
-    let c = null, err = null, timer = null, requested = false, busyPush = false;
+    let c = null, err = null, timer = null, requested = false, busyPush = false, recheck = null, rcTimer = null;
 
     async function load() {
       try { c = await api.repairCase(day, dep); err = null; } catch (e) { err = e; }
@@ -175,6 +175,23 @@ export default {
       load();
     }
 
+    // Checking this deployment's day again on its own (the Repair page's
+    // "Check again"): followed until it finishes, then the case reloads.
+    async function followRecheck() {
+      clearTimeout(rcTimer);
+      let was = recheck;
+      try { recheck = ((await api.dayChecks(day)).rechecks || {})[dep] || null; } catch (e) { recheck = null; }
+      if (recheck && recheck.status === 'running') rcTimer = setTimeout(followRecheck, 4000);
+      else if (was && was.status === 'running') { requested = false; await load(); return; }
+      paint();
+    }
+    function recheckBit() {
+      const tip = 'Replay this deployment’s day again on its own,\nwith the code as it is now. The others stay as they are.';
+      if (recheck && recheck.status === 'running') return html`<span class="grow"></span><span class="small" data-recheck="running"><i class="spin" aria-hidden="true"></i> Checking again…</span>`;
+      return html`<span class="grow"></span>${recheck && recheck.status === 'failed' ? html`<span class="small neg" data-recheck="failed">Checking again failed: ${recheck.error || 'no reason given'}</span>` : ''}
+        <button type="button" class="btn btn-sm" data-act="recheck" data-tip="${tip}">${c && c.check ? 'Check again' : 'Check this day'}</button>`;
+    }
+
     function head() {
       return html`<div class="page-head">
         <div class="col" style="gap:4px">
@@ -189,8 +206,8 @@ export default {
     function dismissBit() {
       if (c.applied || !['rule', 'mismatch', 'ambiguous'].includes(c.check.status)) return '';
       return c.check.dismissed_at
-        ? html`<span class="grow"></span><span class="small mute" data-dismissed>Ignored ${dStamp(c.check.dismissed_at)}: its numbers stand, not marked as flagged</span><button type="button" class="btn btn-xs btn-quiet" data-act="undismiss">Undo</button>`
-        : html`<span class="grow"></span><button type="button" class="btn btn-sm btn-quiet" data-act="dismiss" data-tip="You’ve looked at it and its numbers stand: it stops being marked as flagged on every page and moves to Done on the Repair page. A repair stays possible.">Ignore</button>`;
+        ? html`<span class="small mute" data-dismissed>Ignored ${dStamp(c.check.dismissed_at)}: its numbers stand, not marked as flagged</span><button type="button" class="btn btn-xs btn-quiet" data-act="undismiss">Undo</button>`
+        : html`<button type="button" class="btn btn-sm btn-quiet" data-act="dismiss" data-tip="You’ve looked at it and its numbers stand: it stops being marked as flagged on every page and moves to Done on the Repair page. A repair stays possible.">Ignore</button>`;
     }
 
     function stateBar() {
@@ -226,11 +243,11 @@ export default {
       const shown = c.applied ? null : pl;
       const p = c.check && PILL[c.check.status];
       mount(main, html`${head()}<div class="page" style="padding-top:4px">
-        ${c.check ? html`<div class="rc-found"><span class="dc-pill ${p[1]}">${p[0]}</span><span>${c.check.headline}</span>${dismissBit()}</div>
+        ${c.check ? html`<div class="rc-found"><span class="dc-pill ${p[1]}">${p[0]}</span><span>${c.check.headline}</span>${recheckBit()}${dismissBit()}</div>
           ${(c.check.rules || []).map(r => html`<div class="dc-rule ${r.severity}"><b>${r.title}</b><span>${r.detail}</span></div>`)}`
         : html`<div class="rc-found"><span class="dc-pill t-mute">Not checked</span><span>${c.applied
           ? 'This day wasn’t checked after the close; the repair was made with the stall-repair script.'
-          : 'This day hasn’t been checked after the close yet. Run the day check on the Repair page to replay it; below is what the deployment reported about it.'}</span></div>`}
+          : 'This day hasn’t been checked after the close yet. Check it to replay it; below is what the deployment reported about it.'}</span>${c.applied ? '' : recheckBit()}</div>`}
         ${(c.reported || []).length ? html`${sect('What the deployment reported that day', 'Its own protections and its strategy, as they happened')}
           <div class="rc-reported">${c.reported.map(x => html`<div class="${x.resolved_at ? 'done' : ''}">
             <span class="mono tiny">${hhmm(x.first_at)}</span>
@@ -285,6 +302,15 @@ export default {
         load();
       },
       replan: () => plan(c.draft.choices),
+      recheck: async () => {
+        try {
+          await api.runDayCheck({ day, deployment_id: dep });
+          say(`Checking ${c.deployment.name}’s day again: this deployment only, so it takes a minute or so.`);
+        } catch (e) { fail(e, 'Couldn’t start checking it again'); }
+        recheck = { status: 'running' };
+        paint();
+        followRecheck();
+      },
       push: () => {
         const r = c.plan.result;
         openDialog({
@@ -324,6 +350,7 @@ export default {
     });
     paint();
     load();
-    return () => { offActs(); offMk(); clearTimeout(timer); };
+    followRecheck();
+    return () => { offActs(); offMk(); clearTimeout(timer); clearTimeout(rcTimer); };
   },
 };

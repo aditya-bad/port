@@ -125,11 +125,25 @@ function doneTag(x) {
   return '';
 }
 
-function checkRow(x, open, day) {
+// Checking one deployment's day again (after a fix), without replaying
+// every deployment: its own run, shown on its row.
+function recheckLine(x, rc) {
+  if (rc && rc.status === 'running') return html`<span class="small" data-recheck="running"><i class="spin" aria-hidden="true"></i> Checking again…</span>`;
+  if (rc && rc.status === 'failed') return html`<span class="small neg" data-recheck="failed">Checking again failed ${hhmm(rc.started_at)}: ${rc.error || 'no reason given'}</span>`;
+  return html`<span class="tiny mute">Checked ${dStamp(x.checked_at)}</span>`;
+}
+
+// Rows and groups opened or closed by hand stay so when the list is
+// redrawn (every few seconds while a check runs).
+let shown = new Map();
+const isShown = (key, dflt) => (shown.has(key) ? shown.get(key) : dflt);
+
+function checkRow(x, open, day, rc, group) {
   const diff = x.diff || {}, rep = x.replay || {};
   const done = isDone(x);
-  return html`<details class="dc-row t-${done ? (x.repaired ? 'ok' : 'mute') : CHECK[x.status][1]} ${done ? 'is-done' : ''}" ${open ? 'open' : ''} data-dc="${x.deployment_id}">
-    <summary>${pill(x.status)}<b>${x.name}</b><span class="small mute">${x.strategy} · ${x.mode}</span>${doneTag(x)}<span class="dc-head">${x.headline}</span></summary>
+  const busy = rc && rc.status === 'running';
+  return html`<details class="dc-row t-${done ? (x.repaired ? 'ok' : 'mute') : CHECK[x.status][1]} ${done ? 'is-done' : ''}" ${isShown(`${group}:${x.deployment_id}`, open) ? 'open' : ''} data-dc="${x.deployment_id}" data-key="${group}:${x.deployment_id}">
+    <summary>${pill(x.status)}<b>${x.name}</b><span class="small mute">${x.strategy} · ${x.mode}</span>${doneTag(x)}${busy ? html`<span class="small"><i class="spin" aria-hidden="true"></i> Checking again…</span>` : ''}<span class="dc-head">${x.headline}</span></summary>
     <div class="dc-body">
       ${(x.rules || []).map(r => html`<div class="dc-rule ${r.severity}"><b>${r.title}</b><span>${r.detail}</span></div>`)}
       ${diff.end ? html`${endState(diff.end)}${tradesTable(diff)}` : ''}
@@ -139,20 +153,24 @@ function checkRow(x, open, day) {
         ${(rep.estimated || []).length ? html`<span>Priced without trades on Kite: ${rep.estimated.join(', ')}.</span>` : ''}
         ${(rep.notes || []).map(n => html`<span>${n}</span>`)}
       </div>
-      <div class="row" style="gap:14px">
+      <div class="row wrap" style="gap:8px 14px">
         ${x.repaired ? html`<a class="btn btn-sm" href="${href(`repair/${day}/${x.deployment_id}`)}">Open the repair ›</a>`
           : REPAIRABLE.includes(x.status) ? html`<a class="btn btn-sm ${x.dismissed_at ? '' : 'btn-primary'}" href="${href(`repair/${day}/${x.deployment_id}`)}">Review and repair ›</a>` : ''}
         ${!x.repaired && REPAIRABLE.includes(x.status) ? (x.dismissed_at
           ? html`<button type="button" class="btn btn-sm btn-quiet" data-act="unignoreDay" data-dep="${x.deployment_id}">Undo ignore</button>`
           : html`<button type="button" class="btn btn-sm btn-quiet" data-act="ignoreDay" data-dep="${x.deployment_id}" data-tip="${'You’ve looked at it and its numbers stand.\nIt moves to Done and stops being marked as flagged on every page.\nA repair stays possible.'}">Ignore</button>`) : ''}
-        <a class="small" href="${href(`d/${x.deployment_id}`)}">Open deployment ›</a></div>
+        <a class="small" href="${href(`d/${x.deployment_id}`)}">Open deployment ›</a>
+        <span class="grow"></span>
+        ${recheckLine(x, rc)}
+        <button type="button" class="btn btn-sm" data-act="recheck" data-dep="${x.deployment_id}" ${busy ? 'disabled' : ''}
+          data-tip="${'Replay this deployment’s day again on its own,\nwith the code as it is now. The others stay as they are.'}">Check again</button></div>
     </div>
   </details>`;
 }
 
 function dayCheckSection(c, day) {
   if (!c) return loading(3);
-  const results = c.results || [];
+  const results = c.results || [], rc = c.rechecks || {};
   const flagged = results.filter(x => x.status !== 'ok');
   const todo = flagged.filter(x => !isDone(x)), done = flagged.filter(isDone);
   const fine = results.filter(x => x.status === 'ok');
@@ -170,10 +188,10 @@ function dayCheckSection(c, day) {
     </div>
     ${counts.length || done.length ? html`<div class="dc-counts">${counts.map(([k, n]) => html`<span>${pill(k)} ${n}</span>`)}${done.length ? html`<span><span class="dc-pill t-done" data-tip="Repaired, or ignored with its numbers left as they are">Done</span> ${done.length}</span>` : ''}</div>` : ''}
     ${!results.length ? empty('', c.day ? 'No results for this day yet.' : 'The day check runs by itself once the 15:45 export succeeds. Each deployment’s day is replayed from its open on Kite’s 1-minute candles and checked against what the app did.')
-      : html`<div class="dc-list">${todo.map(x => checkRow(x, todo.length <= 3, c.day))}
+      : html`<div class="dc-list">${todo.map(x => checkRow(x, todo.length <= 3, c.day, rc[x.deployment_id], 'todo'))}
         ${!todo.length && done.length ? html`<p class="small mute dc-clear" style="margin:0">Nothing left to do for this day: ${done.length === 1 ? 'the flagged deployment is' : `all ${done.length} flagged are`} repaired or ignored.</p>` : ''}
-        ${done.length ? html`<details class="dc-fine dc-done"><summary>${done.length} done: repaired or ignored</summary>${done.map(x => checkRow(x, false, c.day))}</details>` : ''}
-        ${fine.length ? html`<details class="dc-fine"><summary>${plural(fine.length, 'deployment')} as expected</summary>${fine.map(x => checkRow(x, false, c.day))}</details>` : ''}</div>`}
+        ${done.length ? html`<details class="dc-fine dc-done" data-group="done" ${isShown('done', false) ? 'open' : ''}><summary>${done.length} done: repaired or ignored</summary>${done.map(x => checkRow(x, false, c.day, rc[x.deployment_id], 'done'))}</details>` : ''}
+        ${fine.length ? html`<details class="dc-fine" data-group="fine" ${isShown('fine', false) ? 'open' : ''}><summary>${plural(fine.length, 'deployment')} as expected</summary>${fine.map(x => checkRow(x, false, c.day, rc[x.deployment_id], 'fine'))}</details>` : ''}</div>`}
   </div>`;
 }
 
@@ -181,6 +199,13 @@ export default {
   title: () => 'Repair',
   render(main) {
     let alerts = null, dc = null, dcDay = '', dcTimer = null, reported = null;
+    shown = new Map();
+    const onToggle = e => {
+      const d = e.target;
+      const key = d.dataset && (d.dataset.key || d.dataset.group);
+      if (key) shown.set(key, d.open);
+    };
+    main.addEventListener('toggle', onToggle, true);
     async function loadReported() {
       try { reported = (await api.strategyIssues(true)).issues; } catch (e) { reported = []; }
       paint();
@@ -192,7 +217,8 @@ export default {
     async function loadChecks() {
       try { dc = await api.dayChecks(dcDay); } catch (e) { dc = { results: [], days: [], counts: {}, run: null, error: e.message }; }
       clearTimeout(dcTimer);
-      if (dc.run && dc.run.status === 'running') dcTimer = setTimeout(loadChecks, 4000);   // follow a running check
+      const rechecking = Object.values(dc.rechecks || {}).some(r => r.status === 'running');
+      if ((dc.run && dc.run.status === 'running') || rechecking) dcTimer = setTimeout(loadChecks, 4000);   // follow a running check
       paint();
     }
     function paint() {
@@ -224,6 +250,14 @@ export default {
           await loadChecks();
         } catch (e) { fail(e, 'Couldn’t start the day check'); }
       },
+      recheck: async x => {
+        const name = ((dc && dc.results) || []).find(r => r.deployment_id === x.dep)?.name || 'It';
+        try {
+          await api.runDayCheck({ day: dcDay || dc.day, deployment_id: x.dep });
+          say(`Checking ${name} again: its day only, so it takes a minute or so.`);
+          await loadChecks();
+        } catch (e) { fail(e, 'Couldn’t start checking it again'); }
+      },
       ignoreDay: async x => {
         try {
           await api.dismissDay(dc.day, x.dep);
@@ -247,11 +281,11 @@ export default {
       if (/^health_/.test(ev.event_type || '')) { loadAlerts(); loadChecks(); loadReported(); }
       else if (/^strategy_issue/.test(ev.event_type || '')) loadReported();
     });
-    const offDay = on(main, 'change', '[data-f="dcDay"]', (e, el) => { dcDay = el.value; dc = null; paint(); loadChecks(); });
+    const offDay = on(main, 'change', '[data-f="dcDay"]', (e, el) => { dcDay = el.value; dc = null; shown = new Map(); paint(); loadChecks(); });
     paint();
     loadAlerts();
     loadChecks();
     loadReported();
-    return () => { offActs(); offEv(); offDay(); clearTimeout(dcTimer); };
+    return () => { offActs(); offEv(); offDay(); clearTimeout(dcTimer); main.removeEventListener('toggle', onToggle, true); };
   },
 };

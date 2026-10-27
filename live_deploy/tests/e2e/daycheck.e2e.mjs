@@ -141,3 +141,35 @@ test('a repaired day is in Done with its repair to open, and nothing is left to 
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+// "Check again" on one deployment (after a fix): its own run, the real
+// worker on that deployment only. No Kite session here, so it fails, and
+// the row and the case page say why; the day's run and the other rows
+// stay as they were, and a group opened by hand stays open meanwhile.
+test('checking one deployment again runs it alone and says how it went on its row and its case', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/repair`);
+  await p.waitForSelector('.dc-list > .dc-row');
+  const before = await api(ctx, '/v2/day-checks');
+  await p.locator('.dc-fine:not(.dc-done) > summary').click();          // open "as expected" by hand
+  const row = p.locator('.dc-list > .dc-row').nth(1), dep = await row.getAttribute('data-dc');
+  await row.locator('[data-act="recheck"]').click();
+  await until(async () => (await row.locator('[data-recheck="running"]').count()) > 0
+    || (await row.locator('[data-recheck="failed"]').count()) > 0);
+  await until(async () => /Checking again failed[\s\S]*No Kite session/.test(await row.innerText()), 60000);
+  assert.equal(await p.locator('.dc-fine:not(.dc-done)').evaluate(el => el.open), true, 'still open after the redraws');
+  const after = await api(ctx, '/v2/day-checks');
+  assert.equal(after.rechecks[dep].status, 'failed');
+  assert.equal(after.rechecks[dep].deployment_id, dep);
+  assert.deepEqual(after.run, before.run, 'the day’s own run is untouched');
+  assert.deepEqual(after.results.map(x => [x.name, x.status, x.headline]), before.results.map(x => [x.name, x.status, x.headline]));
+  assert.match(await p.locator('.dc-bar').innerText(), /Ran after the export, 15:52–16:03/);
+  // the case page shows it too, and can start it again
+  await p.goto(`${BASE}/linck/#/repair/${after.day}/${dep}`);
+  await p.waitForSelector('.rc-found [data-act="recheck"]');
+  await until(async () => /Checking again failed[\s\S]*No Kite session/.test(await p.locator('.rc-found').innerText()));
+  assert.equal(await p.locator('.rc-found [data-act="recheck"]').innerText(), 'Check again');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

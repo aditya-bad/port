@@ -487,14 +487,17 @@ def _run_json(r) -> Optional[dict]:
     if r is None:
         return None
     return {"id": r["id"], "day": r["day"].isoformat(), "trigger": r["trigger"], "status": r["status"],
+            "deployment_id": str(r["deployment_id"]) if r["deployment_id"] else None,
             "progress": r["progress"] or {}, "error": r["error"],
             "started_at": r["started_at"].isoformat(), "finished_at": r["finished_at"].isoformat() if r["finished_at"] else None}
 
 
 @router.get("/day-checks")
 async def get_day_checks(request: Request, day: Optional[str] = None):
-    """A day's end-of-day check: its latest run and every deployment's
-    result, worst first. Default: the latest day checked."""
+    """A day's end-of-day check: its latest run of every deployment, each
+    deployment's result, worst first, and `rechecks`: {deployment id: its
+    own latest run} while one checking it again is running, or failed
+    after its result. Default: the latest day checked."""
     from datetime import date as _date
     pool = request.app.state.db_pool
     days = [r["day"] for r in await pool.fetch(
@@ -504,8 +507,11 @@ async def get_day_checks(request: Request, day: Optional[str] = None):
     except ValueError:
         raise HTTPException(422, "day must be a date, YYYY-MM-DD")
     if d is None:
-        return {"day": None, "days": [], "run": None, "results": [], "counts": {}}
-    run = await pool.fetchrow("SELECT * FROM day_check_runs WHERE day = $1 ORDER BY id DESC LIMIT 1", d)
+        return {"day": None, "days": [], "run": None, "results": [], "counts": {}, "rechecks": {}}
+    run = await pool.fetchrow("SELECT * FROM day_check_runs WHERE day = $1 AND deployment_id IS NULL ORDER BY id DESC LIMIT 1", d)
+    singles = await pool.fetch(
+        "SELECT DISTINCT ON (deployment_id) * FROM day_check_runs WHERE day = $1 AND deployment_id IS NOT NULL "
+        "ORDER BY deployment_id, id DESC", d)
     # with the repair applied to that day, if any: the Repair page lists a
     # flagged day as done once it's repaired (or dismissed, "ignored")
     rows = await pool.fetch(
@@ -524,8 +530,16 @@ async def get_day_checks(request: Request, day: Optional[str] = None):
     counts: dict = {}
     for x in results:
         counts[x["status"]] = counts.get(x["status"], 0) + 1
+    checked = {str(r["deployment_id"]): r["checked_at"] for r in rows}
+    rechecks = {}
+    for r in singles:
+        dep = str(r["deployment_id"])
+        live = r["status"] == "running" and r["started_at"] > datetime.now(timezone.utc) - timedelta(hours=3)
+        failed = r["status"] == "failed" and (dep not in checked or r["started_at"] > checked[dep])
+        if live or failed:
+            rechecks[dep] = _run_json(r)
     return {"day": d.isoformat(), "days": [x.isoformat() for x in days], "run": _run_json(run),
-            "results": results, "counts": counts}
+            "results": results, "counts": counts, "rechecks": rechecks}
 
 
 class DayCheckIn(BaseModel):

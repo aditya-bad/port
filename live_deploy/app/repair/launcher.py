@@ -28,18 +28,23 @@ class DayCheckLauncher:
         self.script, self.python = script, python
         self.tasks: dict[int, asyncio.Task] = {}
 
-    async def running(self, day: date) -> Optional[int]:
+    async def running(self, day: date, deployment: Optional[str] = None) -> Optional[int]:
+        """A run of `day` already under way that covers it: the whole day's,
+        or (for one deployment) that deployment's own."""
         return await self.pool.fetchval(
             "SELECT id FROM day_check_runs WHERE day = $1 AND status = 'running' "
-            "AND started_at > now() - interval '3 hours' ORDER BY id DESC LIMIT 1", day)
+            "AND started_at > now() - interval '3 hours' AND (deployment_id IS NULL OR deployment_id = $2::uuid) "
+            "ORDER BY id DESC LIMIT 1", day, deployment)
 
     async def start(self, day: date, trigger: str = "auto", deployment: Optional[str] = None) -> int:
-        """Start a run (or return the one already running for that day)."""
-        rid = await self.running(day)
+        """Start a run of the day, or of one deployment's day (or return the
+        one already running that covers it)."""
+        rid = await self.running(day, deployment)
         if rid is not None:
             return rid
         rid = await self.pool.fetchval(
-            "INSERT INTO day_check_runs (day, trigger) VALUES ($1, $2) RETURNING id", day, trigger)
+            "INSERT INTO day_check_runs (day, trigger, deployment_id) VALUES ($1, $2, $3::uuid) RETURNING id",
+            day, trigger, deployment)
         self.tasks[rid] = asyncio.create_task(self._run(rid, day, deployment), name=f"day-check-{rid}")
         return rid
 
