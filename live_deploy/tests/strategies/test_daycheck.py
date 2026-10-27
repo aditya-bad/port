@@ -233,6 +233,78 @@ def test_a_steady_move_the_app_never_acted_on_is_an_unambiguous_mismatch(pool_ru
     pool_run(go)
 
 
+# BankNifty strangle, 27 Oct: on last prices its checkpoint was reached at
+# 10:21; live, the strangle re-checks a trigger at Kite's bid/ask mid
+# before acting, and the mid refused it until 11:10. The replay has no
+# bid/ask from the day (its quotes are the last price), so it could never
+# refuse: it closed at 10:21 and called the app wrong. The app logs each
+# refusal (every 5 minutes while it lasts); the replay now holds off there.
+
+REFUSED = "Not acted on: live quotes don't confirm the tick prices"
+
+
+async def refusal_notes(pool, dep_id, day, rule, times):
+    for hhmm in times:
+        at = datetime.combine(day, time.fromisoformat(hhmm), tzinfo=IST)
+        await pool.execute(
+            "INSERT INTO strategy_decisions (deployment_id, decided_at, rule, outcome, summary, data) VALUES ($1, $2, $3, 'blocked', $4, $5)",
+            dep_id, at, rule, REFUSED, {"tick": {"NIFTY26NOV25700CE": 31.5}, "quote": {"NIFTY26NOV25700CE": 38.25}})
+
+
+def steady_move(m):
+    k = max(0, min(30, (m.hour * 60 + m.minute) - (13 * 60)))     # as above: 13:00–13:30, +20 a minute
+    s = 25000 + 20 * k
+    return (s, s + 2, s - 2, s)
+
+
+def test_where_the_apps_log_says_kites_quotes_refused_a_trigger_the_replay_holds_off_too(pool_run, monkeypatch):
+    async def go(pool):
+        sim, day, book = await strangle_day(steady_move)(pool, monkeypatch)
+        # refused from 13:00 on, noted every 5 minutes while it lasted
+        notes = [f"{h:02d}:{m:02d}" for h in range(13, 16) for m in range(0, 60, 5) if (h, m) <= (15, 25)]
+        await refusal_notes(pool, sim.dep_id, day, "continuous_50pct_trigger", notes)
+        await refusal_notes(pool, sim.dep_id, day, "eod_gap_check", ["15:13"])    # each rule by its own notes
+        r = await D.check_deployment(pool, await dep_row(pool, sim), day, book, sim.kite)
+        assert r["status"] == "ok", (r["headline"], r["diff"].get("missed"))
+        note = next(n for n in r["replay"]["notes"] if "Kite's quotes didn't confirm" in n)
+        assert note.startswith("13:00–15:30:") and "30 notes" in note
+        assert "on ticks NIFTY26NOV25700CE ₹31.50, at the bid/ask mid NIFTY26NOV25700CE ₹38.25" in note
+    pool_run(go)
+
+
+def test_a_refusal_holds_only_until_the_next_note_was_due(pool_run, monkeypatch):
+    """One note at 13:00 and nothing after: by 13:05:30 the app would have
+    noted it again had the quotes still refused, so a trade the replay
+    makes after that is still a difference."""
+    async def go(pool):
+        sim, day, book = await strangle_day(steady_move)(pool, monkeypatch)
+        await refusal_notes(pool, sim.dep_id, day, "continuous_50pct_trigger", ["13:00"])
+        await refusal_notes(pool, sim.dep_id, day, "checkpoint_target", [f"{h}:00" for h in (13, 14, 15)])   # another rule's
+        r = await D.check_deployment(pool, await dep_row(pool, sim), day, book, sim.kite)
+        assert r["status"] == "mismatch", r["headline"]
+        assert all(f["reason"] == "continuous_50pct_trigger" and f["minute"] >= "13:05" for f in r["diff"]["missed"])
+    pool_run(go)
+
+
+def test_the_refusal_spans_from_the_apps_log():
+    """Notes 5 minutes apart run into one span; a gap ends it; the app
+    acting on the rule ends it there."""
+    import asyncio
+    from app.repair import engine as E
+
+    class Conn:
+        async def fetch(self, sql, *args):
+            day = datetime(2026, 10, 27, tzinfo=IST)
+            return [{"decided_at": day.replace(hour=h, minute=m), "rule": rule, "data": {"tick": {}, "quote": {}}}
+                    for h, m, rule in [(10, 21, "checkpoint_target"), (10, 26, "checkpoint_target"), (10, 31, "checkpoint_target"),
+                                       (10, 50, "checkpoint_target"), (10, 55, "checkpoint_target"), (11, 0, "eod_gap_check")]]
+    app_fills = [{"at": datetime(2026, 10, 27, 10, 57, 40, tzinfo=IST), "reason": "checkpoint_target"}]
+    got = asyncio.run(E._app_refusals(Conn(), None, date(2026, 10, 27), app_fills))
+    span = lambda s: (f"{s['from']:%H:%M:%S}", f"{s['to']:%H:%M:%S}", s["notes"])   # noqa: E731
+    assert [span(s) for s in got["checkpoint_target"]] == [("10:21:00", "10:36:30", 3), ("10:50:00", "10:57:40", 2)]
+    assert [span(s) for s in got["eod_gap_check"]] == [("11:00:00", "11:05:30", 1)]
+
+
 def test_a_difference_hanging_on_a_minute_read_two_ways_is_ambiguous(pool_run, monkeypatch):
     path = lambda m: (25000, 25600, 24400, 25000) if f"{m:%H:%M}" == "13:05" else (25000, 25004, 24996, 25000)
 

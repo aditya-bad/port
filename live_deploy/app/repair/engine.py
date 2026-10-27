@@ -310,6 +310,63 @@ def _today() -> date:
     return datetime.now(IST).date()
 
 
+# The strangle re-checks a trigger its ticks set off against Kite's quotes
+# (the bid/ask mid) before acting; when they don't confirm it, it waits
+# and logs this, at most once every 5 minutes (strangle_monthly_v2
+# _confirm_trigger, _REFUTE_NOTE_EVERY). The replay has no bid/ask from
+# the day: what it quotes is the last price, so it can never refuse.
+QUOTE_REFUSED = "Not acted on: live quotes don't confirm the tick prices"
+REFUSAL_HOLDS = timedelta(minutes=5, seconds=30)   # until the next note was due, and a little
+
+
+async def _app_refusals(conn, dep_id, day: date, app_fills: list) -> dict[str, list[dict]]:
+    """{rule: [{from, to, tick, quote}]}: when the app's own log says
+    Kite's quotes refused that rule. Each note holds until the next was
+    due (a refusal that lasts is noted every 5 minutes), runs on into the
+    next note, and ends early where the app acted on the rule after all."""
+    start = datetime.combine(day, time(0), tzinfo=IST)
+    rows = await conn.fetch(
+        "SELECT decided_at, rule, data FROM strategy_decisions WHERE deployment_id = $1 AND outcome = 'blocked' "
+        "AND summary = $2 AND decided_at >= $3 AND decided_at < $4 ORDER BY decided_at",
+        dep_id, QUOTE_REFUSED, start, start + timedelta(days=1))
+    acted = {}
+    for f in sorted(app_fills, key=lambda f: f["at"]):
+        acted.setdefault(f.get("reason") or "", []).append(naive_ist(f["at"]))
+    out: dict[str, list[dict]] = {}
+    for r in rows:
+        at = naive_ist(r["decided_at"])
+        data = json.loads(r["data"]) if isinstance(r["data"], str) else (r["data"] or {})
+        to = min([at + REFUSAL_HOLDS] + [t for t in acted.get(r["rule"], []) if t > at])
+        spans = out.setdefault(r["rule"], [])
+        if spans and at <= spans[-1]["to"]:
+            spans[-1]["to"] = max(spans[-1]["to"], to)
+            spans[-1]["notes"] += 1
+        else:
+            spans.append({"from": at, "to": to, "tick": data.get("tick") or {}, "quote": data.get("quote") or {}, "notes": 1})
+    return out
+
+
+def _honour_refusals(strategy, refusals: dict, held: list) -> None:
+    """Where the app's log says Kite's quotes refused a rule, the replay's
+    strategy holds off it too: the quotes it would need aren't stored. The
+    stand-in calls the strategy the runner holds then (a minute replayed
+    again runs on a copy of it)."""
+    confirm = getattr(type(strategy), "_confirm_trigger", None)
+    if confirm is None or not refusals:
+        return
+
+    async def _confirm_trigger(runner, ts, name, prices, still_fires):
+        t = naive_ist(ts)
+        span = next((s for s in refusals.get(name, ()) if s["from"] <= t < s["to"]), None)
+        if span is not None:
+            if not any(h is span for h in held):
+                held.append(span)
+            return None
+        return await confirm(runner.strategy, runner, ts, name, prices, still_fires)
+
+    strategy._confirm_trigger = _confirm_trigger
+
+
 def _real_prices(app_fills: list) -> tuple[dict, dict, dict, dict]:
     """The app's own fills as ({(token, minute): price}, {(HH:MM, action,
     symbol, qty): [prices]}, {minute: [strikes it picked by premium]},
@@ -368,6 +425,8 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
             kite.known_expiries.setdefault(r["underlying"], set()).add(r["expiry"])
     disp = ReplayDispatcher(book, clock)
     strategy = get_strategy_class(dep["strategy_name"])()
+    held_off: list[dict] = []
+    _honour_refusals(strategy, await _app_refusals(conn, dep["id"], window.day, app_fills or []), held_off)
     runner = ReplayRunner(dep, TxPool(conn), disp, strategy, clock, run, window)
     runner.app_prices = app_prices
     minutes = window.minutes
@@ -541,6 +600,13 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
                          + f", which the app didn't. That takes every contract to its high or low at one moment; live, "
                          f"each reached its own at its own time. With every price going {EDGE:.0%} of the way there the strategy "
                          "makes no such trade: only the very edge of the minute sets it off, so the replay keeps to the app.")
+    for s in held_off:
+        def px_view(px: dict) -> str:
+            return ", ".join(f"{k} ₹{float(v):,.2f}" for k, v in px.items())
+        out.notes.append(f"{s['from']:%H:%M}–{s['to']:%H:%M}: the app's log says Kite's quotes didn't confirm what its ticks "
+                         f"set off ({s['notes']} note{'' if s['notes'] == 1 else 's'}; first: on ticks {px_view(s['tick'])}, "
+                         f"at the bid/ask mid {px_view(s['quote'])}), so it held off. The replay has no bid/ask from the day "
+                         "and holds off there too.")
     same = [f for f in out.fills if f["app_price"]]
     if same:
         out.notes.append(f"{len(same)} trade(s) the app also made in the same minute are at the app's own fill price, "
