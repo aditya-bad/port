@@ -5,7 +5,7 @@ import { html, mount, actions, on, $ } from '../../core/dom.js';
 import { hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
 import { say, fail } from '../../ui/toast.js';
-import { lens, onLens, loadHoldings } from '../../data/lens.js';
+import { lens, onLens, loadHoldings, startLive, stopLive } from '../../data/lens.js';
 import * as overview from './overview.js';
 import * as shares from './shares.js';
 import * as funds from './funds.js';
@@ -21,6 +21,16 @@ const HEAD = {
 // what each page remembers while you move around LinckLens
 const ui = { window: '1Y', q: '', asset: 'all', sort: 'value', dir: 'desc', open: null };
 
+// Live: share prices come from LinckLens's own Kite websocket as they trade.
+function liveChip(st) {
+  const lv = st.h && st.h.live;
+  if (!lv) return '';
+  const on = lv.connected || st.live;
+  const tip = on ? `Share prices live from Kite${st.liveAt ? `\nLast price ${hhmm(st.liveAt)}` : ''}\n${lv.priced} of ${lv.of} shares priced live so far`
+    : 'The live price feed isn’t connected: shares are at the prices Kite gave when the account was read';
+  return html`<span class="lens-live ${on ? 'on' : ''}" data-live="${on ? 'on' : 'off'}" data-tip="${tip}"><i></i>${on ? 'Live' : 'Not live'}</span>`;
+}
+
 export default {
   title: p => `${(HEAD[p.tab] || HEAD.overview)[0]} · LinckLens`,
   render(main, params) {
@@ -34,7 +44,8 @@ export default {
       mount(main, html`<div class="page-head lens-head">
           <div class="col"><h1 class="t-h1">${title}</h1><span class="mute">${sub}</span></div>
           <span class="grow"></span>
-          ${st.h && st.h.as_of ? html`<span class="small mute">Read ${hhmm(st.h.as_of)}</span>` : ''}
+          ${liveChip(st)}
+          ${st.h && st.h.as_of ? html`<span class="small mute" title="Holdings, funds and the account are read from Kite once a day, on Refresh and at 17:00">Account read ${hhmm(st.h.as_of)}</span>` : ''}
           <button type="button" class="btn btn-sm" data-act="refresh" ${st.busy ? 'disabled' : ''}>${st.busy ? 'Reading…' : 'Refresh'}</button>
         </div>
         <div class="page lens" data-tab="${tab}">
@@ -64,6 +75,7 @@ export default {
     const offSort = on(main, 'change', '[data-f="sort"]', (e, el) => { ui.sort = el.value; ui.dir = el.value === 'name' ? 'asc' : 'desc'; paint(); });
     paint();
     loadHoldings();
-    return () => { off(); offActs(); offIn(); offSort(); };
+    startLive();
+    return () => { off(); offActs(); offIn(); offSort(); stopLive(); };
   },
 };

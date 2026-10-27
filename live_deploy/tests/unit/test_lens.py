@@ -261,19 +261,54 @@ def fake_kite(fail=(), prices=None, asked=None):
     return call
 
 
-def test_read_once_a_minute_unless_asked_fresh_and_the_lists_once_a_day():
-    asked = []
+def test_read_once_a_day_unless_asked_fresh_and_the_lists_once_a_day():
+    asked, day = [], [TODAY]
 
     async def go():
-        L = lens.Lens(None, call=fake_kite(asked=asked), today=lambda: TODAY)
+        L = lens.Lens(None, call=fake_kite(asked=asked), today=lambda: day[0])
         a = await L.holdings()
         b = await L.holdings()
         c = await L.holdings(fresh=True)
-        return a, b, c
-    a, b, c = asyncio.run(go())
-    assert a is b and [x[0] for x in asked].count("holdings") == 2
-    assert [x[0] for x in asked].count("instruments") == 1 and [x[0] for x in asked].count("mf_instruments") == 1, "the lists: once a day"
-    assert a["equity"][1]["name"] == "INFOSYS" and a["missing"] == [] and c["as_of"]
+        day[0] = TODAY + timedelta(days=1)
+        d = await L.holdings()
+        return a, b, c, d
+    a, b, c, d = asyncio.run(go())
+    reads = [x[0] for x in asked]
+    assert reads.count("holdings") == 3, "kept all day; Refresh reads again; and the next day"
+    assert a == b and reads.count("mf_holdings") == 3 and reads.count("margins") == 3
+    assert reads.count("instruments") == 2 and reads.count("mf_instruments") == 2, "the lists: once a day"
+    assert a["equity"][1]["name"] == "INFOSYS" and a["missing"] == [] and c["as_of"] and "live" not in a
+
+
+class FakeFeed:
+    def __init__(self, prices):
+        self.prices, self.wanted = prices, None
+        self.status = {"connected": True, "last_tick_at": "2026-10-27T05:00:00+00:00"}
+
+    def want(self, symbols):
+        self.wanted = symbols
+
+    def price(self, token):
+        return self.prices.get(token)
+
+
+def test_shares_are_priced_from_the_feed_funds_from_kite():
+    feed = FakeFeed({408065: {"ltp": 1600.0, "close": 1550.0}})
+
+    async def go():
+        L = lens.Lens(None, call=fake_kite(), today=lambda: TODAY, feed=feed)
+        first = await L.holdings()
+        feed.prices[408065] = {"ltp": 1700.0, "close": 1550.0}
+        return first, await L.holdings()
+    first, later = asyncio.run(go())
+    assert feed.wanted == {lens.NIFTY: "NIFTY 50", 408065: "INFY", 424961: "ITC"}, "the shares held, and Nifty"
+    infy = next(r for r in first["equity"] if r["symbol"] == "INFY")
+    assert (infy["ltp"], infy["prev_close"], infy["day_change"]) == (1600.0, 1550.0, 600.0), "12 shares (2 T1) × ₹50"
+    itc = next(r for r in first["equity"] if r["symbol"] == "ITC")
+    assert itc["ltp"] == 420.0, "no tick yet: Kite's price as read"
+    assert next(r for r in later["equity"] if r["symbol"] == "INFY")["ltp"] == 1700.0, "a tick moves it, no Kite call"
+    assert first["live"] == {"connected": True, "priced": 1, "of": 2, "last_tick_at": "2026-10-27T05:00:00+00:00"}
+    assert first["mf"][0]["nav"] == MF[0]["last_price"]
 
 
 def test_what_kite_wont_give_is_named_not_fatal():
@@ -284,30 +319,11 @@ def test_what_kite_wont_give_is_named_not_fatal():
     assert [m.split(":")[0] for m in out["missing"]] == ["NSE names", "SIPs", "account funds"]
 
 
-def test_the_year_is_fetched_in_the_background_and_answered_when_in():
+def test_without_a_database_the_year_says_so():
     async def go():
-        L = lens.Lens(None, call=fake_kite(fail=(424961,)), today=lambda: TODAY)   # ITC's prices refused
-        first = await L.history()
-        await L.hist["task"]
-        second = await L.history()
-        return first, second, L
-    first, second, L = asyncio.run(go())
-    assert first["state"] == "loading" and first["total"] == 3 and first["done"] < 3
-    assert second["state"] == "ready" and second["done"] == 3
-    ins = second["insights"]
-    assert ins["shares"]["INFY"]["ret"]["1Y"] is not None and ins["shares"]["ITC"] == {"ret": {}, "spark": [], "days": 0}
-    assert ins["curve"]["left_out"] == ["ITC"] and ins["curve"]["covered"] == 1
-
-
-def test_without_nifty_the_year_says_why():
-    async def go():
-        L = lens.Lens(None, call=fake_kite(fail=(lens.NIFTY,)), today=lambda: TODAY)
-        await L.history()
-        await L.hist["task"]
-        return await L.history()
+        return await lens.Lens(None, call=fake_kite(), today=lambda: TODAY).history()
     out = asyncio.run(go())
-    assert out["state"] == "ready" and out["insights"]["curve"] is None and out["insights"]["nifty"] is None
-    assert out["error"].startswith("NIFTY 50 prices: RuntimeError")
+    assert out["state"] == "error" and "database" in out["error"]
 
 
 def test_the_browser_tests_see_what_the_server_sends():

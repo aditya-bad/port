@@ -22,8 +22,9 @@ export function render(st) {
 
     ${sect('How LinckLens reads it')}
     <ul class="lens-how small">
-      <li><b>Holdings, funds, SIPs and the account</b> come from Kite as you open LinckLens, then again after a minute or when you press Refresh${h.as_of ? ` (last read ${hhmm(h.as_of)})` : ''}. Nothing is stored and nothing is traded.</li>
-      <li><b>A share’s year</b> is Kite’s daily prices for the last 365 days, read once a day, one request a share. Returns run from each period’s last close to the price now.</li>
+      <li><b>Holdings, funds, SIPs and the account</b> are read from Kite once a day (as soon as Kite is logged in), when you press Refresh, and at the 17:00 sync${h.as_of ? ` (last read ${hhmm(h.as_of)})` : ''}. Nothing is traded.</li>
+      <li><b>Share prices are live</b>: LinckLens has its own Kite websocket, apart from the trading feed, following each share you hold and Nifty 50. Your P&L and today’s move change as they trade, with no request to Kite.</li>
+      <li><b>A share’s year</b> is its daily prices, kept in the database: read from Kite once (the last 365 days), then only the new day at the 17:00 sync, one request a share. Returns run from each period’s last close to the price now.</li>
       <li><b>Your shares against Nifty</b> is today’s shares at each past day’s close: Kite keeps no record of what you held on those days. Shares listed within the year are left out of that line.</li>
       <li><b>Funds</b> are at their last NAV. Kite gives no NAV history, so funds have no yearly line, and no day’s move.</li>
       <li><b>What each holding is</b> (stock, ETF, gold, debt, REIT) is read from its symbol and Kite’s name for it; a fund’s kind, plan and option come from Kite’s fund list.</li>

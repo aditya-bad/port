@@ -409,7 +409,10 @@ def test_lens_holdings_and_history_from_kite_and_when_kite_isnt_connected(client
     from app import lens
     from app.options import NoKiteSession
 
+    asked = []
+
     async def kite(what, *args):
+        asked.append(what)
         if what == "holdings":
             return [{"tradingsymbol": "INFY", "exchange": "NSE", "instrument_token": 408065, "quantity": 10,
                      "average_price": 1400.0, "last_price": 1500.0, "close_price": 1480.0}]
@@ -420,7 +423,10 @@ def test_lens_holdings_and_history_from_kite_and_when_kite_isnt_connected(client
             return [{"date": datetime.combine(end - timedelta(days=k), datetime.min.time()), "high": 101, "low": 99, "close": 100 + (400 - k) * 0.1}
                     for k in range(400, -1, -1) if (end - timedelta(days=k)).weekday() < 5]
         return [] if what in ("mf_holdings", "mf_sips", "mf_instruments") else {}
-    monkeypatch.setattr(client.app.state, "lens", lens.Lens(None, call=kite), raising=False)
+    live = client.get("/v2/lens/live").json()
+    assert live["p"] == {} and live["connected"] is False, "the app's own feed: nothing followed, no Kite session"
+    pool = client.app.state.db_pool
+    monkeypatch.setattr(client.app.state, "lens", lens.Lens(None, call=kite, pool=pool), raising=False)
     r = client.get("/v2/lens/holdings")
     assert r.status_code == 200
     body = r.json()
@@ -435,6 +441,12 @@ def test_lens_holdings_and_history_from_kite_and_when_kite_isnt_connected(client
             break
     assert h["state"] == "ready" and h["insights"]["shares"]["INFY"]["ret"]["1Y"] > 0
     assert h["insights"]["curve"]["covered"] == 1
+    # kept: the year is in the database, and asking again reads nothing from Kite
+    n = client.portal.call(lambda: pool.fetchval("SELECT count(*) FROM lens_daily WHERE instrument_token = 408065"))
+    assert n > 250
+    before = list(asked)
+    assert client.get("/v2/lens/history").json()["state"] == "ready" and client.get("/v2/lens/holdings").status_code == 200
+    assert asked == before, "no Kite call: the account is kept for the day, the year in the database"
 
     async def no_kite(what, *args):
         raise NoKiteSession("no access token")

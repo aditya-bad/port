@@ -58,6 +58,19 @@ from .broadcaster import Broadcaster
 
 logger = logging.getLogger("live_deploy.dispatcher")
 
+
+def _twisted_reactor_running() -> bool:
+    """Is Twisted's reactor (the thread every KiteTicker in this process
+    talks through) already running, for this or another connection?
+    LinckLens has a connection of its own (app/lens_feed.py): whichever
+    of the two connects second must hand its connect() to that thread
+    too, not call it from the asyncio thread."""
+    try:
+        from twisted.internet import reactor
+        return bool(reactor.running)
+    except Exception:
+        return False
+
 MODE_MAP = {
     "ltp":   KiteTicker.MODE_LTP,
     "quote": KiteTicker.MODE_QUOTE,
@@ -89,6 +102,7 @@ class LiveDataDispatcher:
         kite_ticker_cls=KiteTicker,   # injectable for testing without real Kite
         schedule_on_ticker_thread: Optional[Callable] = None,   # injectable for tests
         on_connection_issue: Optional[Callable] = None,
+        reactor_running: Optional[Callable[[], bool]] = None,   # injectable for tests
     ):
         self.broadcaster = broadcaster
         # Optional async callback: on_connection_issue(event_type, message),
@@ -160,6 +174,7 @@ class LiveDataDispatcher:
         # "has the reactor thread ever been started" answer, and it never
         # resets back to False once set.
         self._reactor_started = False
+        self._reactor_running = reactor_running or _twisted_reactor_running
 
         self.connected = False
         self.ticks_received = 0
@@ -197,7 +212,10 @@ class LiveDataDispatcher:
         """
         self._loop = loop
         if self._pending_initial_token:
-            self._connect_with(self._pending_initial_token)
+            if self._reactor_running():
+                self.reconnect(self._pending_initial_token)   # another connection runs the reactor
+            else:
+                self._connect_with(self._pending_initial_token)
         self._pending_initial_token = None
 
     def reconnect(self, access_token: str) -> None:
@@ -240,7 +258,7 @@ class LiveDataDispatcher:
         old_kws = self._kws
         self.connected = False
 
-        if not self._reactor_started:
+        if not self._reactor_started and not self._reactor_running():
             # First-ever connection this process -- the reactor hasn't
             # started yet, so there's no concurrent thread to race with.
             # Mirrors bind_loop()'s own direct call for this exact case.

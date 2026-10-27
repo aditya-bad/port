@@ -65,16 +65,34 @@ async def get_strategy_health(request: Request, fresh: bool = False):
     return cached
 
 
+def _lens(request: Request):
+    """The app's LinckLens (made at startup, with its feed); one without
+    a feed where the app was made without it (tests)."""
+    from .. import lens
+    svc = getattr(request.app.state, "lens", None)
+    if svc is None:
+        svc = request.app.state.lens = lens.Lens(request.app.state.dispatcher, pool=request.app.state.db_pool)
+    return svc
+
+
+@router.get("/lens/live")
+async def get_lens_live(request: Request):
+    """LinckLens's feed: each followed share's price now and previous
+    close, {at, p: {symbol: [price, prev close]}, connected}. Nothing is
+    asked of Kite here."""
+    feed = getattr(_lens(request), "feed", None)
+    if feed is None:
+        return {"at": None, "p": {}, "connected": False}
+    return {**feed.snapshot(), "connected": feed.ws.connected}
+
+
 @router.get("/lens/holdings")
 async def get_lens_holdings(request: Request, fresh: bool = False):
     """LinckLens (app/lens.py): the Kite account's shares and mutual funds,
-    with their totals, read live from Kite (kept a minute; `fresh` reads
-    again). 409 when Kite isn't connected."""
-    from .. import lens
+    with their totals: read from Kite once a day and kept (`fresh` reads
+    again), shares at their live price. 409 when Kite isn't connected."""
     from ..options import NoKiteSession
-    svc = getattr(request.app.state, "lens", None)
-    if svc is None:
-        svc = request.app.state.lens = lens.Lens(request.app.state.dispatcher)
+    svc = _lens(request)
     try:
         return await svc.holdings(fresh)
     except NoKiteSession as e:
@@ -86,13 +104,11 @@ async def get_lens_holdings(request: Request, fresh: bool = False):
 @router.get("/lens/history")
 async def get_lens_history(request: Request):
     """LinckLens (app/lens.py): a year of prices for every share held and
-    NIFTY 50, fetched in the background; {state: loading, done, total}
-    until it's in, then {state: ready, insights}."""
-    from .. import lens
+    NIFTY 50, from the database (what's missing read from Kite in the
+    background); {state: loading, done, total} until it's in, then
+    {state: ready, insights}."""
     from ..options import NoKiteSession
-    svc = getattr(request.app.state, "lens", None)
-    if svc is None:
-        svc = request.app.state.lens = lens.Lens(request.app.state.dispatcher)
+    svc = _lens(request)
     try:
         return await svc.history()
     except NoKiteSession as e:

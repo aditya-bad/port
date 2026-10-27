@@ -1,19 +1,20 @@
 """
 live_deploy — LinckLens: what the Kite account holds, beside LinckTrade
-(the deployments), and what can be said about it from Kite alone.
-
-Two reads, both through the app's own Kite calls (the process-wide
-throttle), nothing stored, nothing traded:
+(the deployments), and what can be said about it.
 
 - holdings(): the shares (kite.holdings) and mutual funds
   (kite.mf_holdings), named from Kite's instrument lists, the funds'
   scheme type, plan and option (kite.mf_instruments), the SIPs
-  (kite.mf_sips) and the account's funds (kite.margins); how it's spread
-  and what needs a look. Kept a minute.
-- history(): a year of daily prices for every share held and for NIFTY 50
-  (kite.historical_data), fetched in the background (one call a holding)
-  and kept for the day; from it each share's returns, 52-week range,
-  volatility and beta, and the shares together against Nifty.
+  (kite.mf_sips) and the account's funds (kite.margins). Read from Kite
+  once a day (warm_loop, after the day's login), again on Refresh and at
+  the 17:00 sync, and kept in between. Shares are priced from LinckLens's
+  own Kite websocket (app/lens_feed.py) as ticks arrive; funds stand at
+  the NAV Kite gave.
+- history(): a year of daily prices for every share held and NIFTY 50,
+  from the database (app/lens_store.py): read from Kite once per
+  instrument, then only the days since, at the 17:00 sync. From it each
+  share's returns, 52-week range, volatility and beta, and the shares
+  together against Nifty.
 
 Kite gives no past holdings and no mutual fund NAV history: the year is
 TODAY's shares at past prices, and the funds stand at their last NAV.
@@ -23,13 +24,20 @@ Every figure built that way says so where it's shown.
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import re
 import time
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Optional
+from zoneinfo import ZoneInfo
 
-CACHE_S = 60
+from . import lens_store
+
+logger = logging.getLogger("live_deploy.lens")
+
+IST = ZoneInfo("Asia/Kolkata")
+RETRY_FAILED_S = 600          # a failed price read is tried again after this
 NIFTY = 256265
 NIFTY_NAME = "NIFTY 50"
 PERIODS = [("1W", 7), ("1M", 30), ("3M", 91), ("6M", 182), ("1Y", 365)]
@@ -420,13 +428,14 @@ def portfolio_curve(eq: list[dict], candles: dict, nifty: list[dict], today: dat
     }
 
 
-def insights(h: dict, candles: dict, nifty_candles: list[dict], today: date) -> dict:
+def insights(h: dict, candles: dict, nifty_candles: list[dict], today: date, nifty_ltp: Optional[float] = None) -> dict:
     """Pure: the holdings and a year of prices -> each share's year, the
-    shares together against Nifty, and what needs a look with both."""
+    shares together against Nifty, and what needs a look with both.
+    nifty_ltp: Nifty now, when the feed has it (else its last close)."""
     n = [x for x in _closes(nifty_candles) if x[0] >= today - timedelta(days=YEAR_DAYS)]
     shares = {r["symbol"]: share_stats(candles.get(r.get("token")) or [], r["ltp"], today, n) for r in h["equity"]}
     out = {"shares": shares, "curve": portfolio_curve(h["equity"], candles, nifty_candles, today),
-           "nifty": share_stats(nifty_candles, n[-1][1] if n else 0, today) if n else None}
+           "nifty": share_stats(nifty_candles, nifty_ltp or (n[-1][1] if n else 0), today) if n else None}
     out["attention"] = attention(h, out)
     return out
 
@@ -526,17 +535,42 @@ def attention(h: dict, ins: Optional[dict] = None) -> list[dict]:
 
 # ── Reading it from Kite ─────────────────────────────────────────────────
 
+def year_answer(h: dict, candles: dict, today: date, *, total: int, error: Optional[str] = None,
+                nifty_ltp: Optional[float] = None) -> dict:
+    """What /v2/lens/history answers once the year is in."""
+    return {"day": today.isoformat(), "done": total, "total": total, "error": error, "state": "ready",
+            "insights": insights(h, candles, candles.get(NIFTY) or [], today, nifty_ltp)}
+
+
+def priced(equity: list[dict], price: Callable[[Any], Optional[dict]]) -> list[dict]:
+    """Kite's holdings with each share at its feed price now (and the
+    previous close the feed gave), where the feed has one."""
+    out = []
+    for h in equity or []:
+        p = price(h.get("instrument_token"))
+        if p and p.get("ltp"):
+            h = {**h, "last_price": p["ltp"], **({"close_price": p["close"]} if p.get("close") else {})}
+        out.append(h)
+    return out
+
+
 class Lens:
     """Reads the account from Kite. `call(name, *args)` makes one Kite
-    call (the app's: kite.<name>(*args) through the throttle)."""
+    call (the app's: kite.<name>(*args) through the throttle). pool: the
+    database, for the year of prices. feed: app/lens_feed.LensFeed, the
+    live prices (None: Kite's holdings prices as read)."""
 
-    def __init__(self, dispatcher, call: Optional[Callable[..., Any]] = None, today: Optional[Callable[[], date]] = None):
-        self.dispatcher = dispatcher
+    def __init__(self, dispatcher, call: Optional[Callable[..., Any]] = None, today: Optional[Callable[[], date]] = None,
+                 *, pool=None, feed=None, now: Optional[Callable[[], datetime]] = None):
+        self.dispatcher, self.pool, self.feed = dispatcher, pool, feed
         self.call = call or self._kite
-        self.today = today or (lambda: datetime.now().astimezone().date())
-        self._cache: Optional[tuple[float, dict]] = None
+        self.now = now or (lambda: datetime.now(IST))
+        self.today = today or (lambda: self.now().astimezone(IST).date())
+        self._raw: Optional[dict] = None          # Kite's answers as last read
         self._daily: dict[str, tuple[date, Any]] = {}
-        self.hist: dict = {"day": None, "candles": {}, "task": None, "error": None, "total": 0}
+        self._read_lock = asyncio.Lock()
+        self.reads = 0
+        self.hist: dict = {"task": None, "progress": None, "failed": {}, "retry": {}, "error": None}
 
     async def _kite(self, what: str, *args):
         from .options import OptionsResolver
@@ -559,10 +593,9 @@ class Lens:
             missing.append(f"{label}: {type(e).__name__}: {str(e)[:120]}")
             return None
 
-    async def holdings(self, fresh: bool = False) -> dict:
-        now = time.monotonic()
-        if self._cache and not fresh and now - self._cache[0] < CACHE_S:
-            return self._cache[1]
+    # ── the account ────────────────────────────────────────────────────
+
+    async def _read(self) -> None:
         equity = await self.call("holdings")
         mf = await self.call("mf_holdings")
         missing: list[str] = []
@@ -578,41 +611,114 @@ class Lens:
             meta = {r.get("tradingsymbol"): r for r in rows}
         sips = await self._optional(missing, "SIPs", lambda: self.call("mf_sips"))
         margins = await self._optional(missing, "account funds", lambda: self.call("margins"))
-        out = build(equity, mf, names=names, mf_meta=meta, sips=sips, margins=margins)
-        out["missing"] = missing
-        out["as_of"] = datetime.now().astimezone().isoformat()
-        self._cache = (now, out)
+        self.reads += 1
+        self._raw = {"day": self.today(), "at": datetime.now().astimezone().isoformat(), "equity": equity or [], "mf": mf or [],
+                     "names": names, "meta": meta, "sips": sips, "margins": margins, "missing": missing}
+        if self.feed is not None:
+            want = {NIFTY: NIFTY_NAME}
+            want.update({h["instrument_token"]: h.get("tradingsymbol") for h in equity or [] if h.get("instrument_token")})
+            self.feed.want(want)
+
+    def _price(self, token) -> Optional[dict]:
+        return self.feed.price(token) if self.feed is not None and token else None
+
+    def _answer(self) -> dict:
+        r = self._raw
+        out = build(priced(r["equity"], self._price), r["mf"], names=r["names"], mf_meta=r["meta"], sips=r["sips"], margins=r["margins"])
+        out["missing"] = list(r["missing"])
+        out["as_of"] = r["at"]
+        if self.feed is not None:
+            st = self.feed.status
+            out["live"] = {"connected": st["connected"], "priced": sum(1 for x in r["equity"] if self._price(x.get("instrument_token"))),
+                           "of": len(r["equity"]), "last_tick_at": st["last_tick_at"]}
         return out
 
-    async def history(self) -> dict:
-        """A year of prices for every share held and NIFTY 50: started in
-        the background on the first ask of the day (and for a share bought
-        since), answered with its progress until it's all in."""
-        h = await self.holdings()
-        today = self.today()
-        if self.hist["day"] != today:
-            self.hist = {"day": today, "candles": {}, "task": None, "error": None, "total": 0}
-        want = [NIFTY] + [r["token"] for r in h["equity"] if r.get("token")]
-        todo = [t for t in want if t not in self.hist["candles"]]
-        task = self.hist["task"]
-        if todo and (task is None or task.done()):
-            self.hist["total"] = len(want)
-            self.hist["error"] = None
-            self.hist["task"] = asyncio.create_task(self._fetch(todo, today), name="lens-history")
-        done = sum(1 for t in want if t in self.hist["candles"])
-        base = {"day": today.isoformat(), "done": done, "total": len(want), "error": self.hist["error"]}
-        if done < len(want):
-            return {**base, "state": "error" if self.hist["error"] and (self.hist["task"] is None or self.hist["task"].done()) else "loading"}
-        return {**base, "state": "ready", "insights": insights(h, self.hist["candles"], self.hist["candles"][NIFTY], today)}
+    async def holdings(self, fresh: bool = False) -> dict:
+        """The account: read from Kite on the first ask of the day, on
+        Refresh (fresh) and at the 17:00 sync; in between, what was read,
+        with each share at its live price."""
+        async with self._read_lock:
+            if fresh or self._raw is None or self._raw["day"] != self.today():
+                await self._read()
+        return self._answer()
 
-    async def _fetch(self, tokens: list, today: date) -> None:
-        start = today - timedelta(days=YEAR_DAYS + 10)
-        for t in tokens:
+    async def warm_loop(self, every: float = 60.0) -> None:
+        """Read the account once a day as soon as Kite is logged in, so the
+        feed follows the shares before anyone opens LinckLens."""
+        retry_at = 0.0
+        while True:
             try:
-                self.hist["candles"][t] = await self.call("historical_data", t, start, today, "day") or []
+                logged_in = bool(getattr(self.dispatcher, "access_token", None)) and getattr(self.dispatcher, "connected", False)
+                stale = self._raw is None or self._raw["day"] != self.today()
+                if logged_in and stale and time.monotonic() >= retry_at:
+                    await self.holdings()
             except Exception as e:
-                # one share without prices doesn't hold the rest up: it's
-                # left out of the year, and named
-                self.hist["candles"][t] = []
-                if t == NIFTY:
-                    self.hist["error"] = f"NIFTY 50 prices: {type(e).__name__}: {str(e)[:120]}"
+                logger.warning("LinckLens: reading the account failed (%s); trying again in 10 minutes", e)
+                retry_at = time.monotonic() + RETRY_FAILED_S
+            await asyncio.sleep(every)
+
+    # ── the year of prices ─────────────────────────────────────────────
+
+    def _wanted(self, h: dict) -> list[dict]:
+        return [{"token": NIFTY, "symbol": NIFTY_NAME, "exchange": "NSE"}] + [
+            {"token": r["token"], "symbol": r["symbol"], "exchange": r.get("exchange")} for r in h["equity"] if r.get("token")]
+
+    async def history(self) -> dict:
+        """A year of prices for every share held and NIFTY 50, from the
+        database; what isn't there yet (a first look, a share bought
+        since, a day missed) is read from Kite in the background, and this
+        answers with its progress until it's in."""
+        h = await self.holdings()
+        today, want = self.today(), self._wanted(h)
+        base = {"day": today.isoformat(), "total": len(want)}
+        if self.pool is None:
+            return {**base, "done": 0, "error": "No database for the year of prices", "state": "error"}
+        task = self.hist["task"]
+        if task is not None and not task.done():
+            p = self.hist["progress"] or {}
+            return {**base, "done": p.get("done", 0), "error": None, "state": "loading"}
+        have = await lens_store.kept(self.pool, [w["token"] for w in want])
+        now, mono = self.now(), time.monotonic()
+        due = [w for w in want
+               if lens_store.to_read((have.get(w["token"]) or {}).get("fetched_through"), (have.get(w["token"]) or {}).get("first"), now) is not None
+               and self.hist["retry"].get(w["token"], 0) <= mono]
+        if due:
+            self._start_reading(due)
+            return {**base, "done": len(want) - len(due), "error": None, "state": "loading"}
+        candles = await lens_store.candles(self.pool, [w["token"] for w in want], today - timedelta(days=lens_store.FIRST_READ_DAYS))
+        failed = {w["symbol"]: self.hist["failed"][w["symbol"]] for w in want if w["symbol"] in self.hist["failed"]}
+        if not candles.get(NIFTY):
+            err = failed.get(NIFTY_NAME) or "Kite gave no NIFTY 50 prices"
+            return {**base, "done": len(want) - 1, "error": f"NIFTY 50 prices: {err}", "state": "error"}
+        error = ("Prices couldn't be read for " + ", ".join(f"{k} ({v})" for k, v in failed.items())) if failed else None
+        nifty_now = (self._price(NIFTY) or {}).get("ltp")
+        return year_answer(h, candles, today, total=len(want), error=error, nifty_ltp=nifty_now)
+
+    def _start_reading(self, due: list[dict]) -> None:
+        self.hist["progress"] = {"total": len(due), "done": 0}
+        self.hist["task"] = asyncio.create_task(self._read_prices(due), name="lens-prices")
+
+    async def _read_prices(self, due: list[dict]) -> dict:
+        r = await lens_store.bring_up_to_date(self.pool, self.call, due, self.now(), self.hist["progress"])
+        retry_at = time.monotonic() + RETRY_FAILED_S
+        for w in due:
+            if w["symbol"] in r["failed"]:
+                self.hist["failed"][w["symbol"]] = r["failed"][w["symbol"]]
+                self.hist["retry"][w["token"]] = retry_at
+            else:
+                self.hist["failed"].pop(w["symbol"], None)
+                self.hist["retry"].pop(w["token"], None)
+        return r
+
+    async def topup(self) -> dict:
+        """The 17:00 sync: the account read again, then each instrument's
+        days since it was last read (one Kite call each; nothing for one
+        that's up to date)."""
+        h = await self.holdings(fresh=True)
+        task = self.hist["task"]
+        if task is not None and not task.done():
+            await task
+        self.hist["progress"] = {"total": 0, "done": 0}
+        r = await self._read_prices(self._wanted(h))
+        logger.info("LinckLens 17:00 sync: %d Kite call(s), %d day(s) stored, %d failed", r["asked"], r["rows"], len(r["failed"]))
+        return r

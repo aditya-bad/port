@@ -714,3 +714,9 @@ a.cell-name:hover b { text-decoration: underline; }
   .ls-detail { grid-template-columns: 1fr; min-width: 0; }
   .lens-tools .input.search { width: 100%; }
 }
+.lens-live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--mute); }
+.lens-live i { width: 8px; height: 8px; border-radius: 50%; background: var(--line2); }
+.lens-live.on { color: var(--g); }
+.lens-live.on i { background: var(--g); box-shadow: 0 0 0 3px var(--gs); }
+@media (prefers-reduced-motion: no-preference) { .lens-live.on i { animation: lens-pulse 2s ease-in-out infinite; } }
+@keyframes lens-pulse { 50% { box-shadow: 0 0 0 6px transparent; } }

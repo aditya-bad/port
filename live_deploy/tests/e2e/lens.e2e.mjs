@@ -183,6 +183,31 @@ test('Shares: every holding, found, filtered, sorted, and one opened against Nif
   await ctx.close();
 });
 
+test('live: a price from LinckLens’s own feed reprices the share and the totals', async () => {
+  const ctx = await context(b, { width: 1440, height: 900, blockSW: true });
+  const live = { ...FX.holdings, live: { connected: true, priced: 14, of: 14, last_tick_at: new Date().toISOString() } };
+  await ctx.route('**/v2/lens/holdings*', r => r.fulfill({ json: live }));
+  await ctx.route('**/v2/lens/history*', r => r.fulfill({ json: FX.history }));
+  let streams = 0;
+  await ctx.route('**/sse/lens', r => {
+    streams += 1;
+    return r.fulfill({ status: 200, contentType: 'text/event-stream',
+      body: `data: ${JSON.stringify({ at: new Date().toISOString(), p: { INFY: [1100, 1050] } })}\n\n` });
+  });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/lens/shares`);
+  await p.waitForSelector('[data-symbol="INFY"]');
+  assert.equal(await p.locator('.lens-live').getAttribute('data-live'), 'on');
+  assert.match(await p.locator('.lens-live').innerText(), /Live/);
+  await until(async () => /1,100\.00/.test(await p.locator('[data-symbol="INFY"]').innerText()), 8000);
+  const row = await p.locator('[data-symbol="INFY"]').innerText();
+  assert.match(row, /1,100\.00[\s\S]*₹1,54,000[\s\S]*\+4\.76%[\s\S]*\+₹7,000/, 'price, value, and today against the feed’s previous close');
+  assert.match(await p.locator('.lens-strip').innerText(), /In shares\s+₹18,44,857/, 'the total moved by INFY’s ₹6,285');
+  assert.ok(streams >= 1);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
 test('Funds: kind, plan, option, NAV, and the SIPs feeding them', async () => {
   const { ctx, p } = await lensPage();
   await p.goto(`${BASE}/linck/#/lens/funds`);

@@ -19,7 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
 
-from app.lens import NIFTY, Lens   # noqa: E402
+from app.lens import NIFTY, Lens, year_answer   # noqa: E402
 
 TODAY = date(2026, 10, 27)
 AS_OF = "2026-10-27T11:42:00+05:30"
@@ -132,17 +132,18 @@ def kite():
         if what == "historical_data":
             return candles[args[0]]
         return answers[what]
-    return call
+    return call, candles
 
 
 async def make() -> dict:
-    lens = Lens(None, call=kite(), today=lambda: TODAY)
+    """What the server answers for the account: the holdings as Lens reads
+    them, and the year as it answers once the prices are in (from the
+    database there; from the same candles here)."""
+    call, candles = kite()
+    lens = Lens(None, call=call, today=lambda: TODAY)
     h = await lens.holdings()
     h["as_of"] = AS_OF
-    y = await lens.history()
-    while y["state"] == "loading":
-        await asyncio.sleep(0)
-        y = await lens.history()
+    y = year_answer(h, candles, TODAY, total=1 + len(h["equity"]))
     return {"holdings": h, "history": y}
 
 

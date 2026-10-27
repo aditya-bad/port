@@ -1,12 +1,14 @@
-// LinckLens's data (app/lens.py), shared by its pages so moving between
-// them doesn't ask Kite again: the holdings (kept a minute here too, as
-// on the server), and the year of prices, followed while the server
-// fetches it in the background.
+// LinckLens's data (app/lens.py), shared by its pages: the holdings (the
+// server reads Kite once a day and keeps it; asked again here after a
+// minute, which costs Kite nothing), the year of prices (from the server's
+// database, followed while it reads what's missing), and live prices from
+// /sse/lens (LinckLens's own Kite websocket) applied as they come.
 
 import { api } from '../core/api.js';
+import { applyPrices } from './lensprice.js';
 
 const STALE_MS = 60000;
-const st = { h: null, hErr: null, hAt: 0, busy: false, y: null, yErr: null, following: false };
+const st = { h: null, hErr: null, hAt: 0, busy: false, y: null, yErr: null, following: false, live: false, liveAt: null };
 const subs = new Set();
 
 export const lens = st;
@@ -40,3 +42,40 @@ async function followHistory(again = false) {
 
 // The holdings' year, by symbol, when it's in.
 export const yearOf = sym => (st.y && st.y.state === 'ready' && st.y.insights.shares[sym]) || null;
+
+// ── Live prices ────────────────────────────────────────────────────────
+// One stream while any LinckLens page is open (closed a few seconds after
+// the last one goes, so moving between them keeps it); the pages are
+// redrawn at most every two seconds.
+const REDRAW_MS = 2000;
+let es = null, users = 0, closeTimer = null, redrawTimer = null;
+
+function redrawSoon() {
+  if (redrawTimer) return;
+  redrawTimer = setTimeout(() => { redrawTimer = null; emit(); }, REDRAW_MS);
+}
+
+export function startLive() {
+  users += 1;
+  clearTimeout(closeTimer);
+  if (es || typeof EventSource === 'undefined') return;
+  es = new EventSource('/sse/lens');
+  es.onopen = () => { st.live = true; emit(); };
+  es.onerror = () => { st.live = false; };          // EventSource tries again by itself
+  es.onmessage = e => {
+    let m;
+    try { m = JSON.parse(e.data); } catch { return; }
+    if (!m || !m.p) return;
+    st.live = true;
+    st.liveAt = m.at || new Date().toISOString();
+    if (st.h) st.h = applyPrices(st.h, m.p);
+    redrawSoon();
+  };
+}
+
+export function stopLive() {
+  users = Math.max(0, users - 1);
+  if (users) return;
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(() => { if (!users && es) { es.close(); es = null; st.live = false; } }, 5000);
+}

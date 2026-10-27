@@ -407,8 +407,17 @@ async def startup() -> None:
     app.state.candles = CandleService(db_pool, dispatcher)
     static = [int(t["instrument_token"]) for t in tokens]
     app.state.index_candles_task = asyncio.create_task(manager.candles_loop(static), name="candles-loop")
+    # ── LinckLens: its own Kite websocket for the shares held (app/
+    # lens_feed.py), the account read once a day, and its daily prices
+    # topped up after the 17:00 option sync (app/lens.py, app/lens_store.py).
+    from .lens import Lens
+    from .lens_feed import LensFeed
+    app.state.lens_feed = LensFeed(dispatcher)
+    app.state.lens_feed.start(loop)
+    app.state.lens = Lens(dispatcher, pool=db_pool, feed=app.state.lens_feed)
+    app.state.lens_warm_task = asyncio.create_task(app.state.lens.warm_loop(), name="lens-warm-loop")
     app.state.candle_backfill_task = asyncio.create_task(
-        manager.candle_backfill_loop(app.state.candles), name="candle-backfill-loop",
+        manager.candle_backfill_loop(app.state.candles, after=app.state.lens.topup), name="candle-backfill-loop",
     )
     # ── Health monitor: Kite, the database, the 17:00 export and every
     # deployment, checked every minute; each problem alerts every minute
@@ -487,7 +496,10 @@ async def shutdown() -> None:
     except asyncio.CancelledError:
         pass
 
-    for name in ("index_candles_task", "candle_backfill_task", "ops_task", "watchdog_task", "strategy_health_task", "vix_task", "vix_spike_task", "freeze_task"):
+    if getattr(app.state, "lens_feed", None) is not None:
+        await app.state.lens_feed.stop()
+        app.state.lens_feed.ws.stop()
+    for name in ("index_candles_task", "candle_backfill_task", "lens_warm_task", "ops_task", "watchdog_task", "strategy_health_task", "vix_task", "vix_spike_task", "freeze_task"):
         task = getattr(app.state, name, None)
         if task is None:
             continue
@@ -658,6 +670,18 @@ async def sse_ticks(request: Request):
     shutdown_event: asyncio.Event = request.app.state.shutdown_event
     return StreamingResponse(
         _sse_stream(request, broadcaster, shutdown_event),
+        media_type="text/event-stream", headers=_SSE_HEADERS,
+    )
+
+
+@app.get("/sse/lens")
+async def sse_lens(request: Request):
+    """LinckLens's live prices: what changed, at most once a second,
+    {at, p: {symbol: [price, prev close]}}, from its own Kite websocket
+    (app/lens_feed.py). Connecting here asks nothing of Kite."""
+    feed = request.app.state.lens_feed
+    return StreamingResponse(
+        _sse_stream(request, feed.out, request.app.state.shutdown_event),
         media_type="text/event-stream", headers=_SSE_HEADERS,
     )
 

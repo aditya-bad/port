@@ -36,7 +36,7 @@ class FakeTicker:
         self.closed = True
 
 
-def make(tokens=({"instrument_token": 256265, "symbol": "NIFTY 50"},), token=None, issues=None, mode="full"):
+def make(tokens=({"instrument_token": 256265, "symbol": "NIFTY 50"},), token=None, issues=None, mode="full", reactor_running=None):
     FakeTicker.made = []
     scheduled = []
 
@@ -49,7 +49,8 @@ def make(tokens=({"instrument_token": 256265, "symbol": "NIFTY 50"},), token=Non
 
     d = LiveDataDispatcher("key", list(tokens), mode, Broadcaster(), initial_access_token=token,
                            kite_ticker_cls=FakeTicker, schedule_on_ticker_thread=schedule,
-                           on_connection_issue=on_issue if issues is not None else None)
+                           on_connection_issue=on_issue if issues is not None else None,
+                           reactor_running=reactor_running or (lambda: False))
     return d, scheduled
 
 
@@ -128,6 +129,19 @@ def test_second_reconnect_runs_on_the_ticker_thread_and_closes_the_old_socket():
     d.reconnect("tok2")
     assert scheduled == ["_do_reconnect"], "never connect() from the asyncio thread once the reactor runs"
     assert first.closed and FakeTicker.made[-1].access_token == "tok2"
+
+
+def test_a_second_connection_in_the_process_connects_on_the_ticker_thread():
+    """LinckLens's own feed is a second dispatcher: the trading feed's
+    connection already runs Twisted's reactor, so even its FIRST connect
+    must go through the reactor thread, not from the asyncio thread."""
+    d, scheduled = make(tokens=(), reactor_running=lambda: True)
+    d.bind_loop(asyncio.new_event_loop())
+    d.reconnect("tok")
+    assert scheduled == ["_do_reconnect"] and FakeTicker.made[-1].connected
+    d, scheduled = make(tokens=(), token="tok", reactor_running=lambda: True)
+    d.bind_loop(asyncio.new_event_loop())
+    assert scheduled == ["_do_reconnect"], "a session at start, the same"
 
 
 def test_give_up_alerts_retries_and_recovery_alerts_once():

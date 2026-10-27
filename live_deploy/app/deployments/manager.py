@@ -700,16 +700,17 @@ class DeploymentManager:
     index_candles_loop = candles_loop   # earlier name
 
 
-    async def candle_backfill_loop(self, candles) -> None:
+    async def candle_backfill_loop(self, candles, after=None) -> None:
         """Once a trading day at 17:00 (candles.BACKFILL_AT): fill the
         day's history of every option contract held today from Kite while
         it still has it — expired contracts can't be fetched later. Runs
         right away on a start after 17:00 if the day isn't done, in case
         the app was down then; a day already done (the saved last run says
-        so) isn't run again by a restart or a redeploy."""
+        so) isn't run again by a restart or a redeploy. after(): run once
+        the day's backfill has succeeded (LinckLens's daily prices)."""
         done = await self.backfill_done_day(candles)
         while True:
-            done = await self.candle_backfill_once(candles, datetime.now(_IST), done)
+            done = await self.candle_backfill_once(candles, datetime.now(_IST), done, after)
             await asyncio.sleep(60 if done != datetime.now(_IST).date() else 300)
 
     @staticmethod
@@ -730,9 +731,9 @@ class DeploymentManager:
         return None
 
     @staticmethod
-    async def candle_backfill_once(candles, now: datetime, done: Optional[date]) -> Optional[date]:
+    async def candle_backfill_once(candles, now: datetime, done: Optional[date], after=None) -> Optional[date]:
         """One pass of the loop at `now`: runs the day's backfill if it's
-        due and not done. Returns the day now done."""
+        due and not done, then after() if given. Returns the day now done."""
         from ..candles import BACKFILL_AT
         now = now.astimezone(_IST)
         if now.weekday() < 5 and now.time() >= BACKFILL_AT and done != now.date():
@@ -742,6 +743,11 @@ class DeploymentManager:
                     done = now.date()      # else (Kite logged out mid-way) retried in a minute
             except Exception:
                 logger.exception("Candle backfill failed — will retry")
+            if done == now.date() and after is not None:
+                try:
+                    await after()
+                except Exception:
+                    logger.exception("After the candle backfill: failed (the options are saved)")
         return done
 
     # ── Health watchdog: active but not running; Kite not connected ────
