@@ -17,6 +17,8 @@ export const ROUTES = [
   { path: 'repair/:day/:dep', nav: 'repair', load: () => import('../pages/repair-case.js') },
   { path: 'repair', nav: 'repair', load: () => import('../pages/repair.js') },
   { path: 'account', nav: 'account', load: () => import('../pages/account.js') },
+  // LinckLens: the account's holdings, its own product beside LinckTrade (the rest)
+  { path: 'lens', nav: 'lens', product: 'lens', load: () => import('../pages/lens.js') },
 ];
 export const DEFAULT = 'desk';
 

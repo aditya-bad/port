@@ -65,6 +65,24 @@ async def get_strategy_health(request: Request, fresh: bool = False):
     return cached
 
 
+@router.get("/lens/holdings")
+async def get_lens_holdings(request: Request, fresh: bool = False):
+    """LinckLens (app/lens.py): the Kite account's shares and mutual funds,
+    with their totals, read live from Kite (kept a minute; `fresh` reads
+    again). 409 when Kite isn't connected."""
+    from .. import lens
+    from ..options import NoKiteSession
+    svc = getattr(request.app.state, "lens", None)
+    if svc is None:
+        svc = request.app.state.lens = lens.Lens(request.app.state.dispatcher)
+    try:
+        return await svc.holdings(fresh)
+    except NoKiteSession as e:
+        raise HTTPException(409, f"Kite isn’t connected, so your holdings can’t be read: {e}")
+    except Exception as e:
+        raise HTTPException(502, f"Kite didn't give the holdings: {type(e).__name__}: {e}")
+
+
 @router.get("/vix")
 async def get_vix(request: Request, start: Optional[datetime] = None, end: Optional[datetime] = None,
                   interval: str = "5minute"):

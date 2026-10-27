@@ -164,8 +164,10 @@ def test_sign_in_and_geek_bar_show_the_mark_and_the_header_says_linck():
     t = (STATIC / "linck/login/index.html").read_text()
     assert 'class="mark" src="/icons/linck-mark.svg"' in t and 'class="mark mark-paper" src="/icons/linck-mark-paper.svg"' in t
     app = (STATIC / "linck/js/app.js").read_text()
-    head = re.search(r'<a class="wordmark"[^>]*>(.*?)</a>', app).group(1)
+    # the word is the product switcher's (LinckTrade / LinckLens): still the word, no mark
+    head = re.search(r'<span class="wordmark">(.*?)</span>', app).group(1)
     assert head == "Linck", "the header says Linck in words, no mark"
+    assert 'class="prod-btn' in app and "linck-mark" not in app
     geek = (STATIC / "linck/js/pages/geek/index.js").read_text()
     assert geek.count('src="/icons/linck-mark.svg"') == 3 and geek.count('src="/icons/linck-mark-paper.svg"') == 3
 

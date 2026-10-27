@@ -25,7 +25,9 @@ async function req(path, { method = 'GET', body, passwordCheck = false } = {}) {
   if (!r.ok) {
     let detail = data && (data.detail || data.message);
     if (Array.isArray(detail)) detail = detail.map(d => d.msg).join('; ');
-    throw new Error(typeof detail === 'string' && detail ? detail : `Request failed (${r.status})`);
+    const err = new Error(typeof detail === 'string' && detail ? detail : `Request failed (${r.status})`);
+    err.status = r.status;
+    throw err;
   }
   return data;
 }
@@ -43,6 +45,8 @@ export const api = {
   strategyIssues: (all = false) => req(`/v2/strategy-issues${all ? '?all=1' : ''}`),
   dismissStrategyIssue: id => post(`/v2/strategy-issues/${id}/dismiss`),
   // the end-of-day check (app/repair/daycheck.py)
+  // LinckLens: the account's holdings (app/lens.py)
+  lensHoldings: fresh => req(`/v2/lens/holdings${fresh ? '?fresh=true' : ''}`),
   dayChecks: day => req(`/v2/day-checks${day ? `?day=${enc(day)}` : ''}`),
   runDayCheck: body => post('/v2/day-checks/run', body || {}),
   // repairing a flagged day (app/repair/dayrepair.py)

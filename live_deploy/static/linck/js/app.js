@@ -23,6 +23,14 @@ const NAV = [
   ['reports', 'Reports', 'hide-1320'], ['review', 'Review', 'hide-1320'], ['strategies', 'Strategies', 'hide-1320'], ['journal', 'Journal', 'hide-1640'], ['tools', 'Tools', 'hide-1640'],
 ];
 const BNAV = [['desk', 'Desk'], ['deployments', 'Deploys'], ['leaderboard', 'Leaders'], ['compare', 'Compare']];
+// Two products in one portal, picked from the logo: LinckTrade (the
+// deployments: everything above) and LinckLens (the account's holdings).
+const PRODUCTS = {
+  trade: { name: 'Trade', home: 'desk', what: 'Deployments, strategies, the day check' },
+  lens: { name: 'Lens', home: 'lens', what: 'Your holdings: shares and mutual funds' },
+};
+const LENS_NAV = [['lens', 'Holdings', '']];
+const product = () => (app.route && app.route.product) || 'trade';
 const IN_MORE = ['repair', 'reports', 'review', 'strategies', 'journal', 'tools', 'account'];
 // Open health issues (app/ops_health.py): a count on the Repair link, red
 // when any is critical and not snoozed.
@@ -33,7 +41,23 @@ function issueBadge() {
   return html`<i class="nav-badge ${hot ? 'hot' : ''}" aria-label="${health.issues.length} open health issue${health.issues.length === 1 ? '' : 's'}">${health.issues.length}</i>`;
 }
 
-const app = { route: null, page: null, cleanup: null, me: null };
+const app = { route: null, page: null, cleanup: null, me: null, prodOpen: false };
+
+function productSwitch() {
+  const cur = product();
+  return html`<div class="prod">
+    <button type="button" class="prod-btn is-${cur}" data-act="product" aria-haspopup="menu" aria-expanded="${app.prodOpen}"
+      aria-label="Linck${PRODUCTS[cur].name}: switch product"><span class="wordmark">Linck</span><span class="prod-name">${PRODUCTS[cur].name}</span><i aria-hidden="true">▾</i></button>
+    ${app.prodOpen ? html`<div class="prod-menu" role="menu">${Object.entries(PRODUCTS).map(([k, p]) => html`
+      <a role="menuitem" href="${href(p.home)}" class="${k === cur ? 'on' : ''}" data-product="${k}" ${k === cur ? html`aria-current="true"` : ''}>
+        <b>Linck<span>${p.name}</span></b><small>${p.what}</small></a>`)}</div>` : ''}
+  </div>`;
+}
+function closeProducts() {
+  if (!app.prodOpen) return;
+  app.prodOpen = false;
+  renderHeader();
+}
 
 // ── Header ─────────────────────────────────────────────────────────
 function kiteChip() {
@@ -71,13 +95,14 @@ function renderHeader() {
   const cur = app.route ? app.route.nav : 'desk';
   const n = alertCount();
   const initials = app.me ? app.me.username.slice(0, 2) : '··';
+  const lens = product() === 'lens';
   mount($('#top'), html`
-    <header class="hdr">
-      <a class="wordmark" href="${href('desk')}" aria-label="Linck, go to the Desk">Linck</a>
-      <nav class="nav hide-phone" aria-label="Main">${NAV.map(([k, l, c]) => html`
+    <header class="hdr ${lens ? 'is-lens' : ''}">
+      ${productSwitch()}
+      <nav class="nav hide-phone" aria-label="Main">${(lens ? LENS_NAV : NAV).map(([k, l, c]) => html`
         <a href="${href(k)}" class="${k === cur ? 'on' : ''} ${c}" ${k === cur ? html`aria-current="page"` : ''}>${l}${k === 'repair' ? issueBadge() : ''}</a>`)}</nav>
       <span class="spacer"></span>
-      ${basisControl()}
+      ${lens ? '' : basisControl()}
       ${kiteChip()}
       <button type="button" class="theme-btn hide-1520" data-act="theme" title="Theme"><i></i>${prefs.themeLabel()}</button>
       <button type="button" class="alerts-btn" data-act="alerts" title="Things that need you" aria-label="${n} alert${n === 1 ? '' : 's'}: open the list"><i class="${n ? '' : 'zero'}">${n}</i><span class="hide-phone">Alerts</span></button>
@@ -106,6 +131,12 @@ function renderStrip() {
 function renderBnav() {
   const cur = app.route ? app.route.nav : 'desk';
   const n = alertCount();
+  if (product() === 'lens') {
+    mount($('#bnav'), html`${LENS_NAV.map(([k, l]) => html`<a href="${href(k)}" class="${k === cur ? 'on' : ''}"><span class="n"></span>${l}</a>`)}
+      <a href="${href('desk')}" data-product="trade"><span class="n"></span>LinckTrade</a>
+      <button type="button" data-act="more"><span class="n"></span>More</button>`);
+    return;
+  }
   mount($('#bnav'), html`${BNAV.map(([k, l]) => html`
     <a href="${href(k)}" class="${k === cur ? 'on' : ''}"><span class="n">${k === 'desk' && n ? n : ''}</span>${l}</a>`)}
     <button type="button" class="${IN_MORE.includes(cur) ? 'on' : ''}" data-act="more"><span class="n">${health.issues.length || ''}</span>More</button>`);
@@ -116,6 +147,9 @@ export function openMore() {
   openDialog({
     kicker: 'MENU', title: 'More', cancelLabel: 'Close',
     menu: [
+      product() === 'lens'
+        ? { l: 'LinckTrade', h: PRODUCTS.trade.what, run: () => go('desk') }
+        : { l: 'LinckLens', h: PRODUCTS.lens.what, run: () => go('lens') },
       { l: `Repair${health.issues.length ? ` · ${health.issues.length} open ${health.issues.length === 1 ? 'alert' : 'alerts'}` : ''}`, h: 'The day check and what the deployments reported: what needs fixing', run: () => go('repair') },
       { l: 'Reports', h: 'Statements, account equity, exposure', run: () => go('reports') },
       { l: 'Week in review', h: 'The week against the usual: deployments, trades, rules, notes', run: () => go('review') },
@@ -201,13 +235,17 @@ async function boot() {
     theme: () => prefs.cycleTheme(),
     kite: () => kiteDialog(),
     more: () => openMore(),
+    product: () => { app.prodOpen = !app.prodOpen; renderHeader(); },
     alerts: () => openAlerts(),
   };
   const click = (e, el) => { const fn = handlers[el.dataset.act]; if (fn) { e.preventDefault(); fn(el.dataset); } };
   on(top, 'click', '[data-act]', click);
   on($('#bnav'), 'click', '[data-act]', click);
 
-  window.addEventListener('hashchange', route);
+  // the product menu closes on a pick, a click elsewhere or Escape
+  document.addEventListener('click', e => { if (app.prodOpen && !e.target.closest('.prod')) closeProducts(); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeProducts(); });
+  window.addEventListener('hashchange', () => { app.prodOpen = false; route(); });
   onBasis(() => { renderHeader(); route(); });
   prefs.subscribe(() => renderHeader());
   listen('status', () => { renderHeader(); });

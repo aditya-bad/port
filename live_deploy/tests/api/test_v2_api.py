@@ -400,3 +400,26 @@ def test_restart_that_still_fails_reports_why(client):
     client.portal.call(lambda: client.app.state.deployment_manager.check_health_once(datetime.now(IST).replace(tzinfo=None)))
     [nr] = client.get("/health").json()["not_running"]
     assert "instrument_tokens" in nr["reason"]
+
+
+# ── LinckLens: the account's holdings (app/lens.py) ────────────────────
+
+def test_lens_holdings_from_kite_and_when_kite_isnt_connected(client, monkeypatch):
+    from app import lens
+    from app.options import NoKiteSession
+
+    async def kite(what):
+        return [{"tradingsymbol": "INFY", "exchange": "NSE", "quantity": 10, "average_price": 1400.0,
+                 "last_price": 1500.0, "close_price": 1480.0}] if what == "holdings" else []
+    monkeypatch.setattr(client.app.state, "lens", lens.Lens(None, call=kite), raising=False)
+    r = client.get("/v2/lens/holdings")
+    assert r.status_code == 200
+    body = r.json()
+    assert [x["symbol"] for x in body["equity"]] == ["INFY"] and body["mf"] == []
+    assert body["totals"]["all"]["pnl"] == 1000.0 and body["totals"]["equity"]["day_change"] == 200.0
+
+    async def no_kite(what):
+        raise NoKiteSession("no access token")
+    monkeypatch.setattr(client.app.state, "lens", lens.Lens(None, call=no_kite), raising=False)
+    r = client.get("/v2/lens/holdings")
+    assert r.status_code == 409 and "Kite isn’t connected" in r.json()["detail"]
