@@ -48,6 +48,9 @@ export const api = {
   // LinckLens: the account's holdings (app/lens.py)
   lensHoldings: fresh => req(`/v2/lens/holdings${fresh ? '?fresh=true' : ''}`),
   lensHistory: () => req('/v2/lens/history'),
+  lensTrades: () => req('/v2/lens/trades'),
+  lensImport: files => post('/v2/lens/trades/import', { files }),
+  lensRemoveImport: id => req(`/v2/lens/trades/imports/${id}`, { method: 'DELETE' }),
   dayChecks: day => req(`/v2/day-checks${day ? `?day=${enc(day)}` : ''}`),
   runDayCheck: body => post('/v2/day-checks/run', body || {}),
   // repairing a flagged day (app/repair/dayrepair.py)

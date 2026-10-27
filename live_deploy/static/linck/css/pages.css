@@ -691,6 +691,31 @@ a.cell-name:hover b { text-decoration: underline; }
 .ls-cells .s { font-size: 11px; color: var(--mute); }
 .lens-how { margin: 0; padding-left: 18px; display: grid; gap: 8px; max-width: 90ch; }
 
+/* trades (pages/lens/trades.js) */
+.lens-import { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 16px; }
+.lens-import label.btn { cursor: pointer; }
+.lens-imported { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+.lens-imported .warn { color: var(--wt); }
+.lens-months { display: grid; gap: 4px; }
+.fy-tbl, .ltr-tbl { overflow-x: auto; }
+.fy-row { grid-template-columns: minmax(110px, 1fr) repeat(3, minmax(110px, 1fr)) 70px; min-width: 560px; padding: 4px 0; }
+.with-slab .fy-row { grid-template-columns: minmax(110px, 1fr) repeat(4, minmax(110px, 1fr)) 70px; min-width: 680px; }
+.ltr-row { grid-template-columns: minmax(170px, 1.8fr) 96px 64px 96px 90px 104px 104px 104px 72px; min-width: 980px; padding: 4px 0; }
+.ltr-row.off { color: var(--mute); }
+.fy-row .num small, .ltr-row .num small { display: block; font-size: 11px; color: var(--mute); }
+.ltr-row .num small.warn { color: var(--wt); }
+.lens-lots { padding: 10px 12px 14px; background: var(--soft); border-bottom: 1.5px solid var(--ink); min-width: 980px; }
+.lot-row { grid-template-columns: 110px 80px 90px 90px minmax(180px, 1fr) 110px; padding: 3px 0; }
+.lens-soon { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.lens-soon-i { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-left: 4px solid var(--g); background: var(--card); }
+.lens-sale { display: grid; grid-template-columns: minmax(80px, 1fr) auto auto; gap: 10px; align-items: baseline; padding: 5px 0; border-bottom: 1px solid var(--line); }
+.lens-sale .num small { font-size: 11px; }
+.lens-recon { display: grid; gap: 8px; }
+.lens-recon-i { display: grid; grid-template-columns: minmax(90px, 160px) minmax(0, 280px) minmax(0, 1fr); gap: 12px; align-items: baseline; padding: 8px 12px; border: 1px solid var(--line); border-left: 4px solid var(--wt); background: var(--card); }
+.lens-files { display: grid; gap: 6px; }
+.lens-file { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.lens-file b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 @media (max-width: 900px) {
   .lens-two, .lens-movers { grid-template-columns: 1fr; gap: 18px; }
 }
@@ -713,6 +738,16 @@ a.cell-name:hover b { text-decoration: underline; }
   .ls-row.tot > span:not([data-l]), .mf-row.tot > span:not([data-l]) { grid-column: 1 / -1; }
   .ls-detail { grid-template-columns: 1fr; min-width: 0; }
   .lens-tools .input.search { width: 100%; }
+  .fy-tbl, .ltr-tbl { overflow: visible; }
+  .fy-row, .with-slab .fy-row, .ltr-row, .lot-row { min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; padding: 10px 0; }
+  .fy-row > :first-child, .ltr-row .cell-name { grid-column: 1 / -1; }
+  .fy-row .num, .ltr-row .num, .lot-row .num { text-align: left; }
+  .fy-row > [data-l]::before, .ltr-row > [data-l]::before, .lot-row > [data-l]::before { content: attr(data-l); display: block; font-family: var(--f-body); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--mute); }
+  .fy-row.th, .ltr-row.th, .lot-row.th { display: none; }
+  .lens-lots { min-width: 0; }
+  .lens-recon-i { grid-template-columns: 1fr; gap: 2px; }
+  .lens-file { grid-template-columns: minmax(0, 1fr) auto; }
+  .lens-file .mute { grid-column: 1 / -1; grid-row: 2; }
 }
 .lens-live { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--mute); }
 .lens-live i { width: 8px; height: 8px; border-radius: 50%; background: var(--line2); }

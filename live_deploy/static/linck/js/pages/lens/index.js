@@ -5,21 +5,23 @@ import { html, mount, actions, on, $ } from '../../core/dom.js';
 import { hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
 import { say, fail } from '../../ui/toast.js';
-import { lens, onLens, loadHoldings, startLive, stopLive } from '../../data/lens.js';
+import { lens, onLens, loadHoldings, startLive, stopLive, loadTrades, importFiles, removeImport } from '../../data/lens.js';
 import * as overview from './overview.js';
 import * as shares from './shares.js';
 import * as funds from './funds.js';
 import * as account from './account.js';
+import * as trades from './trades.js';
 
-export const TABS = [['overview', 'Overview', overview], ['shares', 'Shares', shares], ['funds', 'Funds', funds], ['account', 'Account', account]];
+export const TABS = [['overview', 'Overview', overview], ['shares', 'Shares', shares], ['funds', 'Funds', funds], ['trades', 'Trades', trades], ['account', 'Account', account]];
 const HEAD = {
   overview: ['Overview', 'Everything in your Kite account, and what it’s done.'],
   shares: ['Shares', 'Stocks, ETFs, gold and REITs in your demat.'],
   funds: ['Funds', 'Mutual funds and the SIPs feeding them.'],
+  trades: ['Trades', 'Every buy and sell from your Console tradebook, and what they add up to.'],
   account: ['Account', 'The money in the trading account, and how these pages are read.'],
 };
 // what each page remembers while you move around LinckLens
-const ui = { window: '1Y', q: '', asset: 'all', sort: 'value', dir: 'desc', open: null };
+const ui = { window: '1Y', q: '', asset: 'all', sort: 'value', dir: 'desc', open: null, openTrade: null };
 
 // Live: share prices come from LinckLens's own Kite websocket as they trade.
 function liveChip(st) {
@@ -49,7 +51,7 @@ export default {
           <button type="button" class="btn btn-sm" data-act="refresh" ${st.busy ? 'disabled' : ''}>${st.busy ? 'Reading…' : 'Refresh'}</button>
         </div>
         <div class="page lens" data-tab="${tab}">
-          ${st.hErr ? (st.hErr.status === 409
+          ${tab === 'trades' ? mod.render(st, ui) : st.hErr ? (st.hErr.status === 409
               ? empty('Kite isn’t connected', 'Your holdings are read from your Kite account. Connect it with Reconnect at the top, then Refresh.')
               : empty('Couldn’t read your holdings', st.hErr.message))
             : !st.h ? loading(8) : mod.render(st, ui)}
@@ -70,12 +72,27 @@ export default {
       asset: x => { ui.asset = x.v; paint(); },
       dir: () => { ui.dir = ui.dir === 'asc' ? 'desc' : 'asc'; paint(); },
       open: x => { ui.open = ui.open === x.s ? null : x.s; paint(); },
+      openTrade: x => { ui.openTrade = ui.openTrade === x.s ? null : x.s; paint(); },
+      removeImport: async x => {
+        if (!window.confirm('Remove this file and the trades it brought? Import it again to have them back.')) return;
+        try { await removeImport(x.v); say('Removed.'); } catch (e) { fail(e, 'Couldn’t remove it'); }
+      },
     });
     const offIn = on(main, 'input', '[data-f="q"]', (e, el) => { ui.q = el.value; paint(); });
     const offSort = on(main, 'change', '[data-f="sort"]', (e, el) => { ui.sort = el.value; ui.dir = el.value === 'name' ? 'asc' : 'desc'; paint(); });
+    const offFiles = on(main, 'change', '[data-f="files"]', async (e, el) => {
+      const files = [...(el.files || [])];
+      if (!files.length) return;
+      try {
+        const r = await importFiles(files);
+        const added = (r || []).reduce((n, f) => n + f.added, 0);
+        say(`${added} new trade${added === 1 ? '' : 's'} imported.`);
+      } catch (err) { fail(err, 'Couldn’t import the files'); }
+    });
     paint();
     loadHoldings();
+    if (tab === 'trades') loadTrades();
     startLive();
-    return () => { off(); offActs(); offIn(); offSort(); stopLive(); };
+    return () => { off(); offActs(); offIn(); offSort(); offFiles(); stopLive(); };
   },
 };

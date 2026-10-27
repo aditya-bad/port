@@ -54,6 +54,10 @@ def test_which_days_to_ask_kite_for():
     assert S.to_read(WED, date(2025, 10, 1), at(WED, 18)) is None
     assert S.to_read(WED, date(2025, 10, 1), at(WED, 18), since=date(2024, 1, 2)) == (date(2024, 1, 2), WED), \
         "an older first trade: back to it"
+    assert S.to_read(date(2026, 5, 4), date(2024, 1, 2), at(WED, 18), until=date(2026, 5, 4)) is None, \
+        "sold in May: nothing after it is needed"
+    assert S.to_read(None, None, at(WED, 18), since=date(2024, 1, 2), until=date(2025, 1, 2)) == (date(2024, 1, 2), WED), \
+        "the first read still runs to today (one request)"
 
 
 def test_the_year_once_then_only_the_days_since(pool_run):

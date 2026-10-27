@@ -117,6 +117,41 @@ async def get_lens_history(request: Request):
         raise HTTPException(502, f"Kite didn't give the prices: {type(e).__name__}: {e}")
 
 
+class TradeFile(BaseModel):
+    name: Optional[str] = None
+    text: str = Field(max_length=20_000_000)
+
+
+class TradesIn(BaseModel):
+    files: list[TradeFile] = Field(min_length=1, max_length=50)
+
+
+@router.post("/lens/trades/import")
+async def import_lens_trades(payload: TradesIn, request: Request):
+    """Zerodha Console tradebook files (CSV, equity and mutual funds):
+    each one's rows stored once (importing it again adds nothing), with
+    what was new, what was already there, and what couldn't be read."""
+    return {"files": await _lens(request).import_trades([f.model_dump() for f in payload.files])}
+
+
+@router.get("/lens/trades")
+async def get_lens_trades(request: Request):
+    """What the imported trades say: lots, realized and unrealized P&L,
+    short and long term by financial year, XIRR, money in by month, closed
+    trades, whether they add up to what Kite holds, and the shares day by
+    day against the same money in Nifty ({state: loading} while their
+    prices are read)."""
+    return await _lens(request).trades_report()
+
+
+@router.delete("/lens/trades/imports/{import_id}")
+async def delete_lens_import(import_id: int, request: Request):
+    """An imported file, and the trades it brought."""
+    if not await _lens(request).remove_import(import_id):
+        raise HTTPException(404, "No such import")
+    return {"ok": True}
+
+
 @router.get("/vix")
 async def get_vix(request: Request, start: Optional[datetime] = None, end: Optional[datetime] = None,
                   interval: str = "5minute"):

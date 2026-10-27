@@ -49,7 +49,7 @@ test('the logo switches between LinckTrade and LinckLens; without Kite it says s
   await p.waitForSelector('.hdr.is-lens');
   assert.match(p.url(), /#\/lens$/);
   assert.equal((await p.textContent('.hdr .prod-name')).trim(), 'Lens');
-  assert.deepEqual(await p.locator('.hdr .nav a').allInnerTexts(), ['Overview', 'Shares', 'Funds', 'Account'], 'Lens has its own pages');
+  assert.deepEqual(await p.locator('.hdr .nav a').allInnerTexts(), ['Overview', 'Shares', 'Funds', 'Trades', 'Account'], 'Lens has its own pages');
   assert.equal(await p.locator('.hdr .basis-seg').count(), 0, 'no P&L basis: that is LinckTrade’s');
   // no Kite session on this server: it says so, on every page
   await p.waitForSelector('.lens .empty');
@@ -246,12 +246,90 @@ test('Account: the trading account’s money, and how LinckLens reads it', async
   await ctx.close();
 });
 
+test('Trades: what the tradebook says, against Kite and the same money in Nifty', async () => {
+  const { ctx, p } = await lensPage();
+  await ctx.route('**/v2/lens/trades', r => r.fulfill({ json: FX.trades }));
+  const posted = [];
+  await ctx.route('**/v2/lens/trades/import', r => { posted.push(r.request().postDataJSON()); return r.fulfill({ json: { files: [
+    { id: 3, name: 'tradebook-2024.csv', rows: 3, added: 2, skipped: 1, first_day: '2024-04-02', last_day: '2024-09-30', problems: ['line 4: bad trade_date'] }] } }); });
+  const removed = [];
+  await ctx.route('**/v2/lens/trades/imports/*', r => { removed.push(r.request().url()); return r.fulfill({ json: { ok: true } }); });
+  await p.goto(`${BASE}/linck/#/lens/trades`);
+  await p.waitForSelector('[data-curve="ready"]');
+  const strip = await p.locator('.lens-strip').first().innerText();
+  assert.match(strip, /Money in now\s+₹24,51,969\s+bought less sold, 24 Feb '25 to 22 Sep '26/);
+  assert.match(strip, /Return a year \(XIRR\)\s+\+8\.8%\s+shares −3\.6% · funds \+59\.5%/);
+  assert.match(strip, /Booked\s+\+₹7,600[\s\S]*On paper\s+\+₹1,41,570\s+18 holdings/);
+  assert.match(await p.locator('[data-curve="ready"]').innerText(), /worth ₹17,24,574[\s\S]*would be worth ₹20,14,829: you’re ₹2,90,255 behind/);
+  const box = await p.locator('[data-scrub="lens-trades-curve"]').boundingBox();
+  await p.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2);
+  const tip = await until(() => p.evaluate(() => { const t = document.querySelector('.tip'); return t && t.style.display !== 'none' ? t.innerText.trim() : ''; }));
+  assert.match(tip, /Your shares\s+₹[\d,]+[\s\S]*Same money in Nifty 50\s+₹[\d,]+[\s\S]*Put in so far\s+₹[\d,]+/);
+  assert.equal(await p.locator('.lens-months .ud').count(), FX.trades.analysis.months.length, 'a bar a month');
+  assert.match(await p.locator('[data-fy="2026-27"]').innerText(), /2026-27[\s\S]*\+₹18,900[\s\S]*−₹2,000[\s\S]*\+₹16,900[\s\S]*3/);
+  assert.equal(await p.locator('.lens-soon-i').count(), 8);
+  assert.match(await p.locator('.lens-soon-i').first().innerText(), /1 day to go · long term from 28 Oct '26/);
+  // a holding opens to its lots; under a year, the return over the time held
+  const bel = p.locator('[data-trade="BEL"]');
+  assert.match(await bel.innerText(), /\+73\.3%[\s\S]*in 120 days/);
+  await bel.click();
+  assert.match(await p.locator('[data-lots="BEL"]').innerText(), /29 Jun '26[\s\S]*300[\s\S]*179\.52[\s\S]*120 days[\s\S]*Short term[\s\S]*long from 30 Jun '27[\s\S]*\+₹45,540/);
+  assert.match(await p.locator('[data-trade="ITC"]').innerText(), /300[\s\S]*Kite: 400/);
+  assert.match(await p.locator('[data-recon="ITC"]').innerText(), /trades leave 300 · Kite holds 400[\s\S]*a bonus or split/);
+  assert.match(await p.locator('[data-recon="SGBDEC28"]').innerText(), /held, with no trades/);
+  assert.match(await p.locator('.lens-strip').nth(1).innerText(), /Sold at a profit\s+50%\s+2 of 4[\s\S]*Win to loss\s+1\.38/);
+  // import: the files go up as text; what was new is said
+  await p.setInputFiles('[data-f="files"]', { name: 'tradebook-2024.csv', mimeType: 'text/csv', buffer: Buffer.from('symbol,isin,trade_date\n') });
+  await p.waitForSelector('[data-imported]');
+  assert.equal(posted[0].files[0].name, 'tradebook-2024.csv');
+  assert.match(posted[0].files[0].text, /^symbol,isin,trade_date/);
+  assert.match(await p.locator('[data-imported]').innerText(), /tradebook-2024\.csv: 3 trades, 2 new, 1 already here[\s\S]*1 row not read: line 4: bad trade_date/);
+  p.once('dialog', d => d.accept());
+  await p.locator('[data-import="2"] [data-act="removeImport"]').click();
+  await until(async () => removed.length > 0);
+  assert.match(removed[0], /\/v2\/lens\/trades\/imports\/2$/);
+  assert.equal(await noSideways(p), 0);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('Trades on the real server, without Kite: a file imported, stored once, and removed', async () => {
+  const ctx = await context(b, { width: 1440, height: 900 });
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/lens/trades`);
+  await p.waitForSelector('[data-how]');
+  assert.equal(await p.locator('.lens .empty').count(), 0, 'no Kite needed to import trades');
+  const csv = 'symbol\tisin\ttrade_date\texchange\tsegment\tseries\ttrade_type\tauction\tquantity\tprice\ttrade_id\torder_id\torder_execution_time\t\n'
+    + 'NIFTYBEES\tINF204KB14I2\t2026-04-02\tNSE\tEQ\tEQ\tbuy\tFALSE\t4\t252.850006\tE2E400299040\t1200000002303827\t2026-04-02 9:18:00\t\n'
+    + 'BANDHAN SMALL CAP FUND DIRECT PLAN-GROWTH\tINF194KB1AL4\t2026-04-01\tBSE\tMF\t\tbuy\tFALSE\t56.215\t46.249\tE2E2597645039\t2597645039\t2026-04-01 0:00:00\t\n';
+  const file = { name: 'e2e-tradebook.csv', mimeType: 'text/csv', buffer: Buffer.from(csv) };
+  await p.setInputFiles('[data-f="files"]', file);
+  await p.waitForSelector('[data-imported]');
+  assert.match(await p.locator('[data-imported]').innerText(), /e2e-tradebook\.csv: 2 trades, 2 new/);
+  await p.waitForSelector('[data-trade="NIFTYBEES"]');
+  assert.match(await p.locator('.lens-strip').first().innerText(), /Money in now\s+₹3,611/);
+  assert.match(await p.locator('[data-trade="BANDHAN SMALL CAP FUND DIRECT PLAN-GROWTH"]').innerText(), /Fund[\s\S]*1 Apr '26[\s\S]*56\.215/);
+  assert.match(await p.locator('.lens').innerText(), /Kite isn’t connected, so the trades can’t be set against what you hold now/);
+  await p.setInputFiles('[data-f="files"]', file);
+  await until(async () => /0 new, 2 already here/.test(await p.locator('[data-imported]').innerText()));
+  const ids = await p.locator('[data-import]').evaluateAll(xs => xs.map(x => x.dataset.import));
+  for (const id of ids) {
+    p.once('dialog', d => d.accept());
+    await p.locator(`[data-import="${id}"] [data-act="removeImport"]`).click();
+    await until(async () => (await p.locator(`[data-import="${id}"]`).count()) === 0);
+  }
+  await p.waitForSelector('[data-how]');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
 for (const [width, label] of [[390, 'phone'], [320, 'small phone']]) {
   test(`every Lens page fits a ${label} and the bottom bar has Lens’s pages`, async () => {
     const { ctx, p } = await lensPage({ width, height: 800 });
-    for (const tab of ['', '/shares', '/shares?open=INFY', '/funds', '/account']) {
+    await ctx.route('**/v2/lens/trades', r => r.fulfill({ json: FX.trades }));
+    for (const tab of ['', '/shares', '/shares?open=INFY', '/funds', '/trades', '/account']) {
       await p.goto(`${BASE}/linck/#/lens${tab}`);
-      await p.waitForSelector(tab.startsWith('/shares') ? '.lens-spark' : '.lens-strip');
+      await p.waitForSelector(tab.startsWith('/shares') ? '.lens-spark' : tab === '/trades' ? '[data-curve="ready"]' : '.lens-strip');
       if (tab === '') await p.waitForSelector('.lens-curve');
       assert.equal(await noSideways(p), 0, `#/lens${tab} scrolls sideways at ${width}px`);
     }
@@ -260,7 +338,7 @@ for (const [width, label] of [[390, 'phone'], [320, 'small phone']]) {
     await p.waitForSelector('[data-symbol="INFY"]');
     assert.match(await p.locator('[data-symbol="INFY"] [data-l="P&L"]').evaluate(e => getComputedStyle(e, '::before').content), /P&L/);
     const bar = await p.locator('#bnav a, #bnav button').allInnerTexts();
-    assert.deepEqual(bar.map(s => s.trim()).filter(Boolean).slice(0, 4), ['Overview', 'Shares', 'Funds', 'Account']);
+    assert.deepEqual(bar.map(s => s.trim()).filter(Boolean).slice(0, 5), ['Overview', 'Shares', 'Funds', 'Trades', 'Account']);
     assert.deepEqual(ctx.errors, []);
     await ctx.close();
   });

@@ -8,7 +8,8 @@ import { api } from '../core/api.js';
 import { applyPrices } from './lensprice.js';
 
 const STALE_MS = 60000;
-const st = { h: null, hErr: null, hAt: 0, busy: false, y: null, yErr: null, following: false, live: false, liveAt: null };
+const st = { h: null, hErr: null, hAt: 0, busy: false, y: null, yErr: null, following: false, live: false, liveAt: null,
+  t: null, tErr: null, tBusy: false, tFollowing: false, imported: null };
 const subs = new Set();
 
 export const lens = st;
@@ -78,4 +79,48 @@ export function stopLive() {
   if (users) return;
   clearTimeout(closeTimer);
   closeTimer = setTimeout(() => { if (!users && es) { es.close(); es = null; st.live = false; } }, 5000);
+}
+
+// ── Your trades (Console tradebook files) ─────────────────────────────
+// The report is worked out by the server from what's stored; the shares'
+// day-by-day line follows while their prices are read.
+export async function loadTrades() {
+  if (st.tBusy) return;
+  st.tBusy = true; emit();
+  try { st.t = await api.lensTrades(); st.tErr = null; } catch (e) { st.tErr = e; }
+  st.tBusy = false; emit();
+  followCurve();
+}
+
+async function followCurve() {
+  if (st.tFollowing || !st.t || !st.t.curve || st.t.curve.state !== 'loading') return;
+  st.tFollowing = true;
+  try {
+    for (let i = 0; i < 400 && st.t.curve && st.t.curve.state === 'loading'; i += 1) {
+      await new Promise(r => setTimeout(r, 1500));
+      try { st.t = await api.lensTrades(); st.tErr = null; } catch (e) { st.tErr = e; break; }
+      emit();
+    }
+  } finally { st.tFollowing = false; emit(); }
+}
+
+export async function importFiles(fileList) {
+  const files = [];
+  for (const f of fileList) files.push({ name: f.name, text: await f.text() });
+  if (!files.length) return null;
+  st.tBusy = true; emit();
+  try {
+    const r = await api.lensImport(files);
+    st.imported = r.files;
+    return r.files;
+  } finally {
+    st.tBusy = false;
+    await loadTrades();
+  }
+}
+
+export async function removeImport(id) {
+  await api.lensRemoveImport(id);
+  st.imported = null;
+  await loadTrades();
 }

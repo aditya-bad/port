@@ -37,17 +37,18 @@ def last_complete_day(now: datetime) -> date:
 
 
 def to_read(fetched_through: Optional[date], first: Optional[date], now: datetime,
-            since: Optional[date] = None) -> Optional[tuple[date, date]]:
+            since: Optional[date] = None, until: Optional[date] = None) -> Optional[tuple[date, date]]:
     """The days to ask Kite for, or None: the whole year (or from `since`,
     a first trade, if earlier) the first time; afterwards the days after
-    the last one read, to today. Nothing when it's all in."""
+    the last one read, to today. Nothing when it's all in, or when it's
+    read through `until` (a share sold: its prices after don't matter)."""
     today = now.astimezone(IST).date()
     want_from = min(since or today, today - timedelta(days=FIRST_READ_DAYS))
     if fetched_through is None or first is None:
         return want_from, today
     if since and since < first:
         return want_from, today          # an older trade than what's kept: read back to it
-    if fetched_through >= last_complete_day(now):
+    if fetched_through >= last_complete_day(now) or (until is not None and fetched_through >= until):
         return None
     return fetched_through + timedelta(days=1), today
 
@@ -121,7 +122,7 @@ async def bring_up_to_date(pool, call: Callable[..., Awaitable[Any]], want: list
         progress.update({"total": len(want), "done": 0})
     for w in want:
         k = have.get(int(w["token"])) or {}
-        span = to_read(k.get("fetched_through"), k.get("first"), now, w.get("since"))
+        span = to_read(k.get("fetched_through"), k.get("first"), now, w.get("since"), w.get("until"))
         if span is not None:
             frm, to = span
             got: list[dict] = []

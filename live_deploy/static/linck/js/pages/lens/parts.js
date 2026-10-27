@@ -19,7 +19,7 @@ export function yearProgress(y, yErr) {
     return html`<div class="lens-progress" data-year="loading" role="status" aria-live="polite">
       <span class="small"><i class="spin" aria-hidden="true"></i> Reading a year of prices from Kite${total ? html`: <b class="mono">${done} of ${total}</b>` : '…'}</span>
       <div class="bar"><i style="width:${w}%"></i></div>
-      <span class="tiny mute">One request a share, through the app’s own Kite limit. Kept for the rest of the day.</span></div>`;
+      <span class="tiny mute">One request a share, through the app’s own Kite limit. Kept in the database: after this, only each new day is read, at 17:00.</span></div>`;
   }
   return '';
 }

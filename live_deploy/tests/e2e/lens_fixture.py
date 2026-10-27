@@ -135,6 +135,70 @@ def kite():
     return call, candles
 
 
+def tradebook(h: dict) -> list[dict]:
+    """A made-up tradebook for the account, as app/lens_trades.parse reads
+    Console's files: buys that build each share and fund held (most in two
+    or three lots, some over a year ago), shares bought and sold out, a
+    holding with no trades (a bond bought at issue), and one where a bonus
+    left Kite holding more than the trades bought."""
+    rnd = random.Random(23)
+    out, n = [], [0]
+
+    def add(sym, isin, d, kind, qty, px, seg="EQ", ex="NSE"):
+        n[0] += 1
+        out.append({"symbol": sym, "isin": isin, "trade_date": d, "exchange": ex, "segment": seg, "series": "EQ" if seg == "EQ" else None,
+                    "trade_type": kind, "auction": False, "quantity": qty, "price": round(px, 2), "trade_id": f"T{n[0]:05d}",
+                    "order_id": f"O{n[0]:05d}", "executed_at": datetime(d.year, d.month, d.day, 10, 5), "source": "tradebook.csv"})
+
+    for r in h["equity"]:
+        if r["symbol"] in ("SGBDEC28",):
+            continue                                     # bought at issue: no trade on the exchange
+        qty = r["qty"] - (100 if r["symbol"] == "ITC" else 0)     # ITC: a bonus the trades don't show
+        k = 1 if qty < 10 else rnd.choice([2, 3])
+        lots = [qty // k] * (k - 1) + [qty - qty // k * (k - 1)]
+        for i, q in enumerate(lots):
+            age = 420 - i * 150 if r["symbol"] not in ("MEESHO", "BEL") else 120 - i * 40
+            if r["symbol"] == "HDFCBANK" and i == 0:
+                age = 350                               # turns long term in a fortnight
+            add(r["symbol"], r["isin"], TODAY - timedelta(days=age), "buy", q, r["avg"] * rnd.uniform(0.93, 1.07))
+    for sym, isin, buy_ago, sell_ago, qty, buy, sell in [("YESBANK", "INE528G01035", 610, 200, 2000, 22.4, 17.1),
+                                                         ("IRCTC", "INE335Y01020", 540, 90, 40, 690, 905),
+                                                         ("ZOMATO", "INE758T01015", 300, 60, 150, 142, 268),
+                                                         ("PAYTM", "INE982J01020", 450, 320, 30, 720, 410)]:
+        add(sym, isin, TODAY - timedelta(days=buy_ago), "buy", qty, buy)
+        add(sym, isin, TODAY - timedelta(days=sell_ago), "sell", qty, sell)
+    for f in h["mf"]:
+        units, k = f["units"], 12
+        each = round(units / k, 3)
+        for i in range(k):
+            q = each if i < k - 1 else round(units - each * (k - 1), 3)      # allotments add up to the holding
+            add(f["fund"], f["isin"], TODAY - timedelta(days=30 * (k - i) + 5), "buy", q, f["avg"] * (0.9 + 0.02 * i),
+                seg="MF", ex="BSE")
+    return sorted(out, key=lambda t: (t["trade_date"], t["trade_id"]))
+
+
+def trades_answer(h: dict, candles: dict) -> dict:
+    """What /v2/lens/trades answers for the tradebook above, worked out by
+    the same code (Lens._held_by_isin, lens_trades.analyse and value_curve)
+    from the same prices."""
+    from app import lens_trades as T
+    trades = tradebook(h)
+    a = T.analyse(trades, Lens._held_by_isin(h), TODAY)
+    token = {r["isin"]: r["token"] for r in h["equity"]}
+    series = {T.key_of(t): [(c["date"].date(), c["close"]) for c in candles.get(token.get(t["isin"])) or []] for t in trades}
+    series = {k: v for k, v in series.items() if v}
+    c = T.value_curve(trades, series, [(c["date"].date(), c["close"]) for c in candles[NIFTY]], TODAY)
+    imports = [{"id": 2, "filename": "tradebook-EQ-2025-26.csv", "rows": sum(1 for t in trades if t["segment"] == "EQ"),
+                "added": sum(1 for t in trades if t["segment"] == "EQ"), "skipped": 0, "problems": [],
+                "first_day": min(t["trade_date"] for t in trades if t["segment"] == "EQ").isoformat(),
+                "last_day": max(t["trade_date"] for t in trades if t["segment"] == "EQ").isoformat(), "imported_at": AS_OF},
+               {"id": 1, "filename": "tradebook-MF.csv", "rows": sum(1 for t in trades if t["segment"] == "MF"),
+                "added": sum(1 for t in trades if t["segment"] == "MF"), "skipped": 0, "problems": [],
+                "first_day": min(t["trade_date"] for t in trades if t["segment"] == "MF").isoformat(),
+                "last_day": max(t["trade_date"] for t in trades if t["segment"] == "MF").isoformat(), "imported_at": AS_OF}]
+    return {"imports": imports, "analysis": a, "curve": {"state": "ready", **c, "unknown": []}, "holdings_error": None}
+
+
 async def make() -> dict:
     """What the server answers for the account: the holdings as Lens reads
     them, and the year as it answers once the prices are in (from the
@@ -144,7 +208,7 @@ async def make() -> dict:
     h = await lens.holdings()
     h["as_of"] = AS_OF
     y = year_answer(h, candles, TODAY, total=1 + len(h["equity"]))
-    return {"holdings": h, "history": y}
+    return {"holdings": h, "history": y, "trades": trades_answer(h, candles)}
 
 
 def main():

@@ -29,7 +29,7 @@ const PRODUCTS = {
   trade: { name: 'Trade', home: 'desk', what: 'Deployments, strategies, the day check' },
   lens: { name: 'Lens', home: 'lens', what: 'Your holdings: shares and mutual funds' },
 };
-const LENS_NAV = [['lens', 'Overview', ''], ['lens/shares', 'Shares', ''], ['lens/funds', 'Funds', ''], ['lens/account', 'Account', '']];
+const LENS_NAV = [['lens', 'Overview', ''], ['lens/shares', 'Shares', ''], ['lens/funds', 'Funds', ''], ['lens/trades', 'Trades', ''], ['lens/account', 'Account', '']];
 // which LinckLens page is open: its tab, as a nav key
 const lensCur = () => { const t = parse().params.tab; return t && t !== 'overview' ? `lens/${t}` : 'lens'; };
 const product = () => (app.route && app.route.product) || 'trade';

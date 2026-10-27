@@ -722,3 +722,137 @@ class Lens:
         r = await self._read_prices(self._wanted(h))
         logger.info("LinckLens 17:00 sync: %d Kite call(s), %d day(s) stored, %d failed", r["asked"], r["rows"], len(r["failed"]))
         return r
+
+    # ── your trades (Console tradebook files, app/lens_trades.py) ──────
+
+    async def import_trades(self, files: list[dict]) -> list[dict]:
+        """Each file read and stored: what it held, what was new, what was
+        already there (a trade is stored once however often it's imported),
+        and the rows that couldn't be read."""
+        from . import lens_trades
+        out = []
+        for f in files:
+            name = (f.get("name") or "").strip()[:200] or None
+            rows, problems = lens_trades.parse(f.get("text") or "", name or "")
+            first = min((r["trade_date"] for r in rows), default=None)
+            last = max((r["trade_date"] for r in rows), default=None)
+            async with self.pool.acquire() as conn:
+                async with conn.transaction():
+                    imp = await conn.fetchval(
+                        "INSERT INTO lens_imports (filename, rows, added, skipped, first_day, last_day, problems) "
+                        "VALUES ($1, $2, 0, 0, $3, $4, $5) RETURNING id", name, len(rows), first, last, problems[:50])
+                    added = 0
+                    for r in rows:
+                        added += await conn.fetchval(
+                            "INSERT INTO lens_trades (import_id, symbol, isin, trade_date, exchange, segment, series, trade_type, "
+                            "auction, quantity, price, trade_id, order_id, executed_at) "
+                            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) "
+                            "ON CONFLICT (exchange, segment, trade_id, isin, trade_type) DO NOTHING RETURNING 1",
+                            imp, r["symbol"], r["isin"] or "", r["trade_date"], r["exchange"], r["segment"], r["series"],
+                            r["trade_type"], r["auction"], r["quantity"], r["price"], r["trade_id"], r["order_id"],
+                            r["executed_at"]) or 0
+                    await conn.execute("UPDATE lens_imports SET added = $2, skipped = $3 WHERE id = $1", imp, added, len(rows) - added)
+            out.append({"id": imp, "name": name, "rows": len(rows), "added": added, "skipped": len(rows) - added,
+                        "first_day": first.isoformat() if first else None, "last_day": last.isoformat() if last else None,
+                        "problems": problems})
+        return out
+
+    async def remove_import(self, import_id: int) -> bool:
+        """An import and the trades it brought (a trade another file also
+        held goes with it; import that file again to have it back)."""
+        return (await self.pool.execute("DELETE FROM lens_imports WHERE id = $1", import_id)) != "DELETE 0"
+
+    async def _trades(self) -> list[dict]:
+        rows = await self.pool.fetch("SELECT * FROM lens_trades ORDER BY trade_date, executed_at, id")
+        return [{"symbol": r["symbol"], "isin": r["isin"] or None, "trade_date": r["trade_date"], "exchange": r["exchange"],
+                 "segment": r["segment"], "series": r["series"], "trade_type": r["trade_type"], "auction": r["auction"],
+                 "quantity": r["quantity"], "price": r["price"], "trade_id": r["trade_id"], "order_id": r["order_id"],
+                 "executed_at": r["executed_at"]} for r in rows]
+
+    @staticmethod
+    def _held_by_isin(h: Optional[dict]) -> dict:
+        out = {}
+        for r in (h or {}).get("equity") or []:
+            if r.get("isin"):
+                out[r["isin"]] = {"qty": r["qty"], "ltp": r["ltp"], "value": r["value"], "symbol": r["symbol"], "kind": "equity", "asset": r.get("asset")}
+        for f in (h or {}).get("mf") or []:
+            if f.get("isin"):
+                out[f["isin"]] = {"qty": f["units"], "ltp": f["nav"], "value": f["value"], "symbol": f["fund"], "kind": "mf", "asset": f.get("asset")}
+        return out
+
+    async def trades_report(self) -> dict:
+        """What the imported trades say (lens_trades.analyse) against what
+        Kite holds now, and the shares day by day against the same money in
+        Nifty once their prices are in."""
+        from . import lens_trades
+        imports = [dict(r) for r in await self.pool.fetch("SELECT * FROM lens_imports ORDER BY id DESC")]
+        for i in imports:
+            for k in ("first_day", "last_day", "imported_at"):
+                i[k] = i[k].isoformat() if i[k] else None
+        trades = await self._trades()
+        if not trades:
+            return {"imports": imports, "analysis": None, "curve": None, "holdings_error": None}
+        h, err = None, None
+        try:
+            h = await self.holdings()
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+        analysis = lens_trades.analyse(trades, self._held_by_isin(h), self.today())
+        return {"imports": imports, "analysis": analysis, "curve": await self._trade_curve(trades, analysis),
+                "holdings_error": err}
+
+    async def _tokens_for(self, keys: list[dict]) -> dict[str, dict]:
+        """{key: {token, symbol, exchange}} for traded shares: from what's
+        kept, else Kite's instrument list for that exchange (once a day)."""
+        known = {(r["exchange"] or "", r["tradingsymbol"]): int(r["instrument_token"]) for r in await self.pool.fetch(
+            "SELECT instrument_token, tradingsymbol, exchange FROM lens_instruments")}
+        out = {}
+        for k in keys:
+            tok = known.get((k["exchange"], k["symbol"]))
+            if tok is None:
+                try:
+                    rows = await self._once_a_day(f"instruments:{k['exchange'] or 'NSE'}", "instruments", k["exchange"] or "NSE")
+                except Exception:
+                    rows = []
+                tok = next((int(r["instrument_token"]) for r in rows or [] if r.get("tradingsymbol") == k["symbol"]), None)
+            if tok is not None:
+                out[k["key"]] = {"token": tok, "symbol": k["symbol"], "exchange": k["exchange"]}
+        return out
+
+    async def _trade_curve(self, trades: list[dict], analysis: dict) -> Optional[dict]:
+        from . import lens_trades
+        per = [p for p in analysis["holdings"] if p["kind"] == "equity"]
+        if not per:
+            return None
+        keys = [{"key": p["key"], "symbol": p["symbol"], "exchange": p["exchange"] or "NSE",
+                 "since": date.fromisoformat(p["first_day"]),
+                 "until": None if p["open_qty"] > 1e-6 else date.fromisoformat(p["last_day"])} for p in per]
+        toks = await self._tokens_for(keys)
+        first = min(k["since"] for k in keys)
+        want = [{"token": NIFTY, "symbol": NIFTY_NAME, "exchange": "NSE", "since": first}] + [
+            {**toks[k["key"]], "since": k["since"], "until": k["until"]} for k in keys if k["key"] in toks]
+        task = self.hist.get("trades_task")
+        if task is not None and not task.done():
+            p = self.hist.get("trades_progress") or {}
+            return {"state": "loading", "done": p.get("done", 0), "total": p.get("total", len(want))}
+        have = await lens_store.kept(self.pool, [w["token"] for w in want])
+        now, mono = self.now(), time.monotonic()
+        due = [w for w in want if lens_store.to_read((have.get(w["token"]) or {}).get("fetched_through"),
+                                                      (have.get(w["token"]) or {}).get("first"), now, w.get("since"), w.get("until")) is not None
+               and self.hist["retry"].get(w["token"], 0) <= mono]
+        if due:
+            self.hist["trades_progress"] = {"total": len(due), "done": 0}
+
+            async def read():
+                r = await lens_store.bring_up_to_date(self.pool, self.call, due, self.now(), self.hist["trades_progress"])
+                for w in due:
+                    if w["symbol"] in r["failed"]:
+                        self.hist["retry"][w["token"]] = time.monotonic() + RETRY_FAILED_S
+            self.hist["trades_task"] = asyncio.create_task(read(), name="lens-trade-prices")
+            return {"state": "loading", "done": 0, "total": len(due)}
+        candles = await lens_store.candles(self.pool, [w["token"] for w in want], first - timedelta(days=7))
+        series = {k: [(c["date"], c["close"]) for c in candles.get(v["token"]) or []] for k, v in toks.items()}
+        c = lens_trades.value_curve(trades, series, [(c["date"], c["close"]) for c in candles.get(NIFTY) or []], self.today())
+        if c is None:
+            return {"state": "error", "error": "Kite gave no NIFTY 50 prices back to your first trade"}
+        return {"state": "ready", **c, "unknown": sorted(k["symbol"] for k in keys if k["key"] not in toks)}
