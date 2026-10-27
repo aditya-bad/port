@@ -83,6 +83,24 @@ async def get_lens_holdings(request: Request, fresh: bool = False):
         raise HTTPException(502, f"Kite didn't give the holdings: {type(e).__name__}: {e}")
 
 
+@router.get("/lens/history")
+async def get_lens_history(request: Request):
+    """LinckLens (app/lens.py): a year of prices for every share held and
+    NIFTY 50, fetched in the background; {state: loading, done, total}
+    until it's in, then {state: ready, insights}."""
+    from .. import lens
+    from ..options import NoKiteSession
+    svc = getattr(request.app.state, "lens", None)
+    if svc is None:
+        svc = request.app.state.lens = lens.Lens(request.app.state.dispatcher)
+    try:
+        return await svc.history()
+    except NoKiteSession as e:
+        raise HTTPException(409, f"Kite isn’t connected, so your holdings can’t be read: {e}")
+    except Exception as e:
+        raise HTTPException(502, f"Kite didn't give the prices: {type(e).__name__}: {e}")
+
+
 @router.get("/vix")
 async def get_vix(request: Request, start: Optional[datetime] = None, end: Optional[datetime] = None,
                   interval: str = "5minute"):

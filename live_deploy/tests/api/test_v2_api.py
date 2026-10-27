@@ -404,22 +404,41 @@ def test_restart_that_still_fails_reports_why(client):
 
 # ── LinckLens: the account's holdings (app/lens.py) ────────────────────
 
-def test_lens_holdings_from_kite_and_when_kite_isnt_connected(client, monkeypatch):
+def test_lens_holdings_and_history_from_kite_and_when_kite_isnt_connected(client, monkeypatch):
+    from datetime import date, datetime, timedelta
     from app import lens
     from app.options import NoKiteSession
 
-    async def kite(what):
-        return [{"tradingsymbol": "INFY", "exchange": "NSE", "quantity": 10, "average_price": 1400.0,
-                 "last_price": 1500.0, "close_price": 1480.0}] if what == "holdings" else []
+    async def kite(what, *args):
+        if what == "holdings":
+            return [{"tradingsymbol": "INFY", "exchange": "NSE", "instrument_token": 408065, "quantity": 10,
+                     "average_price": 1400.0, "last_price": 1500.0, "close_price": 1480.0}]
+        if what == "instruments":
+            return [{"instrument_token": 408065, "name": "INFOSYS"}]
+        if what == "historical_data":
+            end = args[2]
+            return [{"date": datetime.combine(end - timedelta(days=k), datetime.min.time()), "high": 101, "low": 99, "close": 100 + (400 - k) * 0.1}
+                    for k in range(400, -1, -1) if (end - timedelta(days=k)).weekday() < 5]
+        return [] if what in ("mf_holdings", "mf_sips", "mf_instruments") else {}
     monkeypatch.setattr(client.app.state, "lens", lens.Lens(None, call=kite), raising=False)
     r = client.get("/v2/lens/holdings")
     assert r.status_code == 200
     body = r.json()
-    assert [x["symbol"] for x in body["equity"]] == ["INFY"] and body["mf"] == []
+    assert [(x["symbol"], x["name"], x["asset"], x["weight"]) for x in body["equity"]] == [("INFY", "INFOSYS", "stock", 100.0)] and body["mf"] == []
     assert body["totals"]["all"]["pnl"] == 1000.0 and body["totals"]["equity"]["day_change"] == 200.0
+    assert body["allocation"][0]["label"] == "Stocks" and body["concentration"]["effective"] == 1.0
+    h = client.get("/v2/lens/history").json()
+    assert h["state"] in ("loading", "ready") and h["total"] == 2
+    for _ in range(50):
+        h = client.get("/v2/lens/history").json()
+        if h["state"] == "ready":
+            break
+    assert h["state"] == "ready" and h["insights"]["shares"]["INFY"]["ret"]["1Y"] > 0
+    assert h["insights"]["curve"]["covered"] == 1
 
-    async def no_kite(what):
+    async def no_kite(what, *args):
         raise NoKiteSession("no access token")
     monkeypatch.setattr(client.app.state, "lens", lens.Lens(None, call=no_kite), raising=False)
-    r = client.get("/v2/lens/holdings")
-    assert r.status_code == 409 and "Kite isn’t connected" in r.json()["detail"]
+    for path in ("/v2/lens/holdings", "/v2/lens/history"):
+        r = client.get(path)
+        assert r.status_code == 409 and "Kite isn’t connected" in r.json()["detail"]

@@ -1,17 +1,39 @@
 """
 live_deploy — LinckLens: what the Kite account holds, beside LinckTrade
-(the deployments). For now, the long-term holdings: shares (kite.holdings)
-and mutual funds (kite.mf_holdings), read live from Kite, kept a minute.
-Nothing here trades or is stored.
+(the deployments), and what can be said about it from Kite alone.
+
+Two reads, both through the app's own Kite calls (the process-wide
+throttle), nothing stored, nothing traded:
+
+- holdings(): the shares (kite.holdings) and mutual funds
+  (kite.mf_holdings), named from Kite's instrument lists, the funds'
+  scheme type, plan and option (kite.mf_instruments), the SIPs
+  (kite.mf_sips) and the account's funds (kite.margins); how it's spread
+  and what needs a look. Kept a minute.
+- history(): a year of daily prices for every share held and for NIFTY 50
+  (kite.historical_data), fetched in the background (one call a holding)
+  and kept for the day; from it each share's returns, 52-week range,
+  volatility and beta, and the shares together against Nifty.
+
+Kite gives no past holdings and no mutual fund NAV history: the year is
+TODAY's shares at past prices, and the funds stand at their last NAV.
+Every figure built that way says so where it's shown.
 """
 
 from __future__ import annotations
 
+import asyncio
+import math
+import re
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Optional
 
 CACHE_S = 60
+NIFTY = 256265
+NIFTY_NAME = "NIFTY 50"
+PERIODS = [("1W", 7), ("1M", 30), ("3M", 91), ("6M", 182), ("1Y", 365)]
+YEAR_DAYS = 365
 
 
 def _f(v) -> float:
@@ -21,16 +43,100 @@ def _f(v) -> float:
         return 0.0
 
 
-def equity_row(h: dict) -> dict:
+def _r(v, n=2):
+    return None if v is None else round(v, n)
+
+
+def _inr(v: float) -> str:
+    """₹ in Indian digit grouping, whole rupees: ₹1,77,309."""
+    n = f"{abs(v):.0f}"
+    head, tail = n[:-3], n[-3:]
+    while len(head) > 2:
+        tail = f"{head[-2:]},{tail}"
+        head = head[:-2]
+    return f"{'-' if v < 0 else ''}₹{head + ',' if head else ''}{tail}"
+
+
+def _day(v) -> Optional[date]:
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
+    if isinstance(v, str) and v:
+        try:
+            return date.fromisoformat(v[:10])
+        except ValueError:
+            return None
+    return None
+
+
+# ── What each holding is ─────────────────────────────────────────────────
+
+ASSETS = {   # key -> label, in the order the allocation lists them
+    "stock": "Stocks", "etf": "Equity ETFs", "gold": "Gold", "silver": "Silver", "debt": "Debt & liquid",
+    "reit": "REITs & InvITs",
+    "mf_equity": "Equity funds", "mf_elss": "Tax-saver funds (ELSS)", "mf_index": "Index funds",
+    "mf_hybrid": "Hybrid funds", "mf_debt": "Debt funds", "mf_liquid": "Liquid funds", "mf_fof": "Fund of funds",
+    "mf_other": "Other funds",
+}
+_DEBT = re.compile(r"LIQUID|GILT|BOND|SDL|TBILL|T-BILL|MONEY ?MARKET|OVERNIGHT|CPSE ?BOND|BHARAT ?BOND|EBBETF|LIQUIDBEES", re.I)
+
+
+def asset_of_share(symbol: str, name: str = "") -> str:
+    """What a listed holding is, from its symbol and Kite's name for it
+    (Kite gives no asset class): a sovereign gold bond, a gold, silver or
+    debt ETF, an equity ETF, a REIT or InvIT, or a stock."""
+    s, n = (symbol or "").upper(), (name or "").upper()
+    both = f"{s} {n}"
+    if s.startswith("SGB"):
+        return "gold"
+    if "REIT" in both or "INVIT" in both:
+        return "reit"
+    etf = "ETF" in both or s.endswith("BEES") or "BEES" in n or s.endswith("IETF")
+    if "GOLD" in both and etf:          # a company with GOLD in its name is a stock
+        return "gold"
+    if "SILVER" in both and etf:
+        return "silver"
+    if etf:
+        return "debt" if _DEBT.search(both) else "etf"
+    return "stock"
+
+
+def asset_of_fund(scheme_type: Optional[str], name: str = "") -> str:
+    """A fund's kind, from Kite's scheme type, else its name."""
+    t, n = (scheme_type or "").lower(), (name or "").upper()
+    if "elss" in t or "ELSS" in n or "TAX SAVER" in n:
+        return "mf_elss"
+    if "index" in t or " INDEX" in n or "NIFTY" in n and "INDEX" in n:
+        return "mf_index"
+    if "liquid" in t or "overnight" in t or "LIQUID" in n or "OVERNIGHT" in n:
+        return "mf_liquid"
+    if "fof" in t or "fund of fund" in t or "FUND OF FUND" in n or " FOF" in n:
+        return "mf_fof"
+    if "hybrid" in t or "balanced" in t or "HYBRID" in n or "BALANCED" in n:
+        return "mf_hybrid"
+    if "debt" in t or "income" in t or "gilt" in t:
+        return "mf_debt"
+    if "equity" in t or "growth" in t:
+        return "mf_equity"
+    return "mf_other"
+
+
+# ── The holdings ─────────────────────────────────────────────────────────
+
+def equity_row(h: dict, name: str = "") -> dict:
     """One share holding. The quantity is what's settled plus what's
     bought and not yet delivered (T1), as Kite shows it."""
     qty = _f(h.get("quantity")) + _f(h.get("t1_quantity"))
     avg, ltp, prev = _f(h.get("average_price")), _f(h.get("last_price")), _f(h.get("close_price"))
     invested, value = qty * avg, qty * ltp
     day = (ltp - prev) * qty if prev else None
+    symbol = h.get("tradingsymbol")
     return {
-        "symbol": h.get("tradingsymbol"), "exchange": h.get("exchange"), "isin": h.get("isin"),
+        "symbol": symbol, "name": name or None, "exchange": h.get("exchange"), "isin": h.get("isin"),
+        "token": h.get("instrument_token"), "asset": asset_of_share(symbol, name),
         "qty": qty, "t1_qty": _f(h.get("t1_quantity")), "pledged_qty": _f(h.get("collateral_quantity")),
+        "discrepancy": bool(h.get("discrepancy")),
         "avg": round(avg, 4), "ltp": round(ltp, 4), "prev_close": round(prev, 4) if prev else None,
         "invested": round(invested, 2), "value": round(value, 2), "pnl": round(value - invested, 2),
         "pnl_pct": round((value - invested) / invested * 100, 2) if invested else None,
@@ -39,14 +145,24 @@ def equity_row(h: dict) -> dict:
     }
 
 
-def mf_row(h: dict) -> dict:
-    """One mutual fund holding, at its last published NAV."""
+def mf_row(h: dict, meta: Optional[dict] = None) -> dict:
+    """One mutual fund holding, at its last published NAV, with what Kite's
+    fund list says of it (its AMC, scheme type, Direct or Regular plan,
+    Growth or IDCW option)."""
+    meta = meta or {}
     units, avg, nav = _f(h.get("quantity")), _f(h.get("average_price")), _f(h.get("last_price"))
     invested, value = units * avg, units * nav
     when = h.get("last_price_date")
+    fund = h.get("fund") or meta.get("name")
+    plan = (meta.get("plan") or "").lower() or ("regular" if "REGULAR" in (fund or "").upper()
+                                                else "direct" if "DIRECT" in (fund or "").upper() else None)
+    option = (meta.get("dividend_type") or "").lower() or None
     return {
-        "fund": h.get("fund"), "folio": h.get("folio"), "isin": h.get("tradingsymbol"),
-        "units": units, "avg": round(avg, 4), "nav": round(nav, 4),
+        "fund": fund, "folio": h.get("folio"), "isin": h.get("tradingsymbol"),
+        "amc": meta.get("amc"), "scheme_type": meta.get("scheme_type"), "plan": plan, "option": option,
+        "asset": asset_of_fund(meta.get("scheme_type"), fund or ""),
+        "units": units, "pledged_units": _f(h.get("pledged_quantity")),
+        "avg": round(avg, 4), "nav": round(nav, 4),
         "nav_date": when.isoformat() if isinstance(when, (date, datetime)) else when,
         "invested": round(invested, 2), "value": round(value, 2), "pnl": round(value - invested, 2),
         "pnl_pct": round((value - invested) / invested * 100, 2) if invested else None,
@@ -64,38 +180,439 @@ def totals(rows: list[dict], day: bool = False) -> dict:
         before = value - change
         out["day_change"] = round(change, 2) if known else None
         out["day_change_pct"] = round(change / before * 100, 2) if known and before else None
+        out["advancing"] = sum(1 for r in rows if (r.get("day_change") or 0) > 0)
+        out["declining"] = sum(1 for r in rows if (r.get("day_change") or 0) < 0)
     return out
 
 
-def build(equity: list[dict], mf: list[dict]) -> dict:
-    """Pure: Kite's two answers -> the holdings, largest first, with their
-    totals and the whole account's."""
-    eq = sorted((equity_row(h) for h in equity or []), key=lambda r: -r["value"])
-    funds = sorted((mf_row(h) for h in mf or []), key=lambda r: -r["value"])
-    t_eq, t_mf = totals(eq, day=True), totals(funds)
-    return {"equity": eq, "mf": funds, "totals": {"equity": t_eq, "mf": t_mf, "all": totals(eq + funds)}}
+MONTHLY = {"monthly": 1.0, "weekly": 52 / 12, "fortnightly": 26 / 12, "quarterly": 1 / 3, "daily": 21.0}
 
+
+def sip_row(s: dict) -> dict:
+    freq = (s.get("frequency") or "").lower()
+    amount = _f(s.get("instalment_amount"))
+    status = (s.get("status") or "").upper()
+    nxt = _day(s.get("next_instalment"))
+    return {
+        "id": s.get("sip_id"), "fund": s.get("fund"), "isin": s.get("tradingsymbol"), "status": status,
+        "frequency": freq or None, "amount": amount, "day": s.get("instalment_day"),
+        "monthly": round(amount * MONTHLY.get(freq, 0), 2) if status == "ACTIVE" else 0.0,
+        "completed": int(_f(s.get("completed_instalments"))), "pending": int(_f(s.get("pending_instalments"))) if s.get("pending_instalments") is not None else None,
+        "next": nxt.isoformat() if nxt else None, "created": _day(s.get("created")).isoformat() if _day(s.get("created")) else None,
+        "step_up": s.get("step_up") or None,
+    }
+
+
+def account_of(margins: Optional[dict]) -> Optional[dict]:
+    """The equity segment's money, from kite.margins(): what's free, the
+    cash in it, what pledged holdings add, what's in use."""
+    if not margins:
+        return None
+    eq = margins.get("equity") or margins
+    av, ut = eq.get("available") or {}, eq.get("utilised") or {}
+    return {
+        "net": _r(_f(eq.get("net"))), "cash": _r(_f(av.get("live_balance") or av.get("cash"))),
+        "opening": _r(_f(av.get("opening_balance"))), "collateral": _r(_f(av.get("collateral"))),
+        "used": _r(_f(ut.get("debits"))), "payout": _r(_f(ut.get("payout"))),
+        "commodity_net": _r(_f((margins.get("commodity") or {}).get("net"))) if margins.get("commodity") else None,
+    }
+
+
+def allocation(eq: list[dict], funds: list[dict]) -> list[dict]:
+    """What it's in, by kind, largest first, as a share of everything."""
+    total = sum(r["value"] for r in eq + funds) or 0
+    by: dict[str, dict] = {}
+    for r in eq + funds:
+        a = by.setdefault(r["asset"], {"key": r["asset"], "label": ASSETS.get(r["asset"], r["asset"]), "value": 0.0, "count": 0})
+        a["value"] += r["value"]
+        a["count"] += 1
+    out = sorted(by.values(), key=lambda a: -a["value"])
+    for a in out:
+        a["value"] = round(a["value"], 2)
+        a["weight"] = round(a["value"] / total * 100, 2) if total else None
+    return out
+
+
+def concentration(rows: list[dict]) -> dict:
+    """How much rides on a few: the largest holding's share, the top five's,
+    and the effective number of equal holdings it amounts to (1 / sum of
+    squared weights)."""
+    total = sum(r["value"] for r in rows)
+    if not total:
+        return {"count": len(rows), "top": None, "top5": None, "effective": None}
+    ws = sorted(((r["value"] / total, r) for r in rows), key=lambda x: -x[0])
+    top = ws[0][1]
+    return {
+        "count": len(rows), "top": {"name": top.get("symbol") or top.get("fund"), "weight": round(ws[0][0] * 100, 2)},
+        "top5": round(sum(w for w, _ in ws[:5]) * 100, 2),
+        "effective": round(1 / sum(w * w for w, _ in ws), 1),
+    }
+
+
+def build(equity: list[dict], mf: list[dict], *, names: Optional[dict] = None, mf_meta: Optional[dict] = None,
+          sips: Optional[list] = None, margins: Optional[dict] = None) -> dict:
+    """Pure: Kite's answers -> the holdings, largest first, with their
+    weights and totals, how it's spread, the SIPs, the account's funds and
+    what needs a look."""
+    names, mf_meta = names or {}, mf_meta or {}
+    eq = sorted((equity_row(h, names.get(h.get("instrument_token")) or names.get(h.get("tradingsymbol")) or "")
+                 for h in equity or []), key=lambda r: -r["value"])
+    funds = sorted((mf_row(h, mf_meta.get(h.get("tradingsymbol"))) for h in mf or []), key=lambda r: -r["value"])
+    total = sum(r["value"] for r in eq + funds)
+    for r in eq + funds:
+        r["weight"] = round(r["value"] / total * 100, 2) if total else None
+    sip_rows = sorted((sip_row(s) for s in sips or []), key=lambda s: (s["status"] != "ACTIVE", -s["amount"]))
+    t_eq, t_mf = totals(eq, day=True), totals(funds)
+    out = {
+        "equity": eq, "mf": funds, "sips": sip_rows,
+        "sip_monthly": round(sum(s["monthly"] for s in sip_rows), 2),
+        "account": account_of(margins),
+        "totals": {"equity": t_eq, "mf": t_mf, "all": totals(eq + funds)},
+        "allocation": allocation(eq, funds), "concentration": concentration(eq + funds),
+    }
+    out["attention"] = attention(out)
+    return out
+
+
+# ── A year of prices ─────────────────────────────────────────────────────
+
+def _closes(candles: list[dict]) -> list[tuple[date, float, float, float]]:
+    """[(day, close, high, low)], oldest first, one a day."""
+    by = {}
+    for c in candles or []:
+        d = _day(c.get("date"))
+        if d is not None and c.get("close") is not None:
+            by[d] = (d, float(c["close"]), float(c.get("high") or c["close"]), float(c.get("low") or c["close"]))
+    return [by[d] for d in sorted(by)]
+
+
+def _at(series: list[tuple], d: date) -> Optional[float]:
+    """The last close on or before `d`."""
+    best = None
+    for row in series:
+        if row[0] > d:
+            break
+        best = row[1]
+    return best
+
+
+def _returns(series: list[tuple]) -> dict[date, float]:
+    """{day: log return from the close before}."""
+    out = {}
+    for a, b in zip(series, series[1:]):
+        if a[1] > 0 and b[1] > 0:
+            out[b[0]] = math.log(b[1] / a[1])
+    return out
+
+
+def _sd(xs: list[float]) -> Optional[float]:
+    if len(xs) < 20:
+        return None
+    m = sum(xs) / len(xs)
+    return math.sqrt(sum((x - m) ** 2 for x in xs) / (len(xs) - 1))
+
+
+def _beta(r: dict, m: dict) -> Optional[float]:
+    days = [d for d in r if d in m]
+    if len(days) < 40:
+        return None
+    a, b = [r[d] for d in days], [m[d] for d in days]
+    ma, mb = sum(a) / len(a), sum(b) / len(b)
+    var = sum((y - mb) ** 2 for y in b)
+    return sum((x - ma) * (y - mb) for x, y in zip(a, b)) / var if var else None
+
+
+def _spark(series: list[tuple], last: Optional[float], today: Optional[date] = None, n: int = 60) -> tuple[list[float], list[str]]:
+    """The year in at most n points (and the price now), with their days."""
+    pts = [(d, c) for d, c, _, _ in series]
+    if last and pts:
+        # the price now: a day of its own, or in place of today's candle
+        pts = pts + [(today, last)] if today and pts[-1][0] < today else pts[:-1] + [(pts[-1][0], last)]
+    if len(pts) > n:
+        step = (len(pts) - 1) / (n - 1)
+        pts = [pts[round(i * step)] for i in range(n)]
+    return [round(c, 2) for _, c in pts], [d.isoformat() for d, _ in pts]
+
+
+def share_stats(candles: list[dict], ltp: float, today: date, nifty: Optional[list[tuple]] = None) -> dict:
+    """One share over the year: its return over each period (to its price
+    now), its 52-week high and low and where it sits between them, how far
+    it is off the high, its volatility (annualised, from daily moves), its
+    beta against Nifty and a small line of the year."""
+    s = [x for x in _closes(candles) if x[0] >= today - timedelta(days=YEAR_DAYS)]
+    if not s:
+        return {"ret": {}, "spark": [], "days": 0}
+    now = ltp or s[-1][1]
+    first_day = s[0][0]
+    ret = {}
+    for k, days in PERIODS:
+        start = today - timedelta(days=days)
+        base = _at(s, start) if first_day <= start else None
+        ret[k] = _r((now / base - 1) * 100) if base else None
+    hi = max([h for _, _, h, _ in s] + [now])
+    lo = min([low for _, _, _, low in s] + [now])
+    r = _returns(s)
+    sd = _sd(list(r.values()))
+    beta = _beta(r, _returns(nifty)) if nifty else None
+    spark, spark_days = _spark(s, now, today)
+    return {
+        "ret": ret, "hi52": _r(hi), "lo52": _r(lo),
+        "range_pos": _r((now - lo) / (hi - lo) * 100, 1) if hi > lo else None,
+        "off_high": _r((now / hi - 1) * 100) if hi else None,
+        "vol": _r(sd * math.sqrt(252) * 100, 1) if sd is not None else None,
+        "beta": _r(beta), "spark": spark, "spark_days": spark_days, "days": len(s), "since": first_day.isoformat(),
+    }
+
+
+def _drawdown(values: list[float], days: list[date]) -> dict:
+    peak, peak_i, worst, at = -math.inf, 0, 0.0, (0, 0)
+    for i, v in enumerate(values):
+        if v > peak:
+            peak, peak_i = v, i
+        dd = v / peak - 1 if peak > 0 else 0
+        if dd < worst:
+            worst, at = dd, (peak_i, i)
+    return {"pct": _r(worst * 100), "from": days[at[0]].isoformat() if values else None,
+            "to": days[at[1]].isoformat() if values else None}
+
+
+def portfolio_curve(eq: list[dict], candles: dict, nifty: list[dict], today: date) -> Optional[dict]:
+    """Today's shares at each day's close over the year, against NIFTY 50,
+    both from 100. Only shares with prices for the whole year are in it
+    (a newer listing would jump the line); the others are named."""
+    n = [x for x in _closes(nifty) if x[0] >= today - timedelta(days=YEAR_DAYS)]
+    if len(n) < 20:
+        return None
+    days = [d for d, *_ in n]
+    covered, left_out = [], []
+    for r in eq:
+        s = _closes(candles.get(r.get("token")) or [])
+        if s and s[0][0] <= days[0] + timedelta(days=7):
+            covered.append((r, s))
+        else:
+            left_out.append(r["symbol"])
+    if not covered:
+        return None
+    values = []
+    for d in days:
+        values.append(sum(r["qty"] * (_at(s, d) or s[0][1]) for r, s in covered))
+    p0, n0 = values[0], n[0][1]
+    port = [v / p0 * 100 for v in values]
+    nif = [c / n0 * 100 for _, c, _, _ in n]
+    periods = []
+    for k, dd in PERIODS:
+        start = today - timedelta(days=dd)
+        i = next((j for j in range(len(days) - 1, -1, -1) if days[j] <= start), None)
+        if i is None:
+            continue
+        periods.append({"k": k, "from": days[i].isoformat(),
+                        "portfolio": _r((values[-1] / values[i] - 1) * 100), "nifty": _r((n[-1][1] / n[i][1] - 1) * 100)})
+    pr = {days[i]: math.log(values[i] / values[i - 1]) for i in range(1, len(values)) if values[i - 1] > 0}
+    nr = _returns(n)
+    sd = _sd(list(pr.values()))
+    return {
+        "days": [d.isoformat() for d in days], "portfolio": [round(v, 2) for v in port], "nifty": [round(v, 2) for v in nif],
+        "value": [round(v, 2) for v in values], "periods": periods,
+        "vol": _r(sd * math.sqrt(252) * 100, 1) if sd is not None else None,
+        "beta": _r(_beta(pr, nr)), "drawdown": _drawdown(values, days), "nifty_drawdown": _drawdown([c for _, c, _, _ in n], days),
+        "covered": len(covered), "left_out": left_out,
+        "covered_value": round(sum(r["value"] for r, _ in covered), 2),
+    }
+
+
+def insights(h: dict, candles: dict, nifty_candles: list[dict], today: date) -> dict:
+    """Pure: the holdings and a year of prices -> each share's year, the
+    shares together against Nifty, and what needs a look with both."""
+    n = [x for x in _closes(nifty_candles) if x[0] >= today - timedelta(days=YEAR_DAYS)]
+    shares = {r["symbol"]: share_stats(candles.get(r.get("token")) or [], r["ltp"], today, n) for r in h["equity"]}
+    out = {"shares": shares, "curve": portfolio_curve(h["equity"], candles, nifty_candles, today),
+           "nifty": share_stats(nifty_candles, n[-1][1] if n else 0, today) if n else None}
+    out["attention"] = attention(h, out)
+    return out
+
+
+# ── What needs a look ────────────────────────────────────────────────────
+
+def _names(rows, key="symbol", n=6):
+    names = [r[key] for r in rows]
+    return names[:n] + ([f"{len(names) - n} more"] if len(names) > n else [])
+
+
+def attention(h: dict, ins: Optional[dict] = None) -> list[dict]:
+    """Things worth a look, each with why and which holdings: what costs
+    more than it needs to, rides on one name, sits in a deep loss or near
+    its yearly low, lags the market, isn't delivered or is pledged, cash
+    left idle. tone: warn (act on it, perhaps) or info (know it)."""
+    eq, funds = h["equity"], h["mf"]
+    total = h["totals"]["all"]["value"] or 0
+    out = []
+
+    def add(key, tone, title, detail, items=None):
+        out.append({"key": key, "tone": tone, "title": title, "detail": detail, "items": items or []})
+
+    regular = [f for f in funds if f.get("plan") == "regular"]
+    if regular:
+        v = sum(f["value"] for f in regular)
+        add("regular_plans", "warn", f"{len(regular)} fund{'s are' if len(regular) > 1 else ' is a'} Regular plan{'s' if len(regular) > 1 else ''}, {_inr(v)}",
+            "A Regular plan pays a distributor's commission out of the fund every year; the Direct plan of the same fund "
+            "doesn't, so it returns a little more. Moving is a sale and a new purchase: check exit loads and tax first.",
+            _names(regular, "fund"))
+    idcw = [f for f in funds if f.get("option") and f["option"] not in ("growth",)]
+    if idcw:
+        add("idcw", "info", f"{len(idcw)} fund{'s pay' if len(idcw) > 1 else ' pays'} out (IDCW) rather than grow",
+            "IDCW payouts are taxed at your slab as they're paid; a Growth option keeps the gains invested until you sell.",
+            _names(idcw, "fund"))
+    # one company: a fund or an ETF already spreads over many
+    for r in [r for r in eq if r["asset"] == "stock" and (r.get("weight") or 0) > 20]:
+        add(f"heavy:{r['symbol']}", "warn", f"{r['symbol']} is {r['weight']:.0f}% of everything",
+            "One company carries a fifth or more of the whole: its bad day is the portfolio's bad day.", [r["symbol"]])
+    deep = sorted([r for r in eq if (r.get("pnl_pct") or 0) <= -25], key=lambda r: r["pnl_pct"])
+    if deep:
+        add("deep_loss", "warn", f"{len(deep)} share{'s are' if len(deep) > 1 else ' is'} down 25% or more from cost",
+            "Worth asking of each whether you'd buy it today at this price. A loss can also offset gains for tax.",
+            [f"{r['symbol']} {r['pnl_pct']:+.0f}%" for r in deep[:6]])
+    small = [r for r in eq + funds if r.get("weight") is not None and r["weight"] < 0.5]
+    if len(small) >= 3:
+        add("small", "info", f"{len(small)} holdings are under 0.5% each, {sum(r['weight'] for r in small):.1f}% together",
+            "Too small to move the whole either way: keep them on purpose, or fold them into ones that matter.",
+            _names([{"n": r.get("symbol") or r.get("fund")} for r in small], "n"))
+    t1 = [r for r in eq if r.get("t1_qty")]
+    if t1:
+        add("t1", "info", f"{len(t1)} share{'s' if len(t1) > 1 else ''} bought, not yet delivered (T1)",
+            "Delivered to your demat on the next settlement day; until then it can't be pledged.", _names(t1))
+    pledged = [r for r in eq if r.get("pledged_qty")]
+    if pledged:
+        add("pledged", "info", f"{len(pledged)} share{'s are' if len(pledged) > 1 else ' is'} pledged for margin",
+            "Pledged shares back margin for trading; they're still yours and still earn, but can't be sold until unpledged.", _names(pledged))
+    if any(r.get("discrepancy") for r in eq):
+        add("discrepancy", "warn", "Kite flags a discrepancy in a holding",
+            "Kite's holdings say a quantity doesn't match the depository's. Check it in Console.",
+            [r["symbol"] for r in eq if r.get("discrepancy")])
+    acc = h.get("account")
+    if acc and acc.get("cash") and total and acc["cash"] > 0.05 * total and acc["cash"] > 10000:
+        add("idle_cash", "info", f"{_inr(acc['cash'])} cash in the account",
+            f"{acc['cash'] / total * 100:.0f}% of what you hold sits as cash in the trading account, earning nothing there.")
+    paused = [s for s in h.get("sips") or [] if s["status"] == "PAUSED"]
+    if paused:
+        add("sips_paused", "info", f"{len(paused)} SIP{'s are' if len(paused) > 1 else ' is'} paused", "", _names(paused, "fund"))
+
+    if ins:
+        stats = ins.get("shares") or {}
+        nifty_1y = ((ins.get("nifty") or {}).get("ret") or {}).get("1Y")
+        low = [r for r in eq if (stats.get(r["symbol"]) or {}).get("range_pos") is not None and stats[r["symbol"]]["range_pos"] <= 10]
+        if low:
+            add("near_low", "warn", f"{len(low)} share{'s are' if len(low) > 1 else ' is'} near the 52-week low",
+                "In the bottom tenth of the year's range. Is it the business, or the market?",
+                [f"{r['symbol']} {stats[r['symbol']]['off_high']:+.0f}% off its high" for r in low[:6]])
+        # range_pos is None when the year never moved (a liquid ETF): no high to be near
+        high = [r for r in eq if (stats.get(r["symbol"]) or {}).get("range_pos") is not None and stats[r["symbol"]]["off_high"] >= -2]
+        if high:
+            add("near_high", "good", f"{len(high)} share{'s are' if len(high) > 1 else ' is'} at or near the 52-week high",
+                "Within 2% of the year's high.", _names(high))
+        if nifty_1y is not None:
+            lag = sorted([r for r in eq if ((stats.get(r["symbol"]) or {}).get("ret") or {}).get("1Y") is not None
+                          and stats[r["symbol"]]["ret"]["1Y"] < nifty_1y - 20], key=lambda r: stats[r["symbol"]]["ret"]["1Y"])
+            if lag:
+                add("lagging", "warn", f"{len(lag)} share{'s' if len(lag) > 1 else ''} trail Nifty by 20 points or more over a year",
+                    f"Nifty is {nifty_1y:+.1f}% in a year.", [f"{r['symbol']} {stats[r['symbol']]['ret']['1Y']:+.0f}%" for r in lag[:6]])
+        wild = [r for r in eq if ((stats.get(r["symbol"]) or {}).get("vol") or 0) >= 45 and (r.get("weight") or 0) >= 2]
+        if wild:
+            add("volatile", "info", f"{len(wild)} sizeable holding{'s swing' if len(wild) > 1 else ' swings'} hard",
+                "Annual volatility of 45% or more, at 2% or more of the whole: expect moves of a third either way in a year.",
+                [f"{r['symbol']} {stats[r['symbol']]['vol']:.0f}%" for r in wild[:6]])
+    order = {"warn": 0, "good": 1, "info": 2}
+    return sorted(out, key=lambda a: order[a["tone"]])
+
+
+# ── Reading it from Kite ─────────────────────────────────────────────────
 
 class Lens:
-    """Reads the holdings from Kite through the app's own Kite calls (the
-    process-wide throttle), and keeps them CACHE_S seconds."""
+    """Reads the account from Kite. `call(name, *args)` makes one Kite
+    call (the app's: kite.<name>(*args) through the throttle)."""
 
-    def __init__(self, dispatcher, call: Optional[Callable[[str], Any]] = None):
+    def __init__(self, dispatcher, call: Optional[Callable[..., Any]] = None, today: Optional[Callable[[], date]] = None):
         self.dispatcher = dispatcher
         self.call = call or self._kite
+        self.today = today or (lambda: datetime.now().astimezone().date())
         self._cache: Optional[tuple[float, dict]] = None
+        self._daily: dict[str, tuple[date, Any]] = {}
+        self.hist: dict = {"day": None, "candles": {}, "task": None, "error": None, "total": 0}
 
-    async def _kite(self, what: str):
+    async def _kite(self, what: str, *args):
         from .options import OptionsResolver
         r = OptionsResolver(self.dispatcher)
         kite = r._kite()
-        return await r._kite_call(getattr(kite, what))
+        return await r._kite_call(getattr(kite, what), *args)
+
+    async def _once_a_day(self, key: str, what: str, *args):
+        got = self._daily.get(key)
+        if got and got[0] == self.today():
+            return got[1]
+        val = await self.call(what, *args)
+        self._daily[key] = (self.today(), val)
+        return val
+
+    async def _optional(self, missing: list, label: str, fn):
+        try:
+            return await fn()
+        except Exception as e:
+            missing.append(f"{label}: {type(e).__name__}: {str(e)[:120]}")
+            return None
 
     async def holdings(self, fresh: bool = False) -> dict:
         now = time.monotonic()
         if self._cache and not fresh and now - self._cache[0] < CACHE_S:
             return self._cache[1]
-        out = build(await self.call("holdings"), await self.call("mf_holdings"))
+        equity = await self.call("holdings")
+        mf = await self.call("mf_holdings")
+        missing: list[str] = []
+        names: dict = {}
+        for ex in sorted({h.get("exchange") or "NSE" for h in equity or []}):
+            rows = await self._optional(missing, f"{ex} names", lambda ex=ex: self._once_a_day(f"instruments:{ex}", "instruments", ex)) or []
+            for row in rows:
+                if row.get("name"):
+                    names[row.get("instrument_token")] = row["name"]
+        meta = {}
+        if mf:
+            rows = await self._optional(missing, "fund details", lambda: self._once_a_day("mf_instruments", "mf_instruments")) or []
+            meta = {r.get("tradingsymbol"): r for r in rows}
+        sips = await self._optional(missing, "SIPs", lambda: self.call("mf_sips"))
+        margins = await self._optional(missing, "account funds", lambda: self.call("margins"))
+        out = build(equity, mf, names=names, mf_meta=meta, sips=sips, margins=margins)
+        out["missing"] = missing
         out["as_of"] = datetime.now().astimezone().isoformat()
         self._cache = (now, out)
         return out
+
+    async def history(self) -> dict:
+        """A year of prices for every share held and NIFTY 50: started in
+        the background on the first ask of the day (and for a share bought
+        since), answered with its progress until it's all in."""
+        h = await self.holdings()
+        today = self.today()
+        if self.hist["day"] != today:
+            self.hist = {"day": today, "candles": {}, "task": None, "error": None, "total": 0}
+        want = [NIFTY] + [r["token"] for r in h["equity"] if r.get("token")]
+        todo = [t for t in want if t not in self.hist["candles"]]
+        task = self.hist["task"]
+        if todo and (task is None or task.done()):
+            self.hist["total"] = len(want)
+            self.hist["error"] = None
+            self.hist["task"] = asyncio.create_task(self._fetch(todo, today), name="lens-history")
+        done = sum(1 for t in want if t in self.hist["candles"])
+        base = {"day": today.isoformat(), "done": done, "total": len(want), "error": self.hist["error"]}
+        if done < len(want):
+            return {**base, "state": "error" if self.hist["error"] and (self.hist["task"] is None or self.hist["task"].done()) else "loading"}
+        return {**base, "state": "ready", "insights": insights(h, self.hist["candles"], self.hist["candles"][NIFTY], today)}
+
+    async def _fetch(self, tokens: list, today: date) -> None:
+        start = today - timedelta(days=YEAR_DAYS + 10)
+        for t in tokens:
+            try:
+                self.hist["candles"][t] = await self.call("historical_data", t, start, today, "day") or []
+            except Exception as e:
+                # one share without prices doesn't hold the rest up: it's
+                # left out of the year, and named
+                self.hist["candles"][t] = []
+                if t == NIFTY:
+                    self.hist["error"] = f"NIFTY 50 prices: {type(e).__name__}: {str(e)[:120]}"

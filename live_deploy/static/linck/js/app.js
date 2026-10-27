@@ -29,7 +29,9 @@ const PRODUCTS = {
   trade: { name: 'Trade', home: 'desk', what: 'Deployments, strategies, the day check' },
   lens: { name: 'Lens', home: 'lens', what: 'Your holdings: shares and mutual funds' },
 };
-const LENS_NAV = [['lens', 'Holdings', '']];
+const LENS_NAV = [['lens', 'Overview', ''], ['lens/shares', 'Shares', ''], ['lens/funds', 'Funds', ''], ['lens/account', 'Account', '']];
+// which LinckLens page is open: its tab, as a nav key
+const lensCur = () => { const t = parse().params.tab; return t && t !== 'overview' ? `lens/${t}` : 'lens'; };
 const product = () => (app.route && app.route.product) || 'trade';
 const IN_MORE = ['repair', 'reports', 'review', 'strategies', 'journal', 'tools', 'account'];
 // Open health issues (app/ops_health.py): a count on the Repair link, red
@@ -92,7 +94,7 @@ function basisControl() {
     <button type="button" class="basis-chip" data-act="basisNext" aria-label="P&L basis: ${b.long || b.l}. Tap to switch." data-tip="${b.long || b.l}\n${b.tip}\nTap to switch">${b.stamp}<i aria-hidden="true">⇄</i></button>`;
 }
 function renderHeader() {
-  const cur = app.route ? app.route.nav : 'desk';
+  const cur = product() === 'lens' ? lensCur() : app.route ? app.route.nav : 'desk';
   const n = alertCount();
   const initials = app.me ? app.me.username.slice(0, 2) : '··';
   const lens = product() === 'lens';
@@ -132,8 +134,8 @@ function renderBnav() {
   const cur = app.route ? app.route.nav : 'desk';
   const n = alertCount();
   if (product() === 'lens') {
-    mount($('#bnav'), html`${LENS_NAV.map(([k, l]) => html`<a href="${href(k)}" class="${k === cur ? 'on' : ''}"><span class="n"></span>${l}</a>`)}
-      <a href="${href('desk')}" data-product="trade"><span class="n"></span>LinckTrade</a>
+    const lc = lensCur();
+    mount($('#bnav'), html`${LENS_NAV.map(([k, l]) => html`<a href="${href(k)}" class="${k === lc ? 'on' : ''}"><span class="n"></span>${l}</a>`)}
       <button type="button" data-act="more"><span class="n"></span>More</button>`);
     return;
   }
