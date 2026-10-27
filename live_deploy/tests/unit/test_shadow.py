@@ -86,6 +86,30 @@ def test_fills_worse_than_the_paper_price():
     assert r["est_price"] == pytest.approx(99.7)
 
 
+def test_the_book_check_keeps_what_it_read_so_the_figure_can_be_redone():
+    """A buy at the last traded price meets the sellers (the asks): the
+    check keeps each level it took from, so ₹55 is (216.85 − 216) × 65."""
+    at = datetime(2026, 10, 27, 4, 33, 12, 400000, tzinfo=timezone.utc)
+    r = assess("buy", 65, 216.0, depth=book(bids=[(215.9, 40), (215.85, 200)], asks=[(216.85, 65), (216.9, 100), (218.5, 300)]),
+               lot=65, tick=0.05, freeze=1800, band=(100.0, 400.0), book_from={"source": "tick", "at": at, "fill_at": at + timedelta(seconds=0.3)})
+    assert r["verdict"] == "worse" and r["shortfall"] == pytest.approx(55.25) and r["est_price"] == pytest.approx(216.85)
+    p = next(c for c in r["checks"] if c["rule"] == "book")["proof"]
+    assert p["side"] == "asks" and p["other_side"] == "bids" and p["other_best"] == 215.9
+    assert [(lv["price"], lv["qty"], lv["take"]) for lv in p["levels"]] == [(216.85, 65, 65), (216.9, 100, 0), (218.5, 300, 0)]
+    assert p["source"] == "tick" and p["at"] == at.isoformat() and p["after_fill_s"] == -0.3
+    # redone from the proof alone
+    taken = [(lv["price"], lv["take"]) for lv in p["levels"] if lv["take"]]
+    avg = sum(px * q for px, q in taken) / sum(q for _, q in taken)
+    assert (avg - 216.0) * 65 == pytest.approx(r["shortfall"])
+
+
+def test_the_proof_stops_at_the_limit_like_the_walk():
+    r = assess("sell", 150, 100.0, depth=book(bids=[(99.8, 75), (99.6, 50), (98.0, 900)]), **FULL)   # limit 99.5
+    p = next(c for c in r["checks"] if c["rule"] == "book")["proof"]
+    assert [lv["take"] for lv in p["levels"]] == [75, 50, 0], "98.00 is past the limit: nothing taken there"
+    assert r["filled_qty"] == 125 and p["source"] is None and "at" not in p
+
+
 def test_a_thin_book_fills_part_and_the_rest_rests():
     r = assess("buy", 300, 100.0, depth=book(asks=[(100.2, 75), (103.0, 900)]), **FULL)
     assert r["verdict"] == "partial" and r["filled_qty"] == 75 and r["limit_price"] == 100.5
@@ -263,8 +287,14 @@ def test_margin_against_the_deployment_and_the_account():
     assert ok["required"] == 300000 and ok["account_free"] == 2000000
     over = shadow.check_margin(600000, 500000)
     assert over["status"] == "reject" and "the deployment has ₹500,000" in over["detail"]
+    # fits the deployment; only every deployment together is over the
+    # account: a warning about the account, not this order refused
     acc = shadow.check_margin(300000, 500000, 2100000, 2000000)
-    assert acc["status"] == "reject" and "the account has ₹2,000,000 free" in acc["detail"]
+    assert acc["status"] == "warn"
+    assert acc["detail"].startswith("Fits this deployment: ₹300,000 of its ₹500,000.")
+    assert "would need ₹2,100,000; the Kite account has ₹2,000,000 free" in acc["detail"]
+    # over its own capital is still refused, whatever the account has
+    assert shadow.check_margin(600000, 500000, 600000, 9000000)["status"] == "reject"
 
 
 def test_a_short_before_its_hedge():

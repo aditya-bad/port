@@ -145,6 +145,32 @@ def walk(depth: Optional[dict], action: str, qty: float, limit: float) -> tuple[
     return got, (cost / got if got else None), best
 
 
+def book_proof(depth: Optional[dict], action: str, qty: float, limit: float, *, source: Optional[str] = None,
+               at: Optional[datetime] = None, fill_at: Optional[datetime] = None) -> dict:
+    """What `walk` read, kept with the check so the figure can be shown
+    and redone by hand: the side the order meets (a sell the bids, a buy
+    the asks) level by level with what it takes from each, the best of
+    the other side, and where the book came from and when."""
+    def levels(side):
+        return [{"price": float(lv["price"]), "qty": float(lv["quantity"]), **({"orders": int(lv["orders"])} if lv.get("orders") else {})}
+                for lv in ((depth or {}).get(side) or []) if (lv.get("price") or 0) > 0 and (lv.get("quantity") or 0) > 0]
+    side, other = ("bids", "asks") if action == "sell" else ("asks", "bids")
+    met = levels("buy" if action == "sell" else "sell")
+    left = qty
+    for lv in met:
+        ok = lv["price"] >= limit - 1e-9 if action == "sell" else lv["price"] <= limit + 1e-9
+        take = min(left, lv["qty"]) if ok and left > 0 else 0.0
+        lv["take"] = take
+        left -= take
+    opp = levels("sell" if action == "sell" else "buy")
+    out = {"side": side, "levels": met, "other_side": other, "other_best": opp[0]["price"] if opp else None, "source": source}
+    if at is not None:
+        out["at"] = at.isoformat()
+        if fill_at is not None:
+            out["after_fill_s"] = round((at - fill_at).total_seconds(), 2)
+    return out
+
+
 def _shortfall(action: str, paper: float, avg: float, qty: float) -> float:
     return ((avg - paper) if action == "buy" else (paper - avg)) * qty
 
@@ -161,9 +187,10 @@ def _verdict(action: str, paper: float, filled: float, qty: float, avg: Optional
 def assess(action: str, qty: float, paper: float, *, lot: Optional[int] = None, tick: Optional[float] = None,
            freeze: Optional[int] = None, freeze_source: Optional[str] = None,
            band: tuple[Optional[float], Optional[float]] = (None, None), depth: Optional[dict] = None,
-           buffer_pct: float = BUFFER_PCT) -> dict:
+           buffer_pct: float = BUFFER_PCT, book_from: Optional[dict] = None) -> dict:
     """What a LIMIT order for this fill would have met, at the moment it
-    was made."""
+    was made. `book_from` ({source, at, fill_at}) says where the book
+    came from; the book check keeps it with what it read (book_proof)."""
     tick = tick or DEFAULT_TICK
     checks = [check_lot(qty, lot)]
     limit = limit_for(action, paper, tick, buffer_pct)
@@ -173,21 +200,22 @@ def assess(action: str, qty: float, paper: float, *, lot: Optional[int] = None, 
     checks.append(bd)
     out = {"limit_price": limit, "est_price": None, "filled_qty": None, "shortfall": None, "orders": orders}
     filled, avg, best = walk(depth, action, qty, limit)
+    proof = {} if depth is None else {"proof": book_proof(depth, action, qty, limit, **(book_from or {}))}
     if depth is None:
         checks.append(_check("book", "unknown", "No order book at the fill."))
         verdict = "unknown"
     elif filled is None:
-        checks.append(_check("book", "unknown", "That side of the order book was empty."))
+        checks.append(_check("book", "unknown", "That side of the order book was empty.", **proof))
         verdict = "unknown"
     else:
         verdict, short = _verdict(action, paper, filled, qty, avg)
         out.update(est_price=_r(avg, 4), filled_qty=filled, shortfall=_r(short))
         if verdict in ("fill", "worse"):
-            checks.append(_check("book", "ok", f"Fills on the book at ₹{avg:,.2f} on average (limit ₹{limit:,.2f})."))
+            checks.append(_check("book", "ok", f"Fills on the book at ₹{avg:,.2f} on average (limit ₹{limit:,.2f}).", **proof))
         elif verdict == "partial":
-            checks.append(_check("book", "warn", f"Only {filled:g} of {qty:g} at or better than the limit ₹{limit:,.2f} on the book; the rest rests."))
+            checks.append(_check("book", "warn", f"Only {filled:g} of {qty:g} at or better than the limit ₹{limit:,.2f} on the book; the rest rests.", **proof))
         else:
-            checks.append(_check("book", "warn", f"Nothing on the book at or better than the limit ₹{limit:,.2f} (best ₹{best:,.2f}); it rests."))
+            checks.append(_check("book", "warn", f"Nothing on the book at or better than the limit ₹{limit:,.2f} (best ₹{best:,.2f}); it rests.", **proof))
     if any(c["status"] == "reject" for c in checks):
         verdict = "reject"
     out.update(verdict=verdict, checks=checks)
@@ -224,8 +252,11 @@ def follow(res: dict, action: str, qty: float, paper: float, prices: list[tuple[
 def check_margin(required: Optional[float], capital: float, acc_required: Optional[float] = None,
                  acc_free: Optional[float] = None) -> dict:
     """The margin Kite would block for the deployment's open legs after
-    the trade, against its capital; and every deployment's together
-    against the account's free margin."""
+    the trade, against its capital: over it, Kite refuses the order.
+    Every deployment's open legs together against the Kite account's
+    free funds is a warning, not this order's refusal: paper runs many
+    deployments the real account was never funded for at once, so a
+    shortfall there says nothing about whether this one fits."""
     if required is None:
         return _check("margin", "unknown", "No margin figure from Kite.")
     data = {"required": round(required, 2), "capital": round(capital, 2)}
@@ -234,7 +265,9 @@ def check_margin(required: Optional[float], capital: float, acc_required: Option
     if required > capital + 0.5:
         return _check("margin", "reject", f"Its open legs need {_inr(required)} of margin; the deployment has {_inr(capital)}.", **data)
     if acc_required is not None and acc_free is not None and acc_required > acc_free + 0.5:
-        return _check("margin", "reject", f"Every deployment's open legs together need {_inr(acc_required)}; the account has {_inr(acc_free)} free.", **data)
+        return _check("margin", "warn", f"Fits this deployment: {_inr(required)} of its {_inr(capital)}. Every deployment's "
+                      f"open legs together would need {_inr(acc_required)}; the Kite account has {_inr(acc_free)} free, "
+                      f"so all of them live on this account at once would be refused.", **data)
     acc = f" · all deployments {_inr(acc_required)} of {_inr(acc_free)} free" if acc_required is not None and acc_free is not None else ""
     return _check("margin", "ok", f"Needs {_inr(required)} of its {_inr(capital)}{acc}.", **data)
 
@@ -600,7 +633,7 @@ class ShadowService:
         token = int(fill["instrument_token"])
         cached = getattr(self.dispatcher, "last_depths", {}).get(token)
         fresh = cached is not None and datetime.now(timezone.utc) - cached[1] <= MAX_BOOK_AGE
-        fill = {**fill, "depth": cached[0] if fresh else None, "_t": loop.time()}
+        fill = {**fill, "depth": cached[0] if fresh else None, "book_at": cached[1] if fresh else None, "_t": loop.time()}
         self.handed += 1
         self._sent.append((fill["_t"], 1))    # every deployment's orders, for the rate (freeze splits added later)
         if token not in self._trails:
@@ -712,12 +745,18 @@ class ShadowService:
         except Exception as e:
             logger.info("Shadow: no quote for %s (%s)", symbol, e)
         quote = quote or {}
-        depth = fill.get("depth") or quote.get("depth")
+        fill_at = fill.get("executed_at") if isinstance(fill.get("executed_at"), datetime) else None
+        if fill.get("depth"):
+            # the tick's book, as it stood when the fill happened
+            depth, book_from = fill["depth"], {"source": "tick", "at": fill.get("book_at"), "fill_at": fill_at}
+        else:
+            # no fresh tick book: Kite's quote, a few seconds after the fill
+            depth, book_from = quote.get("depth"), {"source": "quote", "at": datetime.now(timezone.utc), "fill_at": fill_at}
         freeze, src = self.freeze.get(meta.get("name") or underlying_of(symbol))
         return assess(action, qty, paper, lot=meta.get("lot_size"), tick=meta.get("tick_size"),
                       freeze=freeze, freeze_source=src,
                       band=(quote.get("lower_circuit_limit"), quote.get("upper_circuit_limit")),
-                      depth=depth, buffer_pct=self.buffer_pct)
+                      depth=depth, buffer_pct=self.buffer_pct, book_from=book_from)
 
     async def _one(self, fill: dict) -> dict:
         try:

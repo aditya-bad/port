@@ -153,3 +153,42 @@ test('fills from before shadow mode are estimated from stored data, on request',
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+// "Would fill ₹55 worse": how? A chip opens its working: the book the
+// order met, level by level with what it takes from each, the sum, where
+// the book came from (the fill's own tick, 0.3 s before it), and every
+// rule it checked. The seeded "worse" fill met a two-level book.
+for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
+  test(`a verdict opens how it was worked out (${label})`, async () => {
+    const ctx = await context(b, { width, height: 900 });
+    const p = await ctx.newPage();
+    await p.goto(`${BASE}/linck/#/d/${ID}/now`);
+    const chip = p.locator('[data-shadow-panel] [data-shadow="worse"]');
+    await chip.waitFor();
+    const label = await chip.innerText();
+    const rupees = Number(label.match(/₹([\d,]+) worse/)[1].replace(/,/g, ''));
+    await chip.click();
+    const dlg = p.locator('.dialog');
+    await dlg.waitFor();
+    assert.match(await dlg.locator('h2').innerText(), /^(Sold|Bought) \d+ \S+: would fill ₹[\d,]+ worse$/);
+    const text = await dlg.innerText();
+    assert.match(text, /the last traded price at the fill/);
+    assert.match(text, /From the tick’s own order book at \d\d:\d\d:\d\d, 0\.3 s before the fill/);
+    assert.match(text, /The best (bid|ask) then: ₹[\d,.]+\./);
+    const rows = dlg.locator('.sh-book > div:not(.th)');
+    assert.equal(await rows.count(), 2, 'both levels of the side it meets');
+    assert.equal(await dlg.locator('.sh-book .took').count(), 2, 'it took from both');
+    assert.match(await rows.nth(0).innerText(), /₹[\d,.]+\s+10\s+10\s+₹[\d,.]+/, 'all 10 at the best level');
+    // the sum it shows is the chip's figure
+    const sum = await dlg.locator('.sh-sum').innerText();
+    const m = sum.match(/= ₹([\d,.]+) worse/);
+    assert.ok(m, sum);
+    assert.equal(Math.round(Number(m[1].replace(/,/g, ''))), rupees);
+    assert.match(await dlg.locator('.sh-rules').innerText(), /Order book[\s\S]*Leg by leg[\s\S]*Placed after 1 leg/);
+    assert.equal(await p.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'no sideways scroll');
+    await dlg.locator('[data-cancel]').click();
+    assert.equal(await p.locator('.dialog').count(), 0);
+    assert.deepEqual(ctx.errors, []);
+    await ctx.close();
+  });
+}

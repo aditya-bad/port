@@ -3,9 +3,10 @@
 // rule that was checked.
 
 import { html } from '../core/dom.js';
-import { inr, price, dStamp, plural, tone } from '../core/format.js';
+import { inr, price, dStamp, hhmmss, plural, tone } from '../core/format.js';
 import { pick } from '../core/basis.js';
 import { sect } from './components.js';
+import { openDialog } from './dialog.js';
 
 export const RULE = { lot: 'Lot size', freeze: 'Freeze limit', band: 'Price band', book: 'Order book', follow: 'Within 60 s',
   margin: 'Margin', legs: 'Leg by leg', rate: 'Order rate' };
@@ -41,9 +42,76 @@ export function verdictTip(s) {
   return [order.join(' · '), ...lines, s.estimated ? 'Estimated later from stored data.' : 'Checked as the fill happened.'].join('\n');
 }
 
+// Every chip opens how its verdict was worked out (proofDialog): the
+// checks drawn on the page are kept here by fill, for the click.
+const SEEN = new Map();
 export function shadowChip(s) {
   if (!s) return '';
-  return html`<span class="flag sh-chip ${CLS[s.verdict] || 'unk'}" data-shadow="${s.verdict}" data-tip="${verdictTip(s)}">${verdictLabel(s)}</span>`;
+  if (s.lot_id) SEEN.set(String(s.lot_id), s);
+  return html`<button type="button" class="flag sh-chip ${CLS[s.verdict] || 'unk'}" data-shadow="${s.verdict}" data-shadow-lot="${s.lot_id || ''}"
+    data-tip="${`${verdictTip(s)}\nClick for how it was worked out.`}">${verdictLabel(s)}</button>`;
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', e => {
+    const el = e.target.closest && e.target.closest('[data-shadow-lot]');
+    const s = el && SEEN.get(el.dataset.shadowLot);
+    if (!s) return;
+    e.preventDefault(); e.stopPropagation();
+    proofDialog(s);
+  });
+}
+
+const STATUS = { ok: '✓', warn: '!', reject: '✗', unknown: '?' };
+const q = n => Number(n).toLocaleString('en-IN');
+
+// Where the book came from, and how near the fill it was.
+function bookWhen(p, s) {
+  if (!p.source) return 'The order book read for this check.';
+  const off = p.after_fill_s;
+  const rel = off == null ? '' : Math.abs(off) < 0.05 ? ', at the fill' : off < 0 ? `, ${Math.abs(off).toFixed(1)} s before the fill` : `, ${off.toFixed(1)} s after the fill`;
+  return p.source === 'tick'
+    ? `From the tick’s own order book${p.at ? ` at ${hhmmss(p.at)}` : ''}${rel}: what the order would have met.`
+    : `From Kite’s quote${p.at ? ` at ${hhmmss(p.at)}` : ''}${rel}. No fresh book came with the ticks then, so this is a little after the fill.`;
+}
+
+// The verdict's working: the book level by level, the sum, the other rules.
+export function proofBody(s) {
+  const book = (s.checks || []).find(c => c.rule === 'book');
+  const p = book && book.proof;
+  const buy = s.action === 'buy', qty = Number(s.qty), paper = Number(s.paper_price);
+  const taken = p ? p.levels.filter(l => l.take > 0) : [];
+  const got = taken.reduce((a, l) => a + l.take, 0), cost = taken.reduce((a, l) => a + l.take * l.price, 0);
+  const avg = got ? cost / got : null;
+  const sum = avg == null ? '' : html`<div class="sh-sum">
+      <div><span>Average of what it takes</span><b>${q(Math.round(cost * 100) / 100)} ÷ ${q(got)} = ₹${price(avg)}</b></div>
+      <div><span>Against the paper fill</span><b>(${price(buy ? avg : paper)} − ${price(buy ? paper : avg)}) × ${q(got)} = ${inr((buy ? avg - paper : paper - avg) * got, { sign: false, dp: 2 })} ${(buy ? avg - paper : paper - avg) >= 0 ? 'worse' : 'better'}</b></div>
+      ${got < qty ? html`<div><span>Not filled at or inside the limit</span><b>${q(qty - got)} of ${q(qty)}: it rests at ₹${price(s.limit_price)}</b></div>` : ''}
+    </div>`;
+  return html`<div class="sh-proof">
+    <p class="small">Paper ${buy ? 'bought' : 'sold'} ${q(qty)} at <b class="mono">₹${price(paper)}</b>, the last traded price at the fill.
+      A live ${buy ? 'buy' : 'sell'} meets the ${buy ? 'sellers (the asks)' : 'buyers (the bids)'}: Linck would send a limit at
+      <b class="mono">₹${price(s.limit_price)}</b>, ${buy ? 'above' : 'below'} the price by the buffer, and take each level in turn while it’s at or inside it.</p>
+    ${p ? html`<p class="tiny mute">${bookWhen(p, s)}${p.other_best != null ? ` The best ${buy ? 'bid' : 'ask'} then: ₹${price(p.other_best)}.` : ''}</p>
+      <div class="sh-book" role="table">
+        <div class="th" role="row"><span>${buy ? 'Ask' : 'Bid'}</span><span>On offer</span><span>Taken</span><span>Cost</span></div>
+        ${p.levels.map(l => html`<div role="row" class="${l.take > 0 ? 'took' : ''} ${(buy ? l.price > s.limit_price : l.price < s.limit_price) ? 'past' : ''}">
+          <span class="mono">₹${price(l.price)}</span><span class="mono">${q(l.qty)}</span><span class="mono">${l.take ? q(l.take) : '—'}</span>
+          <span class="mono">${l.take ? `₹${q(Math.round(l.take * l.price * 100) / 100)}` : (buy ? l.price > s.limit_price : l.price < s.limit_price) ? 'past the limit' : ''}</span></div>`)}
+      </div>${sum}`
+      : html`<p class="small mute">This check was made before the order book was kept with it: only its result is stored${s.est_price != null ? ` (₹${price(s.est_price)} on average, limit ₹${price(s.limit_price)})` : ''}.</p>`}
+    <h4 class="small" style="margin:14px 0 6px">Every rule it checked</h4>
+    <ul class="sh-rules">${(s.checks || []).map(c => html`<li class="${c.status}"><i aria-hidden="true">${STATUS[c.status] || '·'}</i><b>${RULE[c.rule] || c.rule}</b><span>${c.detail}</span></li>`)}</ul>
+    <p class="tiny mute" style="margin:8px 0 0">${s.estimated ? 'Estimated later from stored data.' : `Checked as the fill happened${s.checked_at ? `, ${dStamp(s.checked_at)}` : ''}.`}</p>
+  </div>`;
+}
+
+export function proofDialog(s) {
+  openDialog({
+    kicker: 'SHADOW CHECK',
+    title: `${s.action === 'sell' ? 'Sold' : 'Bought'} ${Number(s.qty)} ${s.symbol}: ${verdictLabel(s).toLowerCase()}`,
+    cancelLabel: 'Close',
+    render: () => proofBody(s),
+  });
 }
 
 // "Ready for live?" from a deployment's shadow record (app/shadow.py card).

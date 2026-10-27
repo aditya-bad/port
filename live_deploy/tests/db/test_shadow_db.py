@@ -301,9 +301,77 @@ def test_every_deployment_together_against_the_accounts_free_margin(pool_run):
         r = await fill(pool, b, "NIFTY26OCT24800PE", 2, "sell", 300, 100.0, T0)       # B adds ₹3L: ₹6L > ₹5L free
         s.submit(handed(b, r, "NIFTY26OCT24800PE", 2, "sell", 300, 100.0))
         await s.drain()
-        m = (await checks_of(pool, r["lot_id"]))["margin"]
-        assert m["status"] == "reject" and "Every deployment's open legs together need ₹600,000; the account has ₹500,000 free." == m["detail"]
+        out = await row(pool, r["lot_id"])
+        m = next(c for c in out["checks"] if c["rule"] == "margin")
+        # B's ₹3L fits B's ₹5L: the account being short warns, it doesn't refuse B's order
+        assert m["status"] == "warn" and out["verdict"] == "fill"
+        assert "would need ₹600,000; the Kite account has ₹500,000 free" in m["detail"]
         assert m["account_required"] == 600000 and m["account_free"] == 500000
+    pool_run(go)
+
+
+def test_the_stored_check_says_which_book_it_read_and_when(pool_run):
+    """The proof behind "₹45 worse": the tick's book from the moment of
+    the fill, level by level; without a fresh one, Kite's quote, marked
+    as read after the fill."""
+    async def go(pool):
+        d = await dep(pool)
+        now = datetime.now(timezone.utc)
+        disp = Disp({1: (book(bids=[(99.8, 75), (99.6, 500)], asks=[(100.3, 900)]), now - timedelta(seconds=0.5))})
+        quote = {**QUOTE, "depth": book(bids=[(99.0, 900)])}
+        s = svc(pool, disp, quote)
+        r1 = await fill(pool, d, "NIFTY26OCT25800CE", 1, "sell", 150, 100.0, now)
+        r2 = await fill(pool, d, "NIFTY26OCT24800PE", 2, "sell", 75, 100.0, now)     # no tick book for token 2
+        s.submit(handed(d, r1, "NIFTY26OCT25800CE", 1, "sell", 150, 100.0, now))
+        s.submit(handed(d, r2, "NIFTY26OCT24800PE", 2, "sell", 75, 100.0, now))
+        await s.drain()
+        a = next(c for c in (await row(pool, r1["lot_id"]))["checks"] if c["rule"] == "book")["proof"]
+        assert a["source"] == "tick" and a["after_fill_s"] == pytest.approx(-0.5, abs=0.01)
+        assert a["side"] == "bids" and [(lv["price"], lv["take"]) for lv in a["levels"]] == [(99.8, 75), (99.6, 75)]
+        assert a["other_best"] == 100.3
+        b = next(c for c in (await row(pool, r2["lot_id"]))["checks"] if c["rule"] == "book")["proof"]
+        assert b["source"] == "quote" and b["after_fill_s"] >= 0 and b["levels"] == [{"price": 99.0, "qty": 900, "take": 0}]
+    pool_run(go)
+
+
+def test_the_migration_regrades_stored_account_only_refusals(pool_run):
+    """0042: a fill stored as refused only because every deployment
+    together was over the account becomes what its book said; one over
+    its own capital, or placed before its hedge, stays refused."""
+    from pathlib import Path
+    sql = (Path(shadow.__file__).parent / "db" / "migrations" / "0042_shadow_account_margin_warns.sql").read_text()
+
+    def margin(required, capital=150000.0, **kw):
+        return {"rule": "margin", "status": "reject", "detail": "old", "required": required, "capital": capital,
+                "account_required": 900000.0, "account_free": 120000.0, **kw}
+    book_ok = {"rule": "book", "status": "ok", "detail": "on the book"}
+
+    async def go(pool):
+        d = await dep(pool)
+        cases = {   # name: (action, qty, filled, shortfall, checks)
+            "worse": ("buy", 65, 65, 55.25, [book_ok]),
+            "fits": ("sell", 65, 65, 0.0, [book_ok, margin(149323.0)]),
+            "own": ("sell", 65, 65, 0.0, [book_ok, margin(160000.0)]),
+            "placing": ("sell", 65, 65, 0.0, [book_ok, margin(149323.0, placing=True)]),
+            "band": ("sell", 65, None, None, [{"rule": "band", "status": "reject", "detail": "x"}, margin(149323.0)]),
+        }
+        lots = {}
+        for i, (name, (action, qty, filled, short, checks)) in enumerate(cases.items()):
+            r = await fill(pool, d, f"NIFTY26NOV2{i}850PE", 10 + i, action, qty, 100.0, T0)
+            lots[name] = r["lot_id"]
+            await shadow.save(pool, handed(d, r, f"NIFTY26NOV2{i}850PE", 10 + i, action, qty, 100.0),
+                              {"verdict": "worse" if name == "worse" else "reject", "filled_qty": filled, "shortfall": short,
+                               "est_price": 100.0, "limit_price": 100.5, "orders": 1, "checks": checks})
+        await pool.execute(sql)
+        got = {n: await row(pool, lot) for n, lot in lots.items()}
+        assert {n: r["verdict"] for n, r in got.items()} == {"worse": "worse", "fits": "fill", "own": "reject",
+                                                              "placing": "reject", "band": "reject"}
+        m = next(c for c in got["fits"]["checks"] if c["rule"] == "margin")
+        assert m["status"] == "warn" and m["required"] == 149323.0
+        assert m["detail"] == ("Fits this deployment: ₹149,323 of its ₹150,000. Every deployment's open legs together would need "
+                               "₹900,000; the Kite account has ₹120,000 free, so all of them live on this account at once would be refused.")
+        assert m["detail"] == shadow.check_margin(149323.0, 150000.0, 900000.0, 120000.0)["detail"], "the same words as a new check"
+        assert next(c for c in got["band"]["checks"] if c["rule"] == "margin")["status"] == "warn"
     pool_run(go)
 
 

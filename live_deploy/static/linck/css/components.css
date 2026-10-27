@@ -95,6 +95,29 @@
 .sh-chip.warn { background: var(--ys); color: var(--ink); border-color: var(--line2); }
 .sh-chip.bad { border-color: var(--wr); background: var(--ys); color: var(--wt); }
 .sh-chip.unk { border-style: dashed; }
+button.sh-chip { font-family: inherit; line-height: inherit; background-color: transparent; cursor: pointer; }
+button.sh-chip.warn, button.sh-chip.bad { background: var(--ys); }
+button.sh-chip:hover { text-decoration: underline; }
+/* how a verdict was worked out (ui/shadow.js proofDialog) */
+.sh-proof p { margin: 0 0 8px; }
+.sh-book { display: grid; grid-template-columns: repeat(4, auto); border-top: 1px solid var(--line); font-size: 12px; overflow-x: auto; }
+.sh-book > div { display: contents; }
+.sh-book > div > span { padding: 5px 8px; border-bottom: 1px solid var(--line); text-align: right; }
+.sh-book > div > span:first-child { text-align: left; }
+.sh-book .th > span { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); font-weight: 700; }
+.sh-book .took > span { background: var(--ys); font-weight: 700; }
+.sh-book .past > span { color: var(--mute); }
+.sh-sum { display: grid; gap: 4px; margin: 10px 0 0; font-size: 12px; }
+.sh-sum b { font-family: var(--f-mono); font-weight: 600; }
+.sh-sum > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px; }
+.sh-sum span { color: var(--mute); }
+.sh-rules { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.sh-rules li { display: grid; grid-template-columns: 16px auto 1fr; gap: 2px 8px; font-size: 12px; align-items: baseline; }
+.sh-rules li i { font-style: normal; font-weight: 700; }
+.sh-rules li.ok i { color: var(--g); }
+.sh-rules li.warn i, .sh-rules li.reject i { color: var(--wt); }
+.sh-rules li span { color: var(--mute); }
+@media (max-width: 560px) { .sh-rules li { grid-template-columns: 16px 1fr; } .sh-rules li span { grid-column: 2; } }
 .stamp { font-family: var(--f-mono); font-size: 11px; font-weight: 600; padding: 2px 7px; border: 1px solid currentColor; white-space: nowrap; }
 .fresh { font-family: var(--f-mono); font-size: 10px; font-weight: 600; padding: 1px 6px; border: 1px solid var(--ink); white-space: nowrap; }
 .fresh.ck { border-color: var(--line); background: var(--soft); }

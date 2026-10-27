@@ -239,7 +239,13 @@ async def seed_shadow(pool, dep):
         if lot["id"] == today[-1]["id"]:
             kw = dict(lot=int(qty) + 5, depth={side: [{"price": px, "quantity": 5000}]})
         elif lot["id"] == worse:
-            kw = dict(lot=LOT["BANKNIFTY"], depth={side: [{"price": round(px - 0.4 if act == "sell" else px + 0.4, 2), "quantity": 5000}]})
+            # a two-level book from the fill's own tick, both sides: the proof behind "₹ worse"
+            d = -1 if act == "sell" else 1
+            other = "sell" if side == "buy" else "buy"
+            kw = dict(lot=LOT["BANKNIFTY"], depth={side: [{"price": round(px + d * 0.2, 2), "quantity": 10, "orders": 2},
+                                                          {"price": round(px + d * 0.4, 2), "quantity": 5000, "orders": 9}],
+                                                   other: [{"price": round(px - d * 0.3, 2), "quantity": 400, "orders": 4}]},
+                      book_from={"source": "tick", "at": lot["executed_at"] - timedelta(milliseconds=300), "fill_at": lot["executed_at"]})
         else:
             kw = dict(lot=LOT["BANKNIFTY"], depth={side: [{"price": px, "quantity": 5000}]})
         res = shadow.assess(act, qty, px, tick=0.05, freeze=1050, freeze_source="config", band=(0.05, px * 3), **kw)
