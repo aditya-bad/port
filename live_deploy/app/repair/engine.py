@@ -747,7 +747,7 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         out.notes.append(f"{und}'s {exp:%d %b} contracts expired before this repair ran: Kite no longer lists them "
                          f"or serves their prices, so the strategy couldn't pick its strikes there the way it did on "
                          f"{window.day:%d %b}. Without this check it would have traded the next expiry instead. A repair "
-                         "can be trusted while the day's contracts are still listed (the day check runs at 15:45 the same day).")
+                         "can be trusted while the day's contracts are still listed (the day check runs after the 17:00 export the same day).")
     # every leg it held, before or during the window: one with no price at
     # all left the strategy blind, so nothing it did (or didn't) can be trusted
     held = {int(t) for t in start_positions} | {f["token"] for f in out.fills}

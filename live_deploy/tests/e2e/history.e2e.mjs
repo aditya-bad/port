@@ -22,7 +22,7 @@ test('run now: progress in the header and on Account, then the result', async ()
   const p = await ctx.newPage();
   await p.goto(`${BASE}/linck/#/account?s=history`);
   await p.waitForSelector('#history [data-act=runHist]');
-  assert.match(await p.innerText('#history'), /Next run[\s\S]*15:45/);
+  assert.match(await p.innerText('#history'), /Next run[\s\S]*17:00/);
   await ctx.request.post(`${BASE}/candles/backfill`, { data: { day: weekdayBack(1) } });   // what Run now does, for a day with work
   await p.waitForSelector('#history .bf-run', { timeout: 15000 });   // noticed without a reload
   assert.match(await p.innerText('#history .bf-run'), /Saving .* option history/);

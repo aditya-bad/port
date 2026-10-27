@@ -13,7 +13,7 @@ an issue (table ops_issues) that stays open until the check passes again:
   dep:<id>:errors      its strategy raised in the last 5 minutes
   dep:<id>:stale-legs  open legs with no trade today (after 09:45): the
                        strategy may not act on them, their P&L is old
-  export:<day>         the 15:45 option-history export failed, or hadn't
+  export:<day>         the 17:00 option-history export failed, or hadn't
                        run by 16:15
   daycheck:<day>       the end-of-day check (app/repair/daycheck.py) failed
   eod:<id>             a deployment the day check found breaking a rule of
@@ -55,7 +55,7 @@ ALERT_EVERY = timedelta(seconds=55)          # "every minute" for a loop that ru
 SILENT_AFTER = timedelta(minutes=3)
 ERRORS_WITHIN = timedelta(minutes=5)
 STALE_LEGS_FROM = time(9, 45)
-EXPORT_LATE = time(16, 15)
+EXPORT_LATE = time(17, 30)
 KITE_FROM, MARKET_OPEN, MARKET_CLOSE = time(9, 5), time(9, 15), time(15, 30)
 
 
@@ -212,14 +212,14 @@ class OpsMonitor:
         if last and last.get("day") == today:
             if last.get("error"):
                 return [Problem(f"export:{today}", "export_failed", "Option history export failed",
-                                f"The 15:45 export of today's option candles stopped: {last['error']}. It retries every "
+                                f"The {BACKFILL_AT:%H:%M} export of today's option candles stopped: {last['error']}. It retries every "
                                 f"minute; {last.get('fetched', 0)} of {last.get('instruments', 0)} fetched so far. Kite "
                                 "drops an expired contract's history, so this matters on expiry days.",
                                 data=dict(last))], None
             return [], last
         if n.time() >= EXPORT_LATE and not running:
             return [Problem(f"export:{today}", "export_missing", "Option history export hasn't run",
-                            "The 15:45 export of today's option candles hasn't run. Is the app's backfill loop alive? "
+                            f"The {BACKFILL_AT:%H:%M} export of today's option candles hasn't run. Is the app's backfill loop alive? "
                             "Account → History can start it by hand.")], None
         return [], None
 

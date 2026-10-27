@@ -1,5 +1,5 @@
 // Repair: what needs fixing. The day check (app/repair/daycheck.py) runs
-// once, after the 15:45 export, replaying each deployment's day and
+// once, after the 17:00 export, replaying each deployment's day and
 // checking its end; below it, what the deployments reported about
 // themselves. The health monitor (app/ops_health.py) keeps checking in the
 // background and alerts your phone; its open alerts show here only while
@@ -187,7 +187,7 @@ function dayCheckSection(c, day) {
       <button type="button" class="btn btn-sm" data-act="runCheck" ${c.run && c.run.status === 'running' ? 'disabled' : ''}>Run the day check${c.day ? ` for ${dDay(fromDay(day || c.day))}` : ' now'}</button>
     </div>
     ${counts.length || done.length ? html`<div class="dc-counts">${counts.map(([k, n]) => html`<span>${pill(k)} ${n}</span>`)}${done.length ? html`<span><span class="dc-pill t-done" data-tip="Repaired, or ignored with its numbers left as they are">Done</span> ${done.length}</span>` : ''}</div>` : ''}
-    ${!results.length ? empty('', c.day ? 'No results for this day yet.' : 'The day check runs by itself once the 15:45 export succeeds. Each deployment’s day is replayed from its open on Kite’s 1-minute candles and checked against what the app did.')
+    ${!results.length ? empty('', c.day ? 'No results for this day yet.' : 'The day check runs by itself once the 17:00 export succeeds. Each deployment’s day is replayed from its open on Kite’s 1-minute candles and checked against what the app did.')
       : html`<div class="dc-list">${todo.map(x => checkRow(x, todo.length <= 3, c.day, rc[x.deployment_id], 'todo'))}
         ${!todo.length && done.length ? html`<p class="small mute dc-clear" style="margin:0">Nothing left to do for this day: ${done.length === 1 ? 'the flagged deployment is' : `all ${done.length} flagged are`} repaired or ignored.</p>` : ''}
         ${done.length ? html`<details class="dc-fine dc-done" data-group="done" ${isShown('done', false) ? 'open' : ''}><summary>${done.length} done: repaired or ignored</summary>${done.map(x => checkRow(x, false, c.day, rc[x.deployment_id], 'done'))}</details>` : ''}
@@ -223,13 +223,13 @@ export default {
     }
     function paint() {
       mount(main, html`<div class="page-head">
-          <div class="col"><h1 class="t-h1">Repair</h1><span class="mute">What needs fixing: each day checked once after the 15:45 export, and what the deployments reported about themselves.</span></div>
+          <div class="col"><h1 class="t-h1">Repair</h1><span class="mute">What needs fixing: each day checked once after the 17:00 export, and what the deployments reported about themselves.</span></div>
         </div>
         <div class="page" style="padding-top:4px">
           ${alerts && alerts.length ? html`
             ${sect('Open alerts', 'Each alerts your phone until it clears or you snooze it')}
             <div class="ops-list">${alerts.map(issueCard)}</div>` : ''}
-          ${sect('Day check', 'Runs once after the 15:45 export: each deployment’s day replayed from its open and checked against what the app did')}
+          ${sect('Day check', 'Runs once after the 17:00 export: each deployment’s day replayed from its open and checked against what the app did')}
           ${dayCheckSection(dc, dcDay)}
           ${sect('Reported by the deployments', 'What each running deployment reported about itself — open ones first, then the last few days')}
           ${reportedSection(reported)}

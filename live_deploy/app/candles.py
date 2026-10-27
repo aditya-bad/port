@@ -48,8 +48,9 @@ SESSION_OPEN, SESSION_CLOSE = time(9, 15), time(15, 30)
 STORED = ("CE", "PE", "FUT")
 INTERVAL_MINUTES = {"minute": 1, "3minute": 3, "5minute": 5, "10minute": 10, "15minute": 15,
                     "30minute": 30, "60minute": 60}
-# The daily backfill: once the close (15:30) has settled.
-BACKFILL_AT = time(15, 45)
+# The daily backfill: well after the close (15:30), once Kite's day is
+# settled. The day check (app/repair) starts when it has succeeded.
+BACKFILL_AT = time(17, 0)
 # A day counts as covered at this share of its session minutes (a quiet
 # contract may genuinely not trade every minute).
 COVERED = 0.9

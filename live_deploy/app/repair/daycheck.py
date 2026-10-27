@@ -2,7 +2,7 @@
 live_deploy — the end-of-day check: did each deployment end the day where
 its strategy would have, and did it trade as its strategy would have?
 
-Run after the 15:45 export, in its own process (custom_scripts/
+Run after the 17:00 export, in its own process (custom_scripts/
 day_check.py: the replay points the app's Kite and clock at the past, so
 it can't share the running app's process). For each deployment:
 

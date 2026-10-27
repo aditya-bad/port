@@ -216,7 +216,7 @@ def test_legs_with_no_trade_today_are_a_warning(push_on, pushes, kite_up, monkey
     assert f"dep:{d['id']}:stale-legs" not in keys(client)
 
 
-# ── The 15:45 export ──────────────────────────────────────────────────
+# ── The 17:00 export ──────────────────────────────────────────────────
 
 def test_a_failed_export_alerts_until_a_run_succeeds_then_says_so_once(push_on, pushes):
     client = push_on
@@ -224,24 +224,25 @@ def test_a_failed_export_alerts_until_a_run_succeeds_then_says_so_once(push_on, 
     client.portal.call(lambda: queries.set_app_scratch(pool, "candle_backfill_last", {
         "day": WED.isoformat(), "instruments": 12, "fetched": 4, "rows": 900, "seconds": 3.0,
         "error": "Kite isn't logged in", "complete": False}))
-    check(client, at("15:50"))
+    check(client, at("17:05"))
     x = client_issue(client, f"export:{WED.isoformat()}")
-    assert x["title"] == "Option history export failed" and "Kite isn't logged in" in x["detail"] and "4 of 12" in x["detail"]
+    assert x["title"] == "Option history export failed" and "Kite isn't logged in" in x["detail"] and "4 of 12" in x["detail"] and "17:00 export" in x["detail"]
     client.portal.call(lambda: queries.set_app_scratch(pool, "candle_backfill_last", {
         "day": WED.isoformat(), "instruments": 12, "fetched": 12, "rows": 4400, "seconds": 9.5,
         "error": None, "complete": True}))
-    check(client, at("15:52"))
+    check(client, at("17:07"))
     assert keys(client) == []
     assert "Fixed: Option history export failed" in titles(pushes) and titles(pushes, "saved") == ["Option history saved"]
-    check(client, at("15:53"))
+    check(client, at("17:08"))
     assert titles(pushes, "saved") == ["Option history saved"], "said once"
     assert "12 contract(s)" in next(b for t, b in pushes if t == "Option history saved")
 
 
-def test_an_export_that_never_ran_is_flagged_after_1615(push_on, pushes):
+def test_an_export_that_never_ran_is_flagged_after_1730(push_on, pushes):
     check(push_on, at("16:00"))
-    assert keys(push_on) == []
-    check(push_on, at("16:20"))
+    check(push_on, at("17:20"))
+    assert keys(push_on) == [], "the export is at 17:00: not missing before half past"
+    check(push_on, at("17:35"))
     assert client_issue(push_on, f"export:{WED.isoformat()}")["kind"] == "export_missing"
 
 

@@ -60,7 +60,7 @@ async def backfill_status(request: Request):
 
 @router.post("/backfill", status_code=202)
 async def backfill(payload: BackfillIn, request: Request):
-    """Start the day's option backfill now (it runs by itself at 15:45),
+    """Start the day's option backfill now (it runs by itself at 17:00),
     in the background; poll GET /candles/backfill for progress. 409 if
     one is already running."""
     svc = request.app.state.candles

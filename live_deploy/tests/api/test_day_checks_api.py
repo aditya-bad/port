@@ -84,11 +84,12 @@ def test_states_are_kept_at_the_open_and_after_the_close(client, launcher):
 def test_the_check_starts_once_the_export_has_succeeded(client, launcher):
     pool = client.app.state.db_pool
     check(client, at("15:50"))
-    assert launcher.started == [], "no export yet"
+    check(client, at("17:05"))
+    assert launcher.started == [], "no export yet: the check waits for it, at 17:00 or later"
     client.portal.call(lambda: queries.set_app_scratch(pool, "candle_backfill_last", {
         "day": WED.isoformat(), "instruments": 3, "fetched": 3, "rows": 900, "seconds": 2.0, "error": None, "complete": True}))
-    check(client, at("15:51"))
-    check(client, at("15:52"))
+    check(client, at("17:06"))
+    check(client, at("17:07"))
     assert launcher.started == [(WED, "auto", None)]
 
 
@@ -226,7 +227,7 @@ def test_one_deployments_check_is_not_the_days_for_the_health_monitor(client, la
         WED, a["id"])
     client.portal.call(lambda: queries.set_app_scratch(pool, "candle_backfill_last", {
         "day": WED.isoformat(), "instruments": 3, "fetched": 3, "rows": 900, "seconds": 2.0, "error": None, "complete": True}))
-    check(client, at("15:51"))
+    check(client, at("17:06"))
     assert launcher.started == [(WED, "auto", None)], "the day's own check still starts after the export"
     assert not [p for p in pushes if p[0].startswith("Day check")], "no phone alert for checking one again"
     assert not [x for x in client.get("/v2/ops").json()["open"] if x["key"].startswith("daycheck:")]

@@ -337,21 +337,21 @@ def test_status_never_shows_not_running_beside_the_previous_result(pool_run, mon
     pool_run(go)
 
 
-def test_next_run_is_today_at_1545_until_done_then_the_next_weekday(pool_run):
+def test_next_run_is_today_at_1700_until_done_then_the_next_weekday(pool_run):
     async def go(pool):
         svc = service(pool)
-        assert C.BACKFILL_AT == time(15, 45)
+        assert C.BACKFILL_AT == time(17, 0)
         wed = datetime(2026, 10, 14, 11, 0, tzinfo=IST)
-        assert (await svc.backfill_status(at=wed))["next_at"] == "2026-10-14T15:45:00+05:30"
+        assert (await svc.backfill_status(at=wed))["next_at"] == "2026-10-14T17:00:00+05:30"
         await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-14", "complete": True})
-        assert (await svc.backfill_status(at=wed))["next_at"] == "2026-10-15T15:45:00+05:30"
+        assert (await svc.backfill_status(at=wed))["next_at"] == "2026-10-15T17:00:00+05:30"
         await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-14", "complete": False})
-        assert (await svc.backfill_status(at=wed))["next_at"] == "2026-10-14T15:45:00+05:30", "incomplete: still due"
+        assert (await svc.backfill_status(at=wed))["next_at"] == "2026-10-14T17:00:00+05:30", "incomplete: still due"
         fri_done = datetime(2026, 10, 16, 18, 0, tzinfo=IST)
         await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-16", "complete": True})
-        assert (await svc.backfill_status(at=fri_done))["next_at"] == "2026-10-19T15:45:00+05:30", "skips the weekend"
+        assert (await svc.backfill_status(at=fri_done))["next_at"] == "2026-10-19T17:00:00+05:30", "skips the weekend"
         sat = datetime(2026, 10, 17, 10, 0, tzinfo=IST)
-        assert (await svc.backfill_status(at=sat))["next_at"] == "2026-10-19T15:45:00+05:30"
+        assert (await svc.backfill_status(at=sat))["next_at"] == "2026-10-19T17:00:00+05:30"
     pool_run(go)
 
 
@@ -534,4 +534,42 @@ def test_the_migration_clears_monthly_expiries_guessed_from_the_symbol(pool_run)
         await pool.execute(sql)
         got = {r["instrument_token"]: r["expiry"] for r in await pool.fetch("SELECT instrument_token, expiry FROM contracts")}
         assert got == {901: None, 902: date(2026, 11, 24), 903: date(2026, 10, 20), 904: date(2026, 10, 27)}
+    pool_run(go)
+
+
+def test_a_restart_after_the_days_backfill_doesnt_run_it_again(pool_run):
+    """A redeploy used to start the day's backfill again: the loop kept
+    "done" only in memory. It reads the saved last run now."""
+    from app.deployments.manager import DeploymentManager as M
+
+    class Fake:
+        def __init__(self, pool, complete=True):
+            self.pool, self.days, self.complete = pool, [], complete
+
+        async def backfill_day(self, day):
+            self.days.append(day)
+            return {"complete": self.complete}
+
+    async def go(pool):
+        wed = datetime(2026, 10, 14, 17, 20, tzinfo=IST)
+        f = Fake(pool)
+        assert await M.backfill_done_day(f) is None, "nothing saved yet"
+        assert await M.candle_backfill_once(f, datetime(2026, 10, 14, 16, 59, tzinfo=IST), None) is None and f.days == [], \
+            "not before 17:00"
+        assert await M.candle_backfill_once(f, wed, None) == date(2026, 10, 14) and f.days == [date(2026, 10, 14)]
+        # the run saved itself; a restart reads it and doesn't run the day again
+        await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-14", "complete": True})
+        done = await M.backfill_done_day(f)
+        assert done == date(2026, 10, 14)
+        assert await M.candle_backfill_once(f, wed + timedelta(minutes=5), done) == done and len(f.days) == 1
+        # a day that stopped part way is run again after a restart
+        await queries.set_app_scratch(pool, "candle_backfill_last", {"day": "2026-10-14", "complete": False})
+        assert await M.backfill_done_day(f) is None
+        g = Fake(pool, complete=False)
+        assert await M.candle_backfill_once(g, wed, None) is None and g.days == [date(2026, 10, 14)], "retried until complete"
+        # the next trading day runs again
+        thu = datetime(2026, 10, 15, 17, 1, tzinfo=IST)
+        assert await M.candle_backfill_once(f, thu, done) == date(2026, 10, 15)
+        assert await M.candle_backfill_once(f, datetime(2026, 10, 17, 18, 0, tzinfo=IST), date(2026, 10, 15)) == date(2026, 10, 15), \
+            "not on a Saturday"
     pool_run(go)

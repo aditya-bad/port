@@ -410,7 +410,7 @@ async def startup() -> None:
     app.state.candle_backfill_task = asyncio.create_task(
         manager.candle_backfill_loop(app.state.candles), name="candle-backfill-loop",
     )
-    # ── Health monitor: Kite, the database, the 15:45 export and every
+    # ── Health monitor: Kite, the database, the 17:00 export and every
     # deployment, checked every minute; each problem alerts every minute
     # until it clears — see app/ops_health.py.
     from .ops_health import OpsMonitor

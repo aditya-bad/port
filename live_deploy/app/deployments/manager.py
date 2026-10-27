@@ -701,23 +701,48 @@ class DeploymentManager:
 
 
     async def candle_backfill_loop(self, candles) -> None:
-        """Once a trading day at 15:45: fill the day's history of every
-        option contract held today from Kite while it still has it —
-        expired contracts can't be fetched later. Also runs right away on
-        a start after 15:45, in case the app was down then. Cheap to
-        repeat: covered days are never fetched."""
-        from ..candles import BACKFILL_AT
-        done: Optional[date] = None
+        """Once a trading day at 17:00 (candles.BACKFILL_AT): fill the
+        day's history of every option contract held today from Kite while
+        it still has it — expired contracts can't be fetched later. Runs
+        right away on a start after 17:00 if the day isn't done, in case
+        the app was down then; a day already done (the saved last run says
+        so) isn't run again by a restart or a redeploy."""
+        done = await self.backfill_done_day(candles)
         while True:
-            now = datetime.now(_IST)
-            if now.weekday() < 5 and now.time() >= BACKFILL_AT and done != now.date():
-                try:
-                    r = await candles.backfill_day(now.date())
-                    if r.get("complete"):
-                        done = now.date()      # else (Kite logged out mid-way) retried in 5 minutes
-                except Exception:
-                    logger.exception("Candle backfill failed — will retry")
+            done = await self.candle_backfill_once(candles, datetime.now(_IST), done)
             await asyncio.sleep(60 if done != datetime.now(_IST).date() else 300)
+
+    @staticmethod
+    async def backfill_done_day(candles) -> Optional[date]:
+        """The day the last backfill finished cleanly, from the database
+        (candle_backfill_last), so the app's own memory isn't the only
+        record of it."""
+        try:
+            last = await queries.get_app_scratch(candles.pool, "candle_backfill_last")
+        except Exception:
+            logger.exception("Reading the last candle backfill failed")
+            return None
+        if last and last.get("complete") and last.get("day"):
+            try:
+                return date.fromisoformat(last["day"])
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    async def candle_backfill_once(candles, now: datetime, done: Optional[date]) -> Optional[date]:
+        """One pass of the loop at `now`: runs the day's backfill if it's
+        due and not done. Returns the day now done."""
+        from ..candles import BACKFILL_AT
+        now = now.astimezone(_IST)
+        if now.weekday() < 5 and now.time() >= BACKFILL_AT and done != now.date():
+            try:
+                r = await candles.backfill_day(now.date())
+                if r.get("complete"):
+                    done = now.date()      # else (Kite logged out mid-way) retried in a minute
+            except Exception:
+                logger.exception("Candle backfill failed — will retry")
+        return done
 
     # ── Health watchdog: active but not running; Kite not connected ────
 

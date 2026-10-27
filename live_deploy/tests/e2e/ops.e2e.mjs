@@ -46,7 +46,7 @@ test('the page is the day check and the reports; open alerts on top, worst first
   const text = await p.locator('#main').innerText();
   // the sections, in this order: open alerts, the day check, the reports
   assert.deepEqual(await p.locator('#main .sect h3').allInnerTexts(), ['Open alerts', 'Day check', 'Reported by the deployments']);
-  assert.match(text, /checked once after the 15:45 export/i);
+  assert.match(text, /checked once after the 17:00 export/i);
   // the monitor's own parts are gone
   // (a deployment's own report may say it retries every minute; the monitor's lines are what must go)
   assert.doesNotMatch(text, /Checked [\d:]+ · every minute|Checked every minute|Everything the monitor watches/i, 'nothing says the page checks every minute');

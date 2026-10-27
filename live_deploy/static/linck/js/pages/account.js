@@ -71,7 +71,7 @@ export default {
       if (hist && hist.running) noticeBackfill(hist.running);   // the header strip too, not 20 s later
       paint();
       // every 2 s while a backfill runs; while its section is open every 4 s, so a
-      // run started elsewhere (another tab, the 15:45 schedule) shows up even if
+      // run started elsewhere (another tab, the 17:00 schedule) shows up even if
       // it's quick; else every 10 s
       histTimer = setTimeout(loadHist, hist && hist.running ? 2000 : key === 'history' ? 4000 : 10000);
     }
@@ -238,7 +238,7 @@ export default {
               <span class="tiny mute">${r.current ? html`Now: <span class="mono">${r.current}</span> · ` : ''}${plural(r.fetched, 'contract')} fetched from Kite · ${lakh(r.rows)} minutes stored · started ${hhmm(r.started_at)}</span>
             </div>` : ''}
           ${group('Schedule', html`
-            ${row('Next run', 'Every trading day at 15:45: every option contract held that day.', html`<span class="mono small">${r ? 'running now' : `${dDay(hist.next_at)}, ${hhmm(hist.next_at)}`}</span>`)}
+            ${row('Next run', 'Every trading day at 17:00: every option contract held that day.', html`<span class="mono small">${r ? 'running now' : `${dDay(hist.next_at)}, ${hhmm(hist.next_at)}`}</span>`)}
             ${row('Last run', l ? (l.complete ? `${plural(l.instruments, 'contract')} · ${l.fetched} fetched from Kite · ${lakh(l.rows)} minutes · ${l.seconds}s`
               : `Stopped: ${l.error}. It retries every minute until it completes.`) : '', html`<span class="mono small ${l && !l.complete ? 'neg' : ''}">${l ? `${dDay(l.finished_at)}, ${hhmm(l.finished_at)}` : 'not yet'}</span>`)}
             ${row('Stored', st.minutes ? `${lakh(st.minutes)} one-minute candles${st.since ? ` since ${dDay(st.since)}` : ''}. Index prices come from Kite and aren’t stored.` : 'Nothing yet.', html`<span class="mono small">${plural(st.contracts, 'contract')}</span>`)}`)}
