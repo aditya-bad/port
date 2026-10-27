@@ -337,6 +337,72 @@ def test_a_day_repair_from_inside_a_signal_candle_does_not_trade_twice(old_stamp
     pool_run(go)
 
 
+# ST_PV_INV_SENSEX, 27 Oct: the app bought a CE at 10:05 on a SuperTrend
+# flip that Kite's candles don't show, and the replay bought one at 12:45
+# instead. The app builds its 5-minute candles from its own ticks; the
+# replay built them from Kite's minutes, and a flip can hinge on a few
+# points of the close. The app records the close of every candle it acted
+# on, and from now on every candle its strategy completed
+# (strategy_candles): the replay gives the strategy those. Here the app's
+# last tick of one candle lands past the band ("across": it flips and
+# buys) or just short of it (no flip, but the candle's high and close feed
+# every band after), and Kite's minutes don't have that tick. With only
+# the closes it acted on (a day before the candles were kept), the replay
+# can't know the candle it didn't act on: that one stays a difference.
+@pytest.mark.parametrize("kept", [True, False], ids=["candles kept", "closes acted on only"])
+@pytest.mark.parametrize("sign", ["across", "short of"])
+def test_a_candle_the_app_acted_on_closes_where_its_own_ticks_closed_it(sign, kept, pool_run, monkeypatch):
+    async def go(pool):
+        from app.repair import daycheck as D
+        chain_oi(monkeypatch)
+        strategy = "pivot_supertrend_options_inverse"
+        sim = await Sim.create(pool, monkeypatch, strategy, {**cfg(strategy), "max_trades_per_day": None},
+                               spot=base(datetime(2026, 1, 1, 9, 15)))
+        day = sim.market.today
+        await pool.execute("INSERT INTO app_marks (name, at) VALUES ('fills_stamped_at_tick', $1) "
+                           "ON CONFLICT (name) DO UPDATE SET at = $1", datetime.combine(day, time(0), IST))
+        await D.capture_states(pool, day, "open")
+        spiked = None
+        for m in day_minutes(day):
+            for at, spot in minute_ticks(m):
+                await sim.tick(at, spot=spot)
+                sim.dispatcher.last_prices[VIX] = 14.0
+                sim.dispatcher.last_price_times[VIX] = at
+            st = sim.strategy.st
+            if (spiked is None and m.hour >= 10 and (m.minute + 1) % 5 == 0 and sim.strategy.active_leg_token is None
+                    and st.trend is not None and st.final_upper is not None and st.final_lower is not None):
+                # the candle's last tick, past the band the way the trend would flip ("short of": a tick that doesn't flip it)
+                up = st.trend == "down"
+                gap = 20 if sign == "across" else -20
+                spike = st.final_upper + gap if up else st.final_lower - gap
+                at = m + timedelta(seconds=59, milliseconds=500)
+                await sim.tick(at, spot=round(spike, 2))
+                spiked = (m + timedelta(minutes=1), "CE" if up else "PE", round(spike, 2))
+        assert spiked
+        lots = await pool.fetch("SELECT l.reason, l.executed_at, p.symbol FROM position_lots l JOIN positions p ON p.id = l.position_id "
+                                "WHERE l.deployment_id = $1 AND l.action = 'buy' ORDER BY l.executed_at", sim.dep_id)
+        at_spike = [r for r in lots if r["executed_at"].astimezone(IST).replace(tzinfo=None, second=0, microsecond=0) == spiked[0]]
+        if sign == "across":
+            assert [r["symbol"][-2:] for r in at_spike] == [spiked[1]], "the app flipped on its own last tick and bought"
+        else:
+            assert at_spike == [], "short of the band: no flip"
+        stored = await pool.fetch("SELECT start, close FROM strategy_candles WHERE deployment_id = $1", sim.dep_id)
+        assert len(stored) > 60 and any(float(c["close"]) == spiked[2] for c in stored), "every candle it completed, as it built it"
+        if not kept:
+            await pool.execute("DELETE FROM strategy_candles WHERE deployment_id = $1", sim.dep_id)
+        book = MinuteBook(day, exact_source(sim))     # Kite's minutes: the extra tick isn't in them
+        r = await D.check_deployment(pool, dict(await pool.fetchrow("SELECT * FROM deployments WHERE id = $1", sim.dep_id)),
+                                     day, book, sim.kite)
+        if sign == "short of" and not kept:
+            assert r["status"] == "mismatch", "a candle it didn't act on: nothing says where the app closed it"
+            return
+        assert r["status"] == "ok", (r["headline"], r["diff"].get("missed"), r["diff"].get("extra"))
+        notes = [n for n in r["replay"]["notes"] if "from its own ticks" in n]
+        start = spiked[0] - timedelta(minutes=5)
+        assert any(n.startswith(f"The {start:%H:%M}–{spiked[0]:%H:%M} candle") and f"close {spiked[2]:,.2f}" in n for n in notes), notes
+    pool_run(go)
+
+
 # The end-of-day check replays the whole day from the open and compares.
 # On a day the app traded exactly as its strategy would, it must find
 # nothing: every trade matched at the same minute, nothing missed or extra.

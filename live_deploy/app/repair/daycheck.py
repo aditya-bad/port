@@ -154,7 +154,9 @@ async def actual_day(conn, dep_id, day: date, dep: Optional[dict] = None) -> tup
     fills = [{"at": r["executed_at"].astimezone(IST), "minute": f"{r['executed_at'].astimezone(IST):%H:%M}",
               "action": r["action"], "symbol": r["symbol"], "token": int(r["instrument_token"]), "qty": float(r["qty"]),
               "price": round(float(r["price"]), 2), "reason": r["reason"] or "",
-              "basis": (r["metadata"] or {}).get("target_basis")}
+              "basis": (r["metadata"] or {}).get("target_basis"),
+              # a candle strategy's signal candle close, as the app built it from its ticks
+              "close": ((r["metadata"] or {}).get("trigger_values") or {}).get("close")}
              for r in await conn.fetch(
                  "SELECT l.*, p.symbol, p.instrument_token FROM position_lots l JOIN positions p ON p.id = l.position_id "
                  "WHERE l.deployment_id = $1 AND l.executed_at >= $2 AND l.executed_at < $3 ORDER BY l.executed_at",

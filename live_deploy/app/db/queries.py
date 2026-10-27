@@ -23,6 +23,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import asyncpg
 
@@ -1010,6 +1011,22 @@ async def record_decision(
             """,
             deployment_id, decided_at, rule, outcome, summary, data or {},
         )
+
+
+async def record_strategy_candles(pool: asyncpg.Pool, deployment_id: UUID, candles: list[dict]) -> None:
+    """Candles a strategy completed from its own ticks (migration 0040):
+    [{date, open, high, low, close, minutes}], `date` the candle's start
+    (naive = IST). A candle completed again (a restart mid-candle) keeps
+    the later one."""
+    ist = ZoneInfo("Asia/Kolkata")
+    rows = [(deployment_id, c["date"] if c["date"].tzinfo else c["date"].replace(tzinfo=ist), int(c["minutes"]),
+             float(c["open"]), float(c["high"]), float(c["low"]), float(c["close"])) for c in candles]
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """INSERT INTO strategy_candles (deployment_id, start, minutes, open, high, low, close)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)
+               ON CONFLICT (deployment_id, start) DO UPDATE SET minutes = EXCLUDED.minutes, open = EXCLUDED.open,
+                 high = EXCLUDED.high, low = EXCLUDED.low, close = EXCLUDED.close, recorded_at = now()""", rows)
 
 
 async def list_decisions(

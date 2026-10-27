@@ -141,7 +141,7 @@ import asyncio
 import logging
 from collections import deque
 from datetime import date, datetime, timedelta, time as dtime
-from typing import Optional
+from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 from .. import clock
@@ -429,6 +429,9 @@ class CandleAggregator:
         self.label = label
         self._bucket_start: Optional[datetime] = None
         self._candle: Optional[dict] = None
+        # told each candle as it completes (DeploymentRunner keeps them:
+        # the end-of-day check replays the strategy on the very candles it saw)
+        self.on_complete: Optional[Callable[[dict], None]] = None
 
     def reset(self) -> None:
         """Forget the candle in progress — after a post-market resync has
@@ -523,6 +526,8 @@ class CandleAggregator:
         self._bucket_start = bucket
         self._candle = {"date": bucket, "open": price, "high": price,
                         "low": price, "close": price}
+        if getattr(self, "on_complete", None) is not None:
+            self.on_complete({**completed, "minutes": self.interval_minutes})
         return completed
 
 

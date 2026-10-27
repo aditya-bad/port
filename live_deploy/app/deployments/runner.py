@@ -112,6 +112,8 @@ class DeploymentRunner:
         self._created_at_local: datetime = datetime.fromtimestamp(self.created_at.timestamp())
 
         self.open_positions: dict[int, dict] = {}   # instrument_token -> position row (as dict)
+        # candles a candle strategy completed, not yet stored (_keep_candles)
+        self._candles: list[dict] = []
         self.cash: float = float(deployment["current_cash"])
         # Fixed for the deployment's lifetime (unlike `cash`, which moves
         # with every fill) — for strategies that need a stable reference
@@ -206,8 +208,24 @@ class DeploymentRunner:
         couldn't read: load_state raising fails the start."""
         await asyncio.wait_for(self.strategy.on_start(self), self.START_TIMEOUT)
         self.started = True
+        agg = getattr(self.strategy, "aggregator", None)
+        if agg is not None and hasattr(agg, "on_complete"):
+            agg.on_complete = self._candles.append
         await self.checkpoint_state()
         await self.check_legs("start")
+
+    async def _keep_candles(self) -> None:
+        """Store the candles the strategy completed on this tick, as it
+        built them from its own ticks (migration 0040): the end-of-day
+        check replays it on these, not on Kite's minutes, which can put a
+        candle's close a few points away. Never reaches the strategy."""
+        if not self._candles:
+            return
+        rows, self._candles[:] = list(self._candles), []
+        try:
+            await queries.record_strategy_candles(self.pool, self.deployment_id, rows)
+        except Exception:
+            logger.exception("%s: could not store its candles", self.deployment_name)
 
     async def opened_on(self, day) -> bool:
         """Whether this deployment opened any position on IST `day` (the
@@ -678,6 +696,7 @@ class DeploymentRunner:
         else:
             if self.breaker.succeeded() and self.issues.is_open("crash"):
                 await self.issues.resolve("crash")
+        await self._keep_candles()
         await self.checkpoint_state()
         ts = t.get("exchange_timestamp")
         if self._check_legs:
