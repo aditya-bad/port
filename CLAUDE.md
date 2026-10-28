@@ -9,6 +9,8 @@
   rebuild (re-sync from the book, automatic restart), with the same state
   and the same trades as if it had never stopped.
 - When the owner asks a question, answer it; don't act on it until asked.
+- A change to Markdown files only needs no test run before pushing; any
+  other change gets the full gate (`run_tests.sh --e2e`) first.
 
 ## Waiting for the owner (don't start until they bring it up)
 
