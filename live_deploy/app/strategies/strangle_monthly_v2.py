@@ -532,10 +532,20 @@ adjustment role-sequence continues from the highest `adjustment_N` seen
 across open AND closed-this-cycle legs (same reasoning as
 `intraday_dtt_adjusted`'s lifetime counter); `contract_expiry` is read
 directly from any open leg's own metadata (stored at entry, needs no
-re-derivation); and `converged`/`convergence_premium` are reconstructed
-from a dedicated metadata field stamped onto the fill that most
-recently caused (or confirmed) convergence, read back from whichever of
-open-or-closed-this-cycle records is newest.
+re-derivation). `converged`, `convergence_premium` and the trailing
+stop's low (`_trailing_floor`) are saved with the deployment's state
+(get_persistable_state, checkpointed after every tick) and read back
+for the same cycle. Where none was saved (a crash between the fill and
+the checkpoint, or a position from before this was saved), one CE and
+one PE at the same strike IS a straddle: converged, with the combined
+premium at the fill that made it one (its fill price plus the other
+side's price then, from its trigger values; for an entry, both entry
+prices). A fill stamped `converged` (later fills of a converged cycle)
+is read too. Before 28 Oct 2026 none of this was saved, and the fill
+that made the straddle carried no stamp (it is written before
+convergence is detected): any rebuild (a restart, the runner's re-sync
+from the book, an automatic restart) brought a converged straddle back
+as a strangle, and the 50% roll then closed and re-sold the same strike.
 
 ──────────────────────────────────────────────────────────────────────
 11-12. CONFIG / TRADE-REASON LOGGING
@@ -913,6 +923,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self.cycle_realized_pnl = 0.0
         self.converged = False
         self.convergence_premium: Optional[float] = None
+        self._trailing_floor: Optional[float] = None
 
         self.hedges: dict[int, dict] = {}   # short leg token -> {token, symbol, exchange, entry_price, strike, point_distance}
 
@@ -930,6 +941,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self._leg_seq = 0
 
         await self._resume_from_db(runner)
+        await self._resume_convergence(runner)
 
     # ── Tick consumption ────────────────────────────────────────────────
 
@@ -1083,6 +1095,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self.cycle_realized_pnl = 0.0
         self.converged = False
         self.convergence_premium = None
+        self._trailing_floor = None
         self.adjusted_side = None
         self.adjustments_used = 0
 
@@ -1122,6 +1135,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             )
             if self.enable_hedging:
                 await self._open_hedge_for_short_leg(runner, ts, side, leg_dict, trigger)
+
+        # Both sides on one strike is a straddle from the start (Section 7).
+        self._check_convergence(trigger, {ce_leg.instrument_token: ce_leg.last_price,
+                                          pe_leg.instrument_token: pe_leg.last_price})
 
         # ONE notification for the whole strangle (both legs + any hedges
         # opened above), not one per fill.
@@ -1284,7 +1301,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 # lowest combined premium seen since convergence, and the
                 # stop is always convergence_stop_pct above THAT, not
                 # above whatever the premium happens to be this tick.
-                self._trailing_floor = min(getattr(self, "_trailing_floor", combined_now), combined_now)
+                self._trailing_floor = min(self._trailing_floor if self._trailing_floor is not None else combined_now, combined_now)
                 stop_level = self._trailing_floor * (1 + self.convergence_stop_pct)
             confirmed = None
             if combined_now >= stop_level:
@@ -2282,22 +2299,18 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             if isinstance(role_source, str) and role_source.startswith("adjustment_"):
                 self.adjustments_used = max(self.adjustments_used, int(role_source.split("_")[1]))
 
-        # Convergence reconstruction: scan open-or-closed-this-cycle
-        # records (either can carry the stamp — see _trade_meta) for a
-        # convergence marker; closed ones checked oldest-first so the
-        # LAST write (chronologically) wins if more than one is stamped.
-        for token, pos in open_legs:
-            meta = pos["metadata"] or {}
-            if meta.get("converged"):
-                self.converged = True
-                self.convergence_premium = float(meta["convergence_premium"])
+        # A fill stamped converged (see _trade_meta): only fills placed
+        # after convergence carry it. _resume_convergence does the rest.
         for pos in sorted(closed_this_cycle, key=lambda p: p["closed_at"] or p["opened_at"]):
             meta = pos["metadata"] or {}
             if meta.get("converged"):
                 self.converged = True
                 self.convergence_premium = float(meta["convergence_premium"])
-        if self.converged:
-            self._trailing_floor = self.convergence_premium
+        for token, pos in open_legs:
+            meta = pos["metadata"] or {}
+            if meta.get("converged"):
+                self.converged = True
+                self.convergence_premium = float(meta["convergence_premium"])
 
         logger.info(
             "%s: resumed with %d CE / %d PE leg(s), contract=%s, cycle_id=%d, "
@@ -2306,6 +2319,63 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             self.contract_expiry, self.cycle_id, self.cycle_realized_pnl,
             self.adjustments_used, self.converged,
         )
+
+    async def _resume_convergence(self, runner) -> None:
+        """Convergence and the trailing stop's low, as they were (see the
+        module docstring's RESUME-SAFETY): the saved state for this
+        cycle, else one CE and one PE at one strike is a straddle."""
+        saved = await runner.load_state()
+        if saved:
+            try:
+                if not isinstance(saved, dict) or saved.get("version") != 1 or not isinstance(saved.get("cycle_id"), int):
+                    raise ValueError(f"not this strategy's saved state: {str(saved)[:80]}")
+                if saved["cycle_id"] == self.cycle_id and saved.get("converged") and (self.legs["CE"] or self.legs["PE"]):
+                    premium, floor = float(saved["convergence_premium"]), saved.get("trailing_floor")
+                    self.converged, self.convergence_premium = True, premium
+                    self._trailing_floor = float(floor) if floor is not None else None
+            except (KeyError, TypeError, ValueError) as e:
+                logger.exception("%s: saved convergence state is unusable — rebuilding it from the legs",
+                                 runner.deployment_name)
+                await self.state_unusable(runner, f"The saved state was unreadable ({e})",
+                                          "Whether the position had converged into a straddle is worked out from the open legs instead.")
+        if not (self.legs["CE"] or self.legs["PE"]):
+            return
+        if not self.converged and len(self.legs["CE"]) == 1 and len(self.legs["PE"]) == 1 \
+                and self.legs["CE"][0]["strike"] == self.legs["PE"][0]["strike"]:
+            self.converged = True
+            self.convergence_premium = self._premium_at_convergence(runner)
+            logger.warning(
+                "%s: resumed as a straddle (one CE and one PE at %.2f), not saved as converged: "
+                "converged at combined premium %.2f", runner.deployment_name,
+                self.legs["CE"][0]["strike"], self.convergence_premium,
+            )
+        if self.converged and self._trailing_floor is None:
+            self._trailing_floor = self.convergence_premium
+
+    def _premium_at_convergence(self, runner) -> float:
+        """The combined premium when the straddle was made: the later of
+        its two legs' fill price, plus the other side's price then (what
+        that fill's trigger values held), or, for an entry, both entry
+        prices."""
+        ce, pe = self.legs["CE"][0], self.legs["PE"][0]
+        later, other = (ce, pe) if ce["seq"] >= pe["seq"] else (pe, ce)
+        side = "CE" if later is ce else "PE"
+        meta = (runner.open_positions.get(later["token"]) or {}).get("metadata") or {}
+        tv = meta.get("trigger_values") or {}
+        price = float(meta.get("fill_price") or later["entry_price"])
+        if tv.get("bigger_side") in ("CE", "PE") and tv.get("bigger_sum") is not None and tv.get("smaller_sum") is not None:
+            return price + float(tv["smaller_sum"] if tv["bigger_side"] == side else tv["bigger_sum"])
+        return price + float(other["entry_price"])
+
+    def get_persistable_state(self) -> Optional[dict]:
+        """What the book can't say for sure (RESUME-SAFETY): whether this
+        cycle converged, at what premium, and the trailing stop's low.
+        Checkpointed by the runner after every tick that changes it."""
+        if not self.cycle_id:
+            return None
+        return {"version": 1, "cycle_id": self.cycle_id, "converged": self.converged,
+                "convergence_premium": self.convergence_premium,
+                "trailing_floor": self._trailing_floor if self.converged else None}
 
     # ── Trade-reason metadata (Section 12) ──────────────────────────────
 
@@ -2387,14 +2457,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         time" path (Section 2) logs nothing at all. This surfaces that
         distinction directly.
 
-        No `status_fields_from_state` counterpart -- unlike
-        pivot_supertrend*, this strategy never overrides
-        get_persistable_state (its position state is already resume-safe
-        via the DB, see _resume_from_db), so there is no persisted blob
-        to reconstruct a "waiting for entry time" message from for a
-        paused/stopped deployment; there's also no live clock ticking
-        against it in that state for the message to mean anything.
-        Base class default (None) is correct here, not a shortcut.
+        No `status_fields_from_state` counterpart: the state this
+        strategy saves (get_persistable_state) is only its convergence,
+        nothing a "waiting for entry time" message could be built from
+        for a paused/stopped deployment; there's also no live clock
+        ticking against it in that state for the message to mean anything.
         """
         if self.legs["CE"] or self.legs["PE"]:
             return [

@@ -2,6 +2,7 @@
 sizing, the continuous 50% roll, the 15:13 EOD check, checkpoint
 re-entry, the expiry backstop, the stale-price guard, hedging, restart."""
 
+import dataclasses
 from datetime import date, timedelta
 
 from tests.sim import Sim, find_spot, leg_prices, side_sum
@@ -362,4 +363,90 @@ def test_trigger_refuted_by_quotes_is_noted_as_blocked(pool_run, monkeypatch):
         assert [(r["rule"], r["outcome"]) for r in rows] == [("continuous_50pct_trigger", "blocked")], \
             "noted at most once per 5 minutes"
         assert set(rows[0]["data"]["quote"]) == {l["symbol"] for l in legs}
+    pool_run(go)
+
+
+# ── Convergence survives a restart ─────────────────────────────────────
+# DTT Nifty Strangle, 28 Oct: converged into a straddle (trailing stop),
+# then the strategy was rebuilt from the database (a restart, the
+# runner's re-sync from the book, an automatic restart). Nothing saved
+# that it had converged, so it came back a strangle: at 10:21 the 50%
+# roll closed 22850CE and sold 22850CE again, and the trailing stop
+# started over.
+
+async def converge(sim):
+    """A rally of 25 points a minute from 10:00 rolls the put up to the
+    call's strike (the strike-cross cap): a straddle by about 11:14."""
+    s = sim.runner.strategy
+    t, spot = sim.market.now, sim.market.spot[sim.underlying]
+    for _ in range(150):
+        t += timedelta(minutes=1)
+        spot += 25
+        await sim.tick(t, spot=spot)
+        if s.converged:
+            return t, spot
+    raise AssertionError("never converged")
+
+
+def converged_state(s):
+    return s.converged, s.convergence_premium, s._trailing_floor
+
+
+def test_a_straddle_comes_back_converged_with_its_trailing_stop_after_a_restart(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch, convergence_mode="trailing_stop")
+        t, spot = await converge(sim)
+        strike = sim.runner.strategy.legs["CE"][0]["strike"]
+        for _ in range(3):             # back toward the strike: the combined premium falls, the stop trails down
+            t += timedelta(minutes=1)
+            spot -= 10 if spot > strike else 0
+            await sim.tick(t, spot=spot)
+        before = converged_state(sim.runner.strategy)
+        assert before[0] and before[2] < before[1], "the stop trailed down before the restart"
+        await sim.restart()
+        assert converged_state(sim.runner.strategy) == before
+    pool_run(go)
+
+
+def test_a_straddle_saved_before_this_was_saved_is_rebuilt_from_its_legs(pool_run, monkeypatch):
+    """The live case: nothing saved (the deployment's state from before
+    this fix). One CE and one PE at one strike is a straddle; its
+    premium at convergence comes back from the fill that made it. The
+    50% roll that re-sold the same strike doesn't happen."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch, convergence_mode="trailing_stop")
+        t, spot = await converge(sim)
+        premium = sim.runner.strategy.convergence_premium
+        await pool.execute("DELETE FROM deployment_state WHERE deployment_id = $1", sim.dep_id)
+        await sim.restart()
+        s = sim.runner.strategy
+        assert s.converged and abs(s.convergence_premium - premium) < 0.01 and s._trailing_floor == s.convergence_premium
+        n = len(await sim.fills())
+        down = await find_spot(sim, lambda p: side_sum(p, "CE") <= 0.48 * side_sum(p, "PE"), step=-25)
+        await sim.tick(t + timedelta(minutes=1), spot=down)
+        later = (await sim.fills())[n:]
+        assert "continuous_50pct_trigger" not in {f["reason"] for f in later}, "frozen: only the stop can close it"
+    pool_run(go)
+
+
+def test_an_entry_on_one_strike_is_a_straddle_from_the_start(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, S, cfg(S, convergence_mode="trailing_stop"), mode="positional")
+        await sim.tick("09:30", spot=25000)
+        s = sim.runner.strategy
+        real = s.resolver.get_leg_by_premium
+        picked = {}
+
+        async def same_strike(instrument, expiry, side, target, **kw):
+            if side == "PE" and "CE" in picked:
+                leg = await s.resolver.get_leg(instrument, expiry, picked["CE"], "PE")
+                return dataclasses.replace(leg, last_price=await s.resolver.get_ltp(leg))
+            leg = await real(instrument, expiry, side, target, **kw)
+            picked[side] = leg.strike
+            return leg
+        monkeypatch.setattr(s.resolver, "get_leg_by_premium", same_strike)
+        await sim.tick("10:00", spot=25000)
+        legs = await shorts(sim)
+        assert len(legs) == 2 and len({float(p["metadata"]["strike"]) for p in legs}) == 1
+        assert s.converged and abs(s.convergence_premium - sum(float(p["avg_entry_price"]) for p in legs)) < 0.01
     pool_run(go)

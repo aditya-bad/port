@@ -38,16 +38,18 @@ def trading_days(start, n):
     return out
 
 
-async def run(pool, monkeypatch, strategy, crash_every=None, name="run"):
+async def run(pool, monkeypatch, strategy, crash_every=None, name="run", path=market, over=None, watch=None):
     mode = "positional" if strategy in POSITIONAL else "intraday"
-    sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), mode=mode, spot=25000, name=name)
+    sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy, **(over or {})), mode=mode, spot=25000, name=name)
     step = 5 if strategy in DAYS else 1
     n = 0
     for i, d in enumerate(trading_days(sim.market.today, DAYS.get(strategy, 3))):
-        spot = market(i + 1)
+        spot = path(i + 1)
         t, end = sim_time(d, "09:15"), sim_time(d, "15:29")
         while t <= end:
             await sim.tick(t, spot=spot(t))
+            if watch is not None:
+                watch(sim.runner.strategy)
             n += step
             if crash_every and n % crash_every == 0:
                 await sim.restart()          # no on_stop, no dump: a hard kill
@@ -82,6 +84,45 @@ def test_a_crashed_and_restarted_strategy_trades_exactly_like_an_uninterrupted_o
                 f"  uninterrupted: {base[diff] if diff < len(base) else 'none'}\n"
                 f"  crashed:       {crashed[diff] if diff < len(crashed) else 'none'}\n"
                 f"  ({len(base)} vs {len(crashed)} fills)")
+    pool_run(go)
+
+
+# The sine market above never takes the strangle to a straddle, so its
+# converged state was never restarted mid-way: DTT Nifty Strangle, 28 Oct,
+# came back from a rebuild as a strangle and re-sold its straddle's call.
+# This path does: a rally of 25 points a minute from 10:00 rolls the put
+# up to the call's strike by about 11:15 (day 1); then it drifts back
+# (the trailing stop trails, and fires), and day 2 re-enters and rallies
+# again.
+
+def converging(day_i):
+    def spot(t):
+        m = (t.hour * 60 + t.minute) - 600
+        up = 25 * max(0, min(m, 80))
+        back = 4 * max(0, m - 80)
+        return 25000 + (day_i - 1) * 300 + up - min(back, up * 0.6)
+    return spot
+
+
+@pytest.mark.parametrize("crash_every", CRASH_EVERY)
+def test_a_converged_strangle_restarted_trades_and_holds_state_like_an_uninterrupted_one(crash_every, pool_run, monkeypatch):
+    """Same fills, and after every tick the same convergence: converged,
+    its premium, the trailing stop's low."""
+    def recorder(into):
+        return lambda st: into.append((st.converged, st.convergence_premium, st._trailing_floor))
+
+    async def go(pool):
+        over = {"convergence_mode": "trailing_stop"}
+        base_state, crashed_state = [], []
+        base = await run(pool, monkeypatch, "strangle_monthly_v2", name="uninterrupted", path=converging, over=over,
+                         watch=recorder(base_state))
+        assert any(c for c, _, _ in base_state), "the path must reach a straddle, or this proves nothing"
+        crashed = await run(pool, monkeypatch, "strangle_monthly_v2", crash_every=crash_every, name="crashed",
+                            path=converging, over=over, watch=recorder(crashed_state))
+        assert crashed == base, next(
+            f"fill #{i}: uninterrupted {a}, crashed {b}" for i, (a, b) in enumerate(zip(base + [None], crashed + [None])) if a != b)
+        assert crashed_state == base_state, next(
+            f"tick #{i}: uninterrupted {a}, crashed {b}" for i, (a, b) in enumerate(zip(base_state, crashed_state)) if a != b)
     pool_run(go)
 
 
