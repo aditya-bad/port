@@ -167,6 +167,16 @@ exempt, it must close regardless:
      inside Kite's rate limit). If quote() itself fails, the tick prices
      — already known fresh from layer 1 — are used, so a Kite REST
      hiccup can never stop the strategy from managing its position.
+  3. A leg that doesn't trade — a thin contract (monthly BANKEX options
+     can go a whole session without a trade) used to hold all
+     management all day. From 09:20, a short leg with no trade yet today
+     is priced from Kite's live quote instead: the bid/ask midpoint, and
+     only when both sides of its book are quoted (a one-sided book holds,
+     as before, and says so). Quoted at most every 15 seconds, the price
+     kept for 90 if a quote fails; management, the trigger confirmation
+     above and the leg's close all use it. Each new quoted price is logged
+     (QUOTED) so the day check's replay, which has no order book, prices
+     the leg as the app did.
 
 ──────────────────────────────────────────────────────────────────────
 4. CHECKPOINT PROFIT TARGET
@@ -637,12 +647,28 @@ _SESSION_OPEN = time(9, 15)
 _SESSION_CLOSE = time(15, 30)
 # How long a trigger refuted by live quotes is treated as not fired.
 _CONFIRM_COOLDOWN = timedelta(seconds=15)
+# A short leg with no trade yet today, priced from its live quote (layer 3).
+_QUOTE_STALE_FROM = time(9, 20)
+_QUOTE_STALE_EVERY = timedelta(seconds=15)
+_QUOTE_STALE_KEEP = timedelta(seconds=90)
+QUOTED = "Priced from a live quote: not traded yet today"
 # A trigger that keeps being refuted is noted in the decision log at most this often.
 _REFUTE_NOTE_EVERY = timedelta(minutes=5)
 
 
 def _naive_ist(dt: datetime) -> datetime:
     return dt.astimezone(_IST).replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def _quote_mid(q: dict) -> Optional[float]:
+    """Bid/ask mid from a kite.quote() entry, only when both sides are
+    quoted: no last-price fallback (for a leg with no trade today, its
+    last price is the previous session's)."""
+    depth = q.get("depth") or {}
+    buy, sell = depth.get("buy") or [], depth.get("sell") or []
+    bid = buy[0].get("price") if buy else None
+    ask = sell[0].get("price") if sell else None
+    return (bid + ask) / 2 if bid and ask else None
 
 
 def _quote_price(q: dict) -> Optional[float]:
@@ -779,6 +805,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # Geek mode's decision log (runner.record_decision): what to note
         # next, and when each kind of refute was last noted.
         self._stale_report: Optional[list] = None
+        self._stale_quotes: dict[int, tuple[float, datetime]] = {}   # token -> (bid/ask mid, when quoted)
+        self._stale_quoted_at: Optional[datetime] = None
+        self._stale_quote_logged: dict[int, float] = {}
+        self._manage_ts: Optional[datetime] = None
         self._refute_noted: dict[str, datetime] = {}
         self._decision_days: set = set()
         # Attributes named EXACTLY as intraday_dtt_adjusted's own methods
@@ -1143,9 +1173,16 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 await note(ts, "leg_prices", "ok", "Every leg priced again")
 
         # STALE-PRICE GUARD layer 1 (see module docstring): no decision
-        # until every open short leg has actually traded this session.
-        if self._stale_legs(runner, ts):
-            note = getattr(runner, "note_decision", None)
+        # until every open short leg has traded this session, or (layer
+        # 3) is priced from a live two-sided quote.
+        self._manage_ts = ts
+        stale = self._stale_legs(runner, ts)
+        quoted = await self._quote_stale(runner, ts, stale) if stale else None
+        if quoted is not None:
+            prices.update(quoted)
+            if note is not None:
+                await note(ts, "stale_price_guard", "ok", f"Priced {', '.join(stale)} from live quotes: not traded yet today")
+        elif stale:
             if note is not None:   # every tick it holds: held long enough, it's raised as an issue
                 await note(ts, "stale_price_guard", "blocked", "Holding all management: a short leg hasn't traded yet this session", fault=True)
             if self._stale_report:
@@ -1317,6 +1354,56 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             await self._continuous_adjustment_check(runner, ts, prices)
 
     # ── STALE-PRICE GUARD (see module docstring) ────────────────────────
+
+    async def _quote_stale(self, runner, ts, stale: list[str]) -> Optional[dict[int, float]]:
+        """Layer 3: {token: bid/ask mid} for every short leg in `stale`
+        (symbols with no trade yet today), from Kite's live quote, or None
+        (before 09:20, a one-sided book, or no quote to be had): hold."""
+        if _naive_ist(ts).time() < _QUOTE_STALE_FROM:
+            return None
+        legs = [leg for side_legs in self.legs.values() for leg in side_legs if leg["symbol"] in stale]
+        fresh = self._stale_quoted_at is not None and ts - self._stale_quoted_at < _QUOTE_STALE_EVERY
+        if fresh and all(leg["token"] in self._stale_quotes for leg in legs):
+            return {leg["token"]: self._stale_quotes[leg["token"]][0] for leg in legs}
+        keys = {leg["token"]: f"{self.exchange}:{leg['symbol']}" for leg in legs}
+        try:
+            quotes = await self.resolver.get_quotes(list(keys.values()))
+        except Exception as e:
+            kept = {t: v for t, v in self._stale_quotes.items() if t in keys and ts - v[1] <= _QUOTE_STALE_KEEP}
+            if len(kept) == len(keys):
+                return {t: v[0] for t, v in kept.items()}
+            logger.warning("%s: no live quote for %s (%s) — holding", runner.deployment_name, ", ".join(stale), e)
+            return None
+        self._stale_quoted_at = ts
+        out = {}
+        for token, key in keys.items():
+            mid = _quote_mid(quotes.get(key) or {})
+            if mid is None:
+                self._stale_quotes.pop(token, None)
+                await self._decide_once_a_day(
+                    runner, ts, "stale_price_guard", "blocked",
+                    f"Holding: {key.split(':', 1)[1]} hasn't traded today and its quote has no bid and ask to price it from")
+                return None
+            out[token] = mid
+            self._stale_quotes[token] = (mid, ts)
+        changed = {t: px for t, px in out.items() if self._stale_quote_logged.get(t) != round(px, 2)}
+        if changed:
+            for t, px in changed.items():
+                self._stale_quote_logged[t] = round(px, 2)
+            sym = {leg["token"]: leg["symbol"] for leg in legs}
+            await self._decide(runner, ts, "stale_price_guard", "no_action", QUOTED,
+                               {"quote": {sym[t]: round(px, 2) for t, px in out.items()},
+                                "tokens": {str(t): round(px, 2) for t, px in out.items()}})
+        return out
+
+    async def exit_price(self, runner, token: int, symbol: str, entry: float) -> tuple:
+        """A leg priced from a live quote (layer 3) closes at that quote,
+        not at the previous session's last trade still in the tick cache."""
+        q = getattr(self, "_stale_quotes", {}).get(int(token))   # set by on_start
+        at = getattr(self, "_manage_ts", None)
+        if q is not None and at is not None and at - q[1] <= _QUOTE_STALE_KEEP:
+            return float(q[0]), "quote"
+        return await super().exit_price(runner, token, symbol, entry)
 
     def _stale_legs(self, runner, ts) -> list[str]:
         """Symbols of open short legs whose cached price was last traded

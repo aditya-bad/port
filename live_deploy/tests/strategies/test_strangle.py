@@ -253,6 +253,98 @@ def test_stale_price_hold_is_noted_as_blocked(pool_run, monkeypatch):
     pool_run(go)
 
 
+async def next_day_untraded_call(sim, last=None):
+    """The next day, with the CE leg not traded yet: its cached price is
+    the previous session's (`last`, if given, in place of the model's)."""
+    d2 = sim.market.today + timedelta(days=1)
+    tok = int(next(p for p in await shorts(sim) if p["symbol"].endswith("CE"))["instrument_token"])
+    sim.market.now = sim.market.now.replace(day=d2.day)
+    orig = sim.dispatcher.publish
+
+    def publish():
+        orig()
+        sim.dispatcher.last_price_times[tok] = sim.dispatcher.last_price_times[tok] - timedelta(days=1)
+        if last is not None:
+            sim.dispatcher.last_prices[tok] = last
+    sim.dispatcher.publish = publish
+    return d2, tok
+
+
+def test_an_untraded_leg_is_priced_from_its_live_quote_from_09_20(pool_run, monkeypatch):
+    """DTT Bankex Strangle, 28 Oct: a monthly BANKEX call that didn't trade
+    all morning held every rule from 09:15, with the checkpoint met. From
+    09:20 the leg is priced from its bid/ask mid; the checkpoint fires,
+    and the leg closes at the quote, not at yesterday's last trade."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        call = next(p for p in await shorts(sim) if p["symbol"].endswith("CE"))
+        d2, tok = await next_day_untraded_call(sim, last=400.0)
+        sim.market.vol = 0.13          # premiums fall: the checkpoint is met on the quotes
+        await sim.tick(f"{d2} 09:18", spot=25000)
+        assert closes(await sim.fills()) == [], "before 09:20 it still holds"
+        await sim.tick(f"{d2} 09:21", spot=25000)
+        fills = closes(await sim.fills())
+        assert "checkpoint_target" in {f["reason"] for f in fills}
+        ce = next(f for f in fills if f["position_id"] == call["id"])
+        assert float(ce["price"]) < 300, "closed at the quote's mid, not the 400 from yesterday"
+        rows = [r for r in await decisions(sim) if r["rule"] == "stale_price_guard" and r["outcome"] == "no_action"]
+        assert len(rows) == 1 and rows[0]["summary"] == "Priced from a live quote: not traded yet today"
+        assert set(rows[0]["data"]["tokens"]) == {str(tok)}
+    pool_run(go)
+
+
+def test_a_one_sided_book_still_holds_and_says_so_once(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        d2, tok = await next_day_untraded_call(sim)
+        strat = sim.runner.strategy
+
+        async def no_bids(keys):
+            return {k: {"last_price": 150.0, "depth": {"buy": [], "sell": [{"price": 160.0}]}} for k in keys}
+        monkeypatch.setattr(strat.resolver, "get_quotes", no_bids)
+        sim.market.vol = 0.13
+        await sim.tick(f"{d2} 09:21", spot=25000)
+        await sim.tick(f"{d2} 09:40", spot=25000)
+        assert closes(await sim.fills()) == []
+        rows = [r for r in await decisions(sim) if "no bid and ask" in r["summary"]]
+        assert len(rows) == 1 and rows[0]["outcome"] == "blocked"
+    pool_run(go)
+
+
+def test_the_quote_is_asked_for_at_most_every_15s_and_kept_90s_if_kite_fails(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        d2, tok = await next_day_untraded_call(sim)
+        strat = sim.runner.strategy
+        asked, fail = [], [False]
+        real = strat.resolver.get_quotes
+
+        async def counted(keys):
+            asked.append(sim.market.now)
+            if fail[0]:
+                raise RuntimeError("Kite quote timed out")
+            return await real(keys)
+        monkeypatch.setattr(strat.resolver, "get_quotes", counted)
+        t0 = ist_at(sim, d2, "09:30")
+        for s in (0, 5, 10, 16):
+            await sim.tick(t0 + timedelta(seconds=s), spot=25000)
+        assert len(asked) == 2, "09:30:00 and 09:30:16"
+        assert strat._stale_quotes.get(tok)
+        fail[0] = True
+        await sim.tick(t0 + timedelta(seconds=90), spot=25000)
+        assert strat._manage_ts == t0 + timedelta(seconds=90)
+        assert await strat._quote_stale(sim.runner, t0 + timedelta(seconds=90), [strat.legs["CE"][0]["symbol"]]) is not None, \
+            "a quote 74s old is kept while Kite fails"
+        assert await strat._quote_stale(sim.runner, t0 + timedelta(seconds=120), [strat.legs["CE"][0]["symbol"]]) is None, \
+            "one over 90s old isn't"
+    pool_run(go)
+
+
+def ist_at(sim, day, hhmm):
+    h, m = map(int, hhmm.split(":"))
+    return sim.market.now.replace(year=day.year, month=day.month, day=day.day, hour=h, minute=m, second=0, microsecond=0)
+
+
 def test_trigger_refuted_by_quotes_is_noted_as_blocked(pool_run, monkeypatch):
     async def go(pool):
         sim = await start(pool, monkeypatch)

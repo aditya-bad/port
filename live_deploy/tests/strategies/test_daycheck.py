@@ -305,6 +305,45 @@ def test_the_refusal_spans_from_the_apps_log():
     assert [span(s) for s in got["eod_gap_check"]] == [("11:00:00", "11:05:30", 1)]
 
 
+def test_the_replay_prices_an_untraded_leg_at_the_quote_the_app_logged():
+    """A leg with no trade yet today is priced live from its bid/ask mid,
+    each new price logged. The replay's quotes are made up around the
+    last trade (yesterday's, for such a leg), so it takes the app's: the
+    last one logged at or before the tick, and holds (None) before the
+    first, as the app did."""
+    import asyncio
+    from app.repair import engine as E
+    from app.strategies import strangle_monthly_v2 as V
+
+    assert E.QUOTED == V.QUOTED
+    seen = []
+
+    class Conn:
+        async def fetch(self, sql, *args):
+            seen.append(args)
+            day = datetime(2026, 10, 28, tzinfo=IST)
+            return [{"decided_at": day.replace(hour=9, minute=20, second=4), "data": {"tokens": {"11": 52.5}}},
+                    {"decided_at": day.replace(hour=9, minute=41), "data": '{"tokens": {"11": 47.05, "12": 226.4}}'}]
+    quotes = asyncio.run(E._app_quotes(Conn(), "dep", date(2026, 10, 28)))
+    assert seen[0][1] == V.QUOTED
+    assert quotes == {11: [(datetime(2026, 10, 28, 9, 20, 4), 52.5), (datetime(2026, 10, 28, 9, 41), 47.05)],
+                      12: [(datetime(2026, 10, 28, 9, 41), 226.4)]}
+
+    strat = V.StrangleMonthlyV2Strategy()
+    strat.legs = {"CE": [{"token": 11, "symbol": "BANKEX26NOVCE"}], "PE": [{"token": 12, "symbol": "BANKEX26NOVPE"}]}
+    E._honour_quotes(strat, quotes)
+
+    class Runner:
+        strategy = strat
+    at = lambda hhmm: datetime.combine(date(2026, 10, 28), time.fromisoformat(hhmm), tzinfo=IST)   # noqa: E731
+    run = lambda hhmm, legs: asyncio.run(strat._quote_stale(Runner(), at(hhmm), legs))   # noqa: E731
+    assert run("09:20", ["BANKEX26NOVCE"]) is None, "before the app's first quote: hold"
+    assert run("09:30", ["BANKEX26NOVCE"]) == {11: 52.5}
+    assert run("09:30", ["BANKEX26NOVCE", "BANKEX26NOVPE"]) is None, "the put had no quote yet"
+    assert run("10:00", ["BANKEX26NOVCE", "BANKEX26NOVPE"]) == {11: 47.05, 12: 226.4}
+    assert strat._stale_quotes[11] == (47.05, at("10:00")), "a close in the replay takes it too (exit_price)"
+
+
 def test_a_difference_hanging_on_a_minute_read_two_ways_is_ambiguous(pool_run, monkeypatch):
     path = lambda m: (25000, 25600, 24400, 25000) if f"{m:%H:%M}" == "13:05" else (25000, 25004, 24996, 25000)
 

@@ -348,6 +348,52 @@ async def _app_refusals(conn, dep_id, day: date, app_fills: list) -> dict[str, l
     return out
 
 
+# A short leg with no trade yet today is priced from its bid/ask mid
+# (strangle_monthly_v2 _quote_stale), each new price logged with this.
+# The replay's quotes are made up around the last trade (yesterday's,
+# for such a leg), so it takes the app's instead.
+QUOTED = "Priced from a live quote: not traded yet today"
+
+
+async def _app_quotes(conn, dep_id, day: date) -> dict[int, list[tuple[datetime, float]]]:
+    """{token: [(at, price)]}: each live-quote price the app logged for a
+    leg that hadn't traded, in order."""
+    start = datetime.combine(day, time(0), tzinfo=IST)
+    rows = await conn.fetch(
+        "SELECT decided_at, data FROM strategy_decisions WHERE deployment_id = $1 AND outcome = 'no_action' "
+        "AND summary = $2 AND decided_at >= $3 AND decided_at < $4 ORDER BY decided_at",
+        dep_id, QUOTED, start, start + timedelta(days=1))
+    out: dict[int, list[tuple[datetime, float]]] = {}
+    for r in rows:
+        data = json.loads(r["data"]) if isinstance(r["data"], str) else (r["data"] or {})
+        for tok, px in (data.get("tokens") or {}).items():
+            out.setdefault(int(tok), []).append((naive_ist(r["decided_at"]), float(px)))
+    return out
+
+
+def _honour_quotes(strategy, quotes: dict) -> None:
+    """A leg the app priced from its live quote is priced the same in the
+    replay: the last price the app logged for it at or before the tick.
+    None (hold) before the app had one, as it held then."""
+    if getattr(type(strategy), "_quote_stale", None) is None:
+        return
+
+    async def _quote_stale(runner, ts, stale):
+        me = runner.strategy
+        t = naive_ist(ts)
+        legs = [leg for side_legs in me.legs.values() for leg in side_legs if leg["symbol"] in stale]
+        out = {}
+        for leg in legs:
+            px = next((p for at, p in reversed(quotes.get(int(leg["token"]), ())) if at <= t), None)
+            if px is None:
+                return None
+            out[leg["token"]] = px
+            me.__dict__.setdefault("_stale_quotes", {})[leg["token"]] = (px, ts)
+        return out
+
+    strategy._quote_stale = _quote_stale
+
+
 OHLC = ("open", "high", "low", "close")
 
 
@@ -531,6 +577,7 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     strategy = get_strategy_class(dep["strategy_name"])()
     held_off: list[dict] = []
     _honour_refusals(strategy, await _app_refusals(conn, dep["id"], window.day, app_fills or []), held_off)
+    _honour_quotes(strategy, await _app_quotes(conn, dep["id"], window.day))
     runner = ReplayRunner(dep, TxPool(conn), disp, strategy, clock, run, window)
     runner.app_prices = app_prices
     minutes = window.minutes
