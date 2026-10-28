@@ -6,10 +6,11 @@
 
 import { api } from '../core/api.js';
 import { applyPrices } from './lensprice.js';
+import { importSummary } from './lensimport.js';
 
 const STALE_MS = 60000;
 const st = { h: null, hErr: null, hAt: 0, busy: false, y: null, yErr: null, following: false, live: false, liveAt: null,
-  t: null, tErr: null, tBusy: false, tFollowing: false, imported: null };
+  t: null, tErr: null, tBusy: false, tFollowing: false, imported: null, importNote: null };
 const subs = new Set();
 
 export const lens = st;
@@ -104,20 +105,28 @@ async function followCurve() {
   } finally { st.tFollowing = false; emit(); }
 }
 
+// Throws what went wrong, after noting it (st.importNote) for the page.
 export async function importFiles(fileList) {
-  const files = [];
-  for (const f of fileList) files.push({ name: f.name, text: await f.text() });
-  if (!files.length) return null;
-  st.tBusy = true; emit();
+  const names = [...fileList].map(f => f.name);
+  if (!names.length) return null;
+  st.tBusy = true; st.importNote = null; emit();
   try {
+    const files = [];
+    for (const f of fileList) files.push({ name: f.name, text: await f.text() });
     const r = await api.lensImport(files);
     st.imported = r.files;
+    st.importNote = importSummary(r.files);
     return r.files;
+  } catch (e) {
+    st.importNote = importSummary(null, e, names);
+    throw e;
   } finally {
     st.tBusy = false;
     await loadTrades();
   }
 }
+
+export function dismissImportNote() { st.importNote = null; emit(); }
 
 export async function removeImport(id) {
   await api.lensRemoveImport(id);

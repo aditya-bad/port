@@ -5,7 +5,7 @@ import { html, mount, actions, on, $ } from '../../core/dom.js';
 import { hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
 import { say, fail } from '../../ui/toast.js';
-import { lens, onLens, loadHoldings, startLive, stopLive, loadTrades, importFiles, removeImport } from '../../data/lens.js';
+import { lens, onLens, loadHoldings, startLive, stopLive, loadTrades, importFiles, removeImport, dismissImportNote } from '../../data/lens.js';
 import * as overview from './overview.js';
 import * as shares from './shares.js';
 import * as funds from './funds.js';
@@ -75,6 +75,7 @@ export default {
       dir: () => { ui.dir = ui.dir === 'asc' ? 'desc' : 'asc'; paint(); },
       open: x => { ui.open = ui.open === x.s ? null : x.s; paint(); },
       inspect: (x, el) => enterInspector(el),
+      dismissImport: () => dismissImportNote(),
       openTrade: x => { ui.openTrade = ui.openTrade === x.s ? null : x.s; paint(); },
       removeImport: async x => {
         if (!window.confirm('Remove this file and the trades it brought? Import it again to have them back.')) return;
@@ -86,11 +87,11 @@ export default {
     const offFiles = on(main, 'change', '[data-f="files"]', async (e, el) => {
       const files = [...(el.files || [])];
       if (!files.length) return;
+      el.value = '';   // the same file can be chosen again
       try {
-        const r = await importFiles(files);
-        const added = (r || []).reduce((n, f) => n + f.added, 0);
-        say(`${added} new trade${added === 1 ? '' : 's'} imported.`);
-      } catch (err) { fail(err, 'Couldn’t import the files'); }
+        await importFiles(files);
+        say(lens.importNote.title);
+      } catch (err) { fail(err, 'Upload failed: nothing was imported'); }
     });
     paint();
     loadHoldings();

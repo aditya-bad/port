@@ -10,7 +10,7 @@ import { inr, pct, num, price, plural, tone, dShort, fromDay } from '../../core/
 import { sect, stat, empty, loading } from '../../ui/components.js';
 import { line, yOf, upDownBars } from '../../ui/charts.js';
 import { registerScrub } from '../../ui/tooltip.js';
-import { pctOr, inr0, signed } from './parts.js';
+import { pctOr, inr0, signed, importBanner, importButton } from './parts.js';
 
 const CH = 240;
 const KIND = { equity: 'Share', mf: 'Fund' };
@@ -24,15 +24,7 @@ function how() {
 }
 
 function importer(st) {
-  const r = st.imported;
-  return html`<div class="lens-import">
-    <label class="btn btn-sm ${st.tBusy ? 'disabled' : ''}">
-      <input type="file" accept=".csv,.tsv,.txt,text/csv,text/plain" multiple data-f="files" ${st.tBusy ? 'disabled' : ''} hidden>
-      ${st.tBusy ? 'Reading…' : 'Import tradebook files'}</label>
-    ${r ? html`<ul class="lens-imported small" data-imported>${r.map(f => html`<li><b>${f.name || 'file'}</b>: ${plural(f.rows, 'trade')},
-      ${f.added} new${f.skipped ? `, ${f.skipped} already here` : ''}${f.first_day ? ` · ${dShort(fromDay(f.first_day))} to ${dShort(fromDay(f.last_day))}` : ''}
-      ${f.problems.length ? html`<span class="warn"> · ${plural(f.problems.length, 'row')} not read: ${f.problems.slice(0, 3).join('; ')}${f.problems.length > 3 ? '…' : ''}</span>` : ''}</li>`)}</ul>` : ''}
-  </div>`;
+  return html`<div class="lens-import">${importButton(st.tBusy)}${importBanner(st.importNote)}</div>`;
 }
 
 // Your shares day by day against the same money in Nifty, in rupees.

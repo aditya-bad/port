@@ -2,7 +2,8 @@
 // LinckTrade's Geek mode (its shell and styles), over app/lens_inspect.py:
 // your own money against what "invested" shows, the yearly tax-free
 // long-term gain, your figures without some holdings, and what each
-// holding did. Read-only.
+// holding did. Nothing here trades; tradebook files can be uploaded
+// (as on Trades), and what the upload came to is said here.
 
 import { api } from '../../core/api.js';
 import { html, mount, $, $$, on, actions } from '../../core/dom.js';
@@ -12,7 +13,9 @@ import { empty } from '../../ui/components.js';
 import { line, yOf, centreBar } from '../../ui/charts.js';
 import { registerScrub } from '../../ui/tooltip.js';
 import { head, tiles } from '../geek/ui.js';
-import { inr0, signed, pctOr } from './parts.js';
+import { inr0, signed, pctOr, importBanner, importButton } from './parts.js';
+import { lens, onLens, importFiles, dismissImportNote } from '../../data/lens.js';
+import { say, fail } from '../../ui/toast.js';
 
 // [key, label, group, keyboard key]
 export const VIEWS = [
@@ -255,7 +258,8 @@ function dragView(d) {
     <p class="gk-note">XIRR from your imported trades (each holding’s trades taken out, everything else as it was). The year: today’s shares at each day’s close, with and without it. Funds have no daily prices, so they’re only in the XIRR.</p>`;
 }
 
-const noTrades = () => html`${empty('No trades imported', 'This needs your Console tradebook. Import it on LinckLens › Trades, then come back.')}<p class="small"><a href="${href('lens/trades')}">Go to Trades →</a></p>`;
+const noTrades = () => html`${empty('No trades imported', 'This needs your Console tradebook: Console › Reports › Tradebook, the CSV for each financial year (equity, and mutual funds).')}
+  <p class="small ins-up">${importButton(lens.tBusy, 'Upload tradebook files', 'btn btn-sm btn-primary')} or <a href="${href('lens/trades')}">see Trades →</a></p>`;
 
 const VIEW = { own: ownView, ideas: ideasView, tax: taxView, whatif: whatifView, drag: dragView };
 
@@ -268,12 +272,13 @@ export default {
     function top() {
       const o = st.data && st.data.own;
       return html`<img class="mark gk-mark" src="/icons/linck-mark.svg" alt="" width="24" height="24"><img class="mark gk-mark mark-paper" src="/icons/linck-mark-paper.svg" alt="" width="24" height="24">
-        <span class="gk-badge">INSPECTOR</span><a class="gk-name" href="${href('lens')}">LinckLens</a>
+        <span class="gk-badge">INSPECTOR</span><a class="gk-name ins-name" href="${href('lens')}">LinckLens</a>
         <span class="grow"></span>
         ${o ? html`<span class="gk-kv"><span>Own money</span><b>${inr0(o.own)}</b></span>
           <span class="gk-kv hide-m"><span>At cost</span><b>${inr0(o.cost_now)}</b></span>
           <span class="gk-kv hide-m"><span>Worth</span><b>${inr0(o.value)}</b></span>
           <span class="gk-kv hide-m"><span>Gain on yours</span><b class="${tone(o.gain)}">${pctOr(o.gain_pct, 1)}</b></span>` : ''}
+        ${importButton(lens.tBusy, html`<span aria-hidden="true">↑</span><span class="hide-m">Upload tradebook</span>`, 'gk-exit ins-upload')}
         <button type="button" class="gk-exit" data-act="exit">Exit <kbd>Esc</kbd></button>`;
     }
     const rail = () => html`${GROUPS.map(gr => html`<div class="gk-grp"><h4>${gr}</h4>${VIEWS.filter(v => v[2] === gr).map(([k, l, , key]) => html`
@@ -281,9 +286,10 @@ export default {
       <div class="foot">Keys switch views · Esc leaves<br>Read-only: nothing here trades</div>`;
 
     function body() {
-      if (st.err) return empty(st.err.status === 409 ? 'Kite isn’t connected' : 'Couldn’t read it', st.err.message);
-      if (!st.data) return html`<div class="skel" style="height:300px"></div>`;
-      return VIEW[view[0]](st.data);
+      const note = importBanner(lens.importNote);
+      if (st.err) return html`${note}${empty(st.err.status === 409 ? 'Kite isn’t connected' : 'Couldn’t read it', st.err.message)}`;
+      if (!st.data) return html`${note}<div class="skel" style="height:300px"></div>`;
+      return html`${note}${VIEW[view[0]](st.data)}`;
     }
     function paintView() {
       const el = $('#gkView', main);
@@ -311,15 +317,38 @@ export default {
       } catch (e) { if (st.wiKey === key) { st.wiErr = e; paintView(); } }
     }
 
-    if (!st.data) {
+    function load() {
       api.lensInspect().then(d => { st.data = d; st.err = null; paintView(); if (view[0] === 'whatif') loadWhatif(); })
         .catch(e => { st.err = e; paintView(); });
-    } else if (view[0] === 'whatif') loadWhatif();
+    }
+    if (!st.data) load();
+    else if (view[0] === 'whatif') loadWhatif();
+
+    // an upload: busy, then what it came to, and the views read again
+    let busy = lens.tBusy, note = lens.importNote;
+    const offLens = onLens(s => {
+      if (s.tBusy === busy && s.importNote === note) return;
+      busy = s.tBusy; note = s.importNote;
+      paintView();
+    });
+    const offFiles = on(main, 'change', '[data-f="files"]', async (e, el) => {
+      const files = [...(el.files || [])];
+      el.value = '';
+      if (!files.length) return;
+      try {
+        await importFiles(files);
+        say(lens.importNote.title);
+        st.data = null; st.wi = null; st.wiKey = null;
+        paintView();
+        load();
+      } catch (err) { fail(err, 'Upload failed: nothing was imported'); }
+    });
 
     const offActs = actions(main, {
       exit: (x, el) => leave($('.gk', main), el),
       pick: x => { st.without.has(x.v) ? st.without.delete(x.v) : st.without.add(x.v); loadWhatif(); },
       clear: () => { st.without.clear(); st.wi = null; st.wiKey = null; paintView(); },
+      dismissImport: () => dismissImportNote(),
     });
     const offKeys = on(document, 'keydown', 'body', e => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select, [contenteditable]')) return;
@@ -327,6 +356,6 @@ export default {
       const hit = VIEWS.find(v => v[3].toLowerCase() === e.key.toLowerCase());
       if (hit && hit[0] !== view[0]) { e.preventDefault(); go(`lens/inspect/${hit[0]}`); }
     });
-    return () => { offActs(); offKeys(); };
+    return () => { offActs(); offKeys(); offLens(); offFiles(); };
   },
 };

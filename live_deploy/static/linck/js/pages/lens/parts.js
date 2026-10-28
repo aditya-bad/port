@@ -10,6 +10,22 @@ export const inr0 = v => inr(v, { sign: false });
 export const signed = (v, text) => html`<span class="${tone(v)}">${text}</span>`;
 export const PERIOD_LABEL = { '1W': '1 week', '1M': '1 month', '3M': '3 months', '6M': '6 months', '1Y': '1 year' };
 
+// A tradebook upload's result (data/lensimport.js), until dismissed.
+export function importBanner(n) {
+  if (!n) return '';
+  return html`<div class="lens-upnote ${n.tone}" role="${n.tone === 'bad' ? 'alert' : 'status'}" data-import-note="${n.tone}">
+    <span class="ic" aria-hidden="true">${n.tone === 'good' ? '✓' : '!'}</span>
+    <div><b data-import-title>${n.title}</b>${n.lines.length ? html`<ul class="small" data-imported>${n.lines.map(l => html`<li>${l}</li>`)}</ul>` : ''}</div>
+    <button type="button" class="x" data-act="dismissImport" aria-label="Dismiss">×</button></div>`;
+}
+
+// The upload button: Console tradebook CSVs, several at once.
+export function importButton(busy, label = 'Import tradebook files', cls = 'btn btn-sm') {
+  return html`<label class="${cls} ${busy ? 'disabled' : ''}" data-import-btn>
+    <input type="file" accept=".csv,.tsv,.txt,text/csv,text/plain" multiple data-f="files" aria-label="Upload tradebook files" ${busy ? 'disabled' : ''} hidden>
+    ${busy ? html`<i class="spin" aria-hidden="true"></i> Uploading…` : label}</label>`;
+}
+
 // The year of prices, while the server fetches it a share at a time.
 export function yearProgress(y, yErr) {
   if (yErr) return html`<p class="small mute lens-note" data-year="error">The year of prices couldn’t be read: ${yErr.message}</p>`;

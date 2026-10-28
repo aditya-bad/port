@@ -694,8 +694,23 @@ a.cell-name:hover b { text-decoration: underline; }
 /* trades (pages/lens/trades.js) */
 .lens-import { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 16px; }
 .lens-import label.btn { cursor: pointer; }
-.lens-imported { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
-.lens-imported .warn { color: var(--wt); }
+.lens-import label.btn.disabled, .ins-upload.disabled { opacity: .6; pointer-events: none; }
+/* what an upload came to (pages/lens/parts.js importBanner), Trades and Inspector */
+.lens-upnote { flex: 1 1 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: start;
+  border: 1px solid var(--line); border-left-width: 4px; background: var(--card); padding: 10px 12px; margin-bottom: 14px; }
+.lens-upnote.good { border-left-color: var(--g); }
+.lens-upnote.warn { border-left-color: var(--wt); }
+.lens-upnote.bad { border-left-color: var(--r); }
+.lens-upnote .ic { font-weight: 800; width: 1.4em; height: 1.4em; display: inline-grid; place-items: center; border-radius: 50%; color: var(--card); }
+.lens-upnote.good .ic { background: var(--g); }
+.lens-upnote.warn .ic { background: var(--wt); }
+.lens-upnote.bad .ic { background: var(--r); }
+.lens-upnote ul { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 3px; overflow-wrap: anywhere; }
+.lens-upnote .x { border: 0; background: none; font-size: 18px; line-height: 1; cursor: pointer; color: var(--mute); padding: 0 2px; }
+.ins-up { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.ins-up label { cursor: pointer; }
+.ins-upload { cursor: pointer; }
+@media (max-width: 480px) { .ins-name { display: none; } }
 .lens-months { display: grid; gap: 4px; }
 .fy-tbl, .ltr-tbl { overflow-x: auto; }
 .fy-row { grid-template-columns: minmax(110px, 1fr) repeat(3, minmax(110px, 1fr)) 70px; min-width: 560px; padding: 4px 0; }

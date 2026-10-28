@@ -287,6 +287,8 @@ test('Trades: what the tradebook says, against Kite and the same money in Nifty'
   assert.equal(posted[0].files[0].name, 'tradebook-2024.csv');
   assert.match(posted[0].files[0].text, /^symbol,isin,trade_date/);
   assert.match(await p.locator('[data-imported]').innerText(), /tradebook-2024\.csv: 3 trades, 2 new, 1 already here[\s\S]*1 row not read: line 4: bad trade_date/);
+  assert.equal(await p.locator('[data-import-title]').innerText(), 'Uploaded: 2 new trades imported; some of it couldn’t be read');
+  assert.equal(await p.locator('[data-import-note]').getAttribute('data-import-note'), 'warn');
   p.once('dialog', d => d.accept());
   await p.locator('[data-import="2"] [data-act="removeImport"]').click();
   await until(async () => removed.length > 0);
@@ -324,6 +326,41 @@ test('Trades on the real server, without Kite: a file imported, stored once, and
   await p.waitForSelector('[data-how]');
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
+});
+
+test('Inspector: a tradebook uploaded there says it worked, or that it failed and why', async () => {
+  for (const width of [1440, 390]) {
+    const { ctx, p } = await lensPage({ width, height: width > 400 ? 900 : 844 });
+    let reads = 0;
+    await ctx.route('**/v2/lens/inspect', r => { reads += 1; return r.fulfill({ json: reads === 1 ? { ...FX.inspect, own: null } : FX.inspect }); });
+    let ups = 0;
+    await ctx.route('**/v2/lens/trades/import', r => {
+      ups += 1;
+      return ups === 1
+        ? r.fulfill({ json: { files: [{ id: 9, name: 'tradebook-FY25.csv', rows: 2, added: 2, skipped: 0, first_day: '2025-04-03', last_day: '2026-03-20', problems: [] }] } })
+        : r.fulfill({ status: 413, json: { detail: 'The file is too large' } });
+    });
+    await p.goto(`${BASE}/linck/#/lens/inspect`);
+    await p.waitForSelector('.gk.ins .ins-up [data-import-btn]');
+    assert.match(await p.locator('.gk-view').innerText(), /No trades imported[\s\S]*Console › Reports › Tradebook/);
+    assert.equal(await p.locator('.gk-top [data-import-btn]').count(), 1, 'and from the top bar, on any view');
+    await p.locator('[data-f="files"]').first().setInputFiles({ name: 'tradebook-FY25.csv', mimeType: 'text/csv', buffer: Buffer.from('symbol,isin\n') });
+    await p.waitForSelector('[data-import-note="good"]');
+    assert.match(await p.locator('[data-import-note]').innerText(), /Uploaded: 2 new trades imported[\s\S]*tradebook-FY25\.csv: 2 trades, 2 new · 3 Apr '25 to 20 Mar '26/);
+    await p.waitForSelector('.gk.ins [data-own]');   // read again: the view has the trades now
+    assert.equal(reads, 2);
+    assert.equal(await p.locator('[data-import-note]').count(), 1, 'still said after the view is read again');
+    await p.locator('.gk-top [data-f="files"]').setInputFiles({ name: 'big.csv', mimeType: 'text/csv', buffer: Buffer.from('x') });
+    await p.waitForSelector('[data-import-note="bad"]');
+    assert.match(await p.locator('[data-import-note]').innerText(), /Upload failed: nothing was imported[\s\S]*big\.csv: The file is too large\./);
+    assert.equal(await p.locator('[data-import-note]').getAttribute('role'), 'alert');
+    assert.equal(reads, 2, 'nothing to read again after a failure');
+    assert.equal(await noSideways(p), 0, `no sideways scroll at ${width}px`);
+    await p.click('[data-act="dismissImport"]');
+    await until(async () => (await p.locator('[data-import-note]').count()) === 0);
+    assert.deepEqual(ctx.errors.filter(e => !/413/.test(e)), []);
+    await ctx.close();
+  }
 });
 
 test('Inspector: your own money, the tax-free room, what if, and what each holding did', async () => {
