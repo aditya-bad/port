@@ -3997,12 +3997,12 @@
    {
     "id": 2,
     "filename": "tradebook-EQ-2025-26.csv",
-    "rows": 44,
-    "added": 44,
+    "rows": 46,
+    "added": 46,
     "skipped": 0,
     "problems": [],
     "first_day": "2025-02-24",
-    "last_day": "2026-08-28",
+    "last_day": "2026-09-17",
     "imported_at": "2026-10-27T11:42:00+05:30"
    },
    {
@@ -4021,32 +4021,32 @@
    "as_of": "2026-10-27",
    "first_day": "2025-02-24",
    "last_day": "2026-09-22",
-   "count": 104,
+   "count": 106,
    "other": {
     "count": 0,
     "segments": []
    },
    "totals": {
     "all": {
-     "bought": 2574869.0,
-     "sold": 122900.0,
-     "open_cost": 2459569.0,
+     "bought": 2589923.6,
+     "sold": 137915.0,
+     "open_cost": 2462476.63,
      "value": 2601139.48,
      "unpriced": [],
-     "realized": 7600.0,
-     "unrealized": 141570.48,
+     "realized": 10468.03,
+     "unrealized": 138662.85,
      "xirr": 8.77,
      "count": 22,
      "open": 18
     },
     "equity": {
-     "bought": 1895928.98,
-     "sold": 122900.0,
-     "open_cost": 1780628.98,
+     "bought": 1910983.58,
+     "sold": 137915.0,
+     "open_cost": 1783536.61,
      "value": 1724665.6,
      "unpriced": [],
-     "realized": 7600.0,
-     "unrealized": -55963.38,
+     "realized": 10468.03,
+     "unrealized": -58871.01,
      "xirr": -3.58,
      "count": 17,
      "open": 13
@@ -5034,33 +5034,24 @@
      "isin": "INE010A01011",
      "kind": "equity",
      "exchange": "NSE",
-     "trades": 3,
+     "trades": 5,
      "first_day": "2025-09-02",
-     "last_day": "2026-06-29",
-     "bought": 35248.5,
-     "sold": 0.0,
+     "last_day": "2026-09-17",
+     "bought": 50303.1,
+     "sold": 15015.0,
      "open_qty": 100.0,
-     "open_cost": 35248.5,
-     "avg": 352.485,
+     "open_cost": 38156.13,
+     "avg": 381.5613,
      "price": 484.14,
      "value": 48414.0,
-     "unrealized": 13165.5,
-     "realized": 0,
-     "xirr": 50.99,
-     "return_pct": 37.35,
+     "unrealized": 10257.87,
+     "realized": 2868.03,
+     "xirr": 50.83,
+     "return_pct": 26.09,
      "days": 420,
      "held_qty": 100.0,
      "oversold": 0.0,
      "lots": [
-      {
-       "day": "2025-09-02",
-       "qty": 33.0,
-       "price": 368.09,
-       "days": 420,
-       "term": "long",
-       "long_term_on": "2026-09-03",
-       "gain": 3829.65
-      },
       {
        "day": "2026-01-30",
        "qty": 33.0,
@@ -5078,9 +5069,18 @@
        "term": "short",
        "long_term_on": "2027-06-30",
        "gain": 4930.68
+      },
+      {
+       "day": "2026-09-17",
+       "qty": 33.0,
+       "price": 456.2,
+       "days": 40,
+       "term": "short",
+       "long_term_on": "2027-09-18",
+       "gain": 922.02
       }
      ],
-     "avg_days_open": 268.0
+     "avg_days_open": 143.0
     },
     {
      "key": "INF109K01Z48",
@@ -5522,6 +5522,20 @@
    ],
    "realized": [
     {
+     "symbol": "EMBASSY",
+     "isin": "INE010A01011",
+     "kind": "equity",
+     "fy": "2026-27",
+     "sell_day": "2026-09-17",
+     "buy_day": "2025-09-02",
+     "qty": 33.0,
+     "buy": 368.09,
+     "sell": 455.0,
+     "pnl": 2868.03,
+     "days": 380,
+     "term": "long"
+    },
+    {
      "symbol": "ZOMATO",
      "isin": "INE758T01015",
      "kind": "equity",
@@ -5591,10 +5605,10 @@
     {
      "fy": "2026-27",
      "short": 18900.0,
-     "long": -2000.0,
+     "long": 868.03,
      "slab": 0.0,
-     "sales": 3,
-     "gains": 27500.0,
+     "sales": 4,
+     "gains": 30368.03,
      "losses": -10600.0
     }
    ],
@@ -5736,22 +5750,22 @@
     },
     {
      "month": "2026-09",
-     "bought": 62720.86,
-     "sold": 0.0,
-     "equity": 0.0,
+     "bought": 77775.46,
+     "sold": 15015.0,
+     "equity": 39.6,
      "mf": 62720.86,
-     "trades": 5,
-     "net_in": 2451969.0
+     "trades": 7,
+     "net_in": 2452008.6
     }
    ],
    "behaviour": {
-    "sales": 4,
-    "wins": 2,
+    "sales": 5,
+    "wins": 3,
     "losses": 2,
-    "win_rate": 50.0,
-    "avg_win": 13750.0,
+    "win_rate": 60.0,
+    "avg_win": 10122.68,
     "avg_loss": -9950.0,
-    "avg_days_winners": 345.0,
+    "avg_days_winners": 357.0,
     "avg_days_losers": 270.0,
     "best": [
      {
@@ -5769,6 +5783,14 @@
       "pnl": 8600.0,
       "pct": 31.16,
       "days": 450
+     },
+     {
+      "symbol": "EMBASSY",
+      "kind": "equity",
+      "day": "2026-09-17",
+      "pnl": 2868.03,
+      "pct": 23.61,
+      "days": 380
      },
      {
       "symbol": "PAYTM",
@@ -5805,6 +5827,14 @@
       "days": 130
      },
      {
+      "symbol": "EMBASSY",
+      "kind": "equity",
+      "day": "2026-09-17",
+      "pnl": 2868.03,
+      "pct": 23.61,
+      "days": 380
+     },
+     {
       "symbol": "IRCTC",
       "kind": "equity",
       "day": "2026-07-29",
@@ -5821,8 +5851,8 @@
       "days": 240
      }
     ],
-    "buys": 100,
-    "sells": 4
+    "buys": 101,
+    "sells": 5
    },
    "long_term_soon": [
     {
@@ -6709,35 +6739,35 @@
     1780628.98,
     1780628.98,
     1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98,
-    1780628.98
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58,
+    1780668.58
    ],
    "nifty": [
     426375.47,
@@ -6979,35 +7009,35 @@
     1946935.07,
     1960956.39,
     1962925.47,
-    1985073.81,
-    1984786.53,
-    2002483.11,
-    2027815.97,
-    2055460.82,
-    2044913.59,
-    2060437.62,
-    2029749.99,
-    2012541.11,
-    1981157.75,
-    1999290.97,
-    1979929.36,
-    1980430.02,
-    1978021.24,
-    1978264.33,
-    1969408.04,
-    1973884.96,
-    2003768.65,
-    2005211.93,
-    2014669.46,
-    2031969.78,
-    2029403.27,
-    2009293.35,
-    2000889.71,
-    2019279.73,
-    1992951.66,
-    1983926.96,
-    2001076.4,
-    2014828.72
+    1985113.41,
+    1984826.12,
+    2002523.05,
+    2027856.42,
+    2055501.82,
+    2044954.38,
+    2060478.73,
+    2029790.48,
+    2012581.26,
+    1981197.27,
+    1999330.85,
+    1979968.86,
+    1980469.52,
+    1978060.7,
+    1978303.8,
+    1969447.33,
+    1973924.33,
+    2003808.62,
+    2005251.93,
+    2014709.65,
+    2032010.32,
+    2029443.75,
+    2009333.43,
+    2000929.62,
+    2019320.01,
+    1992991.42,
+    1983966.54,
+    2001116.32,
+    2014868.92
    ],
    "left_out": [
     "IRCTC",
@@ -7017,12 +7047,734 @@
    ],
    "now": {
     "value": 1724574.2,
-    "invested": 1780628.98,
-    "nifty": 2014828.72,
-    "vs_nifty": -290254.52
+    "invested": 1780668.58,
+    "nifty": 2014868.92,
+    "vs_nifty": -290294.72
    },
    "unknown": []
   },
   "holdings_error": null
+ },
+ "inspect": {
+  "as_of": "2026-10-27",
+  "holdings_error": null,
+  "trades": 106,
+  "own": {
+   "own": 2452008.6,
+   "reused": 137915.0,
+   "pot": 0.0,
+   "bought": 2589923.6,
+   "sold": 137915.0,
+   "booked": 10468.03,
+   "cost_now": 2462476.63,
+   "value": 2601139.48,
+   "profit_in_holdings": 10468.03,
+   "gain": 149130.88,
+   "gain_pct": 6.08,
+   "xirr": 8.74,
+   "times_turned": 1.06,
+   "unmatched": 0.0,
+   "unpriced": [],
+   "months": [
+    {
+     "month": "2025-02",
+     "own": 44800.0,
+     "cost": 44800.0,
+     "pot": 0.0
+    },
+    {
+     "month": "2025-05",
+     "own": 72400.0,
+     "cost": 72400.0,
+     "pot": 0.0
+    },
+    {
+     "month": "2025-08",
+     "own": 94000.0,
+     "cost": 94000.0,
+     "pot": 0.0
+    },
+    {
+     "month": "2025-09",
+     "own": 520375.47,
+     "cost": 520375.47,
+     "pot": 0.0
+    },
+    {
+     "month": "2025-10",
+     "own": 570793.4,
+     "cost": 570793.4,
+     "pot": 0.0
+    },
+    {
+     "month": "2025-11",
+     "own": 756603.75,
+     "cost": 756603.75,
+     "pot": 0.0
+    },
+    {
+     "month": "2025-12",
+     "own": 818261.5,
+     "cost": 808961.5,
+     "pot": 0.0
+    },
+    {
+     "month": "2026-01",
+     "own": 1412652.62,
+     "cost": 1403352.62,
+     "pot": 0.0
+    },
+    {
+     "month": "2026-02",
+     "own": 1467552.78,
+     "cost": 1458252.78,
+     "pot": 0.0
+    },
+    {
+     "month": "2026-03",
+     "own": 1523572.71,
+     "cost": 1514272.71,
+     "pot": 0.0
+    },
+    {
+     "month": "2026-04",
+     "own": 1546512.39,
+     "cost": 1526612.39,
+     "pot": 0.0
+    },
+    {
+     "month": "2026-05",
+     "own": 1604772.13,
+     "cost": 1584872.13,
+     "pot": 0.0
+    },
+    {
+     "month": "2026-06",
+     "own": 2279568.87,
+     "cost": 2259668.87,
+     "pot": 0.0
+    },
+    {
+     "month": "2026-07",
+     "own": 2340071.03,
+     "cost": 2292571.03,
+     "pot": 36200.0
+    },
+    {
+     "month": "2026-08",
+     "own": 2429448.14,
+     "cost": 2396848.14,
+     "pot": 40200.0
+    },
+    {
+     "month": "2026-09",
+     "own": 2452008.6,
+     "cost": 2462476.63,
+     "pot": 0.0
+    }
+   ],
+   "years": [
+    {
+     "fy": "2024-25",
+     "fresh": 44800.0,
+     "reused": 0.0,
+     "booked": 0.0,
+     "bought": 44800.0,
+     "sold": 0.0
+    },
+    {
+     "fy": "2025-26",
+     "fresh": 1478772.71,
+     "reused": 12300.0,
+     "booked": -9300.0,
+     "bought": 1491072.71,
+     "sold": 12300.0
+    },
+    {
+     "fy": "2026-27",
+     "fresh": 928435.9,
+     "reused": 125615.0,
+     "booked": 19768.03,
+     "bought": 1054050.9,
+     "sold": 125615.0
+    }
+   ],
+   "harvests": [
+    {
+     "symbol": "EMBASSY",
+     "sold_on": "2026-09-17",
+     "bought_on": "2026-09-17",
+     "qty": 33.0,
+     "bought_qty": 33.0,
+     "booked": 2868.03,
+     "kind": "gain"
+    }
+   ],
+   "first_day": "2025-02-24"
+  },
+  "tax": {
+   "fy": "2026-27",
+   "exemption": 125000,
+   "booked": 868.03,
+   "room": 124131.97,
+   "days_left": 155,
+   "plan": [
+    {
+     "symbol": "SUZLON",
+     "isin": "INE012A01011",
+     "qty": 225.0,
+     "sale": 12694.5,
+     "gain": 3665.25,
+     "maybe": false
+    }
+   ],
+   "plan_gain": 3665.25,
+   "available": [
+    {
+     "symbol": "SUZLON",
+     "qty": 225.0,
+     "gain": 3665.25,
+     "value": 12694.5,
+     "maybe": false
+    },
+    {
+     "symbol": "ITC",
+     "qty": 100.0,
+     "gain": -318.0,
+     "value": 43197.0,
+     "maybe": false
+    },
+    {
+     "symbol": "NIFTYBEES",
+     "qty": 300.0,
+     "gain": -5142.0,
+     "value": 68682.0,
+     "maybe": false
+    },
+    {
+     "symbol": "RELIANCE",
+     "qty": 50.0,
+     "gain": -5151.0,
+     "value": 111836.0,
+     "maybe": false
+    },
+    {
+     "symbol": "IDEA",
+     "qty": 1000.0,
+     "gain": -7680.0,
+     "value": 7170.0,
+     "maybe": false
+    },
+    {
+     "symbol": "INFY",
+     "qty": 46.0,
+     "gain": -17828.68,
+     "value": 48535.06,
+     "maybe": false
+    },
+    {
+     "symbol": "TATAMOTORS",
+     "qty": 60.0,
+     "gain": -24043.2,
+     "value": 25608.0,
+     "maybe": false
+    }
+   ],
+   "years": [
+    {
+     "fy": "2025-26",
+     "long": 0.0,
+     "short": -9300.0,
+     "exemption": 125000,
+     "used": 0.0,
+     "over": 0.0
+    },
+    {
+     "fy": "2026-27",
+     "long": 868.03,
+     "short": 18900.0,
+     "exemption": 125000,
+     "used": 868.03,
+     "over": 0.0
+    }
+   ]
+  },
+  "holdings": [
+   {
+    "isin": "INE000A01011",
+    "symbol": "HDFCBANK",
+    "kind": "equity",
+    "weight": 14.45,
+    "value": 392243.8
+   },
+   {
+    "isin": "INE001A01011",
+    "symbol": "RELIANCE",
+    "kind": "equity",
+    "weight": 12.36,
+    "value": 335508.0
+   },
+   {
+    "isin": "INE006A01011",
+    "symbol": "NIFTYBEES",
+    "kind": "equity",
+    "weight": 7.59,
+    "value": 206046.0
+   },
+   {
+    "isin": "INE005A01011",
+    "symbol": "BEL",
+    "kind": "equity",
+    "weight": 7.32,
+    "value": 198792.0
+   },
+   {
+    "isin": "INE003A01011",
+    "symbol": "ITC",
+    "kind": "equity",
+    "weight": 6.36,
+    "value": 172788.0
+   },
+   {
+    "isin": "INE002A01011",
+    "symbol": "INFY",
+    "kind": "equity",
+    "weight": 5.44,
+    "value": 147715.4
+   },
+   {
+    "isin": "INE007A01011",
+    "symbol": "GOLDBEES",
+    "kind": "equity",
+    "weight": 3.6,
+    "value": 97680.0
+   },
+   {
+    "isin": "INE004A01011",
+    "symbol": "TATAMOTORS",
+    "kind": "equity",
+    "weight": 2.83,
+    "value": 76824.0
+   },
+   {
+    "isin": "INE008A01011",
+    "symbol": "SGBDEC28",
+    "kind": "equity",
+    "weight": 2.6,
+    "value": 70709.44
+   },
+   {
+    "isin": "INE010A01011",
+    "symbol": "EMBASSY",
+    "kind": "equity",
+    "weight": 1.78,
+    "value": 48414.0
+   },
+   {
+    "isin": "INE009A01011",
+    "symbol": "LIQUIDBEES",
+    "kind": "equity",
+    "weight": 1.47,
+    "value": 40000.0
+   },
+   {
+    "isin": "INE012A01011",
+    "symbol": "SUZLON",
+    "kind": "equity",
+    "weight": 0.94,
+    "value": 25389.0
+   },
+   {
+    "isin": "INE011A01011",
+    "symbol": "IDEA",
+    "kind": "equity",
+    "weight": 0.79,
+    "value": 21510.0
+   },
+   {
+    "isin": "INE013A01011",
+    "symbol": "MEESHO",
+    "kind": "equity",
+    "weight": 0.18,
+    "value": 4952.4
+   },
+   {
+    "isin": "INF789F01XA0",
+    "symbol": "UTI NIFTY 50 INDEX FUND - DIRECT PLAN",
+    "kind": "mf",
+    "weight": 13.28,
+    "value": 360672.0
+   },
+   {
+    "isin": "INF879O01027",
+    "symbol": "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN",
+    "kind": "mf",
+    "weight": 10.16,
+    "value": 275843.36
+   },
+   {
+    "isin": "INF846K01131",
+    "symbol": "AXIS ELSS TAX SAVER FUND - REGULAR PLAN",
+    "kind": "mf",
+    "weight": 4.95,
+    "value": 134288.52
+   },
+   {
+    "isin": "INF179KB1HP9",
+    "symbol": "HDFC LIQUID FUND - DIRECT PLAN",
+    "kind": "mf",
+    "weight": 2.31,
+    "value": 62650.0
+   },
+   {
+    "isin": "INF109K01Z48",
+    "symbol": "ICICI PRUDENTIAL BALANCED ADVANTAGE FUND - REGULAR PLAN",
+    "kind": "mf",
+    "weight": 1.58,
+    "value": 43020.0
+   }
+  ],
+  "contributions": [
+   {
+    "isin": "INE004A01011",
+    "symbol": "TATAMOTORS",
+    "weight": 2.83,
+    "held": true,
+    "kind": "equity",
+    "pnl": -70776.0,
+    "xirr_without": 14.27,
+    "xirr_change": -5.5,
+    "year_without": 8.13,
+    "year_change": -4.82
+   },
+   {
+    "isin": "INE002A01011",
+    "symbol": "INFY",
+    "weight": 5.44,
+    "held": true,
+    "kind": "equity",
+    "pnl": -46884.6,
+    "xirr_without": 12.3,
+    "xirr_change": -3.53,
+    "year_without": 5.88,
+    "year_change": -2.57
+   },
+   {
+    "isin": "INE001A01011",
+    "symbol": "RELIANCE",
+    "weight": 12.36,
+    "held": true,
+    "kind": "equity",
+    "pnl": -21492.0,
+    "xirr_without": 11.82,
+    "xirr_change": -3.05,
+    "year_without": 4.0,
+    "year_change": -0.68
+   },
+   {
+    "isin": "INE006A01011",
+    "symbol": "NIFTYBEES",
+    "weight": 7.59,
+    "held": true,
+    "kind": "equity",
+    "pnl": -17154.0,
+    "xirr_without": 10.55,
+    "xirr_change": -1.78,
+    "year_without": 3.5,
+    "year_change": -0.19
+   },
+   {
+    "isin": "INE011A01011",
+    "symbol": "IDEA",
+    "weight": 0.79,
+    "held": true,
+    "kind": "equity",
+    "pnl": -21990.0,
+    "xirr_without": 10.3,
+    "xirr_change": -1.53,
+    "year_without": 4.52,
+    "year_change": -1.21
+   },
+   {
+    "isin": "INE000A01011",
+    "symbol": "HDFCBANK",
+    "weight": 14.45,
+    "held": true,
+    "kind": "equity",
+    "pnl": 7443.8,
+    "xirr_without": 9.91,
+    "xirr_change": -1.14,
+    "year_without": 2.71,
+    "year_change": 0.6
+   },
+   {
+    "isin": "INE528G01035",
+    "symbol": "YESBANK",
+    "weight": null,
+    "held": false,
+    "kind": "equity",
+    "pnl": null,
+    "xirr_without": 9.73,
+    "xirr_change": -0.96,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INE003A01011",
+    "symbol": "ITC",
+    "weight": 6.36,
+    "held": true,
+    "kind": "equity",
+    "pnl": -3212.0,
+    "xirr_without": 9.52,
+    "xirr_change": -0.75,
+    "year_without": 3.43,
+    "year_change": -0.12
+   },
+   {
+    "isin": "INE982J01020",
+    "symbol": "PAYTM",
+    "weight": null,
+    "held": false,
+    "kind": "equity",
+    "pnl": null,
+    "xirr_without": 9.41,
+    "xirr_change": -0.64,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INE009A01011",
+    "symbol": "LIQUIDBEES",
+    "weight": 1.47,
+    "held": true,
+    "kind": "equity",
+    "pnl": 0.0,
+    "xirr_without": 8.91,
+    "xirr_change": -0.14,
+    "year_without": 3.39,
+    "year_change": -0.08
+   },
+   {
+    "isin": "INE013A01011",
+    "symbol": "MEESHO",
+    "weight": 0.18,
+    "held": true,
+    "kind": "equity",
+    "pnl": -1707.6,
+    "xirr_without": 8.85,
+    "xirr_change": -0.08,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INF179KB1HP9",
+    "symbol": "HDFC LIQUID FUND - DIRECT PLAN",
+    "weight": 2.31,
+    "held": true,
+    "kind": "mf",
+    "pnl": 5400.0,
+    "xirr_without": 8.64,
+    "xirr_change": 0.13,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INF109K01Z48",
+    "symbol": "ICICI PRUDENTIAL BALANCED ADVANTAGE FUND - REGULAR PLAN",
+    "weight": 1.58,
+    "held": true,
+    "kind": "mf",
+    "pnl": 4860.0,
+    "xirr_without": 8.61,
+    "xirr_change": 0.16,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INE012A01011",
+    "symbol": "SUZLON",
+    "weight": 0.94,
+    "held": true,
+    "kind": "equity",
+    "pnl": 6489.0,
+    "xirr_without": 8.42,
+    "xirr_change": 0.35,
+    "year_without": 2.93,
+    "year_change": 0.38
+   },
+   {
+    "isin": "INE335Y01020",
+    "symbol": "IRCTC",
+    "weight": null,
+    "held": false,
+    "kind": "equity",
+    "pnl": null,
+    "xirr_without": 8.42,
+    "xirr_change": 0.35,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INE007A01011",
+    "symbol": "GOLDBEES",
+    "weight": 3.6,
+    "held": true,
+    "kind": "equity",
+    "pnl": 16680.0,
+    "xirr_without": 8.25,
+    "xirr_change": 0.52,
+    "year_without": 2.53,
+    "year_change": 0.78
+   },
+   {
+    "isin": "INE010A01011",
+    "symbol": "EMBASSY",
+    "weight": 1.78,
+    "held": true,
+    "kind": "equity",
+    "pnl": 12414.0,
+    "xirr_without": 8.12,
+    "xirr_change": 0.65,
+    "year_without": 2.59,
+    "year_change": 0.73
+   },
+   {
+    "isin": "INE758T01015",
+    "symbol": "ZOMATO",
+    "weight": null,
+    "held": false,
+    "kind": "equity",
+    "pnl": null,
+    "xirr_without": 7.7,
+    "xirr_change": 1.07,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INE008A01011",
+    "symbol": "SGBDEC28",
+    "weight": 2.6,
+    "held": true,
+    "kind": "equity",
+    "pnl": 27509.44,
+    "xirr_without": null,
+    "xirr_change": null,
+    "year_without": 1.55,
+    "year_change": 1.76
+   },
+   {
+    "isin": "INF846K01131",
+    "symbol": "AXIS ELSS TAX SAVER FUND - REGULAR PLAN",
+    "weight": 4.95,
+    "held": true,
+    "kind": "mf",
+    "pnl": 35239.86,
+    "xirr_without": 6.96,
+    "xirr_change": 1.81,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INF789F01XA0",
+    "symbol": "UTI NIFTY 50 INDEX FUND - DIRECT PLAN",
+    "weight": 13.28,
+    "held": true,
+    "kind": "mf",
+    "pnl": 76687.0,
+    "xirr_without": 4.84,
+    "xirr_change": 3.93,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INF879O01027",
+    "symbol": "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN",
+    "weight": 10.16,
+    "held": true,
+    "kind": "mf",
+    "pnl": 82066.52,
+    "xirr_without": 4.31,
+    "xirr_change": 4.46,
+    "year_without": null,
+    "year_change": null
+   },
+   {
+    "isin": "INE005A01011",
+    "symbol": "BEL",
+    "weight": 7.32,
+    "held": true,
+    "kind": "equity",
+    "pnl": 84792.0,
+    "xirr_without": 3.88,
+    "xirr_change": 4.89,
+    "year_without": -1.77,
+    "year_change": 5.09
+   }
+  ],
+  "year_ready": true
+ },
+ "whatif": {
+  "without": [
+   "INE004A01011",
+   "INE011A01011"
+  ],
+  "with": {
+   "trades": {
+    "xirr": 8.77,
+    "booked": 10468.03,
+    "on_paper": 138662.85,
+    "own": 2452008.6,
+    "own_gain": 149130.88,
+    "own_gain_pct": 6.08,
+    "own_xirr": 8.74,
+    "vs_nifty": -290294.72
+   },
+   "now": {
+    "value": 2715045.92,
+    "pnl": 176365.42,
+    "count": 19,
+    "effective": 11.2,
+    "top": "HDFCBANK",
+    "top_weight": 14.4
+   },
+   "year": {
+    "ret": 3.31,
+    "nifty": 11.1,
+    "vol": 13.3,
+    "drawdown": -8.09,
+    "count": 13
+   }
+  },
+  "without_them": {
+   "trades": {
+    "xirr": 16.03,
+    "booked": 10468.03,
+    "on_paper": 238147.85,
+    "own": 2254189.6,
+    "own_gain": 248615.88,
+    "own_gain_pct": 11.03,
+    "own_xirr": 15.98,
+    "vs_nifty": -163955.52
+   },
+   "now": {
+    "value": 2616711.92,
+    "pnl": 269131.42,
+    "count": 17,
+    "effective": 10.5,
+    "top": "HDFCBANK",
+    "top_weight": 15.0
+   },
+   "year": {
+    "ret": 9.58,
+    "nifty": 11.1,
+    "vol": 12.7,
+    "drawdown": -6.56,
+    "count": 11
+   }
+  },
+  "left_out_of_year": [
+   "MEESHO"
+  ]
  }
 }

@@ -11,6 +11,7 @@ import * as shares from './shares.js';
 import * as funds from './funds.js';
 import * as account from './account.js';
 import * as trades from './trades.js';
+import { enterInspector } from './inspect.js';
 
 export const TABS = [['overview', 'Overview', overview], ['shares', 'Shares', shares], ['funds', 'Funds', funds], ['trades', 'Trades', trades], ['account', 'Account', account]];
 const HEAD = {
@@ -48,6 +49,7 @@ export default {
           <span class="grow"></span>
           ${liveChip(st)}
           ${st.h && st.h.as_of ? html`<span class="small mute" title="Holdings, funds and the account are read from Kite once a day, on Refresh and at 17:00">Account read ${hhmm(st.h.as_of)}</span>` : ''}
+          <button type="button" class="btn btn-sm ins-btn" data-act="inspect" title="Inspector: your own money, tax-free gains, what if"><span class="gk-badge">INSPECTOR</span></button>
           <button type="button" class="btn btn-sm" data-act="refresh" ${st.busy ? 'disabled' : ''}>${st.busy ? 'Reading…' : 'Refresh'}</button>
         </div>
         <div class="page lens" data-tab="${tab}">
@@ -72,6 +74,7 @@ export default {
       asset: x => { ui.asset = x.v; paint(); },
       dir: () => { ui.dir = ui.dir === 'asc' ? 'desc' : 'asc'; paint(); },
       open: x => { ui.open = ui.open === x.s ? null : x.s; paint(); },
+      inspect: (x, el) => enterInspector(el),
       openTrade: x => { ui.openTrade = ui.openTrade === x.s ? null : x.s; paint(); },
       removeImport: async x => {
         if (!window.confirm('Remove this file and the trades it brought? Import it again to have them back.')) return;

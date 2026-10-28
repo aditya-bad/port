@@ -152,6 +152,22 @@ async def delete_lens_import(import_id: int, request: Request):
     return {"ok": True}
 
 
+@router.get("/lens/inspect")
+async def get_lens_inspect(request: Request):
+    """LinckLens Inspector (app/lens_inspect.py): your own money against
+    what "invested" shows, the yearly tax-free long-term gain, and what
+    each holding did to your return."""
+    return await _lens(request).inspect()
+
+
+@router.get("/lens/inspect/whatif")
+async def get_lens_whatif(request: Request, without: str = ""):
+    """Your figures with, and without the holdings named (ISINs, comma
+    separated): had you never bought them, and today's holdings without
+    them over the last year."""
+    return await _lens(request).whatif({x.strip() for x in without.split(",") if x.strip()})
+
+
 @router.get("/vix")
 async def get_vix(request: Request, start: Optional[datetime] = None, end: Optional[datetime] = None,
                   interval: str = "5minute"):

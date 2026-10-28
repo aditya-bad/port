@@ -19,7 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
 
-from app.lens import NIFTY, Lens, year_answer   # noqa: E402
+from app.lens import NIFTY, Lens, inspect_answer, year_answer   # noqa: E402
 
 TODAY = date(2026, 10, 27)
 AS_OF = "2026-10-27T11:42:00+05:30"
@@ -167,6 +167,11 @@ def tradebook(h: dict) -> list[dict]:
                                                          ("PAYTM", "INE982J01020", 450, 320, 30, 720, 410)]:
         add(sym, isin, TODAY - timedelta(days=buy_ago), "buy", qty, buy)
         add(sym, isin, TODAY - timedelta(days=sell_ago), "sell", qty, sell)
+    # the year's tax-free long-term gain, booked on purpose: EMBASSY's oldest lot sold and bought back the same day
+    emb = next(r for r in h["equity"] if r["symbol"] == "EMBASSY")
+    first = min((t for t in out if t["symbol"] == "EMBASSY"), key=lambda t: t["trade_date"])
+    add("EMBASSY", emb["isin"], TODAY - timedelta(days=40), "sell", first["quantity"], 455.0)
+    add("EMBASSY", emb["isin"], TODAY - timedelta(days=40), "buy", first["quantity"], 456.2)
     for f in h["mf"]:
         units, k = f["units"], 12
         each = round(units / k, 3)
@@ -199,6 +204,22 @@ def trades_answer(h: dict, candles: dict) -> dict:
     return {"imports": imports, "analysis": a, "curve": {"state": "ready", **c, "unknown": []}, "holdings_error": None}
 
 
+WITHOUT = ("INE004A01011", "INE011A01011")      # TATAMOTORS and IDEA
+
+
+def inspect_answers(h: dict, candles: dict) -> dict:
+    """What /v2/lens/inspect and /v2/lens/inspect/whatif?without=TATAMOTORS,
+    IDEA answer, by the same code from the same prices."""
+    from app import lens_inspect as I
+    from app import lens_trades as T
+    trades = tradebook(h)
+    token = {r["isin"]: r["token"] for r in h["equity"]}
+    prices = {T.key_of(t): [(c["date"].date(), c["close"]) for c in candles.get(token.get(t["isin"])) or []] for t in trades}
+    prices = {k: v for k, v in prices.items() if v}
+    return {"inspect": inspect_answer(trades, h, None, candles, TODAY),
+            "whatif": I.compare(trades, h, candles, candles[NIFTY], TODAY, set(WITHOUT), prices)}
+
+
 async def make() -> dict:
     """What the server answers for the account: the holdings as Lens reads
     them, and the year as it answers once the prices are in (from the
@@ -208,7 +229,7 @@ async def make() -> dict:
     h = await lens.holdings()
     h["as_of"] = AS_OF
     y = year_answer(h, candles, TODAY, total=1 + len(h["equity"]))
-    return {"holdings": h, "history": y, "trades": trades_answer(h, candles)}
+    return {"holdings": h, "history": y, "trades": trades_answer(h, candles), **inspect_answers(h, candles)}
 
 
 def main():

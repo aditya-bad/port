@@ -755,3 +755,30 @@ a.cell-name:hover b { text-decoration: underline; }
 .lens-live.on i { background: var(--g); box-shadow: 0 0 0 3px var(--gs); }
 @media (prefers-reduced-motion: no-preference) { .lens-live.on i { animation: lens-pulse 2s ease-in-out infinite; } }
 @keyframes lens-pulse { 50% { box-shadow: 0 0 0 6px transparent; } }
+
+/* LinckLens Inspector (pages/lens/inspect.js), inside Geek mode's shell */
+.ins-btn { padding: 2px; border-color: transparent; }
+.ins-btn .gk-badge { font-size: 10px; padding: 3px 7px; }
+.ins-btn:hover .gk-badge { background: var(--ink); color: var(--paper); }
+.ins-headline { margin: 0; font-family: var(--f-display); font-size: 21px; font-weight: 600; line-height: 1.4; max-width: 70ch; text-wrap: pretty; }
+.ins-headline b { font-family: var(--f-mono); font-size: 18px; }
+.ins-yr { grid-template-columns: minmax(80px, 1fr) repeat(3, minmax(90px, 1fr)); }
+.ins-plan { grid-template-columns: minmax(140px, 1.6fr) repeat(3, minmax(90px, 1fr)); }
+.ins-av { grid-template-columns: minmax(140px, 1.6fr) repeat(3, minmax(90px, 1fr)); }
+.ins-ty { grid-template-columns: minmax(80px, 1fr) repeat(4, minmax(90px, 1fr)); }
+.ins-cmp { grid-template-columns: minmax(150px, 1.6fr) repeat(3, minmax(90px, 1fr)); }
+.ins-drag { grid-template-columns: minmax(160px, 1.6fr) 64px minmax(150px, 1.4fr) 84px minmax(150px, 1.4fr) 84px; min-width: 760px; }
+.ins-drag.off { color: var(--mute); }
+.ins-drag > [data-l$="effect"] { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; align-items: center; }
+.ins-drag > [data-l$="effect"] b { text-align: right; }
+.ins-harv { display: grid; gap: 6px; }
+.ins-harv-i { display: grid; grid-template-columns: minmax(90px, 1fr) auto auto; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.ins-picks { display: flex; flex-wrap: wrap; gap: 6px; }
+@media (max-width: 760px) {
+  .ins-headline { font-size: 17px; }
+  .ins-yr, .ins-plan, .ins-av, .ins-ty, .ins-cmp { grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr)); font-size: 12px; gap: 6px; }
+  .ins-ty > :nth-child(5) { display: none; }
+  .ins-harv-i { grid-template-columns: 1fr; gap: 2px; }
+}
+.ins-yr, .ins-plan, .ins-av, .ins-ty, .ins-cmp { --minw: 0px; }        /* fit the phone; Geek's tables scroll */
+.ins-picks .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

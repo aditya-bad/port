@@ -81,7 +81,7 @@ def test_paper_mark_is_only_for_the_night_theme_never_an_app_icon():
             if f.is_file() and f.suffix in {".html", ".js", ".css", ".json", ".py", ".xml", ".kt"}:
                 if "mark-paper" in f.read_text(errors="ignore"):
                     users.add(str(f.relative_to(ROOT)))
-    assert users == {"static/linck/js/pages/geek/index.js", "static/linck/login/index.html",
+    assert users == {"static/linck/js/pages/geek/index.js", "static/linck/js/pages/lens/inspect.js", "static/linck/login/index.html",
                      "static/linck/css/shell.css", "static/linck/login/login.css"}, users
     for css in ["static/linck/css/shell.css", "static/linck/login/login.css"]:
         assert ':root[data-th="night"]' in (ROOT / css).read_text() and "mark-paper" in (ROOT / css).read_text()

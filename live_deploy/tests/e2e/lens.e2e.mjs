@@ -257,16 +257,16 @@ test('Trades: what the tradebook says, against Kite and the same money in Nifty'
   await p.goto(`${BASE}/linck/#/lens/trades`);
   await p.waitForSelector('[data-curve="ready"]');
   const strip = await p.locator('.lens-strip').first().innerText();
-  assert.match(strip, /Money in now\s+₹24,51,969\s+bought less sold, 24 Feb '25 to 22 Sep '26/);
+  assert.match(strip, /Money in now\s+₹24,52,009\s+bought less sold, 24 Feb '25 to 22 Sep '26/);
   assert.match(strip, /Return a year \(XIRR\)\s+\+8\.8%\s+shares −3\.6% · funds \+59\.5%/);
-  assert.match(strip, /Booked\s+\+₹7,600[\s\S]*On paper\s+\+₹1,41,570\s+18 holdings/);
-  assert.match(await p.locator('[data-curve="ready"]').innerText(), /worth ₹17,24,574[\s\S]*would be worth ₹20,14,829: you’re ₹2,90,255 behind/);
+  assert.match(strip, /Booked\s+\+₹10,468[\s\S]*On paper\s+\+₹1,38,663\s+18 holdings/);
+  assert.match(await p.locator('[data-curve="ready"]').innerText(), /worth ₹17,24,574[\s\S]*would be worth ₹20,14,869: you’re ₹2,90,295 behind/);
   const box = await p.locator('[data-scrub="lens-trades-curve"]').boundingBox();
   await p.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2);
   const tip = await until(() => p.evaluate(() => { const t = document.querySelector('.tip'); return t && t.style.display !== 'none' ? t.innerText.trim() : ''; }));
   assert.match(tip, /Your shares\s+₹[\d,]+[\s\S]*Same money in Nifty 50\s+₹[\d,]+[\s\S]*Put in so far\s+₹[\d,]+/);
   assert.equal(await p.locator('.lens-months .ud').count(), FX.trades.analysis.months.length, 'a bar a month');
-  assert.match(await p.locator('[data-fy="2026-27"]').innerText(), /2026-27[\s\S]*\+₹18,900[\s\S]*−₹2,000[\s\S]*\+₹16,900[\s\S]*3/);
+  assert.match(await p.locator('[data-fy="2026-27"]').innerText(), /2026-27[\s\S]*\+₹18,900[\s\S]*\+₹868[\s\S]*\+₹19,768[\s\S]*4/);
   assert.equal(await p.locator('.lens-soon-i').count(), 8);
   assert.match(await p.locator('.lens-soon-i').first().innerText(), /1 day to go · long term from 28 Oct '26/);
   // a holding opens to its lots; under a year, the return over the time held
@@ -277,7 +277,7 @@ test('Trades: what the tradebook says, against Kite and the same money in Nifty'
   assert.match(await p.locator('[data-trade="ITC"]').innerText(), /300[\s\S]*Kite: 400/);
   assert.match(await p.locator('[data-recon="ITC"]').innerText(), /trades leave 300 · Kite holds 400[\s\S]*a bonus or split/);
   assert.match(await p.locator('[data-recon="SGBDEC28"]').innerText(), /held, with no trades/);
-  assert.match(await p.locator('.lens-strip').nth(1).innerText(), /Sold at a profit\s+50%\s+2 of 4[\s\S]*Win to loss\s+1\.38/);
+  assert.match(await p.locator('.lens-strip').nth(1).innerText(), /Sold at a profit\s+60%\s+3 of 5[\s\S]*Win to loss\s+1\.02/);
   // import: the files go up as text; what was new is said
   await p.setInputFiles('[data-f="files"]', { name: 'tradebook-2024.csv', mimeType: 'text/csv', buffer: Buffer.from('symbol,isin,trade_date\n') });
   await p.waitForSelector('[data-imported]');
@@ -319,6 +319,67 @@ test('Trades on the real server, without Kite: a file imported, stored once, and
     await until(async () => (await p.locator(`[data-import="${id}"]`).count()) === 0);
   }
   await p.waitForSelector('[data-how]');
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('Inspector: your own money, the tax-free room, what if, and what each holding did', async () => {
+  const { ctx, p } = await lensPage();
+  await ctx.route('**/v2/lens/inspect', r => r.fulfill({ json: FX.inspect }));
+  const asked = [];
+  await ctx.route('**/v2/lens/inspect/whatif*', r => { asked.push(new URL(r.request().url()).searchParams.get('without')); return r.fulfill({ json: FX.whatif }); });
+  await p.goto(`${BASE}/linck/#/lens/shares`);
+  await p.waitForSelector('[data-act="inspect"]');
+  await p.click('[data-act="inspect"]');
+  await p.waitForSelector('.gk.ins [data-own]');
+  assert.match(p.url(), /#\/lens\/inspect$/);
+  assert.equal(await p.locator('#top').isVisible(), false, 'the whole screen, like Geek mode');
+  assert.match(await p.locator('[data-own]').innerText(), /You hold ₹24,62,477 at cost\. ₹24,52,009 of that is your own money; the other ₹10,468 is profit you booked and put back in\./);
+  const t = await p.locator('.gk-tiles').allInnerTexts();
+  assert.match(t[0], /Your own money in\s+₹24,52,009[\s\S]*What you hold, at cost\s+₹24,62,477[\s\S]*Booked profit back in\s+\+₹10,468[\s\S]*Worth now\s+₹26,01,139/);
+  assert.match(t[1], /Gain on your own money\s+\+₹1,49,131\s+\+6\.1% of ₹24,52,009[\s\S]*A year, on your own money\s+\+8\.7%[\s\S]*Bought for each rupee of yours\s+₹1\.06/);
+  assert.match(await p.locator('[data-harvest="EMBASSY"]').innerText(), /33 sold 17 Sep '26, 33 back 17 Sep '26[\s\S]*\+₹2,868 booked/);
+  assert.match(await p.locator('[data-ins="years"] [data-fy="2026-27"]').innerText(), /2026-27[\s\S]*₹9,28,436[\s\S]*₹1,25,615[\s\S]*\+₹19,768/);
+  await p.waitForSelector('.gk.ins:not(.gk-in)', { timeout: 10000 });     // the way in has finished moving
+  const box = await p.locator('[data-scrub="ins-own"]').boundingBox();
+  await p.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2);
+  await p.mouse.move(box.x + box.width * 0.8, box.y + box.height / 2);
+  const tip = await until(() => p.evaluate(() => { const x = document.querySelector('.tip'); return x && x.style.display !== 'none' ? x.innerText.trim() : ''; }));
+  assert.match(tip, /Your own money in\s+₹[\d,]+[\s\S]*What you hold, at cost\s+₹[\d,]+[\s\S]*Sale money not reused\s+₹[\d,]+/);
+  // keys switch views
+  await p.keyboard.press('t');
+  await p.waitForSelector('[data-ins="plan"]');
+  assert.match(p.url(), /inspect\/tax$/);
+  assert.match(await p.locator('.gk-tiles').innerText(), /Booked long term this year\s+\+₹868[\s\S]*Tax-free room left\s+₹1,24,132\s+of ₹1,25,000[\s\S]*155 days/);
+  assert.match(await p.locator('[data-plan="SUZLON"]').innerText(), /SUZLON[\s\S]*225[\s\S]*₹12,695[\s\S]*\+₹3,665/);
+  await p.keyboard.press('w');
+  await p.waitForSelector('[data-whatif="none"]');
+  await p.locator('[data-act="pick"]', { hasText: 'TATAMOTORS' }).click();
+  await p.locator('[data-act="pick"]', { hasText: 'IDEA' }).click();
+  await p.waitForSelector('[data-whatif="ready"]');
+  assert.equal(asked.at(-1), 'INE004A01011,INE011A01011', 'the picks, by ISIN');
+  const cmp = await p.locator('[data-whatif="ready"]').innerText();
+  assert.match(cmp, /XIRR, everything\s+\+8\.8%\s+\+16\.0%\s+\+7\.3 pts/);
+  assert.match(cmp, /Today’s shares over the year\s+\+3\.3%\s+\+9\.6%\s+\+6\.3 pts/);
+  assert.match(cmp, /Worth now\s+₹27,15,046\s+₹26,16,712\s+−₹98,334/);
+  await p.keyboard.press('d');
+  await p.waitForSelector('[data-ins="drag"]');
+  const drag = await p.locator('[data-drag]').evaluateAll(rs => rs.map(r => r.dataset.drag));
+  assert.deepEqual(drag.slice(0, 2), ['TATAMOTORS', 'INFY'], 'what held you back most, first');
+  assert.match(await p.locator('[data-drag="TATAMOTORS"]').innerText(), /−5\.5 pts[\s\S]*\+14\.3%[\s\S]*−4\.8 pts[\s\S]*\+8\.1%/);
+  assert.match(await p.locator('[data-drag="SGBDEC28"]').innerText(), /SGBDEC28[\s\S]*—/, 'no trades of its own: no XIRR effect');
+  // Esc goes back where it came from
+  await p.keyboard.press('Escape');
+  await p.waitForSelector('[data-lens="equity"]');
+  assert.match(p.url(), /#\/lens\/shares$/);
+  assert.equal(await p.locator('#top').isVisible(), true);
+  // a phone fits
+  await p.setViewportSize({ width: 390, height: 844 });
+  for (const v of ['own', 'tax', 'whatif', 'drag']) {
+    await p.goto(`${BASE}/linck/#/lens/inspect/${v}`);
+    await p.waitForSelector('.gk.ins .gk-view > *');
+    assert.equal(await p.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, `${v} fits a phone`);
+  }
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });

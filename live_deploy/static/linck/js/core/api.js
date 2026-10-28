@@ -49,6 +49,8 @@ export const api = {
   lensHoldings: fresh => req(`/v2/lens/holdings${fresh ? '?fresh=true' : ''}`),
   lensHistory: () => req('/v2/lens/history'),
   lensTrades: () => req('/v2/lens/trades'),
+  lensInspect: () => req('/v2/lens/inspect'),
+  lensWhatif: without => req(`/v2/lens/inspect/whatif?without=${encodeURIComponent(without)}`),
   lensImport: files => post('/v2/lens/trades/import', { files }),
   lensRemoveImport: id => req(`/v2/lens/trades/imports/${id}`, { method: 'DELETE' }),
   dayChecks: day => req(`/v2/day-checks${day ? `?day=${enc(day)}` : ''}`),

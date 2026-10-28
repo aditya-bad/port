@@ -554,6 +554,23 @@ def priced(equity: list[dict], price: Callable[[Any], Optional[dict]]) -> list[d
     return out
 
 
+def inspect_answer(trades: list[dict], h: Optional[dict], err: Optional[str], candles: dict, today: date) -> dict:
+    """What /v2/lens/inspect answers (app/lens_inspect.py's reads)."""
+    from . import lens_inspect as I
+    held = Lens._held_by_isin(h)
+    rows = [] if h is None else [{"isin": r["isin"], "symbol": r["symbol"], "kind": "equity", "weight": r.get("weight"), "value": r["value"]}
+                                 for r in h["equity"] if r.get("isin")] + [
+        {"isin": f["isin"], "symbol": f["fund"], "kind": "mf", "weight": f.get("weight"), "value": f["value"]} for f in h["mf"] if f.get("isin")]
+    return {
+        "as_of": today.isoformat(), "holdings_error": err, "trades": len(trades),
+        "own": I.own_money(trades, held, today),
+        "tax": I.tax_free(trades, held, today),
+        "holdings": rows,
+        "contributions": I.contributions(trades, h, candles, candles.get(NIFTY) or [], today) if h is not None else [],
+        "year_ready": bool(candles.get(NIFTY)),
+    }
+
+
 class Lens:
     """Reads the account from Kite. `call(name, *args)` makes one Kite
     call (the app's: kite.<name>(*args) through the throttle). pool: the
@@ -856,3 +873,40 @@ class Lens:
         if c is None:
             return {"state": "error", "error": "Kite gave no NIFTY 50 prices back to your first trade"}
         return {"state": "ready", **c, "unknown": sorted(k["symbol"] for k in keys if k["key"] not in toks)}
+
+    # ── Inspector (app/lens_inspect.py) ────────────────────────────────
+
+    async def _inspect_inputs(self) -> tuple:
+        """The trades, the holdings (None without Kite), the daily prices
+        kept for today's shares and Nifty, and the traded shares' prices
+        for the line against Nifty. Nothing here is read from Kite but the
+        holdings (kept for the day)."""
+        from . import lens_trades as T
+        trades = await self._trades()
+        h, err = None, None
+        try:
+            h = await self.holdings()
+        except Exception as e:
+            err = f"{type(e).__name__}: {e}"
+        today = self.today()
+        tokens = [NIFTY] + [r["token"] for r in (h or {}).get("equity") or [] if r.get("token")]
+        first = min((t["trade_date"] for t in trades), default=today - timedelta(days=lens_store.FIRST_READ_DAYS))
+        since = min(first, today - timedelta(days=lens_store.FIRST_READ_DAYS))
+        known = {(r["exchange"] or "", r["tradingsymbol"]): int(r["instrument_token"]) for r in await self.pool.fetch(
+            "SELECT instrument_token, tradingsymbol, exchange FROM lens_instruments")}
+        traded = {T.key_of(t): known.get((t.get("exchange") or "NSE", t["symbol"])) for t in trades if T.kind_of(t) == "equity"}
+        candles = await lens_store.candles(self.pool, list({*tokens, *[v for v in traded.values() if v]}), since)
+        curve_prices = {k: [(c["date"], c["close"]) for c in candles.get(tok) or []] for k, tok in traded.items() if tok}
+        curve_prices = {k: v for k, v in curve_prices.items() if v}
+        return trades, h, err, candles, curve_prices
+
+    async def inspect(self) -> dict:
+        trades, h, err, candles, _ = await self._inspect_inputs()
+        return inspect_answer(trades, h, err, candles, self.today())
+
+    async def whatif(self, without: set) -> dict:
+        from . import lens_inspect as I
+        trades, h, err, candles, curve_prices = await self._inspect_inputs()
+        if h is None:
+            return {"error": f"Kite isn’t connected, so today’s holdings can’t be read ({err})"}
+        return I.compare(trades, h, candles, candles.get(NIFTY) or [], self.today(), set(without), curve_prices)

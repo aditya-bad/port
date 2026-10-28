@@ -100,3 +100,27 @@ def test_without_kite_the_trades_still_say_what_they_can(pool_run):
             "it says so, and doesn't ask again for ten minutes"
         assert "trades_task" in L.hist and L.hist["trades_task"].done()
     pool_run(go)
+
+
+def test_inspector_reads_your_own_money_the_tax_free_room_and_what_if(pool_run):
+    async def go(pool):
+        asked = []
+        L = lens.Lens(None, call=kite(asked), pool=pool, now=lambda: at(WED, 11))
+        await L.import_trades([{"name": "2025.csv", "text": JAN}, {"name": "later.csv", "text": LATER}])
+        await L.history()
+        await L.hist["task"]
+        n = len(asked)
+        x = await L.inspect()
+        assert len(asked) == n, "nothing more asked of Kite: the holdings are kept, the prices stored"
+        o = x["own"]
+        # INFY 15,000, the fund 7,035, TCS 20,000 and INFY again 5,600 (March, before any sale): all your own;
+        # TCS's sale in June gave 17,500 that nothing bought with since
+        assert (o["own"], o["pot"], o["booked"]) == (15000 + 7035 + 20000 + 5600, 17500, -2500)
+        assert o["profit_in_holdings"] == -2500, "a loss booked: what you hold at cost is that much below what went in"
+        assert x["tax"]["fy"] == "2026-27" and x["tax"]["exemption"] == 125000
+        assert [h["symbol"] for h in x["holdings"]] == ["INFY", "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN"]
+        assert {c["symbol"] for c in x["contributions"]} == {"INFY", "TCS", "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN"}
+        w = await L.whatif({"INE467B01029"})                         # TCS, never bought
+        assert w["without"] == ["INE467B01029"] and w["with"]["trades"]["booked"] == -2500 and w["without_them"]["trades"]["booked"] == 0
+        assert w["with"]["now"]["count"] == 2 and w["without_them"]["now"]["count"] == 2, "TCS isn't held: today's holdings the same"
+    pool_run(go)
