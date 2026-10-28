@@ -101,6 +101,9 @@ test('Overview: the whole, the shares against Nifty, what needs a look, where it
   assert.match(periods, /Nifty 50\s+\+0\.7%\s+−2\.2%\s+\+7\.7%\s+\+13\.1%\s+\+11\.1%/);
   assert.match(periods, /Ahead of Nifty by\s+\+0\.5 pts[\s\S]*−7\.8 pts/);
   assert.match(await p.locator('.lens-risk').innerText(), /Swings \(volatility\)\s+13\.3%[\s\S]*Beta to Nifty\s+0\.87\s+moves less than the market[\s\S]*Worst fall in the year\s+−8\.1%\s+19 May ’?'?26 → 24 Jun ’?'?26/);
+  // the tax opportunities in the imported trades, a click from Inspector
+  assert.match(await p.locator('[data-ideas]').innerText(), /About ₹12,712 less tax this year, 3 ways[\s\S]*Wait before selling these · Book losses against the gains you've already booked · Book ₹3,665 of long-term gain tax-free[\s\S]*155 days left/);
+  assert.match(await p.locator('[data-ideas]').getAttribute('href'), /#\/lens\/inspect\/ideas$/);
   // what needs a look: act-on-it first, then good news, then know-it
   const attn = await p.locator('.lens-a').evaluateAll(as => as.map(a => [a.dataset.attn, a.className.replace('lens-a ', '')]));
   assert.deepEqual(attn.map(a => a[0]), ['regular_plans', 'deep_loss', 'near_low', 'lagging', 'near_high', 'idcw', 't1', 'pledged', 'idle_cash', 'sips_paused']);
@@ -347,6 +350,13 @@ test('Inspector: your own money, the tax-free room, what if, and what each holdi
   const tip = await until(() => p.evaluate(() => { const x = document.querySelector('.tip'); return x && x.style.display !== 'none' ? x.innerText.trim() : ''; }));
   assert.match(tip, /Your own money in\s+₹[\d,]+[\s\S]*What you hold, at cost\s+₹[\d,]+[\s\S]*Sale money not reused\s+₹[\d,]+/);
   // keys switch views
+  await p.keyboard.press('h');
+  await p.waitForSelector('[data-idea="wait"]');
+  assert.match(p.url(), /inspect\/ideas$/);
+  assert.deepEqual(await p.locator('[data-idea]').evaluateAll(xs => xs.map(x => x.dataset.idea)), ['wait', 'book_losses', 'book_tax_free'], 'most saved first');
+  assert.match(await p.locator('.gk-tiles').innerText(), /Less tax, about\s+₹12,712[\s\S]*Short-term gain booked\s+\+₹18,900[\s\S]*Tax-free room left\s+₹1,24,132/);
+  assert.match(await p.locator('[data-idea="book_losses"]').innerText(), /about ₹3,780 less tax[\s\S]*TATAMOTORS[\s\S]*44[\s\S]*₹18,779[\s\S]*−₹19,120[\s\S]*cancels ₹18,900 of gains/);
+  assert.match(await p.locator('[data-idea="wait"] [data-item]').first().innerText(), /UTI NIFTY 50 INDEX FUND[\s\S]*184\.167[\s\S]*\+₹8,757[\s\S]*1 day · saves about ₹1,751/);
   await p.keyboard.press('t');
   await p.waitForSelector('[data-ins="plan"]');
   assert.match(p.url(), /inspect\/tax$/);
@@ -375,7 +385,7 @@ test('Inspector: your own money, the tax-free room, what if, and what each holdi
   assert.equal(await p.locator('#top').isVisible(), true);
   // a phone fits
   await p.setViewportSize({ width: 390, height: 844 });
-  for (const v of ['own', 'tax', 'whatif', 'drag']) {
+  for (const v of ['own', 'ideas', 'tax', 'whatif', 'drag']) {
     await p.goto(`${BASE}/linck/#/lens/inspect/${v}`);
     await p.waitForSelector('.gk.ins .gk-view > *');
     assert.equal(await p.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, `${v} fits a phone`);

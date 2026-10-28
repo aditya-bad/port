@@ -19,7 +19,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent.parent))
 
-from app.lens import NIFTY, Lens, inspect_answer, year_answer   # noqa: E402
+from app.lens import NIFTY, Lens, ideas_summary, inspect_answer, year_answer   # noqa: E402
 
 TODAY = date(2026, 10, 27)
 AS_OF = "2026-10-27T11:42:00+05:30"
@@ -229,7 +229,9 @@ async def make() -> dict:
     h = await lens.holdings()
     h["as_of"] = AS_OF
     y = year_answer(h, candles, TODAY, total=1 + len(h["equity"]))
-    return {"holdings": h, "history": y, "trades": trades_answer(h, candles), **inspect_answers(h, candles)}
+    ins = inspect_answers(h, candles)
+    h["tax_ideas"] = ideas_summary(ins["inspect"]["ideas"])      # what holdings adds once trades are imported
+    return {"holdings": h, "history": y, "trades": trades_answer(h, candles), **ins}
 
 
 def main():

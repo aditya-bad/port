@@ -659,7 +659,29 @@
    }
   ],
   "missing": [],
-  "as_of": "2026-10-27T11:42:00+05:30"
+  "as_of": "2026-10-27T11:42:00+05:30",
+  "tax_ideas": {
+   "saving": 12711.65,
+   "fy": "2026-27",
+   "days_left": 155,
+   "cards": [
+    {
+     "key": "wait",
+     "title": "Wait before selling these",
+     "saving": 8473.49
+    },
+    {
+     "key": "book_losses",
+     "title": "Book losses against the gains you've already booked",
+     "saving": 3780.0
+    },
+    {
+     "key": "book_tax_free",
+     "title": "Book ₹3,665 of long-term gain tax-free",
+     "saving": 458.16
+    }
+   ]
+  }
  },
  "history": {
   "day": "2026-10-27",
@@ -7296,6 +7318,134 @@
      "exemption": 125000,
      "used": 868.03,
      "over": 0.0
+    }
+   ]
+  },
+  "ideas": {
+   "fy": "2026-27",
+   "exemption": 125000,
+   "short_booked": 18900.0,
+   "long_booked": 868.03,
+   "room": 124131.97,
+   "days_left": 155,
+   "rates": {
+    "short": 0.2,
+    "long": 0.125
+   },
+   "saving": 12711.65,
+   "cards": [
+    {
+     "key": "wait",
+     "title": "Wait before selling these",
+     "saving": 8473.49,
+     "by": null,
+     "what": "They turn long term within 60 days. Sold before then the gain is short term (20%); after, long term (12.5%, or nothing within the tax-free room).",
+     "items": [
+      {
+       "symbol": "UTI NIFTY 50 INDEX FUND - DIRECT PLAN",
+       "qty": 184.167,
+       "amount": 30056.05,
+       "result": 8757.14,
+       "note": "long term from 2026-10-28",
+       "days": 1,
+       "save": 1751.43
+      },
+      {
+       "symbol": "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN",
+       "qty": 260.033,
+       "amount": 22986.92,
+       "result": 8453.67,
+       "note": "long term from 2026-10-28",
+       "days": 1,
+       "save": 1690.73
+      },
+      {
+       "symbol": "AXIS ELSS TAX SAVER FUND - REGULAR PLAN",
+       "qty": 120.85,
+       "amount": 11190.71,
+       "result": 3762.06,
+       "note": "long term from 2026-10-28",
+       "days": 1,
+       "save": 752.41
+      },
+      {
+       "symbol": "ICICI PRUDENTIAL BALANCED ADVANTAGE FUND - REGULAR PLAN",
+       "qty": 150.0,
+       "amount": 3585.0,
+       "result": 723.0,
+       "note": "long term from 2026-10-28",
+       "days": 1,
+       "save": 144.6
+      },
+      {
+       "symbol": "UTI NIFTY 50 INDEX FUND - DIRECT PLAN",
+       "qty": 184.167,
+       "amount": 30056.05,
+       "result": 8283.83,
+       "note": "long term from 2026-11-27",
+       "days": 31,
+       "save": 1656.77
+      },
+      {
+       "symbol": "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN",
+       "qty": 260.033,
+       "amount": 22986.92,
+       "result": 8131.23,
+       "note": "long term from 2026-11-27",
+       "days": 31,
+       "save": 1626.25
+      },
+      {
+       "symbol": "AXIS ELSS TAX SAVER FUND - REGULAR PLAN",
+       "qty": 120.85,
+       "amount": 11190.71,
+       "result": 3596.5,
+       "note": "long term from 2026-11-27",
+       "days": 31,
+       "save": 719.3
+      },
+      {
+       "symbol": "ICICI PRUDENTIAL BALANCED ADVANTAGE FUND - REGULAR PLAN",
+       "qty": 150.0,
+       "amount": 3585.0,
+       "result": 660.0,
+       "note": "long term from 2026-11-27",
+       "days": 31,
+       "save": 132.0
+      }
+     ]
+    },
+    {
+     "key": "book_losses",
+     "title": "Book losses against the gains you've already booked",
+     "saving": 3780.0,
+     "by": "2027-03-31",
+     "what": "This year you've booked ₹18,900 of taxable short-term gain. Selling these (oldest units first, only as many as it takes) cancels tax on that. A short-term loss cancels short- or long-term gains; a long-term loss only long-term. You can buy them back if you still want them.",
+     "items": [
+      {
+       "symbol": "TATAMOTORS",
+       "qty": 44.0,
+       "amount": 18779.2,
+       "result": -19119.76,
+       "note": "cancels ₹18,900 of gains"
+      }
+     ]
+    },
+    {
+     "key": "book_tax_free",
+     "title": "Book ₹3,665 of long-term gain tax-free",
+     "saving": 458.16,
+     "by": "2027-03-31",
+     "what": "Sell these and buy them back the same day. You hold the same thing at a higher cost, so this gain is never taxed; the room resets on 1 April and doesn't carry over.",
+     "items": [
+      {
+       "symbol": "SUZLON",
+       "qty": 225.0,
+       "amount": 12694.5,
+       "result": 3665.25,
+       "note": ""
+      }
+     ]
     }
    ]
   },

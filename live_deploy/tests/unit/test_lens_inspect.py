@@ -115,3 +115,64 @@ def test_with_and_without_and_what_each_holding_did():
     h["mf"] = [{"fund": "NO TRADES FUND", "isin": "INNT", "units": 1, "nav": 10, "value": 10, "weight": 0.1}]
     nt = next(r for r in I.contributions(trades, h, cs, nifty, TODAY) if r["isin"] == "INNT")
     assert nt["xirr_change"] is None and nt["xirr_without"] is None, "held with no trades: nothing to take out, not +0.0"
+
+
+# ── Tax opportunities ────────────────────────────────────────────────
+
+def cards(o):
+    return {c["key"]: c for c in o["cards"]}
+
+
+def test_losses_cancel_only_what_needs_cancelling_and_sell_as_few_as_it_takes():
+    trades = [t("W", "2026-05-04", "buy", 100, 100, "1"), t("W", "2026-07-01", "sell", 100, 200, "2"),     # 10,000 short-term gain
+              t("L", "2026-06-01", "buy", 100, 500, "3")]                                                # now 400: 100 a share down
+    o = I.opportunities(trades, {"INL": {"ltp": 400, "asset": "stock"}}, TODAY)
+    c = cards(o)["book_losses"]
+    assert o["short_booked"] == 10000 and c["items"] == [{"symbol": "L", "qty": 100, "amount": 40000, "result": -10000,
+                                                          "note": "cancels ₹10,000 of gains"}]
+    assert c["saving"] == 2000.0, "20% short-term on ₹10,000"
+    o = I.opportunities(trades, {"INL": {"ltp": 300, "asset": "stock"}}, TODAY)
+    assert cards(o)["book_losses"]["items"][0]["qty"] == 50, "200 down a share: 50 shares are enough"
+
+
+def test_a_long_term_loss_cancels_only_long_term_gains():
+    trades = [t("W", "2026-05-04", "buy", 100, 100, "1"), t("W", "2026-07-01", "sell", 100, 200, "2"),     # short-term gain
+              t("L", "2024-06-03", "buy", 100, 500, "3")]                                                # held long term, at a loss
+    o = I.opportunities(trades, {"INL": {"ltp": 400, "asset": "stock"}}, TODAY)
+    assert "book_losses" not in cards(o), "a long-term loss can't cancel a short-term gain"
+
+
+def test_long_term_gains_inside_the_tax_free_room_need_no_cancelling():
+    trades = [t("W", "2024-05-02", "buy", 100, 100, "1"), t("W", "2026-07-01", "sell", 100, 500, "2"),     # 40,000 long term: tax-free
+              t("L", "2026-06-01", "buy", 100, 500, "3")]
+    o = I.opportunities(trades, {"INL": {"ltp": 400, "asset": "stock"}}, TODAY)
+    c = cards(o)
+    assert "book_losses" not in c and c["keep_losses"]["items"][0]["symbol"] == "L", \
+        "booking it now would only cancel tax-free gain: keep it"
+    assert c["keep_losses"]["saving"] is None
+
+
+def test_gain_on_older_units_that_must_go_first_is_counted():
+    trades = [t("W", "2026-05-04", "buy", 10, 100, "1"), t("W", "2026-07-01", "sell", 10, 1100, "2"),      # 10,000 short-term
+              t("L", "2026-04-06", "buy", 10, 300, "3"), t("L", "2026-06-01", "buy", 100, 600, "4")]     # old lot in profit first
+    o = I.opportunities(trades, {"INL": {"ltp": 400, "asset": "stock"}}, TODAY)
+    it = cards(o)["book_losses"]["items"][0]
+    # the 10 old units add 1,000 of gain: 11,000 to cancel at 200 a share = 55 of the newer lot
+    assert it["qty"] == 10 + 55 and it["result"] == 10 * 100 - 55 * 200
+
+
+def test_wait_before_selling_what_turns_long_term_soon():
+    trades = [t("A", "2025-11-20", "buy", 100, 100, "1")]            # long term from 21 Nov 2026
+    o = I.opportunities(trades, {"INA": {"ltp": 200, "asset": "stock"}}, TODAY)
+    w = cards(o)["wait"]
+    assert w["items"][0]["days"] == 24 and w["items"][0]["note"] == "long term from 2026-11-21"
+    assert w["saving"] == 2000.0, "₹10,000 at 20% now, nothing later within the room"
+    loss = I.opportunities([t("B", "2025-11-20", "buy", 100, 100, "1")], {"INB": {"ltp": 90, "asset": "stock"}}, TODAY)
+    assert "wait" not in cards(loss), "a lot at a loss: nothing to wait for"
+
+
+def test_ideas_are_ordered_by_what_they_save_and_cover_only_listed_equity():
+    trades = [t("A", "2024-05-02", "buy", 1000, 100, "1"),                                    # 1.25 lakh+ long-term gain to book
+              t("G", "2025-11-20", "buy", 100, 100, "2")]                                     # gold ETF turning long term: not 112A
+    o = I.opportunities(trades, {"INA": {"ltp": 300, "asset": "stock"}, "ING": {"ltp": 200, "asset": "gold"}}, TODAY)
+    assert [c["key"] for c in o["cards"]] == ["book_tax_free"] and o["saving"] == 125000 * 0.125

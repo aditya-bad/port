@@ -554,6 +554,14 @@ def priced(equity: list[dict], price: Callable[[Any], Optional[dict]]) -> list[d
     return out
 
 
+def ideas_summary(o: Optional[dict]) -> Optional[dict]:
+    """The Overview's line on Inspector's tax opportunities."""
+    if not o or not o["cards"]:
+        return None
+    return {"saving": o["saving"], "fy": o["fy"], "days_left": o["days_left"],
+            "cards": [{"key": c["key"], "title": c["title"], "saving": c["saving"]} for c in o["cards"]]}
+
+
 def inspect_answer(trades: list[dict], h: Optional[dict], err: Optional[str], candles: dict, today: date) -> dict:
     """What /v2/lens/inspect answers (app/lens_inspect.py's reads)."""
     from . import lens_inspect as I
@@ -565,6 +573,7 @@ def inspect_answer(trades: list[dict], h: Optional[dict], err: Optional[str], ca
         "as_of": today.isoformat(), "holdings_error": err, "trades": len(trades),
         "own": I.own_money(trades, held, today),
         "tax": I.tax_free(trades, held, today),
+        "ideas": I.opportunities(trades, held, today),
         "holdings": rows,
         "contributions": I.contributions(trades, h, candles, candles.get(NIFTY) or [], today) if h is not None else [],
         "year_ready": bool(candles.get(NIFTY)),
@@ -588,6 +597,7 @@ class Lens:
         self._read_lock = asyncio.Lock()
         self.reads = 0
         self.hist: dict = {"task": None, "progress": None, "failed": {}, "retry": {}, "error": None}
+        self._trades_kept: Optional[list] = None       # the imported trades, read once, dropped on import/remove
 
     async def _kite(self, what: str, *args):
         from .options import OptionsResolver
@@ -657,7 +667,22 @@ class Lens:
         async with self._read_lock:
             if fresh or self._raw is None or self._raw["day"] != self.today():
                 await self._read()
-        return self._answer()
+        out = self._answer()
+        if self.pool is not None:
+            out["tax_ideas"] = await self._tax_ideas(out)
+        return out
+
+    async def _tax_ideas(self, h: dict) -> Optional[dict]:
+        """For the Overview: what Inspector's tax opportunities come to, from
+        the imported trades (none imported: nothing to say)."""
+        from . import lens_inspect as I
+        try:
+            trades = await self._trades()
+            o = I.opportunities(trades, self._held_by_isin(h), self.today()) if trades else None
+        except Exception:
+            logger.exception("LinckLens: working out the tax opportunities failed")
+            return None
+        return ideas_summary(o)
 
     async def warm_loop(self, every: float = 60.0) -> None:
         """Read the account once a day as soon as Kite is logged in, so the
@@ -769,6 +794,7 @@ class Lens:
                             r["trade_type"], r["auction"], r["quantity"], r["price"], r["trade_id"], r["order_id"],
                             r["executed_at"]) or 0
                     await conn.execute("UPDATE lens_imports SET added = $2, skipped = $3 WHERE id = $1", imp, added, len(rows) - added)
+            self._trades_kept = None
             out.append({"id": imp, "name": name, "rows": len(rows), "added": added, "skipped": len(rows) - added,
                         "first_day": first.isoformat() if first else None, "last_day": last.isoformat() if last else None,
                         "problems": problems})
@@ -777,14 +803,18 @@ class Lens:
     async def remove_import(self, import_id: int) -> bool:
         """An import and the trades it brought (a trade another file also
         held goes with it; import that file again to have it back)."""
+        self._trades_kept = None
         return (await self.pool.execute("DELETE FROM lens_imports WHERE id = $1", import_id)) != "DELETE 0"
 
     async def _trades(self) -> list[dict]:
+        if self._trades_kept is not None:
+            return self._trades_kept
         rows = await self.pool.fetch("SELECT * FROM lens_trades ORDER BY trade_date, executed_at, id")
-        return [{"symbol": r["symbol"], "isin": r["isin"] or None, "trade_date": r["trade_date"], "exchange": r["exchange"],
+        self._trades_kept = [{"symbol": r["symbol"], "isin": r["isin"] or None, "trade_date": r["trade_date"], "exchange": r["exchange"],
                  "segment": r["segment"], "series": r["series"], "trade_type": r["trade_type"], "auction": r["auction"],
                  "quantity": r["quantity"], "price": r["price"], "trade_id": r["trade_id"], "order_id": r["order_id"],
                  "executed_at": r["executed_at"]} for r in rows]
+        return self._trades_kept
 
     @staticmethod
     def _held_by_isin(h: Optional[dict]) -> dict:

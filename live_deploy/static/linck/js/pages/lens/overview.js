@@ -97,6 +97,16 @@ function movers(rows, key, n = 5) {
   return html`<div class="lens-movers"><div class="col">${list(up, 'up')}</div><div class="col">${list(down, 'down')}</div></div>`;
 }
 
+// Inspector's tax opportunities, when the imported trades show any.
+function taxIdeas(x) {
+  if (!x || !x.cards || !x.cards.length) return '';
+  return html`<a class="lens-ideas" href="${href('lens/inspect/ideas')}" data-ideas>
+    <span class="gk-badge">TAX</span>
+    <span class="col"><b>About ${inr0(x.saving)} less tax this year, ${plural(x.cards.length, 'way')}</b>
+      <span class="small mute">${x.cards.map(c => c.title).join(' · ')}</span></span>
+    <span class="small mono">${x.days_left} days left →</span></a>`;
+}
+
 export function render(st, ui) {
   const h = st.h, t = h.totals, y = st.y, ready = y && y.state === 'ready';
   const curve = ready ? y.insights.curve : null;
@@ -121,6 +131,7 @@ export function render(st, ui) {
       : ready ? html`<p class="small mute">${y.error || (t.equity.count ? 'Not enough price history to draw it.' : 'No shares held.')}</p>`
       : yearProgress(y, st.yErr)}
 
+    ${taxIdeas(h.tax_ideas)}
     ${sect('Worth a look', ready ? 'From your holdings and their year' : 'From your holdings; more once the year of prices is in')}
     ${attentionList(attn)}
 

@@ -365,3 +365,173 @@ def contributions(trades: list[dict], h: dict, candles: dict, nifty_candles: lis
 def _held(h: dict) -> dict:
     from .lens import Lens
     return Lens._held_by_isin(h)
+
+
+# ── Tax opportunities ────────────────────────────────────────────────
+
+# Listed equity (shares, equity ETFs, equity funds, REITs) from 23 July
+# 2024: short term (s.111A) 20%, long term (s.112A) 12.5% above the yearly
+# exemption. Before cess and surcharge.
+RATE = {"short": 0.20, "long": 0.125}
+SOON_DAYS = 60
+
+
+def _cut(lots: list[dict], today: date, price: float) -> Optional[dict]:
+    """Selling the oldest units first, the point where the loss is
+    largest: {qty, short, long} (short and long-term parts, both <= 0)."""
+    cum = st = lt = q = 0.0
+    best = None
+    for l in lots:
+        g = l["qty"] * (price - l["price"])
+        if (today - l["day"]).days > T.LONG_TERM_DAYS:
+            lt += g
+        else:
+            st += g
+        cum += g
+        q += l["qty"]
+        if cum < -EPS and (best is None or cum < best["loss"]):
+            best = {"qty": q, "loss": cum, "short": st, "long": lt}
+    return best
+
+
+def _offset(lots: list[dict], today: date, price: float, need_st: float, need_lt: float, step: float) -> Optional[dict]:
+    """The fewest units, oldest first as a sale takes them, whose losses
+    cancel the taxable gains needing it: a short-term loss cancels
+    short-term gains, then long-term; a long-term loss only long-term. A
+    gain on units that have to go first adds to what needs cancelling.
+    {qty, loss (the sale's result), cancels}; None if it cancels nothing."""
+    q = res = cancels = 0.0
+    for l in lots:
+        if need_st <= EPS and need_lt <= EPS:
+            break
+        per = price - l["price"]
+        long_ = (today - l["day"]).days > T.LONG_TERM_DAYS
+        if per >= 0:                       # a gain: it must be sold to reach the units behind it
+            q += l["qty"]; res += l["qty"] * per
+            if long_:
+                need_lt += l["qty"] * per
+            else:
+                need_st += l["qty"] * per
+            continue
+        loss_per = -per
+        want = (need_st + need_lt) if not long_ else need_lt
+        if want <= EPS:
+            continue
+        n = min(l["qty"], math.ceil(want / loss_per / step) * step)
+        loss = n * loss_per
+        if long_:
+            c = min(loss, need_lt); need_lt -= c
+        else:
+            a = min(loss, need_st); need_st -= a
+            b = min(loss - a, need_lt); need_lt -= b
+            c = a + b
+        cancels += c
+        q += n; res -= loss
+    if cancels <= EPS:
+        return None
+    return {"qty": q, "loss": res, "cancels": cancels}
+
+
+def opportunities(trades: list[dict], holdings: Optional[dict] = None, today: Optional[date] = None) -> Optional[dict]:
+    """Ways to pay less tax this financial year with what you hold now,
+    each with what it would save (roughly), by when, and which lots."""
+    today, holdings = today or date.today(), holdings or {}
+    tf = tax_free(trades, holdings, today)
+    if tf is None:
+        return None
+    ts = [t for t in trades if T.kind_of(t) in ("equity", "mf")]
+    assets = {t.get("isin"): asset_of(t, holdings) for t in ts if t.get("isin")}
+    L = T.lots(ts, assets)
+    this, ex = tf["fy"], tf["exemption"]
+    st_booked = lt_booked = 0.0
+    for x in L.values():
+        if assets.get(x["isin"]) not in EXEMPT:
+            continue
+        for c in x["closed"]:
+            if T.fy(c["sell_day"]) == this:
+                if c["term"] == "short":
+                    st_booked += c["pnl"]
+                elif c["term"] == "long":
+                    lt_booked += c["pnl"]
+    deadline = date(int(this[:4]) + 1, 3, 31).isoformat()
+    cards = []
+
+    # 1. the year's tax-free long-term gain, booked and bought back
+    if tf["plan"]:
+        cards.append({"key": "book_tax_free", "title": f"Book ₹{tf['plan_gain']:,.0f} of long-term gain tax-free",
+                      "saving": _r(tf["plan_gain"] * RATE["long"]), "by": deadline,
+                      "what": "Sell these and buy them back the same day. You hold the same thing at a higher cost, so this "
+                              "gain is never taxed; the room resets on 1 April and doesn't carry over.",
+                      "items": [{"symbol": p["symbol"], "qty": p["qty"], "amount": p["sale"], "result": p["gain"],
+                                 "note": "if equity-oriented" if p["maybe"] else ""} for p in tf["plan"]]})
+
+    # 2. losses that would cancel tax on gains already booked this year
+    taxable_st = max(st_booked, 0.0)
+    taxable_lt = max(lt_booked - ex, 0.0)
+    cuts = []
+    for x in L.values():
+        h = holdings.get(x["isin"]) or {}
+        if assets.get(x["isin"]) not in EXEMPT or not h.get("ltp") or not x["open"]:
+            continue
+        c = _cut(x["open"], today, h["ltp"])
+        if c:
+            cuts.append({**c, "symbol": x["symbol"], "price": h["ltp"]})
+    if (taxable_st > EPS or taxable_lt > EPS) and cuts:
+        left_st, left_lt, items = taxable_st, taxable_lt, []
+        cancelled_st = cancelled_lt = 0.0
+        for c in sorted(cuts, key=lambda c: c["loss"]):
+            if left_st <= EPS and left_lt <= EPS:
+                break
+            x = next(v for v in L.values() if v["symbol"] == c["symbol"])
+            o = _offset(x["open"], today, c["price"], left_st, left_lt, 1.0 if x["kind"] == "equity" else 0.001)
+            if not o:
+                continue
+            # what it cancels comes off short-term first (the dearer), then long-term
+            st_c = min(o["cancels"], left_st); lt_c = o["cancels"] - st_c
+            left_st -= st_c; left_lt = max(left_lt - lt_c, 0.0)
+            cancelled_st += st_c; cancelled_lt += lt_c
+            items.append({"symbol": c["symbol"], "qty": _r(o["qty"], 3), "amount": _r(o["qty"] * c["price"]),
+                          "result": _r(o["loss"]), "note": f"cancels ₹{o['cancels']:,.0f} of gains"})
+        if items:
+            cards.append({"key": "book_losses", "title": "Book losses against the gains you've already booked",
+                          "saving": _r(cancelled_st * RATE["short"] + cancelled_lt * RATE["long"]), "by": deadline,
+                          "what": f"This year you've booked ₹{taxable_st:,.0f} of taxable short-term gain"
+                                  + (f" and ₹{taxable_lt:,.0f} of long-term gain above the ₹{ex / 100000:.2f} lakh" if taxable_lt > EPS else "")
+                                  + ". Selling these (oldest units first, only as many as it takes) cancels tax on that. A short-term loss "
+                                    "cancels short- or long-term gains; a long-term loss only long-term. You can buy them back if you still want them.",
+                          "items": items})
+    elif cuts and taxable_st <= EPS and taxable_lt <= EPS:
+        cards.append({"key": "keep_losses", "title": "Hold on to your losses for now", "saving": None, "by": None,
+                      "what": "You haven't booked taxable gains this year, so a loss booked now would only cancel gains that are "
+                              "tax-free anyway. Losses can be carried forward 8 years, but only what's left after this year's gains.",
+                      "items": [{"symbol": c["symbol"], "qty": _r(c["qty"], 3), "amount": _r(c["qty"] * c["price"]),
+                                 "result": _r(c["loss"]), "note": ""} for c in sorted(cuts, key=lambda c: c["loss"])[:6]]})
+
+    # 3. lots in profit that turn long term soon: selling now costs more
+    wait, room = [], tf["room"] - tf["plan_gain"]
+    for x in L.values():
+        h = holdings.get(x["isin"]) or {}
+        if assets.get(x["isin"]) not in EXEMPT or not h.get("ltp"):
+            continue
+        for l in x["open"]:
+            age = (today - l["day"]).days
+            on = l["day"] + timedelta(days=T.LONG_TERM_DAYS + 1)
+            gain = l["qty"] * (h["ltp"] - l["price"])
+            if age <= T.LONG_TERM_DAYS and (on - today).days <= SOON_DAYS and gain > EPS:
+                tax_now = gain * RATE["short"]
+                free = min(gain, max(room, 0.0))
+                room -= free
+                tax_later = (gain - free) * RATE["long"]
+                wait.append({"symbol": x["symbol"], "qty": _r(l["qty"], 3), "amount": _r(l["qty"] * h["ltp"]), "result": _r(gain),
+                             "note": f"long term from {on.isoformat()}", "days": (on - today).days, "save": _r(tax_now - tax_later)})
+    if wait:
+        wait.sort(key=lambda w: w["days"])
+        cards.append({"key": "wait", "title": "Wait before selling these", "saving": _r(sum(w["save"] for w in wait)),
+                      "by": None,
+                      "what": "They turn long term within 60 days. Sold before then the gain is short term (20%); after, long "
+                              "term (12.5%, or nothing within the tax-free room).",
+                      "items": wait})
+    cards.sort(key=lambda c: -(c["saving"] or 0))
+    return {"fy": this, "exemption": ex, "short_booked": _r(st_booked), "long_booked": _r(lt_booked),
+            "room": tf["room"], "days_left": tf["days_left"], "rates": RATE,
+            "saving": _r(sum(c["saving"] or 0 for c in cards)), "cards": cards}

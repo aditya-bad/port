@@ -17,6 +17,7 @@ import { inr0, signed, pctOr } from './parts.js';
 // [key, label, group, keyboard key]
 export const VIEWS = [
   ['own', 'Your own money', 'Your money', 'O'],
+  ['ideas', 'Tax opportunities', 'Your money', 'H'],
   ['tax', 'Tax-free gains', 'Your money', 'T'],
   ['whatif', 'Remove holdings', 'What if', 'W'],
   ['drag', 'What each holding did', 'What if', 'D'],
@@ -151,6 +152,35 @@ function taxView(d) {
       </div></div>`;
 }
 
+// ── Tax opportunities ──────────────────────────────────────────────────
+
+const IDEA_HEAD = { book_tax_free: ['Sell', 'Long-term gain'], book_losses: ['Sell', 'Loss booked'], keep_losses: ['Units', 'Loss now'], wait: ['Units', 'Gain now'] };
+
+function ideasView(d) {
+  const o = d.ideas;
+  if (!o) return noTrades();
+  const fyEnd = `31 Mar ${Number(o.fy.slice(0, 4)) + 1}`;
+  return html`${head('Tax opportunities', 'Ways to pay less tax this financial year with what you hold, each with roughly what it saves and by when. Listed shares, equity ETFs, equity funds and REITs.', `${o.fy} · ${o.days_left} days left`)}
+    ${tiles([
+      ['Less tax, about', o.saving ? html`<span class="pos">${inr0(o.saving)}</span>` : '—', o.cards.length ? `${plural(o.cards.length, 'idea')} below` : 'nothing to do now'],
+      ['Short-term gain booked', signed(o.short_booked, inr(o.short_booked)), `${o.fy}, taxed ${Math.round(o.rates.short * 100)}%`],
+      ['Long-term gain booked', signed(o.long_booked, inr(o.long_booked)), `tax-free up to ${inr0(o.exemption)}, then ${o.rates.long * 100}%`],
+      ['Tax-free room left', inr0(o.room), `until ${fyEnd}`],
+    ])}
+    ${o.cards.length ? o.cards.map(c => html`<div class="ins-idea ${c.saving ? '' : 'quiet'}" data-idea="${c.key}">
+      <div class="ins-idea-h"><h3>${c.title}</h3>
+        ${c.saving ? html`<span class="ins-save">about <b>${inr0(c.saving)}</b> less tax</span>` : ''}
+        ${c.by ? html`<span class="tiny mute mono">by ${dShort(fromDay(c.by))}</span>` : ''}</div>
+      <p class="small">${c.what}</p>
+      <div class="tbl gk-tbl" role="table"><div class="tr th ins-ii" role="row"><span>Holding</span><span class="num">${IDEA_HEAD[c.key][0]}</span><span class="num">Worth</span><span class="num">${IDEA_HEAD[c.key][1]}</span><span></span></div>
+        ${c.items.map(i => html`<div class="tr ins-ii" role="row" data-item="${i.symbol}"><span><b>${i.symbol}</b></span>
+          <span class="num" data-l="${IDEA_HEAD[c.key][0]}">${num(i.qty, i.qty % 1 ? 3 : 0)}</span><span class="num" data-l="Worth">${inr0(i.amount)}</span>
+          <span class="num ${tone(i.result)}" data-l="${IDEA_HEAD[c.key][1]}">${inr(i.result)}</span>
+          <span class="small mute">${c.key === 'wait' ? html`<b>${i.days} day${i.days === 1 ? '' : 's'}</b> · saves about ${inr0(i.save)}` : i.note}</span></div>`)}
+      </div></div>`) : html`<p class="small mute" data-idea="none">Nothing to do this year with what you hold: no tax-free room to fill with gains, no taxable gains for a loss to cancel, nothing about to turn long term.</p>`}
+    <p class="gk-note">Rates for listed equity since 23 July 2024: ${Math.round(o.rates.short * 100)}% short term, ${o.rates.long * 100}% long term above ${inr0(o.exemption)} a year; before cess and surcharge, and your other income and gains aren’t known here. Gains are from your imported trades, first in first out. Brokerage, STT, stamp duty and any exit load cut what you save. Prices move: check before you sell. India has no rule against buying back straight away, but trades made only to save tax can be questioned. A guide, not tax advice.</p>`;
+}
+
 // ── Remove holdings ────────────────────────────────────────────────────
 
 const ROWS = [
@@ -227,7 +257,7 @@ function dragView(d) {
 
 const noTrades = () => html`${empty('No trades imported', 'This needs your Console tradebook. Import it on LinckLens › Trades, then come back.')}<p class="small"><a href="${href('lens/trades')}">Go to Trades →</a></p>`;
 
-const VIEW = { own: ownView, tax: taxView, whatif: whatifView, drag: dragView };
+const VIEW = { own: ownView, ideas: ideasView, tax: taxView, whatif: whatifView, drag: dragView };
 
 export default {
   title: p => `${(VIEWS.find(v => v[0] === p.view) || VIEWS[0])[1]} · Inspector · LinckLens`,
