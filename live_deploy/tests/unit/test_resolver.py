@@ -256,3 +256,22 @@ def test_calls_are_spaced_process_wide(monkeypatch):
         await asyncio.gather(*(x._kite_call(lambda: 1) for x in (a, b, a, b)))
         return time.monotonic() - t0
     assert run(go()) >= 0.14
+
+
+def test_live_price_is_a_recent_trade_else_the_bid_ask_else_nothing():
+    """What a trade could be done at now (strangle_monthly_v2's LIVE
+    PRICES): a last trade only if it's recent; a thin contract's last
+    trade can be days old (SENSEX26NOV70800PE, 30 Oct: 21 Oct 09:34)."""
+    from datetime import datetime
+    from app.options.resolver import live_price
+    now = datetime(2026, 10, 30, 10, 0)
+    book = {"buy": [{"price": 280.0}], "sell": [{"price": 286.0}]}
+    assert live_price({"last_price": 125.9, "last_trade_time": datetime(2026, 10, 30, 9, 58), "depth": book}, now) == (125.9, "trade")
+    assert live_price({"last_price": 125.9, "last_trade_time": datetime(2026, 10, 21, 9, 34), "depth": book}, now) == (283.0, "mid")
+    assert live_price({"last_price": 125.9, "last_trade_time": datetime(2026, 10, 30, 9, 40), "depth": book}, now) == (283.0, "mid")
+    assert live_price({"last_price": 125.9, "last_trade_time": datetime(2026, 10, 30, 9, 40),
+                       "depth": {"buy": [], "sell": [{"price": 286.0}]}}, now) == (125.9, "old_trade")
+    assert live_price({"last_price": 125.9, "last_trade_time": datetime(2026, 10, 21, 9, 34),
+                       "depth": {"buy": [], "sell": []}}, now) == (None, "none")
+    assert live_price({"last_price": 125.9, "last_trade_time": datetime(2026, 10, 30, 9, 10), "depth": {}}, now) == (None, "none"), \
+        "a trade before the open is yesterday's"

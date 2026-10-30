@@ -39,7 +39,8 @@ def candles_source(sim, path, vix: float = 14.0, overrides: dict | None = None):
                     o, h, l, c = path(m)
                     if int(token) not in tok_of:
                         row = market.by_token.get(int(token))
-                        if row is None:
+                        thin = market.thin.get(row["tradingsymbol"]) if row is not None else None
+                        if row is None or (thin is not None and thin[1] < m):   # no trade since its last one
                             m += timedelta(minutes=1)
                             continue
                         market.now = m

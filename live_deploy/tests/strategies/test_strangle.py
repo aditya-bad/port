@@ -289,8 +289,11 @@ def test_an_untraded_leg_is_priced_from_its_live_quote_from_09_20(pool_run, monk
         ce = next(f for f in fills if f["position_id"] == call["id"])
         assert float(ce["price"]) < 300, "closed at the quote's mid, not the 400 from yesterday"
         rows = [r for r in await decisions(sim) if r["rule"] == "stale_price_guard" and r["outcome"] == "no_action"]
-        assert len(rows) == 1 and rows[0]["summary"] == "Priced from a live quote: not traded yet today"
+        assert [r["summary"] for r in rows] == ["Priced from a live quote: not traded yet today",
+                                                "Every leg priced again: management resumes"], "when the hold ended, for the day check"
         assert set(rows[0]["data"]["tokens"]) == {str(tok)}
+        quoted = await pool.fetch("SELECT instrument_token, price FROM strategy_quotes WHERE deployment_id = $1", sim.dep_id)
+        assert {int(r["instrument_token"]) for r in quoted} == {tok}, "each quoted price kept for the day check"
     pool_run(go)
 
 
@@ -449,4 +452,84 @@ def test_an_entry_on_one_strike_is_a_straddle_from_the_start(pool_run, monkeypat
         legs = await shorts(sim)
         assert len(legs) == 2 and len({float(p["metadata"]["strike"]) for p in legs}) == 1
         assert s.converged and abs(s.convergence_premium - sum(float(p["avg_entry_price"]) for p in legs)) < 0.01
+    pool_run(go)
+
+
+# ── Live prices: what a trade could be done at, not a last trade from days ago
+# DTT Sensex Strangle, 30 Oct: the 10:00 entry sold 70800PE at ₹125.90, its
+# last trade, on 21 Oct: picked because that stale price matched the target,
+# filled at it, while its bid/ask stood around twice that. 29 Oct 15:13: the
+# end-of-day check bought 71400PE back at its bid/ask mid (248.22) and sold
+# the same contract again at its last trade from 11:55 (342.30).
+
+def test_an_entry_never_picks_or_fills_a_strike_at_a_last_trade_from_days_ago(pool_run, monkeypatch):
+    from datetime import datetime
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, S, cfg(S), mode="positional")
+        thin = "NIFTY26NOV2424300PE"                 # its bid/ask is about twice the target
+        sim.market.thin[thin] = (166.70, datetime(2026, 10, 5, 9, 34))   # but its last trade, 9 days old, matches it
+        sim.market.no_book.add("NIFTY26NOV2424400PE")
+        sim.market.thin["NIFTY26NOV2424400PE"] = (166.65, datetime(2026, 10, 5, 9, 34))   # and nobody quotes this one at all
+        assert sim.market.price_of(sim.market.by_key[f"NFO:{thin}"]) > 300
+        await sim.tick("10:00", spot=25000)
+        legs = await shorts(sim)
+        pe = next(p for p in legs if p["symbol"].endswith("PE"))
+        assert pe["symbol"] not in (thin, "NIFTY26NOV2424400PE")
+        row = sim.market.by_key[f"NFO:{pe['symbol']}"]
+        assert abs(float(pe["avg_entry_price"]) - sim.market.price_of(row)) < 0.06, "filled where it trades now"
+        assert abs(float(pe["avg_entry_price"]) - 166.7) / 166.7 < 0.15
+    pool_run(go)
+
+
+def test_a_replacement_never_resells_the_strike_it_closes(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        strat = sim.runner.strategy
+        pe = strat.legs["PE"][0]
+        own = sim.market.price_of(sim.market.by_key[f"NFO:{pe['symbol']}"])
+        leg, price = await strat._pick_leg(sim.runner, "PE", own, without=pe)   # its own premium: its own strike is closest
+        assert leg.strike != pe["strike"]
+        assert abs(price - sim.market.price_of(sim.market.by_key[f"NFO:{leg.tradingsymbol}"])) < 0.06
+    pool_run(go)
+
+
+def test_a_leg_with_no_recent_trade_is_managed_and_closed_at_its_bid_ask(pool_run, monkeypatch):
+    """A put that traded at 10:05 and not since: its last trade says the
+    sides are even, its bid/ask that it has fallen to under half the
+    call. The roll goes by the bid/ask, and closes the put there."""
+    from datetime import datetime
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        strat = sim.runner.strategy
+        pe = next(p for p in await shorts(sim) if p["symbol"].endswith("PE"))
+        up = await find_spot(sim, lambda p: side_sum(p, "PE") <= 0.45 * side_sum(p, "CE"), step=25)
+        ce_then = side_sum(await leg_prices(sim, up), "CE")
+        sim.market.thin[pe["symbol"]] = (round(ce_then, 2), datetime(2026, 10, 14, 10, 5))   # even with the call, on its last trade
+        await sim.tick("11:00", spot=up)
+        fills = [f for f in await sim.fills() if f["reason"] == "continuous_50pct_trigger"]
+        assert fills, "rolled on the bid/ask, which its last trade hid"
+        closed = next(f for f in fills if f["position_id"] == pe["id"])
+        live = sim.market.price_of(sim.market.by_key[f"NFO:{pe['symbol']}"])
+        assert abs(float(closed["price"]) - live) < 0.06, "bought back at its bid/ask, not its last trade"
+        rows = await pool.fetch("SELECT instrument_token FROM strategy_quotes WHERE deployment_id = $1", sim.dep_id)
+        assert int(pe["instrument_token"]) in {int(r["instrument_token"]) for r in rows}
+        assert any(r["summary"] == "Priced from a live quote: no recent trade" for r in await decisions(sim))
+    pool_run(go)
+
+
+def test_on_sensex_it_leans_to_round_strikes_when_the_premium_allows(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await Sim.create(pool, monkeypatch, S, cfg(S, instrument="SENSEX", instrument_tokens=[265], adjustment_strike_window=60),
+                               mode="positional", underlying="SENSEX", spot=82230)
+        await sim.tick("10:00", spot=82230)
+        legs = await shorts(sim)
+        assert len(legs) == 2
+        target = 500000 * 0.05 / 20 / 2
+        for p in legs:
+            assert float(p["metadata"]["strike"]) % 500 == 0, p["symbol"]
+            assert abs(float(p["avg_entry_price"]) - target) / target <= 0.15
+        strat = sim.runner.strategy
+        plain = [await strat.resolver.get_leg_by_premium("SENSEX", strat.contract_expiry, side, target, strike_window=60, live=True)
+                 for side in ("CE", "PE")]
+        assert any(l.strike % 500 for l in plain), "the closest premiums weren't round: the lean chose"
     pool_run(go)

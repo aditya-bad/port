@@ -135,6 +135,9 @@ class ReplayRunner(DeploymentRunner):
     def _is_stale_tick(self, tick: dict) -> bool:
         return False   # replayed ticks are in the past by design
 
+    async def record_quote(self, ts, token, price):
+        pass   # the app's own quotes are what the replay prices from, never its own
+
     async def report(self, kind, title, detail=None, **kw):
         # once, at the minute it first came up: a problem that lasts is
         # reported on every tick (four a minute, 1,500 lines a day)
@@ -253,9 +256,30 @@ class Outcome:
         return self.ambiguity is None
 
 
-# A trade the app didn't make, made only in the last tenth of the way from
-# a minute's open/close to its high or low, is the app's call (settle).
-EDGE = 0.9
+# A trade the app didn't make, made only beyond a minute's open and close
+# (in its wicks), is the app's call (settle): the candle puts every
+# contract at its own high or low at one moment, and only the app's ticks
+# saw what really happened inside the minute. 28 and 29 Oct: the straddles'
+# adjustments and rolls the replay found that way, the app's own prices a
+# minute apart never near the trigger, were false flags.
+EDGE = 0.0
+# Where it wasn't getting prices (a feed gap, or the strategy down), only a
+# trigger the last tenth of the wick sets off is.
+BLIND_EDGE = 0.9
+
+
+async def _app_blind(conn, dep_id, day: date) -> list[tuple[datetime, datetime]]:
+    """[(from, to)]: when the deployment saw no prices that day, as it
+    reported: a gap in its feed, or its strategy down (a crash)."""
+    out = []
+    for r in await conn.fetch("SELECT kind, data, first_at, last_at, resolved_at FROM strategy_issues "
+                              "WHERE deployment_id = $1 AND day = $2 AND kind IN ('feed_gap', 'crash')", dep_id, day):
+        data = json.loads(r["data"]) if isinstance(r["data"], str) else (r["data"] or {})
+        if r["kind"] == "feed_gap" and data.get("from") and data.get("to"):
+            out.append((naive_ist(datetime.fromisoformat(data["from"])), naive_ist(datetime.fromisoformat(data["to"]))))
+        elif r["kind"] == "crash":
+            out.append((naive_ist(r["first_at"]), naive_ist(r["resolved_at"] or r["last_at"])))
+    return out
 APP_WITHIN = timedelta(minutes=3)   # as the day check matches trades (daycheck.MATCH_WITHIN)
 
 
@@ -348,50 +372,99 @@ async def _app_refusals(conn, dep_id, day: date, app_fills: list) -> dict[str, l
     return out
 
 
-# A short leg with no trade yet today is priced from its bid/ask mid
-# (strangle_monthly_v2 _quote_stale), each new price logged with this.
-# The replay's quotes are made up around the last trade (yesterday's,
-# for such a leg), so it takes the app's instead.
+# A strategy that prices legs from the live bid/ask (strangle_monthly_v2's
+# LIVE PRICES) and holds while a leg can't be priced logs both: each price
+# it took (strategy_quotes, from 30 Oct 2026; before that, a decision with
+# QUOTED each time one changed) and when a hold began and ended. The
+# replay has no order book from the day and only minute candles: it
+# prices and holds from that log, as the app did, instead of guessing.
 QUOTED = "Priced from a live quote: not traded yet today"
+AGED = "Priced from a live quote: no recent trade"
+HOLD_OVER = "Every leg priced again: management resumes"
+QUOTE_KEPT = timedelta(seconds=90)   # how long the app keeps a quote it couldn't refresh (_QUOTE_STALE_KEEP)
 
 
-async def _app_quotes(conn, dep_id, day: date) -> dict[int, list[tuple[datetime, float]]]:
-    """{token: [(at, price)]}: each live-quote price the app logged for a
-    leg that hadn't traded, in order."""
+async def _app_price_log(conn, dep_id, day: date, app_fills: list) -> dict:
+    """{"rows": {token: [(at, price)]}, "notes": {token: [(at, price)]},
+    "holds": [{from, to, legs}]}: what the app's log says it priced and
+    held. A hold runs from its note to the note that it was over; an older
+    log has none, so to the next sign the strategy was managing again (any
+    other note it made, or a trade), or the day's end."""
     start = datetime.combine(day, time(0), tzinfo=IST)
-    rows = await conn.fetch(
-        "SELECT decided_at, data FROM strategy_decisions WHERE deployment_id = $1 AND outcome = 'no_action' "
-        "AND summary = $2 AND decided_at >= $3 AND decided_at < $4 ORDER BY decided_at",
-        dep_id, QUOTED, start, start + timedelta(days=1))
-    out: dict[int, list[tuple[datetime, float]]] = {}
-    for r in rows:
+    end = start + timedelta(days=1)
+    rows: dict = {}
+    for r in await conn.fetch("SELECT at, instrument_token, price FROM strategy_quotes WHERE deployment_id = $1 "
+                              "AND at >= $2 AND at < $3 ORDER BY at", dep_id, start, end):
+        rows.setdefault(int(r["instrument_token"]), []).append((naive_ist(r["at"]), float(r["price"])))
+    notes: dict = {}
+    holds: list = []
+    decs = await conn.fetch("SELECT decided_at, rule, outcome, summary, data FROM strategy_decisions "
+                            "WHERE deployment_id = $1 AND decided_at >= $2 AND decided_at < $3 ORDER BY decided_at",
+                            dep_id, start, end)
+    marks = sorted(naive_ist(f["at"]) for f in app_fills)
+    for i, r in enumerate(decs):
+        at = naive_ist(r["decided_at"])
         data = json.loads(r["data"]) if isinstance(r["data"], str) else (r["data"] or {})
-        for tok, px in (data.get("tokens") or {}).items():
-            out.setdefault(int(tok), []).append((naive_ist(r["decided_at"]), float(px)))
-    return out
+        if r["rule"] == "stale_price_guard" and r["summary"] in (QUOTED, AGED):
+            for tok, px in (data.get("tokens") or {}).items():
+                notes.setdefault(int(tok), []).append((at, float(px)))
+        if r["rule"] == "stale_price_guard" and r["outcome"] == "blocked" and r["summary"].startswith("Holding"):
+            later = [naive_ist(x["decided_at"]) for x in decs[i + 1:]
+                     if not (x["rule"] == "stale_price_guard" and x["outcome"] == "blocked")]
+            stop = min([t for t in later if t > at] + [t for t in marks if t > at] + [datetime.combine(day, time(23, 59))])
+            if holds and at <= holds[-1]["to"]:
+                holds[-1]["to"] = max(holds[-1]["to"], stop)
+            else:
+                holds.append({"from": at, "to": stop, "legs": data.get("legs") or []})
+    return {"rows": rows, "notes": notes, "holds": holds}
 
 
-def _honour_quotes(strategy, quotes: dict) -> None:
-    """A leg the app priced from its live quote is priced the same in the
-    replay: the last price the app logged for it at or before the tick.
-    None (hold) before the app had one, as it held then."""
-    if getattr(type(strategy), "_quote_stale", None) is None:
+def _honour_prices(strategy, log: dict, held: list) -> None:
+    """Where the app's log says how it priced or held a strategy's legs
+    (_app_price_log), the replay's strategy does the same: holds where the
+    app held; prices a leg at the app's own quote for it; and otherwise at
+    the candle, as a leg that traded lately. The stand-in calls the
+    strategy the runner holds then (a minute replayed again runs on a copy
+    of it). A day with no such log is left to the strategy's own rules."""
+    if getattr(type(strategy), "_leg_prices", None) is None or not (log["rows"] or log["notes"] or log["holds"]):
         return
+    from ..strategies.strangle_monthly_v2 import _SESSION_OPEN
 
-    async def _quote_stale(runner, ts, stale):
+    def app_price(token: int, t: datetime, untraded: bool) -> Optional[float]:
+        got = [(at, px) for at, px in log["rows"].get(token, ()) if at <= t]
+        if got and t - got[-1][0] <= QUOTE_KEPT:
+            return got[-1][1]
+        if log["rows"]:
+            return None
+        # an older log: a price noted when it changed, for a leg not traded that day
+        got = [(at, px) for at, px in log["notes"].get(token, ()) if at <= t]
+        return got[-1][1] if got and untraded else None
+
+    async def _leg_prices(runner, ts):
         me = runner.strategy
         t = naive_ist(ts)
-        legs = [leg for side_legs in me.legs.values() for leg in side_legs if leg["symbol"] in stale]
-        out = {}
-        for leg in legs:
-            px = next((p for at, p in reversed(quotes.get(int(leg["token"]), ())) if at <= t), None)
-            if px is None:
-                return None
-            out[leg["token"]] = px
-            me.__dict__.setdefault("_stale_quotes", {})[leg["token"]] = (px, ts)
-        return out
+        span = next((h for h in log["holds"] if h["from"] <= t < h["to"]), None)
+        if span is not None:
+            if not any(h is span for h in held):
+                held.append(span)
+            return None
+        session_open = datetime.combine(t.date(), _SESSION_OPEN)
+        prices = {}
+        for side_legs in me.legs.values():
+            for leg in side_legs:
+                p = runner.dispatcher.last_prices.get(leg["token"])
+                if p is None:
+                    return None
+                traded = runner.dispatcher.last_price_times.get(leg["token"])
+                q = app_price(int(leg["token"]), t, traded is None or naive_ist(traded) < session_open)
+                if q is not None:
+                    p = q
+                    me._stale_quotes[leg["token"]] = (q, ts)   # it closes there too (exit_price)
+                prices[leg["token"]] = p
+        me._manage_ts = ts
+        return prices
 
-    strategy._quote_stale = _quote_stale
+    strategy._leg_prices = _leg_prices
 
 
 OHLC = ("open", "high", "low", "close")
@@ -577,7 +650,8 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     strategy = get_strategy_class(dep["strategy_name"])()
     held_off: list[dict] = []
     _honour_refusals(strategy, await _app_refusals(conn, dep["id"], window.day, app_fills or []), held_off)
-    _honour_quotes(strategy, await _app_quotes(conn, dep["id"], window.day))
+    app_held: list[dict] = []
+    _honour_prices(strategy, await _app_price_log(conn, dep["id"], window.day, app_fills or []), app_held)
     runner = ReplayRunner(dep, TxPool(conn), disp, strategy, clock, run, window)
     runner.app_prices = app_prices
     minutes = window.minutes
@@ -628,6 +702,7 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
 
         app_trades = [(minute_of(f["at"]), minute_of(f.get("until") or f["at"]), f["action"], f["symbol"],
                        round(float(f["qty"]), 6)) for f in app_fills or []]
+        blind = await _app_blind(conn, dep["id"], window.day) if app_trades else []
 
         def app_made(f: dict, m: datetime) -> bool:
             q = round(float(f["qty"]), 6)
@@ -664,12 +739,12 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         async def settle(m: datetime, order: str) -> tuple[list[dict], bool]:
             """Play `m` in `order`. Against the app's own day (a day check):
             a trade the app didn't make, made at an extreme of the candle,
-            that the same minute with every extreme pulled in to EDGE of
-            the way from its open/close doesn't make, is left out. The candle puts every
+            that the same minute with every price kept to its open and
+            close (EDGE) doesn't make, is left out. The candle puts every
             contract at its own high or low at one moment; live, each
-            reached it at its own time, and a trigger only that last tenth
-            sets off is one the app could rightly not have seen. One made
-            further in is a real difference. (True when it was left out.)"""
+            reached it at its own time, and a trigger only the wicks set off
+            is one the app could rightly not have seen. One the open or
+            close makes is a real difference. (True when it was left out.)"""
             if not app_trades:
                 return await play(m, order), False
             snap = await _Snapshot.take(conn, runner, disp)
@@ -680,7 +755,7 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
                 return got, False
             await snap.restore()
             snap = await _Snapshot.take(conn, runner, disp)
-            book.edge = EDGE
+            book.edge = BLIND_EDGE if any(a - timedelta(minutes=1) <= m <= b for a, b in blind) else EDGE
             try:
                 inner = await play(m, order)
             finally:
@@ -753,9 +828,10 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         out.notes.append(f"{c['minute']}: the candle's usual reading made "
                          + ", ".join(f"{f['action']} {f['symbol']} ({f['reason']}, with the index at its {'high' if f['phase'] == 'up' else 'low'})"
                                      for f in c["left_out"])
-                         + f", which the app didn't. That takes every contract to its high or low at one moment; live, "
-                         f"each reached its own at its own time. With every price going {EDGE:.0%} of the way there the strategy "
-                         "makes no such trade: only the very edge of the minute sets it off, so the replay keeps to the app.")
+                         + ", which the app didn't. That takes every contract to its high or low at one moment; live, "
+                         "each reached its own at its own time. At the minute's opens and closes the strategy "
+                         "makes no such trade: only the wicks set it off, and the app's own ticks are what happened, "
+                         "so the replay keeps to the app.")
     interval = getattr(getattr(strategy, "aggregator", None), "interval_minutes", None)
     for start, (mine, app) in sorted(app_candles.items()):
         out.app_candles.append({"start": f"{start:%H:%M}", "minutes": interval,
@@ -776,6 +852,10 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
         out.notes.append(f"At {end:%H:%M} the app's SuperTrend was {app['trend']} ({bands(app)}), as it logged it then; on "
                          f"Kite's minutes the replay's was {mine['trend']} ({bands(mine)}). Its earlier candles were built "
                          "from the app's own ticks and weren't kept, so the replay takes the app's SuperTrend from there.")
+    for h in app_held:
+        out.notes.append(f"{h['from']:%H:%M}–{h['to']:%H:%M}: the app held all management"
+                         + (f" ({', '.join(h['legs'])} not traded yet)" if h["legs"] else "")
+                         + ", as its log says, so the replay holds there too.")
     for s in held_off:
         def px_view(px: dict) -> str:
             return ", ".join(f"{k} ₹{float(v):,.2f}" for k, v in px.items())

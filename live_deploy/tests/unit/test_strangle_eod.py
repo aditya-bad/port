@@ -20,6 +20,7 @@ def strategy(pe_strike_for_target, enabled=True):
     s.eod_gap_floor, s.adjustment_band_max, s.adjustment_strike_window = 0.80, 0.95, 40
     s.eod_rollout_instead_of_straddle = enabled
     s.instrument, s.contract_expiry, s.hedges = "NIFTY", None, {}
+    s.adjustment_band_min, s.round_strike_multiple, s.round_strike_tolerance_pct = 0.80, 0.0, 0.15
     s.acted, s._roll_blocked_noted = [], {}
 
     # a replacement is resolved before anything is closed (_replace_leg)
@@ -31,7 +32,8 @@ def strategy(pe_strike_for_target, enabled=True):
 
     async def get_ltp(leg):
         return 100.0
-    s.resolver = SimpleNamespace(get_leg_by_premium=get_leg_by_premium, get_leg=get_leg, get_ltp=get_ltp)
+    s.resolver = SimpleNamespace(get_leg_by_premium=get_leg_by_premium, get_leg=get_leg, get_ltp=get_ltp,
+                                 get_live_price=get_ltp)
 
     async def confirm(runner, ts, name, prices, fires):
         return prices
@@ -77,3 +79,20 @@ def test_rollout_fills_are_their_own_event_type():
             lot(300, "buy", "continuous_50pct_trigger"), lot(300, "sell", "continuous_50pct_trigger"), lot(400, "buy", "checkpoint_target")]
     kinds = [e["kind"] for e in cycles._group_events(lots, {"status": "closed"})]
     assert kinds == ["entry", "rollout", "adjustment", "exit"]
+
+
+def test_a_roll_whose_only_strike_is_its_own_does_nothing_and_says_so():
+    """A straddle not known as one (CE and PE both 24800): the strike-cross
+    cap can only put the put back where it is. Closing and re-selling one
+    contract changes nothing but the book's prices (DTT Nifty Strangle,
+    28 Oct, 22850CE): it's left as it is, noted once a day."""
+    s = strategy(25000.0)
+    s.legs["CE"][0]["strike"] = 24800.0
+    s.adjustment_band_min, s._decision_days, noted = 0.80, set(), []
+
+    async def record(ts, rule, outcome, summary, data):
+        noted.append((rule, outcome, summary))
+    runner = SimpleNamespace(deployment_name="T", record_decision=record)
+    asyncio.run(s._roll_side(runner, TS, "PE", 155.0, {2: 155.0, 1: 60.0}, "continuous_50pct_trigger", {}))
+    assert s.acted == [], "nothing closed, nothing sold"
+    assert noted and noted[0][:2] == ("continuous_50pct_trigger", "no_action") and "PE1's own" in noted[0][2]

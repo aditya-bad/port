@@ -74,6 +74,11 @@ class Market:
             self.history[v[0]] = rows
         if spots:
             self.spot.update(spots)
+        # thin contracts: {tradingsymbol: (last trade price, when)}: their
+        # last trade stays put while their bid/ask follows the market;
+        # no_book: no bid or ask quoted at all
+        self.thin: dict[str, tuple[float, datetime]] = {}
+        self.no_book: set[str] = set()
         self.rows: dict[str, list[dict]] = {"NFO": [], "BFO": []}
         self.by_token: dict[int, dict] = {}
         self.by_key: dict[str, dict] = {}
@@ -129,7 +134,11 @@ class FakeKite:
     def _one(self, key):
         row = self.m.by_key.get(key)
         if row is not None:
-            return {"instrument_token": row["instrument_token"], "last_price": self.m.price_of(row)}
+            thin = self.m.thin.get(row["tradingsymbol"])
+            if thin is not None:
+                return {"instrument_token": row["instrument_token"], "last_price": thin[0], "last_trade_time": thin[1]}
+            return {"instrument_token": row["instrument_token"], "last_price": self.m.price_of(row),
+                    "last_trade_time": self.m.now}
         sp = self.m.spot_price(key)
         if sp is not None:
             return {"instrument_token": next(v[0] for k, v in INDEX.items() if key.endswith(v[1]) or key.endswith(k)), "last_price": sp}
@@ -145,7 +154,12 @@ class FakeKite:
         out = {}
         for k in keys:
             q = self._one(k)
-            p = q["last_price"]
+            row = self.m.by_key.get(k)
+            p = self.m.price_of(row) if row is not None else q["last_price"]   # the book follows the market
+            if row is not None and row["tradingsymbol"] in self.m.no_book:
+                q.update({"oi": 0, "volume": 0, "depth": {"buy": [], "sell": []}})
+                out[k] = q
+                continue
             q.update({"oi": 500000, "volume": 100000,
                       "depth": {"buy": [{"price": round(max(0.05, p - 0.05 * (i + 1)), 2), "quantity": 1500, "orders": 5} for i in range(5)],
                                 "sell": [{"price": round(p + 0.05 * (i + 1), 2), "quantity": 1500, "orders": 5} for i in range(5)]}})
@@ -157,6 +171,10 @@ class FakeKite:
         if hist:
             return self._candles(hist, start, end, interval)
         row = self.m.by_token.get(int(token))
+        if row is not None and row["tradingsymbol"] in self.m.thin:   # its one last trade, if in range
+            px, at = self.m.thin[row["tradingsymbol"]]
+            s0, e0 = (x.replace(tzinfo=None) for x in (start, end))
+            return [{"date": at.replace(second=0), "open": px, "high": px, "low": px, "close": px, "volume": 1}] if s0 <= at <= e0 else []
         p = self.m.price_of(row) if row else next((self.m.spot[k] for k, v in INDEX.items() if v[0] == int(token)), 100.0)
         step = {"minute": 1, "5minute": 5, "15minute": 15, "60minute": 60}.get(interval, 1)
         out, t = [], start
@@ -212,6 +230,9 @@ class FakeDispatcher:
     def publish(self):
         for tok in list(self.subscribed) + list(self._index_tokens()):
             row = self.m.by_token.get(tok)
+            if row is not None and row["tradingsymbol"] in self.m.thin:
+                self.last_prices[tok], self.last_price_times[tok] = self.m.thin[row["tradingsymbol"]]
+                continue
             if row is not None:
                 self.last_prices[tok] = self.m.price_of(row)
             else:

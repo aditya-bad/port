@@ -178,6 +178,35 @@ exempt, it must close regardless:
      (QUOTED) so the day check's replay, which has no order book, prices
      the leg as the app did.
 
+LIVE PRICES (30 Oct 2026): every price this strategy acts or fills on is
+what a trade could be done at now, never a last trade from hours or days
+ago. Thin monthly SENSEX/BANKEX options can go days without a trade: the
+10:00 entry of 30 Oct sold 70800PE at ₹125.90, its last trade on 21 Oct,
+picked because that stale price matched the target, while its bid/ask
+stood around twice that; on 29 Oct 15:13 the end-of-day check bought
+71400PE back at its bid/ask mid (248.22) and sold the same contract again
+at its 11:55 last trade (342.30). So:
+  - A contract's last trade is its price only if it was in the last
+    `live_trade_minutes` (default 3); otherwise its bid/ask mid
+    (resolver.live_price). Held legs: layer 3 above covers a leg with no
+    trade today; one that traded today but not lately is priced from its
+    quote the same way (no hold: with no two-sided quote, its last trade
+    from today stands). The leg closes at the price it was managed on
+    (exit_price).
+  - Strike searches (entry, rolls, the end-of-day check, hedges) price
+    every candidate the same way, and leave out a strike nobody has
+    traded today and nobody quotes both ways.
+  - A replacement never re-sells the strike it closes (it changes
+    nothing but the book's prices); when the strike-cross cap allows only
+    that strike, nothing is done and it's noted once a day.
+  - On BANKNIFTY, BANKEX and SENSEX it leans to round strikes, multiples
+    of 500 (`round_strike_multiple`), where the trading is: one wins over
+    the closest premium when its own premium is within
+    `round_strike_tolerance_pct` (15%) of target at entry, or inside the
+    band on a roll or end-of-day replacement.
+  Every quoted price is kept (strategy_quotes) and a hold's end is noted
+  (HOLD_OVER), so the day check's replay prices and holds as the app did.
+
 ──────────────────────────────────────────────────────────────────────
 4. CHECKPOINT PROFIT TARGET
 ──────────────────────────────────────────────────────────────────────
@@ -662,6 +691,14 @@ _QUOTE_STALE_FROM = time(9, 20)
 _QUOTE_STALE_EVERY = timedelta(seconds=15)
 _QUOTE_STALE_KEEP = timedelta(seconds=90)
 QUOTED = "Priced from a live quote: not traded yet today"
+AGED = "Priced from a live quote: no recent trade"
+HOLD_OVER = "Every leg priced again: management resumes"
+# Strikes that trade: where a strangle leans when a premium allows (LIVE PRICES).
+ROUND_STRIKES = {"BANKNIFTY": 500, "BANKEX": 500, "SENSEX": 500}
+
+
+class SameStrike(Exception):
+    """A replacement whose only strike is the one being closed."""
 # A trigger that keeps being refuted is noted in the decision log at most this often.
 _REFUTE_NOTE_EVERY = timedelta(minutes=5)
 
@@ -736,6 +773,15 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
         "adjustment_band_max": 0.95,
         "adjustment_strike_window": 40,
         "strike_liquidity_tolerance_pct": 0.05,
+        # Lean to round strikes (multiples of this; None = 500 on
+        # BANKNIFTY/BANKEX/SENSEX, off on NIFTY) when their premium is
+        # within round_strike_tolerance_pct of target at entry, or inside
+        # the band on a roll or end-of-day replacement.
+        "round_strike_multiple": None,
+        "round_strike_tolerance_pct": 0.15,
+        # A contract's last trade is its price only this fresh; older, the
+        # bid/ask mid (LIVE PRICES in the module docstring).
+        "live_trade_minutes": 3,
         "eod_check_time": "15:13",
         "eod_gap_floor": 0.80,
         "eod_rollout_instead_of_straddle": True,
@@ -817,7 +863,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self._stale_report: Optional[list] = None
         self._stale_quotes: dict[int, tuple[float, datetime]] = {}   # token -> (bid/ask mid, when quoted)
         self._stale_quoted_at: Optional[datetime] = None
-        self._stale_quote_logged: dict[int, float] = {}
+        self._quoted_set: set = set()
+        self._holding = False
         self._manage_ts: Optional[datetime] = None
         self._refute_noted: dict[str, datetime] = {}
         self._decision_days: set = set()
@@ -866,6 +913,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 f"got min={self.adjustment_band_min}, max={self.adjustment_band_max}"
             )
         self.adjustment_strike_window = int(cfg.get("adjustment_strike_window", 40))
+        rm = cfg.get("round_strike_multiple")
+        self.round_strike_multiple = float(rm) if rm is not None else float(ROUND_STRIKES.get(self.instrument, 0))
+        self.round_strike_tolerance_pct = float(cfg.get("round_strike_tolerance_pct", 0.15))
+        self.live_within = timedelta(minutes=float(cfg.get("live_trade_minutes", 3)))
 
         self.eod_check_time = _parse_hhmm(cfg.get("eod_check_time", "15:13"))
         if self.eod_check_time is None:
@@ -1060,13 +1111,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             # -- those price off live band math, not a capital-pct
             # target, so "closest to a target premium, maybe illiquid"
             # doesn't apply to them the same way.
+            tol = self.round_strike_tolerance_pct
             ce_leg = await self.resolver.get_leg_by_premium(
                 self.instrument, expiry, "CE", target_premium, strike_window=self.adjustment_strike_window,
-                check_liquidity=True,
+                check_liquidity=True, **self._live_pick((target_premium * (1 - tol), target_premium * (1 + tol))),
             )
             pe_leg = await self.resolver.get_leg_by_premium(
                 self.instrument, expiry, "PE", target_premium, strike_window=self.adjustment_strike_window,
-                check_liquidity=True,
+                check_liquidity=True, **self._live_pick((target_premium * (1 - tol), target_premium * (1 + tol))),
             )
         except NoKiteSession:
             logger.warning(
@@ -1170,45 +1222,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             )
             return
 
-        prices: dict[int, float] = {}
-        note = getattr(runner, "note_decision", None)
-        for side_legs in self.legs.values():
-            for leg in side_legs:
-                p = runner.dispatcher.last_prices.get(leg["token"])
-                if p is None:
-                    # wait for a live tick on every open leg; held for 10
-                    # minutes, that's raised as an issue
-                    self._waiting_for_price = True
-                    if note is not None:
-                        await note(ts, "leg_prices", "blocked",
-                                   f"Holding all management: no price for {leg['symbol']}", fault=True)
-                    return
-                prices[leg["token"]] = p
-        if self._waiting_for_price:
-            self._waiting_for_price = False
-            if note is not None:
-                await note(ts, "leg_prices", "ok", "Every leg priced again")
-
-        # STALE-PRICE GUARD layer 1 (see module docstring): no decision
-        # until every open short leg has traded this session, or (layer
-        # 3) is priced from a live two-sided quote.
-        self._manage_ts = ts
-        stale = self._stale_legs(runner, ts)
-        quoted = await self._quote_stale(runner, ts, stale) if stale else None
-        if quoted is not None:
-            prices.update(quoted)
-            if note is not None:
-                await note(ts, "stale_price_guard", "ok", f"Priced {', '.join(stale)} from live quotes: not traded yet today")
-        elif stale:
-            if note is not None:   # every tick it holds: held long enough, it's raised as an issue
-                await note(ts, "stale_price_guard", "blocked", "Holding all management: a short leg hasn't traded yet this session", fault=True)
-            if self._stale_report:
-                await self._decide(
-                    runner, ts, "stale_price_guard", "blocked",
-                    f"Holding all management: {', '.join(self._stale_report)} not traded yet this session",
-                    {"legs": self._stale_report}, fault=True,
-                )
-                self._stale_report = None
+        prices = await self._leg_prices(runner, ts)
+        if prices is None:
             return
 
         # 2 — checkpoint profit target
@@ -1372,13 +1387,77 @@ class StrangleMonthlyV2Strategy(StrategyBase):
 
     # ── STALE-PRICE GUARD (see module docstring) ────────────────────────
 
-    async def _quote_stale(self, runner, ts, stale: list[str]) -> Optional[dict[int, float]]:
-        """Layer 3: {token: bid/ask mid} for every short leg in `stale`
-        (symbols with no trade yet today), from Kite's live quote, or None
-        (before 09:20, a one-sided book, or no quote to be had): hold."""
-        if _naive_ist(ts).time() < _QUOTE_STALE_FROM:
+    async def _leg_prices(self, runner, ts) -> Optional[dict[int, float]]:
+        """{token: price} of every open short leg for this tick, as a trade
+        could be done now (LIVE PRICES in the module docstring): its last
+        trade if that was in the last `live_trade_minutes`, else the
+        bid/ask mid. None: hold all management this tick — a leg with no
+        price at all, or one not traded yet today with no two-sided quote
+        (the stale-price guard). The day check's replay stands in for this
+        with what the app logged (app/repair/engine.py _honour_prices)."""
+        prices: dict[int, float] = {}
+        note = getattr(runner, "note_decision", None)
+        for side_legs in self.legs.values():
+            for leg in side_legs:
+                p = runner.dispatcher.last_prices.get(leg["token"])
+                if p is None:
+                    # wait for a live tick on every open leg; held for 10
+                    # minutes, that's raised as an issue
+                    self._waiting_for_price = True
+                    if note is not None:
+                        await note(ts, "leg_prices", "blocked",
+                                   f"Holding all management: no price for {leg['symbol']}", fault=True)
+                    return None
+                prices[leg["token"]] = p
+        if self._waiting_for_price:
+            self._waiting_for_price = False
+            if note is not None:
+                await note(ts, "leg_prices", "ok", "Every leg priced again")
+
+        # STALE-PRICE GUARD layer 1 (see module docstring): no decision
+        # until every open short leg has traded this session, or (layer
+        # 3) is priced from a live two-sided quote; a leg that traded
+        # today but not lately is priced from its quote too.
+        self._manage_ts = ts
+        stale = self._stale_legs(runner, ts)
+        aged = self._aged_legs(runner, ts, stale)
+        quoted = await self._quote_stale(runner, ts, stale, aged) if (stale or aged) else {}
+        if quoted is None:
+            self._holding = True
+            if note is not None:   # every tick it holds: held long enough, it's raised as an issue
+                await note(ts, "stale_price_guard", "blocked", "Holding all management: a short leg hasn't traded yet this session", fault=True)
+            if self._stale_report:
+                await self._decide(
+                    runner, ts, "stale_price_guard", "blocked",
+                    f"Holding all management: {', '.join(self._stale_report)} not traded yet this session",
+                    {"legs": self._stale_report}, fault=True,
+                )
+                self._stale_report = None
             return None
-        legs = [leg for side_legs in self.legs.values() for leg in side_legs if leg["symbol"] in stale]
+        prices.update(quoted)
+        if stale and note is not None:
+            await note(ts, "stale_price_guard", "ok", f"Priced {', '.join(stale)} from live quotes: not traded yet today")
+        if self._holding:
+            # when the hold ended, for the day check's replay to hold as long
+            self._holding = False
+            await self._decide(runner, ts, "stale_price_guard", "no_action", HOLD_OVER,
+                               {"quoted": {str(t): round(px, 2) for t, px in quoted.items()}})
+        return prices
+
+    async def _quote_stale(self, runner, ts, stale: list[str], aged: list[str] = ()) -> Optional[dict[int, float]]:
+        """{token: bid/ask mid} for the short legs in `stale` (no trade yet
+        today: layer 3) and `aged` (traded today, not lately), from Kite's
+        live quote, refreshed at most every 15 seconds and kept 90 if a
+        refresh fails. None: hold — a `stale` leg before 09:20, or with a
+        one-sided book, or no quote to be had. An `aged` leg with no
+        two-sided quote is left out (its last trade, from today, stands).
+        Every price quoted is recorded (runner.record_quote) for the day
+        check, which has no order book from the day."""
+        if stale and _naive_ist(ts).time() < _QUOTE_STALE_FROM:
+            return None
+        want = set(stale) | set(aged)
+        legs = [leg for side_legs in self.legs.values() for leg in side_legs if leg["symbol"] in want]
+        untraded = {leg["token"] for leg in legs if leg["symbol"] in stale}
         fresh = self._stale_quoted_at is not None and ts - self._stale_quoted_at < _QUOTE_STALE_EVERY
         if fresh and all(leg["token"] in self._stale_quotes for leg in legs):
             return {leg["token"]: self._stale_quotes[leg["token"]][0] for leg in legs}
@@ -1386,31 +1465,54 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         try:
             quotes = await self.resolver.get_quotes(list(keys.values()))
         except Exception as e:
-            kept = {t: v for t, v in self._stale_quotes.items() if t in keys and ts - v[1] <= _QUOTE_STALE_KEEP}
-            if len(kept) == len(keys):
-                return {t: v[0] for t, v in kept.items()}
-            logger.warning("%s: no live quote for %s (%s) — holding", runner.deployment_name, ", ".join(stale), e)
-            return None
+            kept = {t: v[0] for t, v in self._stale_quotes.items() if t in keys and ts - v[1] <= _QUOTE_STALE_KEEP}
+            if untraded - set(kept):
+                logger.warning("%s: no live quote for %s (%s) — holding", runner.deployment_name, ", ".join(stale), e)
+                return None
+            return kept
         self._stale_quoted_at = ts
         out = {}
+        record = getattr(runner, "record_quote", None)
         for token, key in keys.items():
             mid = _quote_mid(quotes.get(key) or {})
             if mid is None:
                 self._stale_quotes.pop(token, None)
-                await self._decide_once_a_day(
-                    runner, ts, "stale_price_guard", "blocked",
-                    f"Holding: {key.split(':', 1)[1]} hasn't traded today and its quote has no bid and ask to price it from")
-                return None
+                if token in untraded:
+                    await self._decide_once_a_day(
+                        runner, ts, "stale_price_guard", "blocked",
+                        f"Holding: {key.split(':', 1)[1]} hasn't traded today and its quote has no bid and ask to price it from")
+                    return None
+                continue
             out[token] = mid
             self._stale_quotes[token] = (mid, ts)
-        changed = {t: px for t, px in out.items() if self._stale_quote_logged.get(t) != round(px, 2)}
-        if changed:
-            for t, px in changed.items():
-                self._stale_quote_logged[t] = round(px, 2)
-            sym = {leg["token"]: leg["symbol"] for leg in legs}
-            await self._decide(runner, ts, "stale_price_guard", "no_action", QUOTED,
-                               {"quote": {sym[t]: round(px, 2) for t, px in out.items()},
-                                "tokens": {str(t): round(px, 2) for t, px in out.items()}})
+            if record is not None:
+                await record(ts, token, mid)
+        if set(out) != self._quoted_set:
+            # which legs are priced from their quote changed: said once
+            self._quoted_set = set(out)
+            if out:
+                sym = {leg["token"]: leg["symbol"] for leg in legs}
+                await self._decide(runner, ts, "stale_price_guard", "no_action",
+                                   QUOTED if untraded & set(out) else AGED,
+                                   {"quote": {sym[t]: round(px, 2) for t, px in out.items()},
+                                    "tokens": {str(t): round(px, 2) for t, px in out.items()}})
+        return out
+
+    def _aged_legs(self, runner, ts, stale: list[str]) -> list[str]:
+        """Symbols of open short legs that traded this session, but not in
+        the last `live_trade_minutes`: their last trade isn't a price a
+        trade could be done at now (LIVE PRICES)."""
+        now = _naive_ist(ts)
+        session_open = datetime.combine(now.date(), _SESSION_OPEN)
+        out = []
+        for side_legs in self.legs.values():
+            for leg in side_legs:
+                traded_at = runner.dispatcher.last_price_times.get(leg["token"])
+                if traded_at is None or leg["symbol"] in stale:
+                    continue
+                t = _naive_ist(traded_at)
+                if t >= session_open and now - t > self.live_within:
+                    out.append(leg["symbol"])
         return out
 
     async def exit_price(self, runner, token: int, symbol: str, entry: float) -> tuple:
@@ -1593,12 +1695,22 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         if self.enable_hedging:
             await self._close_hedge_for(runner, ts, leg["token"], trigger)
 
+    def _live_pick(self, prefer_range: Optional[tuple] = None) -> dict:
+        """get_leg_by_premium's live pricing and round-strike lean (LIVE
+        PRICES in the module docstring)."""
+        out = {"live": True}
+        if self.round_strike_multiple and prefer_range and prefer_range[1] > 0:
+            out.update(prefer_multiple=self.round_strike_multiple, prefer_range=(max(prefer_range[0], 0.05), prefer_range[1]))
+        return out
+
     async def _pick_leg(self, runner, side: str, target_premium: float, exclude_strikes=None,
-                        without: Optional[dict] = None) -> tuple:
+                        without: Optional[dict] = None, prefer_range: Optional[tuple] = None) -> tuple:
         """The (leg, price) `_open_leg` would sell on `side` — read-only,
-        places nothing. `without`: a leg about to be closed, so not
-        excluded as already held."""
-        exclude = {l["strike"] for l in self.legs[side] if l is not without}
+        places nothing. `without`: a leg about to be closed — never its
+        own strike again (closing and re-selling one contract changes
+        nothing but the book's prices). Raises SameStrike when that's the
+        only strike the strike-cross cap allows."""
+        exclude = {l["strike"] for l in self.legs[side]}
         if exclude_strikes:
             exclude |= set(exclude_strikes)
         # Resolve (read-only, places no order) BEFORE any trade at all —
@@ -1606,7 +1718,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # short's strike before the short itself is ever sold.
         leg = await self.resolver.get_leg_by_premium(
             self.instrument, self.contract_expiry, side, max(target_premium, 0.5),
-            strike_window=self.adjustment_strike_window, exclude_strikes=exclude,
+            strike_window=self.adjustment_strike_window, exclude_strikes=exclude, **self._live_pick(prefer_range),
         )
         price = leg.last_price
 
@@ -1642,21 +1754,29 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                     runner.deployment_name, side, target_premium, leg.strike,
                     opposite_side, opposite_strike, opposite_strike,
                 )
+                if without is not None and without["strike"] == opposite_strike:
+                    raise SameStrike(f"{side} {opposite_strike:g}")
                 leg = await self.resolver.get_leg(self.instrument, self.contract_expiry, opposite_strike, side)
-                price = await self.resolver.get_ltp(leg)
+                price = await self.resolver.get_live_price(leg)
 
         return leg, price
 
     async def _replace_leg(
         self, runner, ts, side: str, old: dict, target_premium: float, trigger: str,
-        trigger_values: dict, prices: dict,
+        trigger_values: dict, prices: dict, prefer_range: Optional[tuple] = None,
     ) -> bool:
         """Close `old` and sell its replacement — the replacement resolved
         FIRST, so a lookup that fails (Kite down) closes nothing: the old
         leg stays on, it's reported, and the trigger tries again. Closing
         first used to leave the side empty for the rest of the day."""
         try:
-            picked = await self._pick_leg(runner, side, target_premium, without=old)
+            picked = await self._pick_leg(runner, side, target_premium, without=old, prefer_range=prefer_range)
+        except SameStrike:
+            await self._decide_once_a_day(
+                runner, ts, trigger, "no_action",
+                f"Not rolled: the only strike it may take is {old['symbol']}'s own, so there's nothing to change",
+                {**trigger_values, "side": side, "symbol": old["symbol"]})
+            return False
         except Exception as e:
             sig = f"{type(e).__name__}: {e}"[:200]
             last = self._roll_blocked_noted.get(side)
@@ -1823,12 +1943,13 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         band_mid = (self.adjustment_band_min + self.adjustment_band_max) / 2
         band_target_total = band_mid * bigger_sum
         new_leg_target = band_target_total - remaining_sum
+        band = (self.adjustment_band_min * bigger_sum - remaining_sum, self.adjustment_band_max * bigger_sum - remaining_sum)
 
         # Capture the closed leg's own hedge distance BEFORE closing it
         # (which pops it from self.hedges) -- this is a REPLACE, so the
         # reversed hedge-before-short order applies (see module
         # docstring's "HEDGING").
-        await self._replace_leg(runner, ts, side, cheapest, new_leg_target, trigger, trigger_values, prices)
+        await self._replace_leg(runner, ts, side, cheapest, new_leg_target, trigger, trigger_values, prices, prefer_range=band)
 
     # ── Section 6: EOD 80% check — ALWAYS replaces (never grows) ────────
 
@@ -1886,6 +2007,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         cheapest = min(side_legs, key=lambda l: (prices[l["token"]], l["seq"]))
         remaining_sum = sum(prices[l["token"]] for l in side_legs if l is not cheapest)
         new_leg_target = band_target_total - remaining_sum
+        band = (self.eod_gap_floor * bigger_sum - remaining_sum, self.adjustment_band_max * bigger_sum - remaining_sum)
 
         # EOD ROLL-OUT: if moving the untested side in would reach the
         # tested side's strike (the strike-cross cap would then snap it
@@ -1893,18 +2015,20 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # position goes into the overnight gap as a strangle. EOD only:
         # Section 5's intraday rolls still converge as before.
         if self.eod_rollout_instead_of_straddle and await self._eod_roll_would_converge(
-            smaller_side, bigger_side, cheapest, new_leg_target,
+            smaller_side, bigger_side, cheapest, new_leg_target, band,
         ):
             await self._eod_rollout(runner, ts, prices, bigger_side, smaller_sum, band_mid, trigger_values)
             return
 
         # Same reversed hedge-before-short ordering as Section 5's roll
         # -- this is ALSO a replace (close then open).
-        await self._replace_leg(runner, ts, smaller_side, cheapest, new_leg_target, "eod_gap_check", trigger_values, prices)
+        await self._replace_leg(runner, ts, smaller_side, cheapest, new_leg_target, "eod_gap_check", trigger_values, prices,
+                                prefer_range=band)
 
     # ── Section 7: convergence detection + active-management delegation ─
 
-    async def _eod_roll_would_converge(self, side: str, tested_side: str, cheapest: dict, target: float) -> bool:
+    async def _eod_roll_would_converge(self, side: str, tested_side: str, cheapest: dict, target: float,
+                                       band: Optional[tuple] = None) -> bool:
         """Would the normal EOD replacement on `side` reach or cross the
         tested side's strike? Resolves the same strike _open_leg would
         (same premium target, window and exclusions). Any lookup failure
@@ -1912,11 +2036,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         opposite = self.legs[tested_side]
         if len(opposite) != 1:
             return False
-        exclude = {l["strike"] for l in self.legs[side] if l is not cheapest}
+        exclude = {l["strike"] for l in self.legs[side]}
         try:
             leg = await self.resolver.get_leg_by_premium(
                 self.instrument, self.contract_expiry, side, max(target, 0.5),
-                strike_window=self.adjustment_strike_window, exclude_strikes=exclude,
+                strike_window=self.adjustment_strike_window, exclude_strikes=exclude, **self._live_pick(band),
             )
         except Exception:
             logger.exception("EOD roll-out: couldn't resolve the replacement strike — rolling as usual")
@@ -1935,6 +2059,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         nearest = max(legs, key=lambda l: (prices[l["token"]], -l["seq"]))
         remaining = sum(prices[l["token"]] for l in legs if l is not nearest)
         new_target = untested_sum / band_mid - remaining
+        band = (untested_sum / self.adjustment_band_max - remaining, untested_sum / self.adjustment_band_min - remaining)
         tv = {**trigger_values, "rolled_side": tested_side, "closed_premium": prices[nearest["token"]],
               "new_target_premium": round(new_target, 2),
               "why": "moving the untested side in would have created a straddle before the overnight gap"}
@@ -1943,7 +2068,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             "instead of converging into a straddle", runner.deployment_name, tested_side,
             nearest["symbol"], prices[nearest["token"]], new_target,
         )
-        await self._replace_leg(runner, ts, tested_side, nearest, new_target, "eod_rollout", tv, prices)
+        await self._replace_leg(runner, ts, tested_side, nearest, new_target, "eod_rollout", tv, prices, prefer_range=band)
 
     def _check_convergence(self, trigger: str, prices: dict) -> None:
         if self.converged:
@@ -2115,13 +2240,13 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 strikes = await self.resolver.list_strikes(self.instrument, self.contract_expiry, side)
                 nearest = min(strikes, key=lambda s: abs(s - target_strike))
                 hedge = await self.resolver.get_leg(self.instrument, self.contract_expiry, nearest, side)
-                price = await self.resolver.get_ltp(hedge)
+                price = await self.resolver.get_live_price(hedge)
                 target_for_log = None
             else:
                 target_for_log = self._hedge_target_premium(short_price)
                 hedge = await self.resolver.get_leg_by_premium(
                     self.instrument, self.contract_expiry, side, target_for_log,
-                    strike_window=self.adjustment_strike_window, exclude_strikes={short_leg_obj.strike},
+                    strike_window=self.adjustment_strike_window, exclude_strikes={short_leg_obj.strike}, live=True,
                 )
                 price = hedge.last_price
         except Exception as e:

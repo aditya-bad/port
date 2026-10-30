@@ -305,43 +305,61 @@ def test_the_refusal_spans_from_the_apps_log():
     assert [span(s) for s in got["eod_gap_check"]] == [("11:00:00", "11:05:30", 1)]
 
 
-def test_the_replay_prices_an_untraded_leg_at_the_quote_the_app_logged():
-    """A leg with no trade yet today is priced live from its bid/ask mid,
-    each new price logged. The replay's quotes are made up around the
-    last trade (yesterday's, for such a leg), so it takes the app's: the
-    last one logged at or before the tick, and holds (None) before the
-    first, as the app did."""
+def test_the_replay_holds_and_prices_legs_from_the_apps_log():
+    """What the app logged of how it priced and held its legs
+    (_app_price_log), as the replay reads it: a hold to the note that it
+    was over, or, in an older log without one, to the next sign the
+    strategy was managing; each quoted price for 90 seconds; an older
+    log's prices, noted when they changed, for a leg not traded that day."""
     import asyncio
     from app.repair import engine as E
-    from app.strategies import strangle_monthly_v2 as V
 
-    assert E.QUOTED == V.QUOTED
-    seen = []
+    day = datetime(2026, 10, 28, tzinfo=IST)
+    at = lambda h, m, s=0: day.replace(hour=h, minute=m, second=s)   # noqa: E731
 
     class Conn:
+        def __init__(self, decisions, quotes=()):
+            self.decisions, self.quotes = decisions, quotes
+
         async def fetch(self, sql, *args):
-            seen.append(args)
-            day = datetime(2026, 10, 28, tzinfo=IST)
-            return [{"decided_at": day.replace(hour=9, minute=20, second=4), "data": {"tokens": {"11": 52.5}}},
-                    {"decided_at": day.replace(hour=9, minute=41), "data": '{"tokens": {"11": 47.05, "12": 226.4}}'}]
-    quotes = asyncio.run(E._app_quotes(Conn(), "dep", date(2026, 10, 28)))
-    assert seen[0][1] == V.QUOTED
-    assert quotes == {11: [(datetime(2026, 10, 28, 9, 20, 4), 52.5), (datetime(2026, 10, 28, 9, 41), 47.05)],
-                      12: [(datetime(2026, 10, 28, 9, 41), 226.4)]}
+            return list(self.quotes) if "strategy_quotes" in sql else list(self.decisions)
 
+    old = Conn([   # DTT BankNifty Strangle, 28 Oct
+        {"decided_at": at(9, 15), "rule": "stale_price_guard", "outcome": "blocked",
+         "summary": "Holding all management: 57300CE, 50800PE not traded yet this session", "data": {"legs": ["57300CE", "50800PE"]}},
+        {"decided_at": at(9, 15, 2), "rule": "stale_price_guard", "outcome": "blocked",
+         "summary": "Holding all management: 50800PE not traded yet this session", "data": {"legs": ["50800PE"]}},
+        {"decided_at": at(9, 23, 16), "rule": "continuous_50pct_trigger", "outcome": "blocked",
+         "summary": "Not acted on: live quotes don't confirm the tick prices", "data": {}},
+        {"decided_at": at(9, 41), "rule": "stale_price_guard", "outcome": "no_action", "summary": E.QUOTED,
+         "data": {"tokens": {"11": 47.05}}},
+    ])
+    log = asyncio.run(E._app_price_log(old, "dep", date(2026, 10, 28), []))
+    span = lambda h: (f"{h['from']:%H:%M:%S}", f"{h['to']:%H:%M:%S}")   # noqa: E731
+    assert [span(h) for h in log["holds"]] == [("09:15:00", "09:23:16")]
+    assert log["notes"] == {11: [(datetime(2026, 10, 28, 9, 41), 47.05)]} and log["rows"] == {}
+
+    new = Conn([
+        {"decided_at": at(9, 15), "rule": "stale_price_guard", "outcome": "blocked",
+         "summary": "Holding all management: 70800PE not traded yet this session", "data": {"legs": ["70800PE"]}},
+        {"decided_at": at(9, 20, 5), "rule": "stale_price_guard", "outcome": "no_action", "summary": E.HOLD_OVER, "data": {}},
+    ], quotes=[{"at": at(9, 20, 5), "instrument_token": 12, "price": 283.0}, {"at": at(9, 20, 20), "instrument_token": 12, "price": 281.5}])
+    log = asyncio.run(E._app_price_log(new, "dep", date(2026, 10, 28), []))
+    assert [span(h) for h in log["holds"]] == [("09:15:00", "09:20:05")]
+
+    from app.strategies import strangle_monthly_v2 as V
     strat = V.StrangleMonthlyV2Strategy()
-    strat.legs = {"CE": [{"token": 11, "symbol": "BANKEX26NOVCE"}], "PE": [{"token": 12, "symbol": "BANKEX26NOVPE"}]}
-    E._honour_quotes(strat, quotes)
-
-    class Runner:
-        strategy = strat
-    at = lambda hhmm: datetime.combine(date(2026, 10, 28), time.fromisoformat(hhmm), tzinfo=IST)   # noqa: E731
-    run = lambda hhmm, legs: asyncio.run(strat._quote_stale(Runner(), at(hhmm), legs))   # noqa: E731
-    assert run("09:20", ["BANKEX26NOVCE"]) is None, "before the app's first quote: hold"
-    assert run("09:30", ["BANKEX26NOVCE"]) == {11: 52.5}
-    assert run("09:30", ["BANKEX26NOVCE", "BANKEX26NOVPE"]) is None, "the put had no quote yet"
-    assert run("10:00", ["BANKEX26NOVCE", "BANKEX26NOVPE"]) == {11: 47.05, 12: 226.4}
-    assert strat._stale_quotes[11] == (47.05, at("10:00")), "a close in the replay takes it too (exit_price)"
+    strat.legs = {"CE": [{"token": 11, "symbol": "78000CE"}], "PE": [{"token": 12, "symbol": "70800PE"}]}
+    strat._stale_quotes, held = {}, []
+    E._honour_prices(strat, log, held)
+    disp = type("D", (), {"last_prices": {11: 117.95, 12: 125.90},
+                          "last_price_times": {11: datetime(2026, 10, 28, 9, 19), 12: datetime(2026, 10, 21, 9, 34)}})()
+    runner = type("R", (), {"strategy": strat, "dispatcher": disp})()
+    run = lambda h, m, s=0: asyncio.run(strat._leg_prices(runner, at(h, m, s)))   # noqa: E731
+    assert run(9, 18) is None and held, "held where the app held"
+    assert run(9, 20, 30) == {11: 117.95, 12: 281.5}, "the app's quote for the untraded put; the call at its trade"
+    assert strat._stale_quotes[12][0] == 281.5, "and it closes there"
+    assert run(9, 23) == {11: 117.95, 12: 125.90}, "no quote within 90 seconds: what the replay has"
 
 
 def test_a_difference_hanging_on_a_minute_read_two_ways_is_ambiguous(pool_run, monkeypatch):
@@ -462,15 +480,21 @@ def test_a_strike_no_moment_of_the_minute_explains_stays_a_difference(pool_run, 
 # contract at its high or low at the same moment; live, each reached its
 # own at its own time.
 
-def spiked_day(past: float):
+def spiked_day(past: float, gap: bool = False):
     """An adjusted straddle on a flat 25,000 day; Kite's 11:36 index candle
     opens and closes at 25,000 and reaches `past` points beyond the spot
-    where the adjustment triggers."""
+    where the adjustment triggers. `gap`: the app reported no prices from
+    11:30 to 11:40 (a feed gap)."""
     async def go(pool, monkeypatch):
         sim = await Sim.create(pool, monkeypatch, "intraday_dtt_adjusted", cfg("intraday_dtt_adjusted"))
         day = sim.market.today
         await D.capture_states(pool, day, "open")
         await sim.walk("09:15", "15:29", every_min=1)
+        if gap:
+            await pool.execute(
+                "INSERT INTO strategy_issues (deployment_id, key, kind, severity, title, data, day) "
+                "VALUES ($1, 'feed_gap:x', 'feed_gap', 'info', 'No prices from 11:30 to 11:40', $2, $3)",
+                sim.dep_id, {"from": f"{day}T11:30:00+05:30", "to": f"{day}T11:40:00+05:30", "minutes": 10}, day)
         assert not await pool.fetchval("SELECT count(*) FROM position_lots WHERE deployment_id = $1 AND reason = 'adjustment'",
                                        sim.dep_id), "the app never adjusted"
         m = sim.market
@@ -500,11 +524,26 @@ def test_a_trade_only_every_candle_at_its_extreme_together_makes_is_left_out_as_
     pool_run(go)
 
 
-def test_a_trade_made_well_inside_the_minutes_range_stays_a_difference(pool_run, monkeypatch):
-    """As are the strangle's ±600 swings in the tests above: 25,600 pulled in
-    a tenth of the way to 25,000 still rolls."""
+def test_a_trade_only_the_wicks_make_is_the_apps_call_while_it_was_getting_prices(pool_run, monkeypatch):
+    """Straddle Nifty Advanced and Breakeven Adjustments, 28 Oct 14:53;
+    Straddle Sensex Advanced, 29 Oct 14:26: the replay adjusted or rolled
+    on the minute's high side where the app, getting prices all minute,
+    never saw the trigger (its own prices that minute: the put 0.508 of
+    the call, against 0.5). Inside a minute only the app's ticks know what
+    happened when: however far the wick, it's the app's call."""
     async def go(pool):
         r = await spiked_day(150)(pool, monkeypatch)
+        assert r["status"] == "ok", (r["headline"], r["diff"].get("missed"))
+        assert [c["minute"] for c in r["replay"]["edge_only"]] == ["11:36"]
+    pool_run(go)
+
+
+def test_a_trade_made_well_inside_the_minutes_range_stays_a_difference_where_the_app_was_blind(pool_run, monkeypatch):
+    """Where the app reported no prices (a feed gap): 25,600 pulled in a
+    tenth of the way to 25,000 still rolls, as the strangle's ±600 swings
+    in the tests above do: a real difference."""
+    async def go(pool):
+        r = await spiked_day(150, gap=True)(pool, monkeypatch)
         assert r["status"] in ("mismatch", "ambiguous"), r["headline"]
         assert r["replay"]["edge_only"] == []
         assert ("11:36", "adjustment") in {(f["minute"], f["reason"]) for f in r["diff"]["missed"]}
@@ -578,3 +617,73 @@ def test_a_problem_that_lasts_is_listed_once_at_the_minute_it_began():
     asyncio.run(go())
     assert r.problems == ["09:25 “stale price guard” has been blocked since 09:15: Holding all management",
                           "09:40 Something else"]
+
+
+# ── The strangle's thin legs, as the app priced and held them ─────────────
+# DTT BankNifty Strangle, 28 Oct: the app held at the open until its put
+# had traded, then rolled; the replay, seeing the put's 09:15 candle, rolled
+# at 09:15. DTT Sensex Strangle, 29 and 30 Oct: a put that never traded all
+# day, priced by the app from its bid/ask; the replay, with no order book,
+# held all day. Both flagged days the app got right.
+
+async def strangle_next_day(pool, monkeypatch, prepare):
+    """The strangle entered on day 1; day 2 opens rallied, its put now under
+    half the call. `prepare(sim, put)` sets day 2's market up. The app's day
+    2 is played a minute at a time to 09:40, then every 10 minutes."""
+    from tests.sim import find_spot, side_sum
+    sim = await Sim.create(pool, monkeypatch, "strangle_monthly_v2", cfg("strangle_monthly_v2"), mode="positional", spot=25000)
+    await sim.tick("10:00", spot=25000)
+    put = next(p for p in await sim.open_positions() if p["symbol"].endswith("PE"))
+    up = await find_spot(sim, lambda p: side_sum(p, "PE") <= 0.40 * side_sum(p, "CE"), step=25)
+    d2 = sim.market.today + timedelta(days=1)
+    await sim.tick(f"{sim.market.today} 15:29", spot=25000)
+    await D.capture_states(pool, d2, "open")
+    prepare(sim, put, d2)
+    t = datetime.combine(d2, time(9, 15))
+    while t <= datetime.combine(d2, time(15, 29)):
+        await sim.tick(t, spot=up)
+        t += timedelta(minutes=1 if t < datetime.combine(d2, time(9, 40)) else 10)
+    rolls = [dict(r) for r in await pool.fetch("SELECT executed_at FROM position_lots WHERE deployment_id = $1 AND "
+                                                 "reason = 'continuous_50pct_trigger' ORDER BY executed_at", sim.dep_id)]
+    return sim, d2, up, rolls
+
+
+def test_where_the_app_held_at_the_open_for_its_put_the_replay_holds_too(pool_run, monkeypatch):
+    async def go(pool):
+        def prepare(sim, put, d2):
+            tok, orig = int(put["instrument_token"]), sim.dispatcher.publish
+
+            def publish():   # its first trade, as the app saw it, at 09:26
+                orig()
+                if sim.market.now < datetime.combine(d2, time(9, 26)):
+                    sim.dispatcher.last_price_times[tok] -= timedelta(days=1)
+            sim.dispatcher.publish = publish
+        sim, d2, up, rolls = await strangle_next_day(pool, monkeypatch, prepare)
+        assert [f"{r['executed_at'].astimezone(IST):%H:%M}" for r in rolls] == ["09:20", "09:20"], "held, then rolled on its bid/ask"
+        book = MinuteBook(d2, candles_source(sim, flat(up)))   # Kite's minutes: the put trading from 09:15
+        r = await D.check_deployment(pool, await dep_row(pool, sim), d2, book, sim.kite)
+        assert r["status"] == "ok", (r["headline"], r["diff"])
+        assert any("the app held all management" in n for n in r["replay"]["notes"])
+
+        from app.repair import engine as E
+        monkeypatch.setattr(E, "_honour_prices", lambda *a: None)   # the replay on its own
+        r = await D.check_deployment(pool, await dep_row(pool, sim), d2, MinuteBook(d2, candles_source(sim, flat(up))), sim.kite)
+        assert r["status"] != "ok" and "09:15" in {f["minute"] for f in r["diff"]["missed"]}, "it rolled at 09:15 (the flag of 28 Oct)"
+    pool_run(go)
+
+
+def test_a_put_that_never_traded_is_priced_at_the_apps_own_quotes(pool_run, monkeypatch):
+    async def go(pool):
+        def prepare(sim, put, d2):
+            sim.market.thin[put["symbol"]] = (float(put["avg_entry_price"]), datetime.combine(d2 - timedelta(days=1), time(10, 0)))
+        sim, d2, up, rolls = await strangle_next_day(pool, monkeypatch, prepare)
+        assert [f"{r['executed_at'].astimezone(IST):%H:%M}" for r in rolls] == ["09:20", "09:20"], "from 09:20, on its bid/ask"
+        book = MinuteBook(d2, candles_source(sim, flat(up)))   # Kite: no trade in the put all day
+        r = await D.check_deployment(pool, await dep_row(pool, sim), d2, book, sim.kite)
+        assert r["status"] == "ok", (r["headline"], r["diff"])
+
+        from app.repair import engine as E
+        monkeypatch.setattr(E, "_honour_prices", lambda *a: None)   # the replay on its own: no order book, no log
+        r = await D.check_deployment(pool, await dep_row(pool, sim), d2, MinuteBook(d2, candles_source(sim, flat(up))), sim.kite)
+        assert r["status"] != "ok", "without the app's log it can't follow the app (the flags of 29 and 30 Oct)"
+    pool_run(go)

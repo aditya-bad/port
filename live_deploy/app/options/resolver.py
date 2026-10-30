@@ -70,7 +70,7 @@ import asyncio
 import logging
 import time
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, time as dtime, timedelta
 from typing import Iterable, Optional, Union
 
 from kiteconnect.exceptions import KiteException
@@ -79,6 +79,46 @@ from .client import NoKiteSession, get_kite_connect
 from .models import OptionLeg
 
 logger = logging.getLogger("live_deploy.options")
+
+_SESSION_OPEN = dtime(9, 15)
+LIVE_WITHIN = timedelta(minutes=3)
+
+
+def live_price(q: dict, now: datetime, live_within: timedelta = LIVE_WITHIN) -> tuple[Optional[float], str]:
+    """(price, source) of one quote() entry, as a trade could be done now:
+    its last trade if that was in the last `live_within` ("trade"); else
+    the bid/ask mid when both sides are quoted ("mid"); else a last trade
+    from today's session ("old_trade"); else (None, "none") — a strike
+    nobody has traded today and nobody quotes both ways has no price to
+    trade at. A thin contract's last trade can be days old: priced at
+    that, a strike search picks it, and a fill books it, at a price no
+    order could get."""
+    last, at = q.get("last_price"), q.get("last_trade_time")
+    if isinstance(at, str):
+        try:
+            at = datetime.fromisoformat(at)
+        except ValueError:
+            at = None
+    if isinstance(at, datetime) and at.tzinfo is not None:
+        from zoneinfo import ZoneInfo
+        at = at.astimezone(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None)
+    now = now.replace(tzinfo=None) if now.tzinfo is not None else now
+    today = isinstance(at, datetime) and at.date() == now.date() and at.time() >= _SESSION_OPEN
+    if last and today and now - at <= live_within:
+        return float(last), "trade"
+    depth = q.get("depth") or {}
+    buy, sell = depth.get("buy") or [], depth.get("sell") or []
+    bid = buy[0].get("price") if buy else None
+    ask = sell[0].get("price") if sell else None
+    if bid and ask:
+        return round((bid + ask) / 2, 2), "mid"
+    if last and today:
+        return float(last), "old_trade"
+    return None, "none"
+
+
+def is_multiple(strike: float, of: float) -> bool:
+    return bool(of) and abs(round(strike / of) * of - strike) < 1e-6
 
 # name field on option/future instrument rows doesn't always match the
 # index's own spot tradingsymbol. Only indices need this — a stock's
@@ -513,10 +553,25 @@ class OptionsResolver:
         exclude_strikes: Optional[Iterable[float]] = None,
         check_liquidity: bool = False, min_oi: int = 500, max_spread_pct: float = 0.15,
         liquidity_tolerance_pct: Optional[float] = None,
+        live: bool = False, prefer_multiple: Optional[float] = None,
+        prefer_range: Optional[tuple[float, float]] = None,
     ) -> OptionLeg:
         """
         The leg (of `option_type`) whose current LTP is closest to
         `target_price` — "THIS_WEEK CE with price closest to 40".
+
+        `live` (default False): price every candidate as a trade could be
+        done now (`live_price`: a trade in the last 3 minutes, else the
+        bid/ask mid), from one quote() over the window, instead of its
+        last traded price however old; a strike with neither is left out.
+        The returned leg's last_price is that price.
+
+        `prefer_multiple` / `prefer_range` (with `live`): a strike that's a
+        multiple of `prefer_multiple` (e.g. 500 on BANKNIFTY/BANKEX/SENSEX,
+        where the round strikes are the ones that trade) wins over the
+        closest premium when its own premium is inside `prefer_range`
+        (lo, hi); the closest such one to target. None in range: the
+        usual pick.
 
         `liquidity_tolerance_pct` (falls back to the resolver's own
         default; None/0 = off): a liquidity TIE-BREAK, not a filter. Every
@@ -594,7 +649,17 @@ class OptionsResolver:
 
         kite = self._kite()
         keys = [leg.key for leg in legs]
-        ltp_resp = await self._kite_call(kite.ltp, keys) if keys else {}
+        if live:
+            from .. import clock
+            quotes = await self.get_quotes(keys) if keys else {}
+            now = clock.now_ist()
+            ltp_resp = {}
+            for k in keys:
+                px, _src = live_price(quotes.get(k) or {}, now)
+                if px is not None:
+                    ltp_resp[k] = {"last_price": px}
+        else:
+            ltp_resp = await self._kite_call(kite.ltp, keys) if keys else {}
 
         best_leg, best_diff, best_price = None, None, None
         for leg in legs:
@@ -613,8 +678,23 @@ class OptionsResolver:
                 + (f" (excluding strikes {sorted(exclude)})" if exclude else "")
             )
 
+        rounded = None
+        if live and prefer_multiple and prefer_range:
+            lo, hi = prefer_range
+            rounds = [(abs(ltp_resp[leg.key]["last_price"] - target_price), leg.strike, leg) for leg in legs
+                      if leg.key in ltp_resp and is_multiple(leg.strike, prefer_multiple)
+                      and lo <= ltp_resp[leg.key]["last_price"] <= hi]
+            if rounds:
+                _d, _s, rounded = min(rounds, key=lambda r: (r[0], r[1]))
+                if rounded.key != best_leg.key:
+                    logger.info("Round strike: %s (%.2f) over closest-by-price %s (%.2f), target %.2f",
+                                rounded.tradingsymbol, ltp_resp[rounded.key]["last_price"],
+                                best_leg.tradingsymbol, best_price, target_price)
+                best_leg, best_price = rounded, ltp_resp[rounded.key]["last_price"]
+                best_diff = abs(best_price - target_price)
+
         tolerance = liquidity_tolerance_pct if liquidity_tolerance_pct is not None else self.liquidity_tolerance_pct
-        if tolerance:
+        if tolerance and rounded is None:
             liquid = await self._pick_liquid_within_tolerance(
                 legs, ltp_resp, best_leg, target_price, tolerance, min_oi, max_spread_pct,
             )
@@ -935,6 +1015,17 @@ class OptionsResolver:
                     )
                     await asyncio.sleep(delay)
         raise last_exc
+
+    async def get_live_price(self, leg_or_key: Union[OptionLeg, str]) -> float:
+        """What a trade in it could be done at now (`live_price`). Raises
+        ValueError when it has none (no trade today, no two-sided book)."""
+        from .. import clock
+        key = leg_or_key.key if isinstance(leg_or_key, OptionLeg) else leg_or_key
+        q = (await self.get_quotes([key])).get(key) or {}
+        px, _src = live_price(q, clock.now_ist())
+        if px is None:
+            raise ValueError(f"No live price for {key}: no trade today and no bid and ask")
+        return px
 
     async def get_ltp(self, leg_or_key: Union[OptionLeg, str]) -> float:
         key = leg_or_key.key if isinstance(leg_or_key, OptionLeg) else leg_or_key

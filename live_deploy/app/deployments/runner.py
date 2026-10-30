@@ -403,6 +403,19 @@ class DeploymentRunner:
         the deployment's Activity and as an alert), without raising."""
         await self._record_event("strategy_error", message=message, metadata=metadata)
 
+    async def record_quote(self, ts: datetime, token: int, price: float) -> None:
+        """A price the strategy took from a leg's live bid/ask (migration
+        0045), for the day check, which has no order book from the day.
+        A failure is logged and never reaches the strategy."""
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=self._IST)
+        try:
+            await self.pool.execute(
+                "INSERT INTO strategy_quotes (deployment_id, at, instrument_token, price) VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT DO NOTHING", self.deployment_id, ts, int(token), float(price))
+        except Exception:
+            logger.exception("%s: could not record a quote", self.deployment_name)
+
     async def record_decision(
         self, ts: datetime, rule: str, outcome: str, summary: str, data: Optional[dict] = None,
     ) -> None:

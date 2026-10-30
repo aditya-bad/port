@@ -663,11 +663,16 @@ class ReplayKite:
         m = self.clock.minute
         for k, (tok, p, traded) in self._priced(keys).items():
             tick = 0.05
+            # a book only around a price from the day: a contract with no
+            # trade yet that day has nothing known to quote it at (its last
+            # trade can be days old), so none, as a strike search should see
+            today = traded is not None and naive_ist(traded).date() == self.clock.day
             out[k] = {
                 "instrument_token": tok, "last_price": p, "last_trade_time": traded,
                 "volume": self.book.day_volume(tok, m), "oi": self.book.oi(tok, m),
                 "depth": {"buy": [{"price": round(max(0.05, p - tick * (i + 1)), 2), "quantity": 1800, "orders": 6} for i in range(5)],
-                          "sell": [{"price": round(p + tick * (i + 1), 2), "quantity": 1800, "orders": 6} for i in range(5)]},
+                          "sell": [{"price": round(p + tick * (i + 1), 2), "quantity": 1800, "orders": 6} for i in range(5)]}
+                if today else {"buy": [], "sell": []},
             }
         return out
 

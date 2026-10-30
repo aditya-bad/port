@@ -27,20 +27,28 @@ owner on 29 Oct; nothing repaired, dismissed or fixed yet.
 | Straddle Nifty Advanced | False flag: ignore | App's minute marks at 14:53: 22600CE 250.00, 22600PE 127.00 (0.508, trigger is ≤ 0.5). Replay crossed only by pairing the minute's CE high with its PE low |
 | Straddle Nifty Breakeven Adjustments | False flag: ignore | Same marks, same minute |
 
-Fixes agreed as needed, in this order (strangle first):
+Fixes agreed as needed:
 
-1. Day check, strangle: the strategy logs when every leg has first traded
-   (the stale-price hold ends); the replay holds until then, as it already
-   honours logged quote refusals.
-2. pivot_supertrend_options (and siblings): before trading, check pivots
-   are from the previous trading day; if not, re-read from Kite; if that
-   fails, block entries and alert. Today the day rollover keeps old
-   pivots silently when it has no high/low of its own. Why they weren't
-   rolled on 27→28 Oct is unknown: that container's logs were lost when it
-   was recreated at 21:33 IST on 28 Oct.
-3. Day check: a trade that only fires by pairing two legs' extremes from
-   one minute, where the app's own per-minute marks never crossed, is
-   "ambiguous", not "mismatch".
+1. Done (30 Oct): the strangle logs when a hold ends and every price it
+   takes from a bid/ask (strategy_quotes); the day check's replay holds
+   and prices from that log (engine._honour_prices).
+2. Still to do: pivot_supertrend_options (and siblings): before trading,
+   check pivots are from the previous trading day; if not, re-read from
+   Kite; if that fails, block entries and alert. Today the day rollover
+   keeps old pivots silently when it has no high/low of its own. Why they
+   weren't rolled on 27→28 Oct is unknown: that container's logs were lost
+   when it was recreated at 21:33 IST on 28 Oct.
+3. Done (30 Oct): a trade the replay makes only in a minute's wicks is the
+   app's call while the app was getting prices (no feed gap or crash
+   reported then).
+
+29 and 30 Oct (Sensex Strangle, Sensex Advanced) were the same false
+flags, plus a real strangle bug: thin strikes picked and filled at last
+trades days old (30 Oct 70800PE at 21 Oct's ₹125.90), and a close and its
+replacement priced differently (29 Oct 15:13, 71400PE re-sold). Fixed on
+30 Oct (strangle LIVE PRICES; round strikes on BANKNIFTY/BANKEX/SENSEX).
+The Sensex Strangle's book from 29 Oct is overstated by about ₹1,882 (that
+15:13 trade); its 30 Oct put was sold about ₹157 under its bid/ask.
 
 Also seen: the BankNifty Strangle's "checkpoint target blocked since 12:16"
 on 28 Oct: the profit target refused by Kite's quotes for over two hours.
