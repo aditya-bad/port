@@ -45,7 +45,7 @@ export default {
       const cycle = engine && engine.state ? engine.state.cycle_id : null;
       return html`
         <img class="mark gk-mark" src="/icons/linck-mark.svg" alt="" width="24" height="24"><img class="mark gk-mark mark-paper" src="/icons/linck-mark-paper.svg" alt="" width="24" height="24"><span class="gk-badge">GEEK</span>
-        <a class="gk-name" href="${href(`d/${id}/now`)}" title="${v.name}">${v.name}</a>${repairChip(v)}
+        <a class="gk-name" href="${href(`d/${id}/now`)}" title="${v.name}">${v.name}</a>${repairChip(v)}${famPick(v)}
         <span class="mono tiny mute hide-m">${v.strategy} · ${v.mode.toLowerCase()}</span>
         <span class="gk-live ${isLive() && v.rawStatus === 'active' ? 'on' : ''}"><i></i><span class="hide-m">${v.rawStatus === 'active' ? (isLive() ? 'Live' : 'Not streaming') : v.rawStatus === 'paused' ? 'Paused' : 'Stopped'}</span></span>
         <span class="grow"></span>
@@ -55,6 +55,14 @@ export default {
         <span class="gk-kv hide-m"><span>Overall</span><b class="${tone(x.overall)}" data-gk="overall">${inr(x.overall)}</b></span>
         <span class="gk-kv hide-m"><span>IST</span><b data-gk="clock">${hhmmss(new Date())}</b></span>
         <button type="button" class="gk-exit" data-act="exit">Exit <kbd>Esc</kbd></button>`;
+    }
+
+    // a deployment and its variations (app/variations.py): the same view of another
+    function famPick(v) {
+      const F = book.family(v.id);
+      if (F.length < 2) return '';
+      return html`<select class="gk-var" data-gk-var aria-label="Primary or variation">${F.map((x, i) => html`<option value="${x.id}" ${x.id === v.id ? 'selected' : ''}>${i ? x.variationLabel || x.name : 'Primary'}</option>`)}</select>
+        <a class="tiny gk-var-cmp hide-m" href="${href(`compare?ids=${F.slice(0, 5).map(x => x.id).join(',')}`)}">Compare</a>`;
     }
 
     function vixKv() {
@@ -109,6 +117,7 @@ export default {
     }
 
     const offActs = actions(main, { exit: (d, el) => exit(id, $('.gk', main), el) });
+    const offVar = on(main, 'change', '[data-gk-var]', (e, el) => { if (el.value !== id) go(`d/${el.value}/geek/${view ? view[0] : ''}`); });
     const offKeys = on(document, 'keydown', 'body', e => {
       if (e.metaKey || e.ctrlKey || e.altKey || e.target.closest('input, textarea, select, [contenteditable]')) return;
       if (e.key === 'Escape') { e.preventDefault(); exit(id, $('.gk', main), $('[data-act="exit"]', main)); return; }
@@ -150,7 +159,7 @@ export default {
     ];
     const clock = setInterval(() => { const el = $('[data-gk="clock"]', main); if (el) setText(el, hhmmss(new Date())); }, 1000);
     return () => {
-      offActs(); offKeys(); stopEngine(); offs.forEach(f => f()); clearInterval(clock);
+      offActs(); offVar(); offKeys(); stopEngine(); offs.forEach(f => f()); clearInterval(clock);
       if (viewCleanup) viewCleanup();
     };
   },

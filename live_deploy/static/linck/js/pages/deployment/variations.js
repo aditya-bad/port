@@ -117,6 +117,8 @@ export default {
         ${adding ? adder(F) : ''}
         ${F.length > 1 ? html`
           ${table(R)}
+          <div class="row" style="gap:8px;margin-top:-14px"><a class="btn btn-sm" href="${href(`compare?ids=${F.slice(0, 5).map(x => x.id).join(',')}`)}" data-var-compare>Compare in detail</a>
+            <span class="tiny mute">every metric, whether they move together${F.length > 5 ? ' · the first 5' : ''}</span></div>
           <div><div class="sect"><h3 class="t-h3">P&L, over each other</h3><span class="mute small">cumulative, from closed trades</span></div>${chart(F)}</div>
           <div><div class="sect ruled"><h3 class="t-h3">What differs</h3><span class="mute small">only the settings a variation changed</span></div>${diffs(F)}</div>` : ''}
       </div>`);

@@ -16,7 +16,7 @@ import { say } from '../ui/toast.js';
 import { cyclesMark } from '../ui/repairs.js';
 import { readyShort } from '../ui/shadow.js';
 
-const st = ui('leaderboard', { p: 'year', sk: 'rdd', lab: false, board: 'overview' });
+const st = ui('leaderboard', { p: 'year', sk: 'rdd', lab: false, vars: false, board: 'overview' });
 
 // key: [label, format, colour?, hint, board title, what it rewards]
 const K = {
@@ -35,8 +35,9 @@ const val = (k, m) => (k === 'dd' ? m.ddp : k === 'pf' && m.pf >= 99 ? 0 : k ===
 // The first day of the period ranked (month, year), for its repaired cycles.
 const since = p => { const k = dayKey(new Date()); return p === 'month' ? `${k.slice(0, 8)}01` : p === 'year' ? `${k.slice(0, 5)}01-01` : undefined; };
 
-export function rankRows(period, lab) {
-  return book.deployments().filter(v => lab || !v.isLab).map(v => {
+// vars: variations (app/variations.py) ranked beside the rest, each on its own
+export function rankRows(period, lab, vars = false) {
+  return (vars ? book.everything() : book.deployments()).filter(v => lab || !v.isLab).map(v => {
     const m = periodMetrics({ trades: v.trades, daily: v.daily, cap: v.cap, pnlOf, period });
     return { v, m, unranked: v.young || !m.n };
   });
@@ -49,7 +50,7 @@ export default {
     function paint() {
       if (!book.isLoaded('deployments', 'book')) { mount(main, html`<div class="page"><div class="skel" style="height:300px"></div></div>`); return; }
       const s = st.get();
-      const L = rankRows(s.p, s.lab);
+      const L = rankRows(s.p, s.lab, s.vars);
       const judged = L.filter(x => !x.unranked);
       const rank = (k, list) => [...list].sort((a, b) => (a.unranked - b.unranked) || (val(k, b.m) - val(k, a.m)));
       const board = s.board || 'overview';
@@ -63,6 +64,7 @@ export default {
         if (x.v.quiet) f.push([`Quiet ${x.v.quietDays}d`, '']);
         if (x.v.rawStatus === 'stopped') f.push(['Stopped', '']);
         if (x.v.isLab) f.push(['Lab', 'lab']);
+        if (x.v.variationOf) f.push([`Variation · ${x.v.variationLabel || ''}`, '']);
         return f;
       };
       let boardHtml = '';
@@ -110,6 +112,7 @@ export default {
           <span class="grow"></span>
           ${seg([['month', 'Month'], ['year', 'Year'], ['all', 'All-time']], s.p, 'period', 'lg')}
           ${check(s.lab, 'Include Strategy Lab', 'lab')}
+          ${book.everything().some(v => v.variationOf) ? check(s.vars, 'Include variations', 'vars') : ''}
         </div>
         <div class="pad-x boards noscroll">${BOARDS.map(([k, l]) => html`<button type="button" class="chip strong ${board === k ? 'on' : ''}" data-act="board" data-v="${k}">${l}</button>`)}</div>
         ${boardHtml}
@@ -147,6 +150,7 @@ export default {
     const off = actions(main, {
       period: d => { st.set({ p: d.v }); paint(); },
       lab: () => { st.set({ lab: !st.get().lab }); paint(); },
+      vars: () => { st.set({ vars: !st.get().vars }); paint(); },
       board: d => { st.set(d.v === 'overview' ? { board: d.v } : { board: d.v, sk: d.v }); paint(); },
       sk: d => { st.set({ sk: d.v }); paint(); },
       sel: d => { sel.has(d.id) ? sel.delete(d.id) : sel.size < 5 ? sel.add(d.id) : say('Compare takes up to 5.'); paint(); },

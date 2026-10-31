@@ -167,3 +167,15 @@ def test_a_variation_survives_a_restart_as_itself(client):
     assert v in m.runners and p["id"] in m.runners
     d = client.get(f"/deployments/{v}").json()
     assert d["variation_of"] == p["id"] and d["alerts_off"] == list(alert_types.TYPES) and d["include_in_reports"] is False
+
+
+def test_the_weekly_review_counts_primaries(client):
+    """A variation's trades stay out of the week's totals (2024, a year no other test trades in)."""
+    from tests.api.test_review_api import _trade
+    p = make_deployment(client, name="Review primary")
+    v = add(client, p["id"], "rv").json()["id"]
+    _trade(client, p["id"], "NIFTY24MAR22000CE", 9401, 100, 80, "2024-03-11T10:00:00+05:30", "2024-03-11T11:00:00+05:30")
+    _trade(client, v, "NIFTY24MAR22100CE", 9402, 100, 50, "2024-03-11T10:00:00+05:30", "2024-03-11T11:00:00+05:30")
+    r = client.get("/v2/review?week=2024-03-11").json()
+    assert r["totals"]["trades"] == 1 and r["totals"]["pnl"] == 1500.0
+    assert [d["name"] for d in r["deployments"]] == ["Review primary"]

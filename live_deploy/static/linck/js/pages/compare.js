@@ -28,11 +28,14 @@ const MAX = 5;
 const short = n => (n.length > 16 ? n.replace(/^(Nifty|BankNifty|Sensex|FinNifty|Midcap|Bankex) /, '') : n);
 const label = s => (book.strategy(s) || { label: s }).label;
 const byStrategy = all => { const o = {}; all.forEach(v => { (o[v.strategy] = o[v.strategy] || []).push(v); }); return o; };
-const records = (items, all) => resolve(items, all, { label, allOfStrategy: (s, n) => all.filter(v => v.strategy === s).length === n });
+// a strategy's deployments: its primaries (a variation is compared on its own, never inside a strategy)
+const records = (items, all) => resolve(items, all, { label, allOfStrategy: (s, n) => all.filter(v => v.strategy === s && !v.variationOf).length === n });
+const primaries = all => all.filter(v => !v.variationOf);
 const one = ids => ids.map(id => ({ ids: [id] }));
 
 // [title, subtitle, items]; an item with several ids is a combined group.
-function quickPicks(all) {
+function quickPicks(everyone) {
+  const all = primaries(everyone);
   const judged = all.filter(v => !v.young && v.trades.length).map(v => ({ v, m: periodMetrics({ trades: v.trades, daily: v.daily, cap: v.cap, pnlOf, period: 'all' }) }))
     .sort((a, b) => b.m.rdd - a.m.rdd);
   const P = [['Top 3 risk-adjusted', 'best return/drawdown, all-time', one(judged.slice(0, 3).map(x => x.v.id))]];
@@ -45,6 +48,9 @@ function quickPicks(all) {
     .forEach(([k, L]) => P.push([`Every ${label(k)}`, 'same strategy, different settings', one(L.slice(0, MAX).map(v => v.id))]));
   const bi = judged.find(x => x.v.modeKey === 'intraday'), bp = judged.find(x => x.v.modeKey === 'positional');
   if (bi && bp) P.push(['Best intraday vs best positional', 'which style is working', one([bi.v.id, bp.v.id])]);
+  // a deployment against its variations (app/variations.py): which settings do better
+  all.filter(v => v.variations).slice(0, 3).forEach(p => P.push([`${p.name} and its variations`, 'which settings do better',
+    one([p, ...everyone.filter(v => v.variationOf === p.id)].slice(0, MAX).map(v => v.id))]));
   const ints = all.filter(v => v.modeKey === 'intraday'), poss = all.filter(v => v.modeKey === 'positional');
   if (ints.length >= 2 && poss.length >= 2) P.push(['All intraday vs all positional', 'each side combined', [{ ids: ints.map(v => v.id) }, { ids: poss.map(v => v.id) }]]);
   book.tags().forEach(t => {
@@ -73,7 +79,7 @@ export default {
       };
       let tiles;
       if (s.mode === 'strategy') {
-        const groups = Object.entries(byStrategy(all)).filter(([k, L]) => !q || `${label(k)} ${k} ${L.map(v => v.name).join(' ')}`.toLowerCase().includes(q));
+        const groups = Object.entries(byStrategy(primaries(all))).filter(([k, L]) => !q || `${label(k)} ${k} ${L.map(v => v.name).join(' ')}`.toLowerCase().includes(q));
         tiles = groups.map(([k, L]) => {
           const [g] = records([{ ids: L.map(v => v.id) }], all);
           const i = keys.indexOf(keyOf(L.map(v => v.id)));
@@ -90,7 +96,7 @@ export default {
           const gi = i < 0 ? items.findIndex(it => it.ids.length > 1 && it.ids.includes(v.id)) : -1;
           return html`<button type="button" class="tile ${i >= 0 ? 'on' : ''}" data-act="toggle" data-id="${v.id}" aria-pressed="${i >= 0}">
             <span class="tile-box ${gi >= 0 ? 'in-group' : ''}" ${gi >= 0 ? html`title="In ${recs[gi] ? recs[gi].name : 'a group'}"` : ''}>${i >= 0 ? i + 1 : gi >= 0 ? gi + 1 : ''}</span>
-            <span class="col" style="gap:3px;min-width:0"><b class="ell">${v.name}</b><span class="mono mute ell" style="font-size:11px">${v.strategy} · ${v.mode}</span>
+            <span class="col" style="gap:3px;min-width:0"><b class="ell">${v.name}</b><span class="mono mute ell" style="font-size:11px">${v.variationOf ? `variation of ${(all.find(p => p.id === v.variationOf) || { name: '?' }).name}` : `${v.strategy} · ${v.mode}`}</span>
               ${tileStats(v)}</span>
           </button>`;
         });
@@ -289,7 +295,7 @@ export default {
 
     function paint() {
       if (!book.isLoaded('deployments', 'book')) { mount(main, html`<div class="page"><div class="skel" style="height:300px"></div></div>`); return; }
-      const all = book.deployments();
+      const all = book.everything();   // a variation can be picked like any deployment
       const s = st.get();
       const known = new Set(all.map(v => v.id));
       const items = s.items.map(it => ({ ...it, ids: it.ids.filter(id => known.has(id)) })).filter(it => it.ids.length);
@@ -306,7 +312,7 @@ export default {
       else set({ items: [...items, { ids }] });
     }
     const off = actions(main, {
-      preset: d => { const all = book.deployments(); set({ items: quickPicks(all)[+d.i][2] }); },
+      preset: d => { const all = book.everything(); set({ items: quickPicks(all)[+d.i][2] }); },
       mode: d => set({ mode: d.v }),
       toggle: d => toggleItem([d.id]),
       toggleGroup: d => toggleItem(d.ids.split('.')),
@@ -320,7 +326,7 @@ export default {
       rename: d => {
         const it = st.get().items.find(x => keyOf(x.ids) === d.key);
         if (!it) return;
-        const [rec] = records([it], book.deployments());
+        const [rec] = records([it], book.everything());
         openDialog({
           kicker: 'GROUP', title: 'Name this group',
           lines: [`${rec.members.map(v => v.name).join(' + ')}.`, 'Leave it empty to go back to the automatic name.'],

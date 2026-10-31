@@ -204,12 +204,15 @@ async def build(pool: asyncpg.Pool, week: Optional[date] = None, now: Optional[d
                 health: Optional[dict] = None) -> dict[str, Any]:
     now = (now or datetime.now(IST)).astimezone(IST)
     today = now.date()
-    trades = await book.list_trades(pool)
+    # the week of primaries: a variation (app/variations.py) runs beside one
+    variants = {str(r["id"]) for r in await pool.fetch("SELECT id FROM deployments WHERE variation_of IS NOT NULL")}
+    trades = [t for t in await book.list_trades(pool) if str(t["deployment_id"]) not in variants]
     if week is None:
         week = default_week(today, any(_week_of(t["closed_at"]) == monday(today) for t in trades))
     week = monday(week)
     lo, hi = week - timedelta(days=7 * HISTORY_WEEKS), week + timedelta(days=7)
-    daily_all = [d for d in await book.list_daily(pool, _at(lo)) if date.fromisoformat(d["day"]) < hi]
+    daily_all = [d for d in await book.list_daily(pool, _at(lo))
+                 if date.fromisoformat(d["day"]) < hi and str(d["deployment_id"]) not in variants]
     s = summarize([t for t in trades if _at(lo) <= datetime.fromisoformat(t["closed_at"]) < _at(hi)], daily_all, week)
     daily = [d for d in daily_all if date.fromisoformat(d["day"]) >= week]
     days = []
@@ -219,7 +222,8 @@ async def build(pool: asyncpg.Pool, week: Optional[date] = None, now: Optional[d
         if i < 5 or rows:
             days.append({"day": d.isoformat(), **_sum(rows), "closes": sum(x["closes"] for x in rows)})
     deps = {str(r["id"]): dict(r) for r in await queries.list_deployments(pool)}
-    rules = unusual_rules(await _rule_counts(pool, _at(week - timedelta(days=7 * HISTORY_WEEKS)), _at(week + timedelta(days=7))), week)
+    rules = [r for r in unusual_rules(await _rule_counts(pool, _at(week - timedelta(days=7 * HISTORY_WEEKS)), _at(week + timedelta(days=7))), week)
+             if r["deployment_id"] not in variants]
     notes = await queries.list_journal(pool, None, week, week + timedelta(days=6), None, None, None, False, 200)
     open_by = defaultdict(int)
     for r in await pool.fetch("SELECT deployment_id, COUNT(*) AS n FROM positions WHERE status = 'open' GROUP BY 1"):
@@ -253,7 +257,7 @@ async def build(pool: asyncpg.Pool, week: Optional[date] = None, now: Optional[d
         t["name"] = name(t["deployment_id"])
     for r in rules:
         r["name"] = name(r["deployment_id"])
-    repairs = await book.list_repairs(pool, between=(week, week + timedelta(days=7)))
+    repairs = [r for r in await book.list_repairs(pool, between=(week, week + timedelta(days=7))) if str(r["deployment_id"]) not in variants]
     for r in repairs:
         r["name"] = name(r["deployment_id"])
     return {

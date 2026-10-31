@@ -69,3 +69,36 @@ test('add a variation, see it beside its primary, and make it the primary', asyn
   assert.deepEqual(ctx.errors || [], []);
   await ctx.close();
 });
+
+test('a variation is pickable in Compare and Leaderboard, and Geek mode switches between them', async () => {
+  const ctx = await context(b);
+  const P = 'Nifty Strangle B';
+  const cfg = (await api(ctx, `/deployments/${IDS[P]}`)).config;
+  const r = await ctx.request.post(`${BASE}/v2/deployments/${IDS[P]}/variations`, { data: { label: 'tight band', config: cfg } });
+  const vid = (await r.json()).id;
+  try {
+    const p = await ctx.newPage();
+    // Leaderboard: primaries, unless asked
+    await p.goto(`${BASE}/linck/#/leaderboard`);
+    await p.waitForSelector('[data-act="vars"]');
+    const rowsText = async () => p.innerText('#main');
+    assert.ok(!(await rowsText()).includes('tight band'));
+    await p.click('[data-act="vars"]');
+    await until(async () => (await rowsText()).includes(`${P} · tight band`));
+    // Compare: a quick pick of the family, and the variation as a tile
+    await p.goto(`${BASE}/linck/#/compare`);
+    await p.waitForSelector('.quick');
+    assert.match(await p.innerText('#main'), new RegExp(`${P} and its variations`));
+    assert.match(await p.locator(`[data-act="toggle"][data-id="${vid}"]`).innerText(), new RegExp(`variation of ${P}`));
+    // Geek mode: the family's switcher keeps the view
+    await p.goto(`${BASE}/linck/#/d/${IDS[P]}/geek/overview`);
+    await p.waitForSelector('[data-gk-var]');
+    await p.selectOption('[data-gk-var]', vid);
+    await p.waitForURL(new RegExp(`#/d/${vid}/geek/overview$`));
+    assert.equal(await p.locator('[data-gk-var]').inputValue(), vid);
+  } finally {
+    await ctx.request.post(`${BASE}/deployments/${vid}/stop`);
+    await ctx.request.delete(`${BASE}/deployments/${vid}`);
+    await ctx.close();
+  }
+});

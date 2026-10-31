@@ -315,3 +315,7 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
   .rp-mini .rp-play { min-width: 88px; font-weight: 800; }
   .rp-mini [data-rp="mini"] { margin-left: auto; display: flex; gap: 10px; align-items: baseline; }
 }
+.gk-var { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line2); background: var(--paper); color: var(--ink); }
+.gk-var-cmp { color: var(--mute); }
+.gk-var { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line2); background: var(--paper); color: var(--ink); }
+.gk-var-cmp { color: var(--mute); }
