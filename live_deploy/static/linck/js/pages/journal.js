@@ -32,7 +32,7 @@ export default {
   title: () => 'Journal',
   render(main) {
     let tags = null, jb = null, q = '';
-    const deps = () => book.isLoaded('deployments') ? book.deployments().map(v => ({ id: v.id, name: v.name })) : [];
+    const deps = () => book.isLoaded('deployments') ? book.everything().map(v => ({ id: v.id, name: v.name })) : [];
     function filters() {
       const s = st.get();
       return { deployment_id: s.dep && s.dep !== 'none' ? s.dep : '', standalone: s.dep === 'none' ? 'true' : '', tag: s.tag, q, day_from: since(s.period) };

@@ -14,7 +14,7 @@
 // longer streak, a different error, the next day).
 
 import { kite, health } from './live.js';
-import { deployments, healthOf, vixSpike, shadowRejections } from './book.js';
+import { everything as deployments, healthOf, vixSpike, shadowRejections } from './book.js';
 import { STREAK_ALERT } from './config.js';
 import { api } from '../core/api.js';
 import { ui, emit, listen } from '../core/store.js';

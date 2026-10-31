@@ -101,7 +101,7 @@ export default {
         return html`<div class="tools-grid"><div class="stack" style="gap:16px">${r.inputs}</div>
           <div class="stack" style="gap:20px" data-out>${r.output}<p class="tiny mute pretty" style="margin:0">${r.note}</p></div></div>`;
       }
-      const held = new Set(book.deployments().flatMap(v => v.legs.map(l => l.instrument_token)));
+      const held = new Set(book.everything().flatMap(v => v.legs.map(l => l.instrument_token)));
       const subset = new Set((subs || []).map(x => x.instrument_token));
       const list = q.length >= 2 ? (results || []).map(r => ({ token: r.instrument_token, sym: r.tradingsymbol, type: r.instrument_type, ex: r.exchange }))
         : (subs || []).map(x => ({ token: x.instrument_token, sym: x.symbol, type: x.static ? 'Always on' : '', ex: '', fixed: x.static }));

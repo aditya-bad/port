@@ -81,6 +81,10 @@ export const api = {
   // deployments (v1)
   deployments: () => req('/deployments'),
   update: (id, body) => req(`/deployments/${id}`, { method: 'PATCH', body }),
+  // variations (app/variations.py)
+  variations: id => req(`/v2/deployments/${id}/variations`),
+  addVariation: (id, body) => post(`/v2/deployments/${id}/variations`, body),
+  makePrimary: id => post(`/v2/deployments/${id}/make-primary`),
   pause: id => post(`/deployments/${id}/pause`),
   resume: id => post(`/deployments/${id}/resume`),
   stop: (id, closeFirst) => post(`/deployments/${id}/stop?force_close=${closeFirst ? 'true' : 'false'}`),

@@ -1,5 +1,5 @@
 // One deployment: header with actions on every tab, a five-figure strip,
-// and tabs Now · Performance · Cycles · Trades & replay · Settings.
+// and tabs Now · Performance · Cycles · Trades & replay · Variations · Settings.
 // Each tab is its own module exporting render(el, v) → cleanup.
 
 import { html, mount, $, actions, on, setText, setTone } from '../../core/dom.js';
@@ -21,6 +21,7 @@ export const TABS = v => [
   ['performance', 'Performance', () => import('./performance.js')],
   ['cycles', 'Cycles', () => import('./days.js')],
   ['trades', 'Trades & replay', () => import('./trades.js')],
+  ['variations', v.variations || v.variationOf ? `Variations · ${book.family(v.id).length - 1}` : 'Variations', () => import('./variations.js')],
   ['settings', 'Settings', () => import('./settings.js')],
 ];
 
@@ -51,7 +52,10 @@ export default {
           <a class="small b mute back" href="${href('deployments')}">‹ All deployments</a>
           <div class="row end wrap" style="gap:20px">
             <div class="col" style="gap:8px;min-width:0">
-              <div class="row wrap" style="gap:14px"><h1 class="dep-title">${v.name}</h1>${status(v.status)}${repairChip(v)}</div>
+              <div class="row wrap" style="gap:14px"><h1 class="dep-title">${v.name}</h1>${status(v.status)}${repairChip(v)}
+                ${v.variations ? html`<a class="chip var-chip" href="${href(`d/${v.id}/variations`)}" data-var-chip>+${plural(v.variations, 'variation')}</a>` : ''}</div>
+              ${v.variationOf ? html`<div class="small var-of" data-var-of>Variation of <a href="${href(`d/${v.variationOf}/variations`)}"><b>${(book.find(v.variationOf) || { name: 'its primary' }).name}</b></a> · ${v.variationLabel || ''}
+                <button type="button" class="btn btn-xs" data-act="makePrimary">Make primary</button></div>` : ''}
               <div class="row wrap mute" style="gap:8px 16px">
                 <a class="mono tiny" href="${href(`s/${v.strategy}`)}" title="${v.strategyLabel}: every deployment of it, combined">${v.strategy}</a><span>${v.mode}</span><span>${v.index}</span>
                 <span class="mono small">${inr(v.cap, { sign: false })} capital</span>
@@ -138,6 +142,7 @@ export default {
       delete: (d, el) => { menu = false; paintHeader(); if (el.dataset.reason) return say(el.dataset.reason); A.remove(vNow()); },
       menu: () => { menu = !menu; paintHeader(); },
       geek: (d, el) => enterGeek(id, el),
+      makePrimary: () => A.makePrimary(vNow()),
     });
     const offKey = on(document, 'keydown', 'body', e => {
       if (e.key !== 'g' && e.key !== 'G') return;

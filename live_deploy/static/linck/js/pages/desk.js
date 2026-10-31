@@ -197,7 +197,7 @@ function lanesBlock(list, frac) {
           return html`
             <div class="lane ${v.issue ? 'att' : ''}">
               <a class="lane-name" href="${href(`d/${v.id}`)}">
-                <span class="row" style="gap:8px">${marker(v.status)}<b>${v.name}</b>${repairChip(v, { link: false })}</span>
+                <span class="row" style="gap:8px">${marker(v.status)}<b>${v.name}</b>${repairChip(v, { link: false })}${v.variations ? html`<span class="tiny mute var-n" data-var-n="${v.variations}">+${v.variations}</span>` : ''}</span>
                 ${!compact || warn ? html`<span class="tiny ${warn ? 'warn' : 'mute'}">${note}</span>` : ''}
               </a>
               <div class="lane-plot">

@@ -160,7 +160,7 @@ export async function removeTag(v, name) {
 }
 
 export function closeEverything() {
-  const all = book.deployments().filter(v => v.rawStatus !== 'stopped');
+  const all = book.everything().filter(v => v.rawStatus !== 'stopped');   // variations hold positions too
   const holding = all.filter(v => v.legs.length);
   const legs = holding.flatMap(v => v.legs);
   const running = all.filter(v => v.rawStatus === 'active').length;
@@ -304,4 +304,16 @@ export function menuItems(v) {
     { l: 'Remove current trade…', h: v.legs.length ? 'Erase the open cycle from the record' : 'No open cycle', run: () => removeTrade(v), off: !v.legs.length },
     { l: 'Delete…', h: stopped ? 'Removes it and its history' : 'Stop it first', run: () => remove(v), off: !stopped },
   ];
+}
+
+// A variation becomes the primary (app/variations.promote): confirmed first.
+export function makePrimary(v) {
+  const p = book.find(v.variationOf);
+  if (!p) return say('Its primary isn’t loaded yet.');
+  openDialog({
+    kicker: 'CONFIRM', title: `Make ${v.variationLabel || v.name} the primary?`,
+    lines: [`${v.name} becomes the primary: it counts in totals and reports and takes ${p.name}’s alert settings. ${p.name} becomes a variation labelled “Original”, with the critical alerts only. Nothing trades, and each keeps its own history.`],
+    okLabel: 'Make primary',
+    onOk: async () => { await api.makePrimary(v.id); await book.load(['deployments']); say(`${v.name} is the primary now.`); },
+  });
 }

@@ -182,6 +182,8 @@ function base(d) {
     cap: Number(d.initial_capital), tags: d.tags || [], isLab: (d.tags || []).includes(LAB_TAG),
     index: indexOf(d), created, ageDays, young: ageDays < YOUNG_DAYS,
     inReports: d.include_in_reports !== false,
+    // a variation (app/variations.py) runs beside its primary: lists and totals show primaries
+    variationOf: d.variation_of || null, variationLabel: d.variation_label || null,
     legs: legsBy().get(id) || [], trades, daily: dailyBy().get(id) || [],
     repairs: repairsBy().get(id) || { done: [], open: [] },
     lastTradeAt: last, quietDays: last ? Math.floor((Date.now() - last) / 864e5) : ageDays,
@@ -251,16 +253,39 @@ export function live(v) {
   };
 }
 
-export function deployments() {
-  return memo(`deps:${version}:${basis()}:${health.sig}`, () => raw.deployments.map(d => {
-    const v = base(d);
-    const m = tradeMetrics(v.trades.map(pnlOf));
-    v.streak = m.streak;
-    v.quiet = v.rawStatus === 'active' && v.quietDays >= QUIET_DAYS ? v.quietDays : 0;
-    return v;
-  }));
+// Every deployment, variations too: for finding one, its alerts, its notes.
+// Each with how many variations run beside it (a primary's count; 0 for a variation).
+export function everything() {
+  return memo(`deps:${version}:${basis()}:${health.sig}`, () => {
+    const n = new Map();
+    raw.deployments.forEach(d => { if (d.variation_of) n.set(d.variation_of, (n.get(d.variation_of) || 0) + 1); });
+    return raw.deployments.map(d => {
+      const v = base(d);
+      const m = tradeMetrics(v.trades.map(pnlOf));
+      v.streak = m.streak;
+      v.quiet = v.rawStatus === 'active' && v.quietDays >= QUIET_DAYS ? v.quietDays : 0;
+      v.variations = n.get(d.id) || 0;
+      return v;
+    });
+  });
 }
-export const find = id => deployments().find(v => v.id === id) || null;
+// The deployments the pages list and total: primaries and ones on their own.
+export function deployments() {
+  return memo(`prim:${version}:${basis()}:${health.sig}`, () => {
+    const all = everything();
+    const ids = new Set(all.map(v => v.id));
+    return all.filter(v => !v.variationOf || !ids.has(v.variationOf));
+  });
+}
+// A deployment's family: its primary first, then the variations, oldest first.
+export function family(id) {
+  const all = everything();
+  const v = all.find(x => x.id === id);
+  if (!v) return [];
+  const top = v.variationOf ? all.find(x => x.id === v.variationOf) || v : v;
+  return [top, ...all.filter(x => x.variationOf === top.id).sort((a, b) => a.created - b.created)];
+}
+export const find = id => everything().find(v => v.id === id) || null;
 export const rawDeployment = id => raw.deployments.find(d => d.id === id) || null;
 export const eventsToday = v => (raw.session && raw.session.lanes[v.id] ? raw.session.lanes[v.id].events : []);
 export function totals(list) {

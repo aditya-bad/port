@@ -89,7 +89,7 @@ export default {
 
     const lakh = n => (n >= 1e5 ? `${num(n / 1e5, 1)} lakh` : n.toLocaleString('en-IN'));
     const live = () => kite.state === 'connected';
-    const deps = () => (book.isLoaded('deployments') ? book.deployments() : []);
+    const deps = () => (book.isLoaded('deployments') ? book.everything() : []);
     const PUSH = {
       loading: 'Checking…', unconfigured: 'Not set up on this server (run custom_scripts/generate_vapid_keys.py).', unsupported: 'This browser can’t receive push notifications.',
       denied: 'Blocked in your browser’s site settings. Allow notifications there, then reload.', on: 'On: a push for every entry and exit, even with the app closed.', off: 'Off: turn it on to get a push for every entry and exit.',
@@ -322,7 +322,7 @@ export default {
         },
       }),
       clearAll: () => guarded({
-        kicker: 'IRREVERSIBLE', title: `Delete all ${plural(book.deployments().length, 'deployment')}?`,
+        kicker: 'IRREVERSIBLE', title: `Delete all ${plural(book.everything().length, 'deployment')}?`,
         lines: ['Stops every runner, then deletes every deployment with its positions, trades, events and snapshots. Open positions are not closed with exit orders; they are simply removed.', 'Kite, subscribed instruments and strategy settings are kept.'],
         phrase: 'DELETE ALL', okLabel: 'Delete everything',
         run: async (pw, phrase) => { const r = await api.clearAll(pw, phrase); await book.load(); say(`${plural(r.deleted, 'deployment')} deleted.`); },

@@ -127,7 +127,7 @@ export default {
                 <div class="tr hover ${v.issue ? 'att' : sel.has(v.id) ? 'sel' : ''}" style="position:relative">
                   <button type="button" class="box ${sel.has(v.id) ? 'on' : ''}" data-act="sel" data-id="${v.id}" aria-label="Select ${v.name}"></button>
                   ${status(v.status)}
-                  <a class="cell-name" href="${href(`d/${v.id}`)}"><b>${v.name}</b><span class="${note ? 'warn' : ''}">${note || v.strategy}</span></a>
+                  <a class="cell-name" href="${href(`d/${v.id}`)}"><b>${v.name}</b><span class="${note ? 'warn' : ''}">${note || v.strategy}${v.variations ? html` · <span class="var-n" data-var-n="${v.variations}">+${plural(v.variations, 'variation')}</span>` : ''}</span></a>
                   <span class="row wrap" style="gap:4px">${repairChip(v)}${v.tags.map(tagChip)}</span>
                   <span class="small mute">${v.mode}</span>
                   <span class="mono tiny">${v.index}</span>

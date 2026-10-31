@@ -843,3 +843,20 @@ a.cell-name:hover b { text-decoration: underline; }
   .hb-slot { grid-template-columns: 100px minmax(40px, 1fr); }
   .hb-slot > .mono { grid-column: 1 / -1; }
 }
+
+/* Variations (pages/deployment/variations.js) */
+.var-chip { text-decoration: none; }
+.var-of { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; color: var(--mute); }
+.var-of a { color: var(--ink); }
+.var-tbl { overflow-x: auto; }
+.var-tbl .tr { grid-template-columns: minmax(180px, 1.6fr) 100px repeat(7, minmax(78px, 1fr)) 120px; gap: 10px; min-width: 1060px; }
+.var-tbl .tr.sel { background: var(--soft); }
+.var-tbl .cell-name { display: grid; grid-template-columns: 10px minmax(0, 1fr); column-gap: 8px; align-items: center; }
+.var-tbl .cell-name .key { grid-row: span 2; width: 10px; height: 10px; }
+.var-tbl .cell-name > span { grid-column: 2; }
+.var-diff { overflow-x: auto; }
+.var-diff .tr { grid-template-columns: minmax(200px, 1.4fr) repeat(var(--n), minmax(110px, 1fr)); gap: 10px; min-width: calc(200px + var(--n) * 120px); }
+.var-add { border: 1.5px solid var(--ink); padding: 18px 20px; background: var(--card); }
+.var-add .sect { flex-wrap: wrap; row-gap: 4px; }
+.var-add .sect h3 { overflow-wrap: anywhere; min-width: 0; }
+@media (max-width: 760px) { .var-add { padding: 14px 12px; } }
