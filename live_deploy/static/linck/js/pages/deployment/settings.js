@@ -1,6 +1,7 @@
 // Settings: the strategy's parameters (editable only while paused, so a
 // change can't land halfway through a trade), plus the deployment's own
-// name, push notifications and whether it counts in reports.
+// name, push notifications, whether it counts in reports, and which
+// kinds of alert it raises (ui/alertprefs.js). Those work whatever its status.
 
 import { api } from '../../core/api.js';
 import { html, mount, actions, $ } from '../../core/dom.js';
@@ -9,6 +10,7 @@ import { fieldsFor, renderFields, bindFields, validate, toConfig } from '../../u
 import { toggle } from '../../ui/components.js';
 import { say } from '../../ui/toast.js';
 import * as A from '../../actions.js';
+import { alertPrefs, flipKind } from '../../ui/alertprefs.js';
 
 export default {
   render(el, v0) {
@@ -64,6 +66,10 @@ export default {
               <div class="pref-row"><div class="col grow" style="gap:0"><b>Count in reports</b><span class="tiny mute">Include it in Reports and account totals</span></div>
                 ${toggle(d.inReports, 'reports', {}, 'Count in reports')}</div>
             </div>
+            <div>
+              <div class="sect ruled"><h3 class="t-h3">Alerts</h3><span class="mute small">which ones it raises, on the Desk, as toasts and as pushes</span></div>
+              ${alertPrefs([d], { act: 'alertKind' })}
+            </div>
           </div>
         </div>`);
     }
@@ -118,6 +124,7 @@ export default {
         const on = v().raw.notifications_enabled !== false;
         try { await api.update(v().id, { notifications_enabled: !on }); await book.load(['deployments']); say(on ? 'Push notifications off for this deployment.' : 'Push notifications on.'); } catch (e) { say(e.message); }
       },
+      alertKind: async d => { await flipKind([v()], d.kind); paint(); },
       reports: async () => {
         try { await api.update(v().id, { include_in_reports: !v().inReports }); await book.load(['deployments']); paint(); } catch (e) { say(e.message); }
       },

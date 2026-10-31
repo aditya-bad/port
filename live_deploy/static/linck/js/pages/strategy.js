@@ -21,6 +21,7 @@ import { perfStack, insightsList } from '../ui/perfstack.js';
 import { status, empty, check, seg } from '../ui/components.js';
 import { say } from '../ui/toast.js';
 import { newDeployment } from '../actions.js';
+import { alertPrefs, flipKind } from '../ui/alertprefs.js';
 
 const st = ui('strategy', { off: {}, each: false, hm: {}, cal: {}, setAll: false });
 
@@ -194,6 +195,14 @@ export default {
         </div>` : empty('', 'Nothing changed from the defaults. Show all settings to see them.')}`;
     }
 
+    // Which alerts its deployments raise, set for all of them at once.
+    const live = deps => deps.filter(v => v.rawStatus !== 'stopped');
+    function alertsBlock(deps) {
+      const L = live(deps);
+      return html`<div><div class="sect ruled"><h3 class="t-h3">Alerts</h3><span class="mute small">${L.length ? `which ones its ${L.length > 1 ? `${L.length} deployments` : 'deployment'} raise · a switch sets all of them; each can differ on its own Settings tab` : 'nothing deployed and not stopped'}</span></div>
+        ${L.length ? alertPrefs(L, { act: 'alertKind' }) : ''}</div>`;
+    }
+
     function paint() {
       if (!book.isLoaded('strategies', 'deployments')) { mount(main, html`<div class="page"><div class="skel" style="height:300px"></div></div>`); return; }
       const s = book.strategy(name);
@@ -231,6 +240,7 @@ export default {
             <div><div class="sect"><h3 class="t-h3">What stands out</h3></div>${insightsList(a.insights)}</div>
           </div>
           <div><div class="sect ruled"><h3 class="t-h3">Settings in use</h3><span class="mute small">the default, and what the deployments in view use</span></div>${settings(s, sel)}</div>
+          ${alertsBlock(deps)}
         </div>`);
     }
 
@@ -249,6 +259,7 @@ export default {
       setAll: d => { st.set({ setAll: d.v === 'all' }); paint(); },
       hm: d => { const s = st.get(); st.set({ hm: { ...s.hm, [key]: d.v } }); paint(); },
       cal: d => { const s = st.get(); st.set({ cal: { ...s.cal, [key]: d.v } }); paint(); },
+      alertKind: d => flipKind(live(deploymentsOf(book.deployments(), name)), d.kind),
     });
     paint();
     const offs = [listen('data', paint)];

@@ -93,6 +93,9 @@ class DeploymentUpdate(BaseModel):
     # 0011's own comment). Read fresh from the DB per execution, not
     # cached on a live runner, so this takes effect immediately.
     notifications_enabled: Optional[bool] = None
+    # The kinds of alert it doesn't raise (app/alert_types.py); [] turns
+    # them all back on. Editable whatever its status, read fresh per alert.
+    alerts_off: Optional[list[str]] = None
 
 
 class StatusField(BaseModel):
@@ -126,6 +129,7 @@ class DeploymentOut(BaseModel):
     # migration 0011's own comment. Same defensive-default reasoning as
     # include_in_reports just above.
     notifications_enabled: bool = True
+    alerts_off: list[str] = Field(default_factory=list)   # app/alert_types.py
     # Custom labels applied from the predefined catalog (Settings ->
     # Tags) -- see the 0010 migration's own comment. Never includes the
     # synthetic "Excluded from reports" chip; the frontend derives that

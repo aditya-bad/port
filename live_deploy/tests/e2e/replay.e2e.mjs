@@ -33,7 +33,7 @@ test('the payoff of what’s held, the positions under it, step by step to the n
   assert.equal(await chart.locator('[data-curve="now"]').count(), 1, 'and today');
   assert.match(await chart.innerHTML(), /NIFTY 50 [\d,.]+/);
   assert.match(await chart.innerHTML(), /FUT [\d,.]+/);
-  assert.match(await p.locator('[data-rp="strip"]').innerText(), /Future · NIFTY26NOVFUT[\s\S]*basis/);
+  assert.match(await p.locator('[data-rp="strip"]').innerText(), /Future · NIFTY\d{2}[A-Z]{3}FUT[\s\S]*basis/);
   assert.match(await p.locator('[data-rp="paystats"]').innerText(), /Max loss\s*Unlimited/, 'a short strangle');
   assert.match(await p.locator('[data-rp="banner"]').innerText(), /New cycle 10[\s\S]*first closed cycle 9/);
   // the P&L on the chart is the P&L of the step

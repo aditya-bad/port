@@ -2,6 +2,10 @@
 // that name the problem and offer the one action that fixes it. Items
 // disappear when resolved. Add a rule by appending to RULES.
 //
+// A deployment can turn kinds of alert off (data/alert_types.js, its
+// Settings tab or its strategy's page): an item of a kind it turned off
+// isn't made at all. The critical ones (not running, errored) always are.
+//
 // Every item can be dismissed. A dismissal is kept per user on the server
 // (app/v2/alerts.py), so it holds on every device, and the other open
 // devices hear about it at once (an alerts_dismissed event). It stores
@@ -15,6 +19,7 @@ import { STREAK_ALERT } from './config.js';
 import { api } from '../core/api.js';
 import { ui, emit, listen } from '../core/store.js';
 import { plural, dayKey } from '../core/format.js';
+import { isOn } from './alert_types.js';
 
 const cache = ui('alertsDismissed', { map: {} });   // the server's copy, for a first paint before it answers
 let dismissed = { ...cache.get().map };
@@ -47,13 +52,13 @@ export const RULES = [
     body: `${v.issue.text}${v.legs.length ? ` ${plural(v.legs.length, 'leg')} open.` : ''}`,
     act: 'Review', action: { type: 'open', id: v.id },
   })),
-  list => list.filter(v => v.rawStatus === 'paused' && v.legs.length).map(v => ({
+  list => list.filter(v => v.rawStatus === 'paused' && v.legs.length && isOn(v, 'paused')).map(v => ({
     key: `paused:${v.id}`, token: String(v.legs.length), kind: 'paused', id: v.id,
     title: `${v.name} is paused with ${plural(v.legs.length, 'open leg')}`,
     body: 'Positions are not being managed while paused.',
     act: 'Resume', action: { type: 'resume', id: v.id },
   })),
-  list => list.filter(v => v.rawStatus === 'active' && v.streak >= STREAK_ALERT && !v.isLab).map(v => ({
+  list => list.filter(v => v.rawStatus === 'active' && v.streak >= STREAK_ALERT && !v.isLab && isOn(v, 'streak')).map(v => ({
     key: `streak:${v.id}`, token: String(v.streak), kind: 'streak', id: v.id,
     title: `${v.name}: losing streak of ${v.streak}`,
     body: `The last ${v.streak} trades closed at a loss.`,
@@ -61,10 +66,13 @@ export const RULES = [
   })),
   // VIX jumped 10%+ today (app/vix.py): what holds sold premium loses
   // as it rises. Dismissed for the day.
-  () => {
+  list => {
     const s = vixSpike();
     if (!s) return [];
-    const ex = s.exposed || [];
+    const byId = new Map(list.map(v => [v.id, v]));
+    const all = s.exposed || [];
+    const ex = all.filter(e => isOn(byId.get(String(e.id)), 'vix'));
+    if (all.length && !ex.length) return [];   // every deployment it hurts turned VIX alerts off
     return [{
       key: 'vixspike', token: (s.at || '').slice(0, 10), kind: 'vix',
       title: `VIX up ${Math.round(s.change_pct)}% today: ${s.prev_close.toFixed(2)} → ${s.vix.toFixed(2)}`,
@@ -74,7 +82,7 @@ export const RULES = [
   },
   // Drifting from how it normally trades (app/strategy_health.py): one
   // item per finding, dismissed until what it says changes.
-  list => list.filter(v => v.rawStatus !== 'stopped' && !v.isLab).flatMap(v => healthOf(v.id).map(f => ({
+  list => list.filter(v => v.rawStatus !== 'stopped' && !v.isLab).flatMap(v => healthAlertsOf(v).map(f => ({
     key: `health:${v.id}:${f.key}`, token: fp(`${f.title}|${f.body}`), kind: 'health', id: v.id,
     title: `${v.name}: ${f.title.toLowerCase()}`, body: f.body,
     act: 'Open', action: { type: 'open', id: v.id, tab: 'performance' },
@@ -82,7 +90,7 @@ export const RULES = [
   // Shadow mode (app/shadow.py): an order Kite would have refused. Once
   // per deployment, rule and day; dismissed for that day.
   list => {
-    const byId = new Map(list.filter(v => !v.isLab).map(v => [v.id, v]));
+    const byId = new Map(list.filter(v => !v.isLab && isOn(v, 'shadow')).map(v => [v.id, v]));
     return shadowRejections().filter(x => byId.has(x.deployment_id)).map(x => ({
       key: `shadow:${x.deployment_id}:${x.rule}:${x.day}`, token: x.day, kind: 'shadow', id: x.deployment_id,
       title: `${x.name}: Kite would have refused ${x.n > 1 ? `${x.n} orders` : 'an order'} today`,
@@ -129,8 +137,11 @@ export const restore = a => change([], [a.key]);
 // Another device dismissed or brought one back.
 listen('event', ev => { if (ev && ev.event_type === 'alerts_dismissed') loadDismissed(); });
 
+// Its health findings (app/strategy_health.py) of the kinds it alerts on.
+export const healthAlertsOf = v => healthOf(v.id).filter(f => isOn(v, f.rule));
+
 // How much a deployment needs you, for sorting the Desk.
 export function attention(v) {
-  return (v.status === 'error' || v.status === 'down' ? 8 : 0) + (v.rawStatus === 'paused' && v.legs.length ? 4 : 0)
-    + (v.streak >= STREAK_ALERT ? 2 : 0) + (healthOf(v.id).length ? 2 : 0) + (v.quiet ? 1 : 0);
+  return (v.status === 'error' || v.status === 'down' ? 8 : 0) + (v.rawStatus === 'paused' && v.legs.length && isOn(v, 'paused') ? 4 : 0)
+    + (v.streak >= STREAK_ALERT && isOn(v, 'streak') ? 2 : 0) + (healthAlertsOf(v).length ? 2 : 0) + (v.quiet ? 1 : 0);
 }

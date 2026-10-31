@@ -25,7 +25,8 @@ It also keeps the day: each deployment's strategy state at the open
 succeeded, starts the end-of-day check (app/repair/launcher.py) and says
 what it found when it's done.
 
-While an issue is open and not snoozed, it alerts every minute — a push
+While an issue is open and not snoozed, it alerts every minute (unless
+its deployment turned that kind of alert off: app/alert_types.py) — a push
 to every subscribed phone and a toast in every open Linck tab — and once
 more when it clears. "Mark as holiday" (Account -> Notifications) mutes
 the pushes and the market-hours checks for the day. The export also
@@ -349,7 +350,9 @@ class OpsMonitor:
                           {"key": f"export-ok:{r['day']}", "kind": "export_ok", "severity": "info"})
 
     async def _sync(self, now: datetime, problems: list[Problem]) -> None:
+        from . import alert_types
         seen = {p.key: p for p in problems}
+        muted = await queries.alerts_off_by_deployment(self.pool)
         open_rows = {r["key"]: r for r in await self.pool.fetch("SELECT * FROM ops_issues WHERE resolved_at IS NULL")}
         for key, p in seen.items():
             dep = UUID(p.deployment_id) if p.deployment_id else None
@@ -368,7 +371,9 @@ class OpsMonitor:
                     "WHERE id = $1 RETURNING *", row["id"], p.title, p.detail, p.data, p.severity, now)
             snoozed = row["snoozed_until"] is not None and row["snoozed_until"] > now
             due = row["last_alert_at"] is None or (p.repeat and now - row["last_alert_at"] >= ALERT_EVERY)
-            if not snoozed and due:
+            # its deployment turned this kind off: the issue is kept, never alerted
+            quiet = not alert_types.is_on(muted.get(p.deployment_id or ""), alert_types.of_problem(p.kind, p.severity))
+            if not snoozed and due and not quiet:
                 await self.pool.execute(
                     "UPDATE ops_issues SET last_alert_at = $2, alerts = alerts + 1 WHERE id = $1", row["id"], now)
                 # repeat: the phone is pushed again every minute; open tabs show only the first

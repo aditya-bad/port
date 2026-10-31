@@ -68,11 +68,31 @@ async def exposed(pool) -> list[dict]:
     return [{"id": str(r["id"]), "name": r["name"], "legs": r["legs"], "premium": round(r["premium"], 2)} for r in rows]
 
 
+async def without_muted(pool, s: dict) -> Optional[dict]:
+    """The spike without the deployments that turned VIX alerts off
+    (app/alert_types.py), or None when every one exposed did: nobody who
+    wants it is hurt. With nothing exposed at all it still says so."""
+    from .db import queries
+    ex = s.get("exposed") or []
+    if not ex:
+        return s
+    off = await queries.alerts_off_by_deployment(pool)
+    keep = [e for e in ex if "vix" not in off.get(str(e["id"]), ())]
+    if not keep:
+        return None
+    if len(keep) == len(ex):
+        return s
+    return {**{k: v for k, v in s.items() if k != "per_point"}, "exposed": keep}   # per_point counted them all
+
+
 async def push_spike_once(pool, config: dict, s: dict, now: datetime) -> bool:
     """Push a spike, once a day (strategy_health_sent remembers it)."""
     from . import notifications
     from .db import queries
     if not notifications.is_push_configured(config):
+        return False
+    s = await without_muted(pool, s)
+    if s is None:
         return False
     if not await queries.mark_health_alert_sent(pool, None, f"vixspike:{now.astimezone(IST).date().isoformat()}"):
         return False

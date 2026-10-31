@@ -466,3 +466,5 @@ a.fix-tag:hover, a.fix-flag:hover { background: var(--soft); }
 .attn-more.linkish { padding: 10px 26px 14px; }
 @media (max-width: 600px) { .apanel { border-left: 0; } }
 @media (prefers-reduced-motion: reduce) { .apanel { animation: none; } }
+.al-group { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--mute); margin-top: 4px; }
+.al-prefs .pref-row { min-height: 48px; }

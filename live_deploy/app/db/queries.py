@@ -104,6 +104,7 @@ async def update_deployment_fields(
     deployment_name: Optional[str] = None, notes: Optional[str] = None,
     config: Optional[dict] = None, include_in_reports: Optional[bool] = None,
     tags: Optional[list[str]] = None, notifications_enabled: Optional[bool] = None,
+    alerts_off: Optional[list[str]] = None,
 ) -> Optional[asyncpg.Record]:
     """
     Partial update for PATCH /deployments/{id} — only the field(s)
@@ -150,6 +151,9 @@ async def update_deployment_fields(
     BOTH channels (in-app toast and mobile push) for this deployment,
     read fresh from the DB on every execution rather than cached, so
     this takes effect on the very next entry/exit, no restart needed.
+
+    alerts_off (migration 0046, app/alert_types.py): the kinds of alert it
+    doesn't raise; None leaves it, [] turns every kind back on.
     """
     async with pool.acquire() as conn:
         return await conn.fetchrow(
@@ -161,12 +165,13 @@ async def update_deployment_fields(
                 include_in_reports = COALESCE($5, include_in_reports),
                 tags = COALESCE($6, tags),
                 notifications_enabled = COALESCE($7, notifications_enabled),
+                alerts_off = COALESCE($8, alerts_off),
                 updated_at = now()
             WHERE id = $1
             RETURNING *
             """,
             deployment_id, deployment_name, notes, config, include_in_reports, tags,
-            notifications_enabled,
+            notifications_enabled, alerts_off,
         )
 
 
@@ -2859,6 +2864,22 @@ async def get_deployment_notifications_enabled(pool: asyncpg.Pool, deployment_id
             "SELECT notifications_enabled FROM deployments WHERE id = $1", deployment_id,
         )
     return True if value is None else bool(value)
+
+
+async def get_deployment_alerting(pool: asyncpg.Pool, deployment_id: UUID) -> tuple[bool, list[str]]:
+    """(notifications_enabled, alerts_off), read fresh each time like the
+    above, so a switch flipped takes effect on the next alert. A deployment
+    gone by now: (True, []), fail open."""
+    row = await pool.fetchrow("SELECT notifications_enabled, alerts_off FROM deployments WHERE id = $1", deployment_id)
+    if row is None:
+        return True, []
+    return bool(row["notifications_enabled"]), list(row["alerts_off"] or [])
+
+
+async def alerts_off_by_deployment(pool: asyncpg.Pool) -> dict[str, list[str]]:
+    """{deployment id: kinds off}, only those with any off."""
+    rows = await pool.fetch("SELECT id, alerts_off FROM deployments WHERE cardinality(alerts_off) > 0")
+    return {str(r["id"]): list(r["alerts_off"]) for r in rows}
 
 
 # ═════════════════════════════════════════════════════════════════════

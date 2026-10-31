@@ -464,7 +464,8 @@ class DeploymentRunner:
         """
         if side not in ("entry", "exit"):
             raise ValueError(f"side must be 'entry' or 'exit', got {side!r}")
-        if not await queries.get_deployment_notifications_enabled(self.pool, self.deployment_id):
+        enabled, alerts_off = await queries.get_deployment_alerting(self.pool, self.deployment_id)
+        if not enabled or "trades" in alerts_off:   # app/alert_types.py: entries and exits turned off
             return
 
         await self._record_event(f"execution_{side}", message=message, metadata=metadata)

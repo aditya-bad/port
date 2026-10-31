@@ -160,14 +160,17 @@ async def check_all(pool, now: Optional[datetime] = None) -> dict:
 
 async def push_new(pool, config: dict, findings: dict) -> int:
     """Push each finding not pushed before (by key), unless its
-    deployment's notifications are off. Returns how many were sent."""
+    deployment's notifications, or that kind of alert, are off. Returns how many were sent."""
     from . import notifications
     sent = 0
     for dep_id, fs in findings.items():
         from uuid import UUID
-        if not await queries.get_deployment_notifications_enabled(pool, UUID(dep_id)):
+        enabled, alerts_off = await queries.get_deployment_alerting(pool, UUID(dep_id))
+        if not enabled:
             continue
         for f in fs:
+            if f.get("rule") in alerts_off:   # that kind turned off (app/alert_types.py)
+                continue
             if not await queries.mark_health_alert_sent(pool, UUID(dep_id), f"{dep_id}:{f['key']}"):
                 continue
             await notifications.send_push_for_all(pool, config, f"{f['name']}: {f['title'].lower()}", f["body"])

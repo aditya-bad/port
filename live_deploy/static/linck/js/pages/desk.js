@@ -9,7 +9,8 @@ import { ui, listen } from '../core/store.js';
 import { href } from '../core/router.js';
 import * as book from '../data/book.js';
 import { kite } from '../data/live.js';
-import { alerts, dismiss, restore, attention } from '../data/alerts.js';
+import { alerts, dismiss, restore, attention, healthAlertsOf } from '../data/alerts.js';
+import { isOn } from '../data/alert_types.js';
 import { openAlerts, runAlert } from '../ui/alertspanel.js';
 import { DESK_LANES, STREAK_ALERT } from '../data/config.js';
 import { chips, utabs, marker, empty } from '../ui/components.js';
@@ -49,9 +50,9 @@ function setOdometer(el, text) {
 
 function laneNote(v) {
   if (v.issue) return [v.issue.text, true];
-  if (v.rawStatus === 'paused' && v.legs.length) return [`Paused while still holding ${plural(v.legs.length, 'leg')}`, true];
-  if (v.streak >= STREAK_ALERT) return [`losing streak of ${v.streak}`, true];
-  const h = book.healthOf(v.id);
+  if (v.rawStatus === 'paused' && v.legs.length && isOn(v, 'paused')) return [`Paused while still holding ${plural(v.legs.length, 'leg')}`, true];
+  if (v.streak >= STREAK_ALERT && isOn(v, 'streak')) return [`losing streak of ${v.streak}`, true];
+  const h = healthAlertsOf(v);
   if (h.length) return [`${h[0].title.toLowerCase()}${h.length > 1 ? ` · +${h.length - 1} more` : ''}`, true];
   if (v.quiet) return [`no trade for ${v.quietDays} days`, true];
   return [`${v.strategy} · ${v.mode}`, false];

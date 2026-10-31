@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Request
 
 from .aggregate import year_bounds
+from .. import alert_types
 from ..db import queries
 from ..prices import open_prices, open_values, value_open_row
 from ..deployments.schemas import (
@@ -273,6 +274,9 @@ async def update_deployment(deployment_id: UUID, payload: DeploymentUpdate, requ
             f"to apply the change.",
         )
 
+    if payload.alerts_off is not None and alert_types.unknown(payload.alerts_off):
+        raise HTTPException(400, f"Unknown alert kind(s) {alert_types.unknown(payload.alerts_off)!r}")
+
     if payload.tags is not None:
         # Every name must already exist in the predefined catalog
         # (Settings -> Tags) -- the whole reason that catalog exists is
@@ -293,6 +297,7 @@ async def update_deployment(deployment_id: UUID, payload: DeploymentUpdate, requ
         deployment_name=payload.deployment_name, notes=payload.notes,
         config=payload.config, include_in_reports=payload.include_in_reports,
         tags=payload.tags, notifications_enabled=payload.notifications_enabled,
+        alerts_off=None if payload.alerts_off is None else alert_types.clean(payload.alerts_off),
     )
     out = _annotate(row)
     await _enrich_pnl_one(pool, request.app.state.dispatcher, deployment_id, out)
