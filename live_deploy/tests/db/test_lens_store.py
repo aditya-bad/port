@@ -100,6 +100,26 @@ def test_the_year_once_then_only_the_days_since(pool_run):
     pool_run(go)
 
 
+def test_a_span_with_no_prices_at_its_start_is_asked_for_once(pool_run):
+    """Asked from before a share listed (or from a weekend): Kite's first
+    candle comes later than the day asked for, and that's still read."""
+    async def go(pool):
+        asked = []
+
+        async def call(what, token, frm, to, interval):
+            asked.append(frm)
+            return daily(max(frm, date(2026, 6, 1)), to)       # listed 1 June
+        now = at(WED, 18)
+        want = [{"token": 777, "symbol": "NEWCO", "exchange": "NSE", "since": date(2025, 9, 6)}]   # a Saturday
+        await S.bring_up_to_date(pool, call, want, now)
+        k = (await S.kept(pool, [777]))[777]
+        assert k["first"] == date(2025, 9, 6), "covered from what was asked"
+        assert S.to_read(k["fetched_through"], k["first"], now, date(2025, 9, 6)) is None
+        await S.bring_up_to_date(pool, call, want, now)
+        assert len(asked) == 1, "not asked again"
+    pool_run(go)
+
+
 def test_a_share_kite_refuses_is_named_and_tried_again_later(pool_run, monkeypatch):
     async def go(pool):
         asked = []

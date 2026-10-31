@@ -814,3 +814,32 @@ a.cell-name:hover b { text-decoration: underline; }
   .lens-ideas { grid-template-columns: auto minmax(0, 1fr); }
   .lens-ideas > :last-child { grid-column: 2; }
 }
+
+/* LinckLens › Habits (pages/lens/habits.js) */
+.hb-finds { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.hb-find { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--line); border-left: 4px solid var(--line2); background: var(--card); color: var(--ink); text-decoration: none; }
+.hb-find:hover, .hb-find:focus-visible { border-color: var(--ink); }
+.hb-find.bad { border-left-color: var(--r); }
+.hb-find.good { border-left-color: var(--g); }
+.hb-find .hb-rs { font-size: 18px; font-weight: 700; }
+.hb-tbl { overflow-x: auto; }
+.hb-tbl .tr { display: grid; gap: 10px; align-items: baseline; }
+.hb-tbl .tr.off { opacity: .55; }
+.hb-tbl .num small { display: block; font-size: 11px; color: var(--mute); }
+.hb-cost .tr { grid-template-columns: 90px repeat(5, minmax(90px, 1fr)); min-width: 640px; }
+.hb-hold .tr { grid-template-columns: minmax(140px, 1.4fr) repeat(4, minmax(80px, 1fr)); min-width: 560px; }
+.hb-after .tr { grid-template-columns: minmax(170px, 1.6fr) repeat(5, minmax(80px, 1fr)); min-width: 720px; }
+.hb-buy .tr { grid-template-columns: minmax(170px, 1.6fr) repeat(4, minmax(80px, 1fr)); min-width: 600px; }
+.hb-spread .tr { grid-template-columns: 90px repeat(4, minmax(100px, 1fr)); min-width: 600px; }
+.hb-list { display: grid; }
+.hb-li { display: grid; grid-template-columns: minmax(90px, 200px) minmax(0, 1fr) auto; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.hb-slots { display: grid; gap: 6px; }
+.hb-slot { display: grid; grid-template-columns: 130px minmax(60px, 1fr) 190px; gap: 12px; align-items: center; }
+.hb-bar { height: 10px; background: var(--soft); }
+.hb-bar i { display: block; height: 100%; background: var(--ink); }
+@media (max-width: 760px) {
+  .hb-li { grid-template-columns: 1fr auto; }
+  .hb-li > .mute { grid-column: 1 / -1; grid-row: 2; }
+  .hb-slot { grid-template-columns: 100px minmax(40px, 1fr); }
+  .hb-slot > .mono { grid-column: 1 / -1; }
+}

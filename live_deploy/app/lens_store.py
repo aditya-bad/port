@@ -69,20 +69,24 @@ async def candles(pool, tokens: list[int], since: date) -> dict[int, list[dict]]
 
 
 async def kept(pool, tokens: list[int]) -> dict[int, dict]:
-    """{token: {symbol, first, last, fetched_through}} for what's kept."""
+    """{token: {symbol, first, last, fetched_through}} for what's kept.
+    first: the earliest day covered, the earlier of the first candle and
+    the first day asked for (nothing before a listing is still covered)."""
     if not tokens:
         return {}
     rows = await pool.fetch(
         "SELECT i.instrument_token, i.tradingsymbol, i.fetched_through, "
-        "(SELECT min(day) FROM lens_daily d WHERE d.instrument_token = i.instrument_token) AS first, "
+        "LEAST(i.read_from, (SELECT min(day) FROM lens_daily d WHERE d.instrument_token = i.instrument_token)) AS first, "
         "(SELECT max(day) FROM lens_daily d WHERE d.instrument_token = i.instrument_token) AS last "
         "FROM lens_instruments i WHERE i.instrument_token = ANY($1::bigint[])", [int(t) for t in tokens])
     return {int(r["instrument_token"]): {"symbol": r["tradingsymbol"], "first": r["first"], "last": r["last"],
                                          "fetched_through": r["fetched_through"]} for r in rows}
 
 
-async def save(pool, token: int, symbol: str, exchange: Optional[str], rows: list[dict], fetched_through: date) -> int:
-    """Kite's daily candles for one instrument, and how far it's been read."""
+async def save(pool, token: int, symbol: str, exchange: Optional[str], rows: list[dict], fetched_through: date,
+               read_from: Optional[date] = None) -> int:
+    """Kite's daily candles for one instrument, how far it's been read, and
+    the earliest day asked for (read_from)."""
     vals = []
     for c in rows or []:
         d = c.get("date")
@@ -101,11 +105,12 @@ async def save(pool, token: int, symbol: str, exchange: Optional[str], rows: lis
                     "open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low, close = EXCLUDED.close, "
                     "volume = EXCLUDED.volume", vals)
             await conn.execute(
-                "INSERT INTO lens_instruments (instrument_token, tradingsymbol, exchange, fetched_through, updated_at) "
-                "VALUES ($1, $2, $3, $4, now()) ON CONFLICT (instrument_token) DO UPDATE SET "
+                "INSERT INTO lens_instruments (instrument_token, tradingsymbol, exchange, fetched_through, read_from, updated_at) "
+                "VALUES ($1, $2, $3, $4, $5, now()) ON CONFLICT (instrument_token) DO UPDATE SET "
                 "tradingsymbol = EXCLUDED.tradingsymbol, exchange = COALESCE(EXCLUDED.exchange, lens_instruments.exchange), "
                 "fetched_through = GREATEST(COALESCE(lens_instruments.fetched_through, EXCLUDED.fetched_through), EXCLUDED.fetched_through), "
-                "updated_at = now()", int(token), symbol, exchange, fetched_through)
+                "read_from = LEAST(lens_instruments.read_from, EXCLUDED.read_from), "
+                "updated_at = now()", int(token), symbol, exchange, fetched_through, read_from)
     return len(vals)
 
 
@@ -125,6 +130,7 @@ async def bring_up_to_date(pool, call: Callable[..., Awaitable[Any]], want: list
         span = to_read(k.get("fetched_through"), k.get("first"), now, w.get("since"), w.get("until"))
         if span is not None:
             frm, to = span
+            asked_from = frm
             got: list[dict] = []
             try:
                 while frm <= to:
@@ -132,7 +138,7 @@ async def bring_up_to_date(pool, call: Callable[..., Awaitable[Any]], want: list
                     asked += 1
                     got += await call("historical_data", int(w["token"]), frm, end, "day") or []
                     frm = end + timedelta(days=1)
-                rows += await save(pool, int(w["token"]), w["symbol"], w.get("exchange"), got, min(done_day, to))
+                rows += await save(pool, int(w["token"]), w["symbol"], w.get("exchange"), got, min(done_day, to), asked_from)
             except Exception as e:
                 failed[w["symbol"]] = f"{type(e).__name__}: {str(e)[:120]}"
                 logger.warning("LinckLens prices for %s: %s", w["symbol"], failed[w["symbol"]])

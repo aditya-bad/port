@@ -1,5 +1,5 @@
-// LinckLens: what the Kite account holds (app/lens.py). Four pages over
-// the same data (data/lens.js): Overview, Shares, Funds, Account.
+// LinckLens: what the Kite account holds (app/lens.py). Pages over the
+// same data (data/lens.js): Overview, Shares, Funds, Trades, Habits, Account.
 
 import { html, mount, actions, on, $ } from '../../core/dom.js';
 import { hhmm } from '../../core/format.js';
@@ -11,14 +11,16 @@ import * as shares from './shares.js';
 import * as funds from './funds.js';
 import * as account from './account.js';
 import * as trades from './trades.js';
+import * as habits from './habits.js';
 import { enterInspector } from './inspect.js';
 
-export const TABS = [['overview', 'Overview', overview], ['shares', 'Shares', shares], ['funds', 'Funds', funds], ['trades', 'Trades', trades], ['account', 'Account', account]];
+export const TABS = [['overview', 'Overview', overview], ['shares', 'Shares', shares], ['funds', 'Funds', funds], ['trades', 'Trades', trades], ['habits', 'Habits', habits], ['account', 'Account', account]];
 const HEAD = {
   overview: ['Overview', 'Everything in your Kite account, and what it’s done.'],
   shares: ['Shares', 'Stocks, ETFs, gold and REITs in your demat.'],
   funds: ['Funds', 'Mutual funds and the SIPs feeding them.'],
   trades: ['Trades', 'Every buy and sell from your Console tradebook, and what they add up to.'],
+  habits: ['Habits', 'How you trade, from your tradebook: in rupees, naming the stocks.'],
   account: ['Account', 'The money in the trading account, and how these pages are read.'],
 };
 // what each page remembers while you move around LinckLens
@@ -53,7 +55,7 @@ export default {
           <button type="button" class="btn btn-sm" data-act="refresh" ${st.busy ? 'disabled' : ''}>${st.busy ? 'Reading…' : 'Refresh'}</button>
         </div>
         <div class="page lens" data-tab="${tab}">
-          ${tab === 'trades' ? mod.render(st, ui) : st.hErr ? (st.hErr.status === 409
+          ${tab === 'trades' || tab === 'habits' ? mod.render(st, ui) : st.hErr ? (st.hErr.status === 409
               ? empty('Kite isn’t connected', 'Your holdings are read from your Kite account. Connect it with Reconnect at the top, then Refresh.')
               : empty('Couldn’t read your holdings', st.hErr.message))
             : !st.h ? loading(8) : mod.render(st, ui)}
@@ -95,7 +97,7 @@ export default {
     });
     paint();
     loadHoldings();
-    if (tab === 'trades') loadTrades();
+    if (tab === 'trades' || tab === 'habits') loadTrades();
     startLive();
     return () => { off(); offActs(); offIn(); offSort(); offFiles(); stopLive(); };
   },

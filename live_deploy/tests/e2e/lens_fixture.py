@@ -201,7 +201,11 @@ def trades_answer(h: dict, candles: dict) -> dict:
                 "added": sum(1 for t in trades if t["segment"] == "MF"), "skipped": 0, "problems": [],
                 "first_day": min(t["trade_date"] for t in trades if t["segment"] == "MF").isoformat(),
                 "last_day": max(t["trade_date"] for t in trades if t["segment"] == "MF").isoformat(), "imported_at": AS_OF}]
-    return {"imports": imports, "analysis": a, "curve": {"state": "ready", **c, "unknown": []}, "holdings_error": None}
+    from app import lens_habits as HB
+    day_of = lambda cs: [{**x, "date": x["date"].date()} for x in cs or []]  # noqa: E731
+    priced = {T.key_of(t): day_of(candles.get(token.get(t["isin"]))) for t in trades if candles.get(token.get(t["isin"]))}
+    habits = HB.analyse(trades, a, TODAY, priced, day_of(candles[NIFTY]))
+    return {"imports": imports, "analysis": a, "curve": {"state": "ready", **c, "unknown": []}, "habits": habits, "holdings_error": None}
 
 
 WITHOUT = ("INE004A01011", "INE011A01011")      # TATAMOTORS and IDEA

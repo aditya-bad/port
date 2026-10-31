@@ -38,6 +38,9 @@ logger = logging.getLogger("live_deploy.lens")
 
 IST = ZoneInfo("Asia/Kolkata")
 RETRY_FAILED_S = 600          # a failed price read is tried again after this
+# A traded share's prices for app/lens_habits.py: from a year before its
+# first buy, and (sold out) to a year after its last sale
+HABIT_BEFORE_DAYS, HABIT_AFTER_DAYS = 380, 366
 NIFTY = 256265
 NIFTY_NAME = "NIFTY 50"
 PERIODS = [("1W", 7), ("1M", 30), ("3M", 91), ("6M", 182), ("1Y", 365)]
@@ -829,9 +832,10 @@ class Lens:
 
     async def trades_report(self) -> dict:
         """What the imported trades say (lens_trades.analyse) against what
-        Kite holds now, and the shares day by day against the same money in
-        Nifty once their prices are in."""
-        from . import lens_trades
+        Kite holds now, the shares day by day against the same money in
+        Nifty once their prices are in, and how you trade (lens_habits:
+        the findings that need prices join once they're in)."""
+        from . import lens_habits, lens_trades
         imports = [dict(r) for r in await self.pool.fetch("SELECT * FROM lens_imports ORDER BY id DESC")]
         for i in imports:
             for k in ("first_day", "last_day", "imported_at"):
@@ -845,8 +849,9 @@ class Lens:
         except Exception as e:
             err = f"{type(e).__name__}: {e}"
         analysis = lens_trades.analyse(trades, self._held_by_isin(h), self.today())
-        return {"imports": imports, "analysis": analysis, "curve": await self._trade_curve(trades, analysis),
-                "holdings_error": err}
+        curve, priced = await self._trade_curve(trades, analysis)
+        habits = lens_habits.analyse(trades, analysis, self.today(), *(priced or (None, None)))
+        return {"imports": imports, "analysis": analysis, "curve": curve, "habits": habits, "holdings_error": err}
 
     async def _tokens_for(self, keys: list[dict]) -> dict[str, dict]:
         """{key: {token, symbol, exchange}} for traded shares: from what's
@@ -866,22 +871,29 @@ class Lens:
                 out[k["key"]] = {"token": tok, "symbol": k["symbol"], "exchange": k["exchange"]}
         return out
 
-    async def _trade_curve(self, trades: list[dict], analysis: dict) -> Optional[dict]:
+    async def _trade_curve(self, trades: list[dict], analysis: dict) -> tuple[Optional[dict], Optional[tuple]]:
+        """(the curve, ({key: daily candles}, Nifty's) once every price is in, else None).
+        Each share is read from a year before its first buy (where it stood
+        when you bought: lens_habits.buy_timing) and, sold out, to a year
+        after its last sale (what it did next: lens_habits.after_sale)."""
         from . import lens_trades
         per = [p for p in analysis["holdings"] if p["kind"] == "equity"]
         if not per:
-            return None
+            return None, None
+        today = self.today()
         keys = [{"key": p["key"], "symbol": p["symbol"], "exchange": p["exchange"] or "NSE",
-                 "since": date.fromisoformat(p["first_day"]),
-                 "until": None if p["open_qty"] > 1e-6 else date.fromisoformat(p["last_day"])} for p in per]
+                 "first": date.fromisoformat(p["first_day"]),
+                 "since": date.fromisoformat(p["first_day"]) - timedelta(days=HABIT_BEFORE_DAYS),
+                 "until": None if p["open_qty"] > 1e-6 else min(today, date.fromisoformat(p["last_day"]) + timedelta(days=HABIT_AFTER_DAYS))}
+                for p in per]
         toks = await self._tokens_for(keys)
-        first = min(k["since"] for k in keys)
+        first = min(k["first"] for k in keys)
         want = [{"token": NIFTY, "symbol": NIFTY_NAME, "exchange": "NSE", "since": first}] + [
             {**toks[k["key"]], "since": k["since"], "until": k["until"]} for k in keys if k["key"] in toks]
         task = self.hist.get("trades_task")
         if task is not None and not task.done():
             p = self.hist.get("trades_progress") or {}
-            return {"state": "loading", "done": p.get("done", 0), "total": p.get("total", len(want))}
+            return {"state": "loading", "done": p.get("done", 0), "total": p.get("total", len(want))}, None
         have = await lens_store.kept(self.pool, [w["token"] for w in want])
         now, mono = self.now(), time.monotonic()
         due = [w for w in want if lens_store.to_read((have.get(w["token"]) or {}).get("fetched_through"),
@@ -896,13 +908,16 @@ class Lens:
                     if w["symbol"] in r["failed"]:
                         self.hist["retry"][w["token"]] = time.monotonic() + RETRY_FAILED_S
             self.hist["trades_task"] = asyncio.create_task(read(), name="lens-trade-prices")
-            return {"state": "loading", "done": 0, "total": len(due)}
-        candles = await lens_store.candles(self.pool, [w["token"] for w in want], first - timedelta(days=7))
-        series = {k: [(c["date"], c["close"]) for c in candles.get(v["token"]) or []] for k, v in toks.items()}
-        c = lens_trades.value_curve(trades, series, [(c["date"], c["close"]) for c in candles.get(NIFTY) or []], self.today())
+            return {"state": "loading", "done": 0, "total": len(due)}, None
+        candles = await lens_store.candles(self.pool, [w["token"] for w in want], first - timedelta(days=HABIT_BEFORE_DAYS))
+        series = {k: [(c["date"], c["close"]) for c in candles.get(v["token"]) or [] if c["date"] >= first - timedelta(days=7)]
+                  for k, v in toks.items()}
+        nifty = candles.get(NIFTY) or []
+        c = lens_trades.value_curve(trades, series, [(c["date"], c["close"]) for c in nifty if c["date"] >= first - timedelta(days=7)], today)
+        priced = ({k: candles.get(v["token"]) or [] for k, v in toks.items()}, nifty)
         if c is None:
-            return {"state": "error", "error": "Kite gave no NIFTY 50 prices back to your first trade"}
-        return {"state": "ready", **c, "unknown": sorted(k["symbol"] for k in keys if k["key"] not in toks)}
+            return {"state": "error", "error": "Kite gave no NIFTY 50 prices back to your first trade"}, priced
+        return {"state": "ready", **c, "unknown": sorted(k["symbol"] for k in keys if k["key"] not in toks)}, priced
 
     # ── Inspector (app/lens_inspect.py) ────────────────────────────────
 

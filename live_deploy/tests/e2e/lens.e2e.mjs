@@ -49,7 +49,7 @@ test('the logo switches between LinckTrade and LinckLens; without Kite it says s
   await p.waitForSelector('.hdr.is-lens');
   assert.match(p.url(), /#\/lens$/);
   assert.equal((await p.textContent('.hdr .prod-name')).trim(), 'Lens');
-  assert.deepEqual(await p.locator('.hdr .nav a').allInnerTexts(), ['Overview', 'Shares', 'Funds', 'Trades', 'Account'], 'Lens has its own pages');
+  assert.deepEqual(await p.locator('.hdr .nav a').allInnerTexts(), ['Overview', 'Shares', 'Funds', 'Trades', 'Habits', 'Account'], 'Lens has its own pages');
   assert.equal(await p.locator('.hdr .basis-seg').count(), 0, 'no P&L basis: that is LinckTrade’s');
   // no Kite session on this server: it says so, on every page
   await p.waitForSelector('.lens .empty');
@@ -298,6 +298,52 @@ test('Trades: what the tradebook says, against Kite and the same money in Nifty'
   await ctx.close();
 });
 
+test('Habits: the strongest findings first, then what each rests on', async () => {
+  const { ctx, p } = await lensPage();
+  await ctx.route('**/v2/lens/trades', r => r.fulfill({ json: FX.trades }));
+  await p.goto(`${BASE}/linck/#/lens/trades`);
+  await p.waitForSelector('[data-habits="teaser"]');
+  // the Trades page leads with the top findings and links to Habits
+  const keys = FX.trades.habits.summary.map(f => f.key);
+  assert.deepEqual(await p.$$eval('[data-habits="teaser"] [data-finding]', xs => xs.map(x => x.dataset.finding)), keys.slice(0, 3));
+  await p.click('[data-habits-link]');
+  await p.waitForURL(/#\/lens\/habits$/);
+  await p.waitForSelector('[data-habits="findings"]');
+  assert.match(await p.locator('.lens-head').innerText(), /Habits[\s\S]*How you trade, from your tradebook/);
+  const cards = await p.$$eval('[data-habits="findings"] [data-finding]', xs => xs.map(x => x.dataset.finding));
+  assert.deepEqual(cards, keys, 'every finding, biggest in rupees first');
+  assert.match(await p.locator('[data-finding="costs"]').innerText(), /₹6,268[\s\S]*What trading cost you[\s\S]*₹2,488 in charges and ₹3,780 in tax/);
+  // each finding links to its detail
+  await p.click('[data-finding="costs"]');
+  await until(async () => (await p.evaluate(() => location.hash)) === '#hb-costs' || (await p.locator('#hb-costs').isVisible()));
+  assert.match(await p.locator('[data-habits="costs"] [data-fy="2026-27"]').innerText(), /2026-27[\s\S]*₹1,000[\s\S]*\+₹19,768[\s\S]*₹3,780/);
+  assert.match(await p.locator('#hb-costs').innerText(), /Estimates: a tradebook has no contract notes[\s\S]*20%\/12\.5% from it/);
+  assert.match(await p.locator('[data-bucket="Over a year"]').innerText(), /Over a year[\s\S]*3/);
+  assert.equal(await p.locator('[data-bucket="Under a month"].off').count(), 1, 'too few sales to say: greyed');
+  assert.match(await p.locator('[data-habits="vs_nifty"]').innerText(), /Your trades made\s+\+₹18,900[\s\S]*Nifty 50 would have\s+\+₹2,352[\s\S]*1 of 1 beat it/);
+  assert.match(await p.locator('[data-sale="EMBASSY"]').innerText(), /EMBASSY[\s\S]*\+3\.0%[\s\S]*not yet/);
+  assert.equal(await p.locator('[data-habits="funds"] [data-fund]').count(), FX.trades.habits.funds.funds.length);
+  assert.match(await p.locator('[data-habits="averaging"]').innerText(), /under/);
+  assert.equal(await noSideways(p), 0);
+  // a phone: one column, nothing sideways
+  await p.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await noSideways(p), 0);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
+test('Habits while prices are read: what the trades alone say, and that the rest is coming', async () => {
+  const { ctx, p } = await lensPage();
+  const hb = { ...FX.trades.habits, priced: false, after_sale: undefined, buy_timing: undefined, vs_nifty: undefined, in_day: undefined };
+  await ctx.route('**/v2/lens/trades', r => r.fulfill({ json: { ...FX.trades, habits: hb, curve: { state: 'loading', done: 3, total: 21 } } }));
+  await p.goto(`${BASE}/linck/#/lens/habits`);
+  await p.waitForSelector('[data-habits="unpriced"]');
+  assert.match(await p.innerText('[data-habits="unpriced"]'), /Reading daily prices for every share you’ve traded \(3 of 21\)/);
+  assert.equal(await p.locator('[data-habits="costs"]').count(), 1);
+  assert.equal(await p.locator('[data-habits="vs_nifty"], [data-habits="after_sale"]').count(), 0);
+  await ctx.close();
+});
+
 test('Trades on the real server, without Kite: a file imported, stored once, and removed', async () => {
   const ctx = await context(b, { width: 1440, height: 900 });
   const p = await ctx.newPage();
@@ -435,9 +481,9 @@ for (const [width, label] of [[390, 'phone'], [320, 'small phone']]) {
   test(`every Lens page fits a ${label} and the bottom bar has Lens’s pages`, async () => {
     const { ctx, p } = await lensPage({ width, height: 800 });
     await ctx.route('**/v2/lens/trades', r => r.fulfill({ json: FX.trades }));
-    for (const tab of ['', '/shares', '/shares?open=INFY', '/funds', '/trades', '/account']) {
+    for (const tab of ['', '/shares', '/shares?open=INFY', '/funds', '/trades', '/habits', '/account']) {
       await p.goto(`${BASE}/linck/#/lens${tab}`);
-      await p.waitForSelector(tab.startsWith('/shares') ? '.lens-spark' : tab === '/trades' ? '[data-curve="ready"]' : '.lens-strip');
+      await p.waitForSelector(tab.startsWith('/shares') ? '.lens-spark' : tab === '/trades' ? '[data-curve="ready"]' : tab === '/habits' ? '[data-habits="findings"]' : '.lens-strip');
       if (tab === '') await p.waitForSelector('.lens-curve');
       assert.equal(await noSideways(p), 0, `#/lens${tab} scrolls sideways at ${width}px`);
     }
@@ -446,7 +492,11 @@ for (const [width, label] of [[390, 'phone'], [320, 'small phone']]) {
     await p.waitForSelector('[data-symbol="INFY"]');
     assert.match(await p.locator('[data-symbol="INFY"] [data-l="P&L"]').evaluate(e => getComputedStyle(e, '::before').content), /P&L/);
     const bar = await p.locator('#bnav a, #bnav button').allInnerTexts();
-    assert.deepEqual(bar.map(s => s.trim()).filter(Boolean).slice(0, 5), ['Overview', 'Shares', 'Funds', 'Trades', 'Account']);
+    assert.deepEqual(bar.map(s => s.trim()).filter(Boolean).slice(0, 6), ['Overview', 'Shares', 'Funds', 'Trades', 'Account', 'More']);
+    // Habits from More
+    await p.click('#bnav [data-act="more"]');
+    await p.getByRole('button', { name: /^Habits How you trade/ }).click();
+    await p.waitForURL(/#\/lens\/habits$/);
     assert.deepEqual(ctx.errors, []);
     await ctx.close();
   });

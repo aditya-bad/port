@@ -29,7 +29,7 @@ const PRODUCTS = {
   trade: { name: 'Trade', home: 'desk', what: 'Deployments, strategies, the day check' },
   lens: { name: 'Lens', home: 'lens', what: 'Your holdings: shares and mutual funds' },
 };
-const LENS_NAV = [['lens', 'Overview', ''], ['lens/shares', 'Shares', ''], ['lens/funds', 'Funds', ''], ['lens/trades', 'Trades', ''], ['lens/account', 'Account', '']];
+const LENS_NAV = [['lens', 'Overview', ''], ['lens/shares', 'Shares', ''], ['lens/funds', 'Funds', ''], ['lens/trades', 'Trades', ''], ['lens/habits', 'Habits', ''], ['lens/account', 'Account', '']];
 // which LinckLens page is open: its tab, as a nav key
 const lensCur = () => { const t = parse().params.tab; return t && t !== 'overview' ? `lens/${t}` : 'lens'; };
 const product = () => (app.route && app.route.product) || 'trade';
@@ -135,7 +135,8 @@ function renderBnav() {
   const n = alertCount();
   if (product() === 'lens') {
     const lc = lensCur();
-    mount($('#bnav'), html`${LENS_NAV.map(([k, l]) => html`<a href="${href(k)}" class="${k === lc ? 'on' : ''}"><span class="n"></span>${l}</a>`)}
+    // a phone's bar holds five and More: Habits is in More, and a link from Trades
+    mount($('#bnav'), html`${LENS_NAV.filter(([k]) => k !== 'lens/habits').map(([k, l]) => html`<a href="${href(k)}" class="${k === lc ? 'on' : ''}"><span class="n"></span>${l}</a>`)}
       <button type="button" data-act="more"><span class="n"></span>More</button>`);
     return;
   }
@@ -152,6 +153,7 @@ export function openMore() {
       product() === 'lens'
         ? { l: 'LinckTrade', h: PRODUCTS.trade.what, run: () => go('desk') }
         : { l: 'LinckLens', h: PRODUCTS.lens.what, run: () => go('lens') },
+      ...(product() === 'lens' ? [{ l: 'Habits', h: 'How you trade, from your tradebook', run: () => go('lens/habits') }] : []),
       { l: `Repair${health.issues.length ? ` · ${health.issues.length} open ${health.issues.length === 1 ? 'alert' : 'alerts'}` : ''}`, h: 'The day check and what the deployments reported: what needs fixing', run: () => go('repair') },
       { l: 'Reports', h: 'Statements, account equity, exposure', run: () => go('reports') },
       { l: 'Week in review', h: 'The week against the usual: deployments, trades, rules, notes', run: () => go('review') },

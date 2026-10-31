@@ -62,17 +62,24 @@ def test_import_store_once_report_and_remove(pool_run):
         hist = [x for x in asked if x[0] == "historical_data"]
         assert sorted(x[1] for x in hist) == [lens.NIFTY, 408065, 2953217]
         assert {x[1]: x[2] for x in hist}[lens.NIFTY] == date(2025, 1, 6), "Nifty from the first share bought"
+        assert {x[1]: x[2] for x in hist}[408065] == date(2025, 1, 6) - timedelta(days=lens.HABIT_BEFORE_DAYS), \
+            "a share from a year before its first buy: where it stood when bought"
         rep = await L.trades_report()
         c = rep["curve"]
         assert c["state"] == "ready" and c["days"][0] == "2025-01-06" and c["left_out"] == [] and c["unknown"] == []
         assert c["invested"][0] == 15000 and c["now"]["invested"] == 15000 + 20000 + 5600 - 17500
-        # the next evening: INFY and Nifty read again for the day; TCS, sold in June, isn't
+        # how you trade: the findings from prices join once they're in
+        hb = rep["habits"]
+        assert hb["priced"] and [s["symbol"] for s in hb["after_sale"]["sales"]] == ["TCS"]
+        assert hb["after_sale"]["sales"][0]["m3"] is not None and hb["costs"]["booked"] == -2500.0
+        # the next evening: INFY and Nifty read again for the day, and TCS
+        # too: sold in June, it's followed for a year after
         n = len([x for x in asked if x[0] == "historical_data"])
         now[0] = at(WED + timedelta(days=1), 17, 30)
         assert (await L.trades_report())["curve"]["state"] == "loading"
         await L.hist["trades_task"]
         again = [x[1] for x in asked if x[0] == "historical_data"][n:]
-        assert sorted(again) == [lens.NIFTY, 408065]
+        assert sorted(again) == [lens.NIFTY, 408065, 2953217]
         # removing the later file takes its trades
         later = next(i["id"] for i in rep["imports"] if i["filename"] == "later.csv")
         assert await L.remove_import(later) and not await L.remove_import(later)
@@ -94,6 +101,7 @@ def test_without_kite_the_trades_still_say_what_they_can(pool_run):
         assert rep["holdings_error"].startswith("NoKiteSession") and a["totals"]["equity"]["bought"] == 35000
         assert a["holdings"][0]["value"] is None and a["totals"]["equity"]["unpriced"] == ["INFY", "TCS"]
         assert rep["curve"]["state"] == "loading", "it tries Kite for the prices"
+        assert rep["habits"]["priced"] is False and rep["habits"]["costs"]["years"], "what the trades alone say, at once"
         await L.hist["trades_task"]
         rep = await L.trades_report()
         assert rep["curve"] == {"state": "error", "error": "Kite gave no NIFTY 50 prices back to your first trade"}, \

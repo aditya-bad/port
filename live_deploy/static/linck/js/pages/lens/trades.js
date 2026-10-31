@@ -157,6 +157,15 @@ function reconcile(list, err) {
     <p class="tiny mute lens-note">A tradebook has no bonuses, splits, IPO allotments or transfers. Where those happened, or a file is missing, the trades won’t add up, and the figures above are short by those shares.</p>`;
 }
 
+// The three strongest findings from Habits (pages/lens/habits.js).
+function habitsTeaser(hb) {
+  const top = hb && hb.summary ? hb.summary.slice(0, 3) : [];
+  if (!top.length) return '';
+  return html`${sect('What stands out', `${hb.summary.length > 3 ? `3 of ${hb.summary.length} findings` : 'from your habits'}`, html`<a class="btn btn-sm" href="#/lens/habits" data-habits-link>See all habits</a>`)}
+    <div class="hb-finds" data-habits="teaser">${top.map(f => html`<a class="hb-find ${f.tone}" href="#/lens/habits" data-finding="${f.key}">
+      <span class="hb-rs mono">${inr0(f.rupees)}</span><b>${f.title}</b><span class="small">${f.text}</span></a>`)}</div>`;
+}
+
 export function render(st, ui) {
   if (st.tErr) return empty('Couldn’t read your trades', st.tErr.message);
   if (!st.t) return loading(6);
@@ -177,6 +186,8 @@ export function render(st, ui) {
       ${stat('Booked', signed(all.realized, inr(all.realized)), 'from what you sold')}
       ${stat('On paper', signed(all.unrealized, inr(all.unrealized)), `${plural(all.open || 0, 'holding')} from these trades`)}
     </div>
+
+    ${habitsTeaser(t.habits)}
 
     ${sect('Your shares against the same money in Nifty 50', 'Day by day, from your trades')}
     ${curveChart(t.curve)}

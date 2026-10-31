@@ -7075,6 +7075,574 @@
    },
    "unknown": []
   },
+  "habits": {
+   "costs": {
+    "years": [
+     {
+      "fy": "2024-25",
+      "turnover": 44800.0,
+      "stt": 44.8,
+      "stamp": 6.72,
+      "exchange": 1.33,
+      "sebi": 0.04,
+      "gst": 0.25,
+      "brokerage": 0.0,
+      "dp": 0.0,
+      "charges": 53.14,
+      "orders": 1,
+      "booked": 0,
+      "tax": null,
+      "charges_pct_of_booked": null
+     },
+     {
+      "fy": "2025-26",
+      "turnover": 1503372.71,
+      "stt": 1184.06,
+      "stamp": 191.73,
+      "exchange": 35.17,
+      "sebi": 1.18,
+      "gst": 6.54,
+      "brokerage": 0.0,
+      "dp": 15.34,
+      "charges": 1434.02,
+      "orders": 56,
+      "booked": -9300.0,
+      "tax": {
+       "short_net": 0.0,
+       "long_net": 0.0,
+       "exempt_used": 0.0,
+       "short_tax": 0.0,
+       "long_tax": 0.0,
+       "tax": 0.0,
+       "losses_left": 9300.0
+      },
+      "charges_pct_of_booked": null
+     },
+     {
+      "fy": "2026-27",
+      "turnover": 1179665.9,
+      "stt": 793.72,
+      "stamp": 120.34,
+      "exchange": 24.36,
+      "sebi": 0.82,
+      "gst": 6.16,
+      "brokerage": 9.02,
+      "dp": 46.02,
+      "charges": 1000.43,
+      "orders": 49,
+      "booked": 19768.03,
+      "tax": {
+       "short_net": 18900.0,
+       "long_net": 868.03,
+       "exempt_used": 868.03,
+       "short_tax": 3780.0,
+       "long_tax": 0.0,
+       "tax": 3780.0,
+       "losses_left": 0.0
+      },
+      "charges_pct_of_booked": 5.1
+     }
+    ],
+    "charges": 2487.59,
+    "tax": 3780.0,
+    "booked": 10468.03,
+    "kept": 4200.44,
+    "rates": {
+     "stt_delivery_pct": 0.1,
+     "stamp_buy_pct": 0.015,
+     "dp_per_sale": 15.34,
+     "nse_exchange_pct": 0.00297
+    }
+   },
+   "holding": {
+    "buckets": [
+     {
+      "label": "Under a month",
+      "sales": 0,
+      "pnl": 0,
+      "cost": 0,
+      "return_pct": null,
+      "win_rate": null,
+      "enough": false
+     },
+     {
+      "label": "1–6 months",
+      "sales": 1,
+      "pnl": -9300.0,
+      "cost": 21600.0,
+      "return_pct": -43.1,
+      "win_rate": 0.0,
+      "enough": false
+     },
+     {
+      "label": "6–12 months",
+      "sales": 1,
+      "pnl": 18900.0,
+      "cost": 21300.0,
+      "return_pct": 88.7,
+      "win_rate": 100.0,
+      "enough": false
+     },
+     {
+      "label": "Over a year",
+      "sales": 3,
+      "pnl": 868.03,
+      "cost": 84546.97,
+      "return_pct": 1.0,
+      "win_rate": 67.0,
+      "enough": false
+     }
+    ],
+    "best": null,
+    "worst": null
+   },
+   "averaging": {
+    "added": [
+     {
+      "symbol": "INFY",
+      "result": -42332.36,
+      "bought": 190047.76,
+      "pct": -22.3,
+      "adds": [
+       {
+        "day": "2026-01-30",
+        "price": 1332.71,
+        "avg": 1442.69,
+        "below_pct": 7.6
+       },
+       {
+        "day": "2026-06-29",
+        "price": 1299.57,
+        "avg": 1387.7,
+        "below_pct": 6.4
+       }
+      ],
+      "open": true
+     },
+     {
+      "symbol": "HDFCBANK",
+      "result": 6193.92,
+      "bought": 386049.88,
+      "pct": 1.6,
+      "adds": [
+       {
+        "day": "2026-01-30",
+        "price": 1393.71,
+        "avg": 1561.31,
+        "below_pct": 10.7
+       }
+      ],
+      "open": true
+     },
+     {
+      "symbol": "EMBASSY",
+      "result": 13125.9,
+      "bought": 50303.1,
+      "pct": 26.1,
+      "adds": [
+       {
+        "day": "2026-06-29",
+        "price": 339.12,
+        "avg": 359.37,
+        "below_pct": 5.6
+       }
+      ],
+      "open": true
+     }
+    ],
+    "never": 14,
+    "added_summary": {
+     "count": 3,
+     "result": -23012.54,
+     "winners": 2,
+     "return_pct": -3.7,
+     "median_pct": 1.6
+    },
+    "never_summary": {
+     "count": 14,
+     "result": -25390.44,
+     "winners": 6,
+     "return_pct": -2.0,
+     "median_pct": -4.2
+    },
+    "enough": true
+   },
+   "round_trips": {
+    "trips": [],
+    "effect": 0,
+    "cheaper": 0,
+    "dearer": 0
+   },
+   "intraday": {
+    "count": 1,
+    "pnl": -39.6,
+    "wins": 0,
+    "days": [
+     {
+      "symbol": "EMBASSY",
+      "day": "2026-09-17",
+      "qty": 33.0,
+      "pnl": -39.6
+     }
+    ]
+   },
+   "spread": {
+    "months": [
+     {
+      "month": "2025-02",
+      "holdings": 1,
+      "at_cost": 44800.0,
+      "largest": "YESBANK",
+      "largest_pct": 100.0
+     },
+     {
+      "month": "2025-03",
+      "holdings": 1,
+      "at_cost": 44800.0,
+      "largest": "YESBANK",
+      "largest_pct": 100.0
+     },
+     {
+      "month": "2025-04",
+      "holdings": 1,
+      "at_cost": 44800.0,
+      "largest": "YESBANK",
+      "largest_pct": 100.0
+     },
+     {
+      "month": "2025-05",
+      "holdings": 2,
+      "at_cost": 72400.0,
+      "largest": "YESBANK",
+      "largest_pct": 61.9
+     },
+     {
+      "month": "2025-06",
+      "holdings": 2,
+      "at_cost": 72400.0,
+      "largest": "YESBANK",
+      "largest_pct": 61.9
+     },
+     {
+      "month": "2025-07",
+      "holdings": 2,
+      "at_cost": 72400.0,
+      "largest": "YESBANK",
+      "largest_pct": 61.9
+     },
+     {
+      "month": "2025-08",
+      "holdings": 3,
+      "at_cost": 94000.0,
+      "largest": "YESBANK",
+      "largest_pct": 47.7
+     },
+     {
+      "month": "2025-09",
+      "holdings": 13,
+      "at_cost": 520375.47,
+      "largest": "RELIANCE",
+      "largest_pct": 22.5
+     },
+     {
+      "month": "2025-10",
+      "holdings": 13,
+      "at_cost": 520375.47,
+      "largest": "RELIANCE",
+      "largest_pct": 22.5
+     },
+     {
+      "month": "2025-11",
+      "holdings": 14,
+      "at_cost": 654648.13,
+      "largest": "HDFCBANK",
+      "largest_pct": 20.5
+     },
+     {
+      "month": "2025-12",
+      "holdings": 14,
+      "at_cost": 654348.13,
+      "largest": "HDFCBANK",
+      "largest_pct": 20.5
+     },
+     {
+      "month": "2026-01",
+      "holdings": 14,
+      "at_cost": 1194959.14,
+      "largest": "HDFCBANK",
+      "largest_pct": 21.3
+     },
+     {
+      "month": "2026-02",
+      "holdings": 14,
+      "at_cost": 1194959.14,
+      "largest": "HDFCBANK",
+      "largest_pct": 21.3
+     },
+     {
+      "month": "2026-03",
+      "holdings": 14,
+      "at_cost": 1194959.14,
+      "largest": "HDFCBANK",
+      "largest_pct": 21.3
+     },
+     {
+      "month": "2026-04",
+      "holdings": 13,
+      "at_cost": 1150159.14,
+      "largest": "HDFCBANK",
+      "largest_pct": 22.1
+     },
+     {
+      "month": "2026-05",
+      "holdings": 13,
+      "at_cost": 1150159.14,
+      "largest": "HDFCBANK",
+      "largest_pct": 22.1
+     },
+     {
+      "month": "2026-06",
+      "holdings": 15,
+      "at_cost": 1765573.78,
+      "largest": "HDFCBANK",
+      "largest_pct": 21.9
+     },
+     {
+      "month": "2026-07",
+      "holdings": 14,
+      "at_cost": 1737973.78,
+      "largest": "HDFCBANK",
+      "largest_pct": 22.2
+     },
+     {
+      "month": "2026-08",
+      "holdings": 13,
+      "at_cost": 1780628.98,
+      "largest": "HDFCBANK",
+      "largest_pct": 21.7
+     },
+     {
+      "month": "2026-09",
+      "holdings": 13,
+      "at_cost": 1784051.58,
+      "largest": "HDFCBANK",
+      "largest_pct": 21.6
+     }
+    ],
+    "years": [
+     {
+      "fy": "2024-25",
+      "avg_held": 44800.0,
+      "sold": 0.0,
+      "turnover": 0.0
+     },
+     {
+      "fy": "2025-26",
+      "avg_held": 524218.72,
+      "sold": 12300.0,
+      "turnover": 0.02
+     },
+     {
+      "fy": "2026-27",
+      "avg_held": 1561424.4,
+      "sold": 125615.0,
+      "turnover": 0.08
+     }
+    ],
+    "peak": {
+     "month": "2025-05",
+     "holdings": 2,
+     "at_cost": 72400.0,
+     "largest": "YESBANK",
+     "largest_pct": 61.9
+    }
+   },
+   "funds": {
+    "funds": [
+     {
+      "fund": "UTI NIFTY 50 INDEX FUND - DIRECT PLAN",
+      "months": 12,
+      "usual": 23902.11,
+      "sip": true,
+      "missed": [],
+      "stopped": false,
+      "lump_sums": [],
+      "total": 286824.79
+     },
+     {
+      "fund": "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN",
+      "months": 12,
+      "usual": 16309.27,
+      "sip": true,
+      "missed": [],
+      "stopped": false,
+      "lump_sums": [],
+      "total": 195714.12
+     },
+     {
+      "fund": "AXIS ELSS TAX SAVER FUND - REGULAR PLAN",
+      "months": 12,
+      "usual": 8336.84,
+      "sip": true,
+      "missed": [],
+      "stopped": false,
+      "lump_sums": [],
+      "total": 100039.63
+     },
+     {
+      "fund": "HDFC LIQUID FUND - DIRECT PLAN",
+      "months": 12,
+      "usual": 4820.08,
+      "sip": true,
+      "missed": [],
+      "stopped": false,
+      "lump_sums": [],
+      "total": 57820.48
+     },
+     {
+      "fund": "ICICI PRUDENTIAL BALANCED ADVANTAGE FUND - REGULAR PLAN",
+      "months": 12,
+      "usual": 3211.5,
+      "sip": true,
+      "missed": [],
+      "stopped": false,
+      "lump_sums": [],
+      "total": 38541.0
+     }
+    ],
+    "redemptions": 0
+   },
+   "orders": {
+    "timed": 46,
+    "slots": [
+     {
+      "label": "First 15 minutes",
+      "buys": 0,
+      "sells": 0,
+      "value": 0
+     },
+     {
+      "label": "Morning",
+      "buys": 41,
+      "sells": 5,
+      "value": 2048898.58
+     },
+     {
+      "label": "Afternoon",
+      "buys": 0,
+      "sells": 0,
+      "value": 0
+     },
+     {
+      "label": "Last hour",
+      "buys": 0,
+      "sells": 0,
+      "value": 0
+     }
+    ],
+    "orders": 46,
+    "split_orders": 0,
+    "most_parts": null,
+    "open_share": 0.0
+   },
+   "priced": true,
+   "after_sale": {
+    "sales": [
+     {
+      "symbol": "EMBASSY",
+      "day": "2026-09-17",
+      "qty": 33.0,
+      "price": 455.0,
+      "booked": 2868.03,
+      "won": true,
+      "m1": {
+       "move_pct": 3.0,
+       "missed": 452.68,
+       "nifty_pct": 2.2
+      },
+      "m3": null,
+      "m12": null
+     }
+    ],
+    "winners": null,
+    "losers": null,
+    "missed_12m": null,
+    "with_12m": 0
+   },
+   "buy_timing": {
+    "buys": 23,
+    "run_up": null,
+    "fall": {
+     "buys": 5,
+     "amount": 256082.3,
+     "result": -22536.99,
+     "return_pct": -8.8,
+     "enough": true
+    },
+    "flat": {
+     "buys": 18,
+     "amount": 911855.15,
+     "result": 62695.49,
+     "return_pct": 6.9,
+     "enough": true
+    },
+    "near_high": {
+     "buys": 5,
+     "amount": 136675.68,
+     "result": 22840.04,
+     "return_pct": 16.7,
+     "enough": true
+    },
+    "near_low": {
+     "buys": 10,
+     "amount": 558618.21,
+     "result": 4420.39,
+     "return_pct": 0.8,
+     "enough": true
+    },
+    "chased": []
+   },
+   "vs_nifty": {
+    "trades": 1,
+    "beat": 1,
+    "vs": 16547.99,
+    "pnl": 18900.0,
+    "nifty": 2352.01,
+    "best": [
+     {
+      "symbol": "ZOMATO",
+      "vs": 16547.99
+     }
+    ],
+    "worst": []
+   },
+   "in_day": {
+    "buys": 1,
+    "sells": 1,
+    "buy_median_pct": 49.0,
+    "sell_median_pct": 38.0,
+    "vs_close": 39.6,
+    "left_out": 22
+   },
+   "summary": [
+    {
+     "key": "concentration",
+     "title": "One share carried a lot",
+     "text": "In 2025-05 YESBANK was 62% of what you held (at cost), across 2 holdings.",
+     "rupees": 44815.6,
+     "tone": "info",
+     "section": "spread"
+    },
+    {
+     "key": "costs",
+     "title": "What trading cost you",
+     "text": "About ₹2,488 in charges and ₹3,780 in tax on gains, estimated: 24% of the ₹10,468 you booked.",
+     "rupees": 6267.59,
+     "tone": "bad",
+     "section": "costs"
+    }
+   ]
+  },
   "holdings_error": null
  },
  "inspect": {
