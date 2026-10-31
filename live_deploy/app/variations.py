@@ -34,13 +34,16 @@ variations. Nothing else moves; each keeps its own history.
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime
 from typing import Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from . import alert_types
 from .db import queries
 
 logger = logging.getLogger("live_deploy.variations")
+IST = ZoneInfo("Asia/Kolkata")
 
 MAX_PER_PRIMARY = 10
 LABEL_MAX = 40
@@ -125,10 +128,78 @@ async def create(manager, primary_id: UUID, label: str, config: dict, *, capital
     return dict(await queries.get_deployment(pool, row["id"]))
 
 
-async def copy_cycle(manager, primary: dict, variation_id: UUID) -> None:
-    """Continue the primary's current cycle: filled in by
-    app/variations_copy.py (the next stage). Refused until then."""
-    raise VariationError("Continuing the primary's cycle isn't available yet: start fresh")
+async def copy_cycle(manager, primary: dict, variation_id: UUID) -> dict:
+    return await copy_book(manager.pool, primary, variation_id)
+
+
+async def cycle_rows(pool, primary: dict, today: Optional[date] = None) -> list[dict]:
+    """The primary's current cycle, as positions (oldest first): the legs
+    held now, and the legs closed in the same cycle. The same cycle is
+    the run of overlapping legs the open ones belong to (an "episode",
+    queries._group_into_episodes, the cycles the pages show); and, for a
+    strategy that numbers its cycles in its fills (the strangle's
+    cycle_id), every leg of that number; and, for an intraday deployment,
+    every leg of today (what limits its trades a day reads them back).
+    Refused when nothing is held: there's no cycle to continue."""
+    rows = [dict(r) for r in await pool.fetch(
+        "SELECT * FROM positions WHERE deployment_id = $1 ORDER BY opened_at, id", primary["id"])]
+    held = [r for r in rows if r["status"] == "open"]
+    if not held:
+        raise VariationError(f"{primary['deployment_name']} holds nothing now, so there's no cycle to continue: start fresh")
+    async with pool.acquire() as conn:
+        reasons = await queries._fetch_closing_reasons(conn, [r["id"] for r in rows])
+    eps = queries._group_into_episodes(rows, reasons)
+    keep = {r["id"] for r in (eps[-1]["rows"] if eps else [])} | {r["id"] for r in held}
+    cycles = {str((r["metadata"] or {}).get("cycle_id")) for r in held if (r["metadata"] or {}).get("cycle_id") is not None}
+    keep |= {r["id"] for r in rows if str((r["metadata"] or {}).get("cycle_id")) in cycles}
+    if primary["mode"] == "intraday":
+        today = today or datetime.now(IST).date()
+        keep |= {r["id"] for r in rows if r["opened_at"].astimezone(IST).date() == today}
+    return [r for r in rows if r["id"] in keep]
+
+
+async def _columns(conn, table: str) -> list[str]:
+    return [r["column_name"] for r in await conn.fetch(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1 "
+        "ORDER BY ordinal_position", table)]
+
+
+async def copy_book(pool, primary: dict, variation_id: UUID, today: Optional[date] = None) -> dict:
+    """Copy the primary's current cycle into the variation, exactly as the
+    primary holds it: its positions and every fill of them (prices, times,
+    reasons, the metadata the strategy reads back), the cash those fills
+    moved, and the strategy's saved state (what the book can't say, like
+    the strangle's convergence). The variation then starts as a restart
+    of that book: the strategy resumes the cycle and manages it under the
+    variation's own settings. Legs keep the primary's quantities; the
+    variation's capital applies to what it opens next."""
+    rows = await cycle_rows(pool, primary, today)
+    ids = [r["id"] for r in rows]
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            pcols = [c for c in await _columns(conn, "positions") if c not in ("id", "deployment_id")]
+            lcols = [c for c in await _columns(conn, "position_lots") if c not in ("id", "deployment_id", "position_id")]
+            new_of = {}
+            for pid in ids:
+                new_of[pid] = await conn.fetchval(
+                    f"INSERT INTO positions (deployment_id, {', '.join(pcols)}) "
+                    f"SELECT $1, {', '.join(pcols)} FROM positions WHERE id = $2 RETURNING id", variation_id, pid)
+                await conn.execute(
+                    f"INSERT INTO position_lots (deployment_id, position_id, {', '.join(lcols)}) "
+                    f"SELECT $1, $2, {', '.join(lcols)} FROM position_lots WHERE position_id = $3 ORDER BY executed_at, id",
+                    variation_id, new_of[pid], pid)
+            moved = await conn.fetchval(
+                "SELECT COALESCE(SUM(CASE WHEN action = 'sell' THEN qty * price ELSE -qty * price END), 0)::float8 "
+                "FROM position_lots WHERE deployment_id = $1", variation_id)
+            await conn.execute("UPDATE deployments SET current_cash = initial_capital + $2 WHERE id = $1", variation_id, moved)
+            state = await conn.fetchval("SELECT state FROM deployment_state WHERE deployment_id = $1", primary["id"])
+            if state is not None:
+                await conn.execute(
+                    "INSERT INTO deployment_state (deployment_id, state, updated_at) VALUES ($1, $2, now()) "
+                    "ON CONFLICT (deployment_id) DO UPDATE SET state = EXCLUDED.state, updated_at = now()",
+                    variation_id, state)
+    held = sum(1 for r in rows if r["status"] == "open")
+    return {"legs_held": held, "legs_closed": len(rows) - held, "cash_moved": round(moved, 2), "state": state is not None}
 
 
 async def promote(pool, variation_id: UUID) -> dict:

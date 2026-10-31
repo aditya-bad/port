@@ -109,11 +109,35 @@ def test_make_primary_swaps_the_two(client):
     assert client.post(f"/v2/deployments/{b}/make-primary").status_code == 409, "already the primary"
 
 
-def test_continuing_the_cycle_is_refused_until_it_exists(client):
+def test_continuing_needs_a_cycle_and_copies_it(client):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from tests.conftest import add_fill
     p = make_deployment(client, name="Straddle V")
     r = add(client, p["id"], "cont", start="continue")
-    assert r.status_code == 409 and "start fresh" in r.json()["detail"]
+    assert r.status_code == 409 and "no cycle to continue: start fresh" in r.json()["detail"]
     assert not [d for d in client.get("/deployments").json() if d["deployment_name"] == "Straddle V · cont"]
+    # yesterday's straddle, closed; today's, held, with a leg already rolled
+    now = datetime.now(ZoneInfo("Asia/Kolkata")).replace(hour=10, minute=0, second=0, microsecond=0)
+    y = now - timedelta(days=1)
+    for sym, tok in (("NIFTYY1CE", 801), ("NIFTYY1PE", 802)):
+        add_fill(client, p["id"], sym, tok, "sell", 75, 100, y, "entry", {"action": "open"})
+        add_fill(client, p["id"], sym, tok, "buy", 75, 80, y + timedelta(hours=2), "exit", {"action": "close"})
+    add_fill(client, p["id"], "NIFTYT1CE", 811, "sell", 75, 120, now, "entry", {"action": "open"})
+    add_fill(client, p["id"], "NIFTYT1PE", 812, "sell", 75, 110, now, "entry", {"action": "open"})
+    add_fill(client, p["id"], "NIFTYT1PE", 812, "buy", 75, 60, now + timedelta(minutes=30), "roll", {"action": "close"})
+    add_fill(client, p["id"], "NIFTYT2PE", 813, "sell", 75, 115, now + timedelta(minutes=30), "roll", {"action": "open"})
+    r = add(client, p["id"], "cont", start="continue", initial_capital=300000)
+    assert r.status_code == 201, r.text
+    vid = r.json()["id"]
+    pool = client.app.state.db_pool
+    rows = client.portal.call(lambda: pool.fetch("SELECT symbol, status FROM positions WHERE deployment_id = $1 ORDER BY symbol", vid))
+    assert [(x["symbol"], x["status"]) for x in rows] == [("NIFTYT1CE", "open"), ("NIFTYT1PE", "closed"), ("NIFTYT2PE", "open")], \
+        "today's cycle, with its rolled leg; not yesterday's"
+    cash = client.get(f"/deployments/{vid}").json()["current_cash"]
+    assert cash == 300000 + 75 * (120 + 110 - 60 + 115), "its own capital, moved by the copied fills"
+    events = [e["message"] for e in client.get(f"/deployments/{vid}/events").json() if e["event_type"] == "created"]
+    assert events and "continuing its cycle" in events[0]
 
 
 def test_the_evening_check_skips_variations_and_checks_one_when_asked(client, monkeypatch):
