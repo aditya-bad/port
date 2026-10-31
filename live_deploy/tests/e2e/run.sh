@@ -18,8 +18,10 @@ SHARDS="${E2E_SHARDS:-2}"
 [ -d "$HERE/node_modules/playwright" ] || (cd "$HERE" && npm install --silent --no-audit --no-fund) || {
   echo "e2e: could not install playwright (npm install in tests/e2e)"; exit 2; }
 
-# Heaviest first (measured); specs not listed go last.
-ORDER="pages geek history legs login brand flow charts"
+# Heaviest first (measured); specs not listed go last. history goes first
+# of all: it backfills recent days and needs their prices not yet stored,
+# and the replay specs store some (which days depends on the date).
+ORDER="history pages geek legs login brand flow charts"
 if [ -n "${E2E_SPECS:-}" ]; then SPECS=($E2E_SPECS)
 else
   SPECS=()
