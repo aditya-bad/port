@@ -817,7 +817,7 @@ a.cell-name:hover b { text-decoration: underline; }
 
 /* LinckLens › Habits (pages/lens/habits.js) */
 .hb-finds { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
-.hb-find { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--line); border-left: 4px solid var(--line2); background: var(--card); color: var(--ink); text-decoration: none; }
+.hb-find { display: grid; gap: 4px; text-align: left; font: inherit; cursor: pointer; padding: 12px 14px; border: 1px solid var(--line); border-left: 4px solid var(--line2); background: var(--card); color: var(--ink); text-decoration: none; }
 .hb-find:hover, .hb-find:focus-visible { border-color: var(--ink); }
 .hb-find.bad { border-left-color: var(--r); }
 .hb-find.good { border-left-color: var(--g); }

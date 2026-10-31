@@ -16,8 +16,9 @@ const day = d => dShort(fromDay(d));
 
 function findings(list) {
   if (!list.length) return html`<p class="small mute" data-habits="none">Nothing stands out yet: each finding needs enough trades behind it (at least five sales of a kind, or three stocks in a group). Import more of your tradebook to see more.</p>`;
-  return html`<div class="hb-finds" data-habits="findings">${list.map(f => html`<a class="hb-find ${f.tone}" href="#hb-${f.section}" data-finding="${f.key}">
-    <span class="hb-rs mono">${inr0(f.rupees)}</span><b>${f.title}</b><span class="small">${f.text}</span></a>`)}</div>`;
+  // scrolls to the detail without touching the address: the app routes on it
+  return html`<div class="hb-finds" data-habits="findings">${list.map(f => html`<button type="button" class="hb-find ${f.tone}" data-act="jump" data-to="hb-${f.section}" data-finding="${f.key}">
+    <span class="hb-rs mono">${inr0(f.rupees)}</span><b>${f.title}</b><span class="small">${f.text}</span></button>`)}</div>`;
 }
 
 function costs(c) {

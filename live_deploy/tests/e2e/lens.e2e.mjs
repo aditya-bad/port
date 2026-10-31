@@ -314,8 +314,9 @@ test('Habits: the strongest findings first, then what each rests on', async () =
   assert.deepEqual(cards, keys, 'every finding, biggest in rupees first');
   assert.match(await p.locator('[data-finding="costs"]').innerText(), /₹6,268[\s\S]*What trading cost you[\s\S]*₹2,488 in charges and ₹3,780 in tax/);
   // each finding links to its detail
-  await p.click('[data-finding="costs"]');
-  await until(async () => (await p.evaluate(() => location.hash)) === '#hb-costs' || (await p.locator('#hb-costs').isVisible()));
+  await p.click('[data-habits="findings"] [data-finding="costs"]');
+  await until(async () => p.evaluate(() => { const r = document.getElementById('hb-costs').getBoundingClientRect(); return r.top >= -2 && r.top < innerHeight; }));
+  assert.equal(await p.evaluate(() => location.hash), '#/lens/habits', 'still on Habits: the address is untouched');
   assert.match(await p.locator('[data-habits="costs"] [data-fy="2026-27"]').innerText(), /2026-27[\s\S]*₹1,000[\s\S]*\+₹19,768[\s\S]*₹3,780/);
   assert.match(await p.locator('#hb-costs').innerText(), /Estimates: a tradebook has no contract notes[\s\S]*20%\/12\.5% from it/);
   assert.match(await p.locator('[data-bucket="Over a year"]').innerText(), /Over a year[\s\S]*3/);

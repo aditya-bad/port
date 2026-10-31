@@ -79,6 +79,7 @@ export default {
       inspect: (x, el) => enterInspector(el),
       dismissImport: () => dismissImportNote(),
       openTrade: x => { ui.openTrade = ui.openTrade === x.s ? null : x.s; paint(); },
+      jump: x => { const t = document.getElementById(x.to); if (t) t.scrollIntoView({ behavior: 'smooth', block: 'start' }); },
       removeImport: async x => {
         if (!window.confirm('Remove this file and the trades it brought? Import it again to have them back.')) return;
         try { await removeImport(x.v); say('Removed.'); } catch (e) { fail(e, 'Couldn’t remove it'); }
