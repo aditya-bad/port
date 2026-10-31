@@ -356,7 +356,10 @@ async def deployments_of(pool, day: date) -> list[dict]:
 async def run_day(pool, day: date, book: MinuteBook, real_kite, run_id: Optional[int] = None,
                   only: Optional[list] = None, say: Callable = lambda s: None) -> list[dict]:
     """Check every deployment's day and store each result (day_checks)."""
-    deps = [d for d in await deployments_of(pool, day) if not only or str(d["id"]) in {str(x) for x in only}]
+    # a variation (app/variations.py) is checked when asked, not every evening
+    wanted = {str(x) for x in only or []}
+    deps = [d for d in await deployments_of(pool, day)
+            if (str(d["id"]) in wanted if only else d.get("variation_of") is None)]
     results = []
     for i, d in enumerate(deps):
         say(f"[{i + 1}/{len(deps)}] {d['deployment_name']}")

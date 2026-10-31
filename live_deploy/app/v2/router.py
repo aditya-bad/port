@@ -435,6 +435,65 @@ async def create_deployment(payload: CreateIn, request: Request):
     return {"id": str(row["id"]), "status": row["status"], "strategy_registered": registered}
 
 
+# ── Variations (app/variations.py) ───────────────────────────────────
+
+class VariationIn(BaseModel):
+    label: str
+    config: dict
+    initial_capital: Optional[float] = None
+    start: Literal["fresh", "continue"] = "fresh"
+    run: Literal["paused", "now"] = "paused"
+
+
+@router.get("/deployments/{deployment_id}/variations")
+async def get_variations(deployment_id: UUID, request: Request):
+    """The deployment's primary and its variations, oldest first."""
+    from .. import variations
+    pool = request.app.state.db_pool
+    p = await variations.primary_of(pool, deployment_id)
+    if p is None:
+        raise HTTPException(404, "No such deployment")
+    vs = await variations.list_of(pool, p["id"])
+    one = lambda r: {"id": str(r["id"]), "name": r["deployment_name"], "label": r["variation_label"],  # noqa: E731
+                     "status": r["status"], "capital": float(r["initial_capital"]), "config": r["config"],
+                     "created_at": r["created_at"].isoformat()}
+    return {"primary": one(p), "variations": [one(v) for v in vs], "max": variations.MAX_PER_PRIMARY,
+            "running": sum(1 for v in vs if v["status"] != "stopped")}
+
+
+@router.post("/deployments/{deployment_id}/variations", status_code=201)
+async def create_variation(deployment_id: UUID, payload: VariationIn, request: Request):
+    """A variation of the deployment (or of its primary): the same strategy
+    with these settings, its own capital (the primary's by default),
+    starting fresh or continuing the primary's current cycle."""
+    from .. import variations
+    try:
+        row = await variations.create(request.app.state.deployment_manager, deployment_id, payload.label, payload.config,
+                                      capital=payload.initial_capital, start=payload.start, run=payload.run)
+    except KeyError:
+        raise HTTPException(404, "No such deployment")
+    except variations.VariationError as e:
+        raise HTTPException(409, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"Couldn’t start it: {e}")
+    await _refresh_caches(request)
+    return {"id": str(row["id"]), "name": row["deployment_name"], "status": row["status"]}
+
+
+@router.post("/deployments/{deployment_id}/make-primary")
+async def make_primary(deployment_id: UUID, request: Request):
+    """Swap a variation and its primary."""
+    from .. import variations
+    try:
+        row = await variations.promote(request.app.state.db_pool, deployment_id)
+    except KeyError:
+        raise HTTPException(404, "No such deployment")
+    except variations.VariationError as e:
+        raise HTTPException(409, str(e))
+    await _refresh_caches(request)
+    return {"id": str(row["id"]), "name": row["deployment_name"]}
+
+
 @router.post("/deployments/{deployment_id}/restart")
 async def restart_deployment(deployment_id: UUID, request: Request):
     """Start the strategy of a deployment that's active but not running

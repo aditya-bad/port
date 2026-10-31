@@ -130,6 +130,9 @@ class DeploymentOut(BaseModel):
     # include_in_reports just above.
     notifications_enabled: bool = True
     alerts_off: list[str] = Field(default_factory=list)   # app/alert_types.py
+    # app/variations.py: the primary it runs beside, and what it tries
+    variation_of: Optional[UUID] = None
+    variation_label: Optional[str] = None
     # Custom labels applied from the predefined catalog (Settings ->
     # Tags) -- see the 0010 migration's own comment. Never includes the
     # synthetic "Excluded from reports" chip; the frontend derives that
