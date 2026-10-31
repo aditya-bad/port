@@ -33,3 +33,6 @@ logs/*
 # VCS
 .git/
 .gitignore
+
+# Videos made on the server: kept in their mounted folder, never in an image
+videos/

@@ -325,3 +325,15 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 .rp-explain-box .up { text-transform: uppercase; letter-spacing: .06em; }
 .rp-explain-text { margin: 0; font-size: 18px; line-height: 1.5; max-width: 72ch; text-wrap: pretty; }
 @media (max-width: 760px) { .rp-explain-text { font-size: 16px; } .rp-explain-box { padding: 10px 12px; } }
+/* Videos on the replay page (pages/geek/videos.js) */
+.rp-videos .vid-make { flex-wrap: wrap; gap: 10px 14px; align-items: center; padding-bottom: 10px; }
+.rp-videos .vid-list { display: grid; border-top: 1px solid var(--line); }
+.vid-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: 8px 14px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.vid-row.on { background: color-mix(in oklch, var(--b) 6%, transparent); }
+.vid-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
+.vid-bar { display: block; width: 100%; max-width: 220px; height: 6px; background: var(--soft); border-radius: 3px; overflow: hidden; }
+.vid-bar > i { display: block; height: 100%; background: var(--b); transition: width .6s; }
+.vid-player { display: grid; gap: 8px; margin: 6px 0 12px; }
+.vid-player video { width: 100%; max-height: 70vh; background: #000; border-radius: 8px; aspect-ratio: 16 / 9; }
+.vid-chaps { display: flex; flex-wrap: wrap; gap: 4px; }
+@media (max-width: 760px) { .vid-row { grid-template-columns: minmax(0, 1fr); } .vid-row > .row { justify-content: flex-start !important; } }

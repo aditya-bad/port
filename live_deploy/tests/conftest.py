@@ -190,6 +190,10 @@ def _start_app():
     task = getattr(app.state, "ops_task", None)
     if task is not None:
         client.portal.call(lambda: _cancel(task))
+    # videos are made when a test asks (app.state.videos.run_once)
+    vt = getattr(app.state, "videos_task", None)
+    if vt is not None:
+        client.portal.call(lambda: _cancel(vt))
     _app_state["client"] = client
     _app_state["pushes"] = pushes
     return client

@@ -74,6 +74,7 @@ from .routers import candles as candles_router
 from .v2 import router as v2_router
 from .routers import geek as geek_router
 from .routers import journal as journal_router
+from .routers import videos as videos_router
 from .cache_headers import NoStaleShellMiddleware
 from .routers.aggregate import (
     fetch_portfolio_equity_curve, fetch_positions_open, fetch_strategy_leaderboard, fetch_trades_recent,
@@ -114,6 +115,7 @@ app.include_router(candles_router.router)
 app.include_router(v2_router.router)
 app.include_router(geek_router.router)
 app.include_router(journal_router.router)
+app.include_router(videos_router.router)
 
 # Middleware order matters: add_middleware() makes the MOST RECENTLY
 # added one OUTERMOST (it runs first on the way in, last on the way
@@ -446,6 +448,12 @@ async def startup() -> None:
     app.state.vix_spike_task = asyncio.create_task(
         app.state.vix.spike_loop(lambda s, now: vix_mod.push_spike_once(db_pool, config, s, now)), name="vix-spike-loop")
 
+    # ── Videos: a replay told as a narrated MP4, made one at a time in
+    # processes of their own at the lowest priority — see app/video/.
+    from .video.jobs import VideoJobs
+    app.state.videos = VideoJobs(db_pool)
+    app.state.videos_task = asyncio.create_task(app.state.videos.loop(), name="videos-loop")
+
     logger.info(
         "live_deploy started — %d static token(s), mode=%s, %d deployment(s) resumed, "
         "kite_session=%s",
@@ -465,6 +473,11 @@ async def shutdown() -> None:
     # traceback from the forced cancellation — this fixes the root
     # cause, not just the symptom).
     app.state.shutdown_event.set()
+
+    # a video being made stops (it starts again from its story next time)
+    if getattr(app.state, "videos_task", None) is not None:
+        app.state.videos_task.cancel()
+        await app.state.videos.stop()
 
     # Cancel the snapshot loop before tearing down runners/DB pool below
     # — it's a plain infinite-sleep loop with no cleanup of its own, so

@@ -11,7 +11,8 @@
 // Keys: Space play/pause · ← → one step · [ ] previous / next trade.
 // Explain plays the replay told in words (app/geek/explain.py): the playhead
 // goes to each moment, the device's voice says what happened and why, and
-// the same words show as a caption.
+// the same words show as a caption. Make video has the server tell the same
+// replay as a narrated, animated MP4 to keep (./videos.js, app/video/).
 
 import { api } from '../../core/api.js';
 import { sentences, readMs, glide, pickVoice } from '../../data/explain.js';
@@ -21,6 +22,7 @@ import { go } from '../../core/router.js';
 import { empty, loading, fixTag } from '../../ui/components.js';
 import { bs, black76, intrinsic, yearsTo } from '../../data/options.js';
 import { head, table, svg, money, tone } from './ui.js';
+import { videosPanel } from './videos.js';
 
 export const KIND = {
   new: ['New cycle', 'var(--ink)'], entry: ['Entry', 'var(--ink)'], adjustment: ['Adjustment', 'var(--b)'],
@@ -451,6 +453,7 @@ export default {
       return html`<div class="rp-dock"><div class="rp-ctl">
         <span class="rp-btns">
           ${D.explain && D.explain.beats.length ? html`<button type="button" class="btn btn-sm btn-primary rp-explain" data-act="explain" title="The replay told in words: what it did and why">${X.on ? 'Explaining…' : '▶ Explain'}</button>` : ''}
+          <button type="button" class="btn btn-sm rp-video" data-act="video" title="The replay told by a narrator, as a video to keep">🎬 Video</button>
           <button type="button" class="btn btn-sm" data-act="to" data-f="0" aria-label="To the start">⏮</button>
           <button type="button" class="btn btn-sm" data-act="prevEv" aria-label="Previous trade" title="Previous trade  [">⇤</button>
           <button type="button" class="btn btn-sm" data-act="back" aria-label="Step back" title="Step back  ←">‹</button>
@@ -494,6 +497,7 @@ export default {
         ${picker()}</div>
         ${controls()}
         <div data-rp="explain"></div>
+        <div data-rp-videos></div>
         <div data-rp="banner"></div>
         <div class="gk-panel rp-pay"><h3>Payoff <span class="s" data-rp="paysub"></span><span data-rp="paystats"></span></h3>
           <div class="rp-canvas" data-rp="stage"></div>
@@ -505,8 +509,17 @@ export default {
         </div>
         ${D.unpriced && D.unpriced.length ? html`<p class="gk-note">No stored prices for ${D.unpriced.join(', ')}: shown at entry until they close.</p>` : ''}
         ${mini()}</div>`);
+      vids().attach(el.querySelector('[data-rp-videos]'));
       update();
     }
+
+    // the Videos panel: made once, put back in its slot on every paint
+    let VP = null;
+    const vids = () => VP || (VP = videosPanel(g.id, () => {
+      const [a, z] = D.selected, E = D.episodes;
+      const lab = n => (E.find(e => e.n === n) || {}).label || `#${n}`;
+      return { from: a, to: z, label: a === z ? lab(a) : `${lab(a)} to ${lab(z)}`, open: E.some(e => e.n >= a && e.n <= z && e.open) };
+    }));
 
     function update() {
       if (!D || !D.frames || !D.frames.length) return;
@@ -637,6 +650,7 @@ export default {
 
     const off = actions(el, {
       explain: () => (X.on ? explainStop() : explainStart()),
+      video: () => vids().open(),
       xStop: () => explainStop(),
       xNext: () => { X.paused = false; beat(X.k + 1); },
       xPrev: () => { X.paused = false; beat(X.k - 1); },
@@ -683,6 +697,6 @@ export default {
     let alive = true;
     api.geek(g.id, `replay${q ? `?${q}` : ''}`).then(d => { if (alive) { D = d; i = 0; paint(); } },
       e => { if (alive) { D = e instanceof Error ? e : new Error(String(e)); paint(); } });
-    return () => { alive = false; dragging = false; hush(); X.run += 1; if (timer) clearInterval(timer); clearTimeout(rz); window.removeEventListener('resize', onResize); off(); offs.forEach(f => f()); };
+    return () => { alive = false; dragging = false; hush(); X.run += 1; if (VP) VP.stop(); if (timer) clearInterval(timer); clearTimeout(rz); window.removeEventListener('resize', onResize); off(); offs.forEach(f => f()); };
   },
 };

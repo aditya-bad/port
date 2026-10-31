@@ -27,3 +27,6 @@ tests/e2e/server*.log
 tests/e2e/shard*.log
 tests/e2e/.queue*
 htmlcov/
+
+# Videos made on the server (app/video/): files, not source
+videos/

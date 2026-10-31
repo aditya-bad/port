@@ -40,6 +40,9 @@ os.environ["TZ"] = "Asia/Kolkata"
 _time.tzset()
 os.environ.update({"DATABASE_URL": DB, "LOCAL_DATABASE_URL": DB, "APP_AUTH_SECRET": PASSWORD,
                    "KITE_API_KEY": "e2e-key", "KITE_API_SECRET": "e2e-secret"})
+# videos (app/video/): a quiet tone for the voice, two frames a second, in a folder of this server's own
+os.environ.update({"LINCK_VIDEO_FAKE_VOICE": "1", "LINCK_VIDEO_FPS": "2",
+                   "LINCK_VIDEO_DIR": os.environ.get("LINCK_VIDEO_DIR") or f"/tmp/linck-e2e-videos-{PORT}"})
 for k in ("VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT"):
     os.environ.pop(k, None)
 

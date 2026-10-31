@@ -99,6 +99,11 @@ export const api = {
   strategyStatus: id => req(`/deployments/${id}/strategy-status`),
   cycles: id => req(`/deployments/${id}/cycles`),
   geek: (id, view) => req(`/v2/deployments/${id}/geek/${view}`),
+  // videos: the replay told as a narrated MP4, made on the server (app/routers/videos.py)
+  videoInfo: () => req('/v2/videos/info'),
+  videos: id => req(`/v2/deployments/${id}/videos`),
+  makeVideo: (id, body) => post(`/v2/deployments/${id}/videos`, body),
+  deleteVideo: vid => req(`/v2/videos/${enc(vid)}`, { method: 'DELETE' }),
   underlying: id => req(`/v2/deployments/${id}/underlying`),
   repairs: id => req(`/v2/deployments/${id}/repairs`),
   // the trade journal (app/routers/journal.py)

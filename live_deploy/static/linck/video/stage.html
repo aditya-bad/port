@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strategy video</title>
+<link rel="stylesheet" href="fonts.css">
+<link rel="stylesheet" href="video.css">
+</head>
+<body>
+<!-- The video stage: app/video/render.py records it frame by frame
+     (?story=…&narr=…&record=1); opened plainly it plays with captions. -->
+<svg id="stage" viewBox="0 0 1600 780" role="img" aria-label="A strategy's replay, explained">
+<g id="layer"></g>
+<g id="hud"></g>
+</svg>
+<div class="band"><p id="cap" aria-live="polite"></p>
+<nav class="ctl" aria-label="Scenes"><button id="prev" aria-label="Previous scene">◀</button><button id="pp" aria-label="Pause or play">❚❚</button><button id="next" aria-label="Next scene">▶</button><button id="snd" aria-label="Sound on or off">🔇</button><div class="dots"></div></nav></div>
+<script src="engine.js"></script>
+<script src="life.js"></script>
+<script src="scenes.js"></script>
+</body>
+</html>

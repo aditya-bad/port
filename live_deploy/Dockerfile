@@ -1,7 +1,7 @@
 # live_deploy — paper-trading service.
 #
-# Stateless by design: the ONLY files this app reads are config.json and
-# tokens.json, both read ONCE at startup (config.json at import time,
+# Stateless by design (one exception: videos, below): the ONLY files this
+# app reads are config.json and tokens.json, both read ONCE at startup (config.json at import time,
 # tokens.json inside the FastAPI startup event) — never written to, and
 # nothing else under the image's filesystem is read or written at
 # runtime (no local log files, no cache directories, no SQLite). Every
@@ -10,7 +10,10 @@
 # can be killed and replaced at any time without losing anything that
 # matters; config.json/tokens.json are the only inputs it needs handed
 # back on the next run (via env vars or a mounted file — see below),
-# and Postgres already has everything else.
+# and Postgres already has everything else. The exception is the videos
+# the replay page makes (app/video/): MP4 files in /app/videos, which
+# redeploy.sh mounts from the host so they outlast the container. Lose
+# them and nothing else is affected; each can be made again.
 #
 # Build:
 #   docker build -t live-deploy .
@@ -41,6 +44,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Videos (app/video/, the replay page's Make video): the voice, a browser
+# to draw the frames and ffmpeg, about 600 MB, in layers of their own so
+# they're built once and kept while the app's code changes. The voice's
+# model (Kokoro, 120 MB) comes from its GitHub release.
+COPY requirements-video.txt .
+RUN pip install --no-cache-dir -r requirements-video.txt \
+    && python -m playwright install --with-deps --only-shell chromium \
+    && rm -rf /var/lib/apt/lists/*
+ADD https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx /opt/kokoro/
+ADD https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin /opt/kokoro/
+ENV LINCK_VOICE_MODELS=/opt/kokoro
 
 # Dependencies first, separately from app code, so `docker build` only
 # re-installs them when requirements.txt actually changes.

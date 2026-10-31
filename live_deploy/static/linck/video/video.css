@@ -1,0 +1,120 @@
+/* The video stage (engine.js, scenes.js). Light only: it's recorded into
+   an MP4, where the viewer's theme doesn't reach; every colour is set
+   here. Colour roles: --b blue (puts, the index), --wt orange (calls),
+   --g green (gains), --r red (losses, a rule firing), --y yellow (focus). */
+:root {
+  --ink: oklch(0.2 0.01 90); --paper: oklch(0.968 0.006 90); --card: oklch(0.99 0.003 90); --soft: oklch(0.94 0.008 90);
+  --line: oklch(0.88 0.01 90); --line2: oklch(0.76 0.01 90); --mute: oklch(0.47 0.01 90);
+  --y: oklch(0.88 0.13 95); --ys: oklch(0.95 0.05 95);
+  --g: oklch(0.52 0.14 150); --r: oklch(0.56 0.2 28); --b: oklch(0.56 0.14 250); --wt: oklch(0.6 0.16 50); --pu: oklch(0.52 0.16 305);
+  --f-display: 'Funnel Display', 'Funnel Sans', system-ui, sans-serif;
+  --f-body: 'Funnel Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --f-mono: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--paper); color: var(--ink); font: 400 16px/1.5 var(--f-body); overflow: hidden; display: flex; flex-direction: column; }
+#stage { display: block; width: 100%; flex: 1 1 auto; min-height: 0; }
+.band { flex: 0 0 auto; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 20px;
+  padding: 10px 24px; min-height: 92px; background: var(--card); border-top: 1px solid var(--line); }
+#cap { margin: 0 auto; max-width: 72ch; text-align: center; text-wrap: balance; font: 500 clamp(15px, 1.6vw, 23px)/1.4 var(--f-body); }
+nav.ctl { display: flex; align-items: center; gap: 8px; }
+nav.ctl > button { font: 600 13px/1 var(--f-mono); color: var(--ink); background: none; border: 1px solid var(--line2); width: 34px; height: 30px; cursor: pointer; }
+.dots { display: flex; flex-wrap: wrap; gap: 5px; max-width: 220px; }
+.dots button { width: 11px; height: 11px; padding: 0; border: 1.5px solid var(--ink); background: none; cursor: pointer; }
+.dots button.on { background: var(--ink); }
+button:focus-visible { outline: 2px solid var(--b); outline-offset: 2px; }
+/* recording: the frame is the stage and its caption, nothing else; the
+   caption band is exactly what's left of a 16:9 frame under the stage */
+body.record .band { grid-template-columns: minmax(0, 1fr); height: calc(100vh - 100vw * 780 / 1600); min-height: 0; padding: 0 48px; }
+body.record nav.ctl { display: none; }
+body.record #cap { font-size: calc((100vh - 100vw * 780 / 1600) * 0.27); }
+@media (max-width: 760px) { .band { grid-template-columns: minmax(0, 1fr); padding: 8px 16px; } nav.ctl { justify-content: center; } }
+
+#stage text { font-family: var(--f-body); fill: var(--ink); }
+#stage .ttl { font: 700 40px var(--f-display); letter-spacing: -.02em; }
+#stage .sub { font: 500 15px var(--f-mono); fill: var(--mute); }
+#stage .idx { font: 500 16px var(--f-mono); fill: var(--mute); }
+.prog { fill: var(--ink); } .prog-bg { fill: var(--line); }
+#stage .huge { font: 700 66px var(--f-display); letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+#stage .big { font: 700 46px var(--f-display); font-variant-numeric: tabular-nums; }
+#stage .bigs { font: 650 28px var(--f-display); }
+#stage .mono { font: 500 16px var(--f-mono); }
+#stage .mute { fill: var(--mute); }
+#stage .fl { font: 600 14px var(--f-mono); letter-spacing: .1em; text-transform: uppercase; fill: var(--mute); }
+#stage .good { fill: var(--g); } #stage .bad { fill: var(--r); }
+.chip rect { fill: var(--ink); } #stage .chip .chipt { font: 600 16px var(--f-mono); fill: var(--paper); }
+.chip.soft rect { fill: var(--card); stroke: var(--line2); stroke-width: 1.5; } #stage .chip.soft .chipt { fill: var(--ink); }
+.live rect { fill: color-mix(in oklch, var(--r) 12%, var(--card)); stroke: var(--r); stroke-width: 1.5; }
+.livedot { fill: var(--r); } #stage .livet { font: 700 15px var(--f-mono); fill: var(--r); letter-spacing: .08em; }
+
+/* charts */
+.grid { stroke: var(--line); stroke-width: 1; } .vgrid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 2 5; }
+.zero { stroke: var(--line2); stroke-width: 1.6; }
+#stage .glab { font: 500 13px var(--f-mono); fill: var(--mute); }
+.ln-idx { fill: none; stroke: var(--ink); stroke-width: 2.6; stroke-linejoin: round; stroke-linecap: round; }
+.ln-idx.faint { stroke: var(--line2); stroke-width: 2; }
+.ln-vix { fill: none; stroke: var(--pu); stroke-width: 2.2; stroke-linejoin: round; }
+.ln-pnl { fill: none; stroke: var(--ink); stroke-width: 2.6; stroke-linejoin: round; }
+.ln-booked { fill: none; stroke: var(--mute); stroke-width: 2; stroke-dasharray: 7 6; }
+.area.pos { fill: color-mix(in oklch, var(--g) 20%, transparent); } .area.neg { fill: color-mix(in oklch, var(--r) 18%, transparent); }
+.band { stroke-width: 4; stroke-linecap: round; fill: none; } .band.ce { stroke: var(--wt); } .band.pe { stroke: var(--b); }
+#stage .bandt { font: 600 14px var(--f-mono); } #stage .bandt.ce { fill: var(--wt); } #stage .bandt.pe { fill: var(--b); }
+.head .dot { fill: var(--ink); stroke: var(--paper); stroke-width: 2; } .head .dot.vix { fill: var(--pu); }
+.head .ring { fill: none; stroke: var(--y); stroke-width: 4; }
+#stage .headt { font: 700 16px var(--f-mono); paint-order: stroke; stroke: var(--paper); stroke-width: 5px; }
+.dot.idx { fill: var(--ink); }
+.mark .high { fill: var(--g); stroke: var(--paper); stroke-width: 2; } .mark .low { fill: var(--r); stroke: var(--paper); stroke-width: 2; }
+#stage .markt { font: 700 15px var(--f-mono); paint-order: stroke; stroke: var(--paper); stroke-width: 5px; }
+#stage .markt.high, #stage .markt.good { fill: var(--g); } #stage .markt.low, #stage .markt.bad { fill: var(--r); }
+.evdot { fill: var(--y); stroke: var(--ink); stroke-width: 2; }
+.evline { stroke: var(--ink); stroke-width: 1.6; stroke-dasharray: 5 5; }
+.evpill { fill: var(--ink); } #stage .evt { font: 600 15px var(--f-mono); fill: var(--paper); }
+.zone { fill: color-mix(in oklch, var(--g) 12%, transparent); stroke: var(--g); stroke-width: 1.5; stroke-dasharray: 6 5; }
+#stage .zonet { font: 600 15px var(--f-mono); fill: var(--g); }
+
+/* panels */
+.pnlchip rect { fill: var(--card); stroke: var(--line2); stroke-width: 1.5; }
+#stage .pnlv { font: 700 30px var(--f-display); font-variant-numeric: tabular-nums; }
+#stage .pnlv.good { fill: var(--g); } #stage .pnlv.bad { fill: var(--r); }
+.ticket rect { fill: var(--card); stroke: var(--line2); stroke-width: 1.5; }
+.ticket.sell .strip { fill: var(--wt); stroke: none; } .ticket.buy .strip { fill: var(--b); stroke: none; }
+#stage .tv { font: 700 14px var(--f-mono); letter-spacing: .08em; }
+.ticket.sell #stage .tv, #stage .ticket.sell .tv { fill: var(--wt); } #stage .ticket.buy .tv { fill: var(--b); }
+#stage .tw { font: 650 19px var(--f-body); } #stage .tp { font: 600 18px var(--f-mono); }
+#stage .tq { font: 500 14px var(--f-mono); fill: var(--mute); } #stage .tb { font: 700 15px var(--f-mono); }
+#stage .tb.good { fill: var(--g); } #stage .tb.bad { fill: var(--r); }
+.bal .axis, .axis { stroke: var(--ink); stroke-width: 1.6; }
+.bar { stroke: var(--ink); stroke-width: 1.5; } .bar.big, .bar.call { fill: color-mix(in srgb, var(--wt) 38%, white); }
+.bar.small, .bar.put { fill: color-mix(in srgb, var(--b) 34%, white); } .bar.under { fill: color-mix(in srgb, var(--r) 45%, white); }
+.bar.ok { fill: color-mix(in srgb, var(--g) 40%, white); }
+#stage .barv { font: 700 19px var(--f-mono); } #stage .barl { font: 600 16px var(--f-mono); fill: var(--mute); }
+.rule-line { stroke: var(--r); stroke-width: 2.4; stroke-dasharray: 8 5; } #stage .rulet { font: 700 15px var(--f-mono); fill: var(--r); }
+#stage .ratio { font: 700 22px var(--f-mono); }
+.track { fill: var(--soft); stroke: var(--line2); stroke-width: 1.5; } .fillp { fill: var(--b); } .fillp.hit { fill: var(--g); }
+.flagpole { stroke: var(--ink); stroke-width: 2.4; } .flagf { fill: var(--g); }
+#stage .flagt { font: 600 14px var(--f-mono); } #stage .progv { font: 700 20px var(--f-mono); }
+.vcard rect { fill: var(--card); stroke: var(--line2); stroke-width: 1.5; }
+#stage .vk { font: 600 14px var(--f-mono); fill: var(--mute); } #stage .vv { font: 700 28px var(--f-display); }
+.card > rect { fill: var(--card); stroke: var(--ink); stroke-width: 1.6; }
+#stage .cardh { font: 700 26px var(--f-display); } #stage .cardb { font: 400 19px var(--f-body); }
+.clockf { fill: var(--soft); stroke: var(--ink); stroke-width: 2.4; } .hand { stroke: var(--ink); stroke-linecap: round; } .hand.h { stroke-width: 5; } .hand.m { stroke-width: 3; }
+.arrow { fill: none; stroke-width: 6; stroke-linecap: round; } .arrow.up { stroke: var(--g); } .arrow.dn { stroke: var(--r); }
+.gear circle { fill: none; stroke: var(--ink); stroke-width: 3; } .gear circle:first-child { stroke-width: 8; stroke-dasharray: 7 5; }
+.cmark .cline { stroke: var(--line2); stroke-width: 1.6; stroke-dasharray: 4 4; } .cmark circle { fill: var(--line2); stroke: var(--ink); stroke-width: 1.5; }
+.cmark.blocked circle { fill: var(--y); } .cmark.blocked .cline { stroke: var(--wt); }
+.cbub rect { fill: var(--card); stroke: var(--ink); stroke-width: 1.8; } #stage .cbt { font: 500 19px var(--f-body); }
+.wfb { stroke: var(--ink); stroke-width: 1.5; } .wfb.pos { fill: color-mix(in srgb, var(--g) 34%, white); } .wfb.neg { fill: color-mix(in srgb, var(--r) 34%, white); }
+.wfb.sum { stroke-width: 3; }
+#stage .wfv { font: 700 24px var(--f-mono); } #stage .wfv.good { fill: var(--g); } #stage .wfv.bad { fill: var(--r); }
+#stage .wfl { font: 600 18px var(--f-body); }
+.row rect { fill: var(--card); stroke: var(--line2); stroke-width: 1.5; } #stage .roww { font: 650 20px var(--f-body); }
+
+/* life.js */
+.lf-stamp rect { fill: color-mix(in oklch, var(--card) 70%, transparent); stroke-width: 5; }
+#stage .lf-stamp text { font: 800 34px var(--f-mono); letter-spacing: .14em; text-transform: uppercase; }
+.lf-stamp.r rect { stroke: var(--r); } #stage .lf-stamp.r text { fill: var(--r); }
+.lf-stamp.g rect { stroke: var(--g); } #stage .lf-stamp.g text { fill: var(--g); }
+.lf-puff circle { fill: var(--line2); } .lf-bit { stroke: none; }
+.f-b { fill: var(--b); } .f-g { fill: var(--g); } .f-y { fill: var(--y); } .f-pu { fill: var(--pu); } .f-r { fill: var(--r); } .f-wt { fill: var(--wt); }

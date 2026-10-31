@@ -1,0 +1,8 @@
+# Videos (app/video/): the voice, run offline on the CPU (Kokoro, with
+# onnxruntime); a browser that draws the frames (Playwright's Chromium,
+# installed by the Dockerfile's video layer); and ffmpeg (a static build
+# inside imageio-ffmpeg). The voice's model files are fetched by the
+# Dockerfile into /opt/kokoro.
+kokoro-onnx==0.6.1
+playwright==1.56.0
+imageio-ffmpeg==0.6.0

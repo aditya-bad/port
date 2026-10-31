@@ -67,11 +67,15 @@ echo "==> Starting container"
 # re-runs this exact script. Created automatically by `docker run`'s
 # own bind-mount behavior if it doesn't exist yet.
 mkdir -p control
+# videos/ (read-write): the MP4s the replay page makes (app/video/), kept
+# on the host so a redeploy doesn't lose them.
+mkdir -p videos
 docker run -d --name live-deploy --restart unless-stopped \
   -p 127.0.0.1:8000:8000 \
   -v "$(pwd)/config.json:/app/config.json:ro" \
   -v "$(pwd)/tokens.json:/app/tokens.json:ro" \
   -v "$(pwd)/control:/app/control" \
+  -v "$(pwd)/videos:/app/videos" \
   live-deploy
 
 # Re-attach to the local-Postgres Docker network, if one was ever set

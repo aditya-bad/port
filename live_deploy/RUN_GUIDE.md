@@ -426,6 +426,31 @@ one part of this guide genuinely asking you to be the first to click it.
 live-deploy` in place of a supervisor's own log files or a foreground
 terminal.
 
+### Videos (the replay page's Make video)
+
+The image includes what a video needs: the voice (Kokoro, an open model
+that runs offline on the CPU), a headless Chromium that draws the frames,
+and ffmpeg. They add about 600 MB to the image and are built once, in
+layers of their own. The first build after this change downloads them
+(about 120 MB for the voice model, from its GitHub release).
+
+- **Where the files go:** `redeploy.sh` mounts `./videos` into the
+  container as `/app/videos`, so videos survive a redeploy. Delete a video
+  from the replay page, or clear the folder; nothing else depends on it.
+- **Memory:** one video is made at a time, in processes of its own, at
+  the lowest CPU priority. The voice peaks at about 360 MB and the frame
+  recording (Chromium and ffmpeg) at about 510 MB, one after the other
+  (measured, shared memory counted once). A video starts only when at
+  least 1,100 MB is free, counting RAM and swap together, so on a 2 GB
+  server add a swap file first. Until there's room it waits, and the
+  replay page says so.
+- **Time:** measured on four cores, an 8½-minute video took about 10
+  minutes to make (4 for the voice, 6 for the frames). A smaller server
+  takes longer. The replay page shows the progress and the time left, and
+  you can leave the page while it works.
+- **After a restart:** a video caught half made starts again from the
+  beginning when the app comes back.
+
 ---
 
 ## Credential hardening
