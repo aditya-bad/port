@@ -54,3 +54,27 @@ def test_a_straddle_day_replays_from_its_entry_to_its_exit(client, monkeypatch):
     assert v["frames"] and v["frames"][-1]["booked"] == 3000
     assert {l["strike"] for l in v["legs"]} == {22400.0}
     assert client.get(f"/v2/deployments/{d['id']}/geek/replay?from=x&to=-3").status_code == 200   # bad params clamp
+
+
+def test_the_replay_comes_with_its_explanation(client, monkeypatch):
+    no_kite(monkeypatch, client)
+    cfg = {**default_config("intraday_dtt_simple"), "instrument_tokens": [256265]}
+    d = make_deployment(client, name="rp explain", config=cfg)
+    at = lambda h, m: datetime(2024, 5, 7, h, m, tzinfo=IST)  # noqa: E731
+    meta = {"trigger": "entry", "context": {"spot": 22400.0, "vix": 14.1}}
+    add_fill(client, d["id"], "NIFTY2450922400CE", 111, "sell", 75, 120, at(10, 0), "entry", meta)
+    add_fill(client, d["id"], "NIFTY2450922400PE", 112, "sell", 75, 110, at(10, 0), "entry", meta)
+    add_fill(client, d["id"], "NIFTY2450922400CE", 111, "buy", 75, 90, at(15, 0), "force_exit", {"trigger": "force_exit", "trigger_values": {"exit_time": "15:00"}})
+    add_fill(client, d["id"], "NIFTY2450922400PE", 112, "buy", 75, 100, at(15, 0), "force_exit", {"trigger": "force_exit"})
+    pool = client.app.state.db_pool
+    client.portal.call(lambda: pool.execute(
+        "INSERT INTO strategy_decisions (deployment_id, decided_at, rule, outcome, summary) VALUES ($1, $2, 'leg_stop', 'no_action', $3)",
+        UUID(d["id"]), at(12, 30), "CE at 95 under its stop of 168: holding"))
+    x = client.get(f"/v2/deployments/{d['id']}/geek/replay").json()["explain"]
+    texts = [b["text"] for b in x["beats"]]
+    assert [b["kind"] for b in x["beats"]] == ["intro", "trade", "decision", "trade", "summary"]
+    assert texts[0].startswith("rp explain, running DTT straddle.")
+    assert "It entered." in texts[1] and "sold the 22,400 call at ₹120" in texts[1] and "sold the 22,400 put at ₹110" in texts[1]
+    assert texts[2] == "At 12:30 it checked and did nothing: CE at 95 under its stop of 168: holding."
+    assert "Its exit time came, so it closed everything, seeing exit time 15:00." in texts[3] and "That booked plus ₹3,000." in texts[3]
+    assert texts[4].startswith("In all, plus ₹3,000: plus ₹3,000 booked.")

@@ -319,3 +319,9 @@ body.geek-return #main { animation: gk-rise .45s cubic-bezier(.2,.7,.2,1) both; 
 .gk-var-cmp { color: var(--mute); }
 .gk-var { font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--line2); background: var(--paper); color: var(--ink); }
 .gk-var-cmp { color: var(--mute); }
+
+/* Explain (pages/geek/replay.js) */
+.rp-explain-box { border: 1.5px solid var(--ink); background: var(--card); padding: 12px 16px 14px; display: grid; gap: 8px; }
+.rp-explain-box .up { text-transform: uppercase; letter-spacing: .06em; }
+.rp-explain-text { margin: 0; font-size: 18px; line-height: 1.5; max-width: 72ch; text-wrap: pretty; }
+@media (max-width: 760px) { .rp-explain-text { font-size: 16px; } .rp-explain-box { padding: 10px 12px; } }

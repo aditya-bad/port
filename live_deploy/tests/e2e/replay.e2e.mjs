@@ -7,7 +7,7 @@
 // one screen, and a closed leg keeps its entry and exit.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BASE, IDS, browser, context, api } from './helper.mjs';
+import { BASE, IDS, browser, context, api, until } from './helper.mjs';
 
 const ID = IDS['Nifty Monthly Strangle'];
 let b;
@@ -264,4 +264,48 @@ test('the timeline: a click or a drag lands on the step under the pointer, at an
     assert.deepEqual(ctx.errors, []);
     await ctx.close();
   }
+});
+
+test('Explain: the replay told in words, the playhead going to each moment as it’s said', async () => {
+  const ctx = await context(b);
+  // a stand-in voice: records what's said and finishes at once
+  await ctx.addInitScript(() => {
+    window.__said = [];
+    const synth = { speaking: false, getVoices: () => [{ lang: 'en-IN', name: 'test' }], cancel() {}, pause() {}, resume() {},
+      speak(u) { window.__said.push(u.text); setTimeout(() => u.onend && u.onend(), 5); } };
+    Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true });
+    window.SpeechSynthesisUtterance = function (text) { this.text = text; };
+  });
+  const d = await api(ctx, `/v2/deployments/${ID}/geek/replay`);
+  const B = d.explain.beats;
+  assert.ok(B.length >= 3 && B[0].kind === 'intro' && B[B.length - 1].kind === 'summary');
+  assert.ok(B.some(x => x.kind === 'trade'));
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/d/${ID}/geek/replay`);
+  await p.waitForSelector('[data-act="explain"]');
+  await p.click('[data-act="explain"]');
+  await p.waitForSelector('[data-explain]');
+  assert.equal(await p.innerText('[data-explain-text]'), B[0].text);
+  // on to a trade: the playhead goes to its moment and it's said
+  const k = B.findIndex(x => x.kind === 'trade');
+  await until(async () => (await p.innerText('[data-explain-n]')) === `${k + 1} of ${B.length}`);
+  assert.equal(await p.innerText('[data-explain-text]'), B[k].text);
+  await until(async () => (await p.locator('[data-range]').inputValue()) === String(B[k].frame));
+  await until(async () => (await p.evaluate(() => window.__said.join(' '))).includes('rupees'));
+  assert.ok(!(await p.evaluate(() => window.__said.join(' '))).includes('₹'), 'amounts said as “4,388 rupees”');
+  // pause holds it; Next moves on; ✕ ends it
+  await p.click('[data-act="xPause"]');
+  const at = await p.innerText('[data-explain-n]');
+  await p.waitForTimeout(400);
+  assert.equal(await p.innerText('[data-explain-n]'), at, 'paused');
+  await p.click('[data-act="xNext"]');
+  await until(async () => (await p.innerText('[data-explain-n]')) !== at);
+  await p.click('[data-act="xStop"]');
+  await until(async () => (await p.locator('[data-explain]').count()) === 0);
+  // to the end on its own, with the voice off: captions only
+  await p.click('[data-act="explain"]');
+  await p.waitForSelector('[data-explain]');
+  await p.click('[data-act="xVoice"]');
+  assert.equal(await p.locator('[data-act="xVoice"]').innerText(), 'Voice off');
+  await ctx.close();
 });

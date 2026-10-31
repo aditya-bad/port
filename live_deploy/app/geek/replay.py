@@ -167,6 +167,14 @@ def strike_of(meta: Optional[dict], parsed: dict) -> Optional[float]:
     return None
 
 
+def _plain(v):
+    """Recorded values, numbers and words only (JSON-safe)."""
+    if not isinstance(v, dict):
+        return {}
+    return {k: (x if isinstance(x, (int, float, str, bool)) or x is None else str(x)) for k, x in v.items()
+            if not isinstance(x, (dict, list))}
+
+
 def bar_of(t: datetime, step: timedelta) -> datetime:
     """The start of the bar `t` falls in, on a grid anchored at 09:15."""
     base = t.replace(hour=9, minute=15, second=0, microsecond=0)
@@ -373,6 +381,7 @@ def build(b: dict, sel: list[dict], index: list, vix: list, prices: dict, step: 
             ev = {
                 "t": _iso(a["t"]), "frame": fi, "kind": k, "label": KIND_LABEL[k], "episode": n,
                 "rule": label(a["trigger"]), "why": saw(a["trigger_values"]),
+                "trigger": a["trigger"], "values": _plain(a["trigger_values"]),   # for Explain (app/geek/explain.py)
                 "fills": [fill(x) for x in mine],
                 "booked": round(sum(booked), 2) if booked and all(v is not None for v in booked) else None,
                 "idx": spot, "vix": vix_here, "pnl": f.get("pnl"), "cycle": cyc,
@@ -524,6 +533,17 @@ async def replay(ctx: Ctx) -> dict:
     out["future"] = fut_info
     out.update({"interval": interval, "index_name": _index_name(ctx), "market_error": market_error,
                 "no_index": not index})
+    # Explain: the replay in words, with the checks that didn't trade in its window
+    from . import explain
+    from ..v2.catalog import STRATEGIES as META
+    rows = await ctx.pool.fetch(
+        "SELECT decided_at, rule, outcome, summary FROM strategy_decisions WHERE deployment_id = $1 "
+        "AND decided_at >= $2 AND decided_at <= $3 ORDER BY decided_at LIMIT 500", ctx.dep["id"], start, end)
+    meta = META.get(ctx.dep["strategy_name"]) or {}
+    out["explain"] = explain.script(out, name=ctx.dep["deployment_name"], strategy=ctx.dep["strategy_name"],
+                                    strategy_label=meta.get("label") or ctx.dep["strategy_name"],
+                                    decisions=[{"t": r["decided_at"], "rule": r["rule"], "outcome": r["outcome"],
+                                                "summary": r["summary"]} for r in rows])
     return out
 
 

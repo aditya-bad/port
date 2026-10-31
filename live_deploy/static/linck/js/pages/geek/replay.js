@@ -9,8 +9,12 @@
 // the positions share one screen: the chart's height follows the window,
 // and on a phone a bar at the bottom keeps play and step in reach.
 // Keys: Space play/pause · ← → one step · [ ] previous / next trade.
+// Explain plays the replay told in words (app/geek/explain.py): the playhead
+// goes to each moment, the device's voice says what happened and why, and
+// the same words show as a caption.
 
 import { api } from '../../core/api.js';
+import { sentences, readMs, glide, pickVoice } from '../../data/explain.js';
 import { html, mount, actions, on } from '../../core/dom.js';
 import { inr, dStamp, dShort, hhmm, price, ist } from '../../core/format.js';
 import { go } from '../../core/router.js';
@@ -421,6 +425,8 @@ export default {
   render(el, v, g) {
     const p = g.params || {};
     let D = null, i = 0, playing = false, timer = null, speed = 1, pauseAt = true, step = null;
+    // Explain: which beat, paused or not, voice or captions only
+    const X = { on: false, k: 0, paused: false, voice: typeof speechSynthesis !== 'undefined', timer: null, run: 0 };
 
     function picker() {
       const E = D.episodes, [a, z] = D.selected;
@@ -444,6 +450,7 @@ export default {
       const n = D.frames.length, S = stepsFor(D.interval);
       return html`<div class="rp-dock"><div class="rp-ctl">
         <span class="rp-btns">
+          ${D.explain && D.explain.beats.length ? html`<button type="button" class="btn btn-sm btn-primary rp-explain" data-act="explain" title="The replay told in words: what it did and why">${X.on ? 'Explaining…' : '▶ Explain'}</button>` : ''}
           <button type="button" class="btn btn-sm" data-act="to" data-f="0" aria-label="To the start">⏮</button>
           <button type="button" class="btn btn-sm" data-act="prevEv" aria-label="Previous trade" title="Previous trade  [">⇤</button>
           <button type="button" class="btn btn-sm" data-act="back" aria-label="Step back" title="Step back  ←">‹</button>
@@ -486,6 +493,7 @@ export default {
         <div class="rp-top">${head('Replay', '', D.market_error ? 'index and VIX unavailable' : '')}
         ${picker()}</div>
         ${controls()}
+        <div data-rp="explain"></div>
         <div data-rp="banner"></div>
         <div class="gk-panel rp-pay"><h3>Payoff <span class="s" data-rp="paysub"></span><span data-rp="paystats"></span></h3>
           <div class="rp-canvas" data-rp="stage"></div>
@@ -513,6 +521,7 @@ export default {
       set('paystats', P ? payStats(D, i, P, xs) : '');
       set('mini', html`<span class="mono small">${dShort(f.t).replace(/ '\d\d$/, '')} ${hhmm(asOf(D, i))}</span> <b class="mono small ${tone(f.pnl)}">${inr(f.pnl)}</b>`);
       set('banner', banner(D, i, g.id));
+      set('explain', explainPanel());
       if (P) {
         const st = el.querySelector('[data-rp="stage"]');
         set('stage', payoffChart(D, i, P, xs, st ? st.clientWidth : 1000, payoffHeight(window.innerWidth, window.innerHeight)));
@@ -536,6 +545,68 @@ export default {
       if (r && +r.value !== i) r.value = i;
       el.querySelectorAll('.rp-play').forEach(b => { b.textContent = playing ? '❚❚ Pause' : '▶ Play'; b.setAttribute('aria-label', playing ? 'Pause' : 'Play'); });
     }
+
+    // ── Explain ──
+    function explainPanel() {
+      if (!X.on) return '';
+      const B = D.explain.beats, b = B[X.k], last = X.k >= B.length - 1;
+      return html`<div class="rp-explain-box" role="region" aria-label="Explanation" data-explain>
+        <div class="row" style="gap:10px;align-items:baseline"><b class="tiny up mute">${b.kind === 'intro' ? 'The setup' : b.kind === 'summary' ? 'How it went' : b.kind === 'decision' ? 'Didn’t trade' : 'Trade'}</b>
+          <span class="tiny mute mono" data-explain-n>${X.k + 1} of ${B.length}</span><span class="grow"></span>
+          <button type="button" class="btn btn-xs" data-act="xPrev" ${X.k ? '' : 'disabled'} aria-label="Previous">‹</button>
+          <button type="button" class="btn btn-xs" data-act="xPause">${X.paused ? '▶ Resume' : '❚❚ Pause'}</button>
+          <button type="button" class="btn btn-xs" data-act="xNext" ${last ? 'disabled' : ''} aria-label="Next">›</button>
+          <button type="button" class="btn btn-xs" data-act="xVoice" aria-pressed="${X.voice}" ${typeof speechSynthesis === 'undefined' ? 'disabled title="This browser has no voice: captions only"' : ''}>${X.voice ? 'Voice on' : 'Voice off'}</button>
+          <button type="button" class="btn btn-xs btn-quiet" data-act="xStop" aria-label="Stop explaining">✕</button></div>
+        <p class="rp-explain-text" aria-live="polite" data-explain-text>${b.text}</p></div>`;
+    }
+    function hush() {
+      if (X.timer) { clearTimeout(X.timer); clearInterval(X.timer); X.timer = null; }
+      if (typeof speechSynthesis !== 'undefined') speechSynthesis.cancel();
+    }
+    function explainStop() { hush(); X.on = false; X.run += 1; paint(); }
+    function say(text, done) {
+      const run = X.run;
+      if (!X.voice || typeof speechSynthesis === 'undefined') { X.timer = setTimeout(() => { if (run === X.run) done(); }, readMs(text)); return; }
+      const parts = sentences(text), voice = pickVoice(speechSynthesis.getVoices());
+      let n = 0;
+      const next = () => {
+        if (run !== X.run) return;
+        if (n >= parts.length) { done(); return; }
+        const u = new SpeechSynthesisUtterance(parts[n].replace(/₹([\d,]+)/g, '$1 rupees'));   // “₹4,388” said “4,388 rupees”
+        n += 1;
+        if (voice) u.voice = voice;
+        u.lang = voice ? voice.lang : 'en-IN';
+        u.onend = next;
+        u.onerror = () => { if (run === X.run) X.timer = setTimeout(next, 300); };
+        speechSynthesis.speak(u);
+      };
+      next();
+    }
+    // Glide to the beat's moment, say it, then on to the next.
+    function beat(k) {
+      hush();
+      X.run += 1;
+      const run = X.run, B = D.explain.beats;
+      X.k = Math.max(0, Math.min(B.length - 1, k));
+      const path = glide(i, B[X.k].frame);
+      let j = 0;
+      update();
+      const speak = () => {
+        if (run !== X.run) return;
+        say(B[X.k].text, () => {
+          if (run !== X.run || X.paused) return;
+          if (X.k >= B.length - 1) { X.timer = setTimeout(() => { if (run === X.run) { X.on = false; paint(); } }, 1500); return; }
+          X.timer = setTimeout(() => beat(X.k + 1), 500);
+        });
+      };
+      X.timer = setInterval(() => {
+        if (run !== X.run) return;
+        if (j >= path.length) { clearInterval(X.timer); X.timer = null; speak(); return; }
+        i = path[j]; j += 1; update();
+      }, 35);
+    }
+    function explainStart() { stop(); X.on = true; X.paused = false; paint(); beat(0); }
 
     function stop() { playing = false; if (timer) clearInterval(timer); timer = null; update(); }
     function play() {
@@ -565,7 +636,13 @@ export default {
     };
 
     const off = actions(el, {
-      play: () => (playing ? stop() : play()),
+      explain: () => (X.on ? explainStop() : explainStart()),
+      xStop: () => explainStop(),
+      xNext: () => { X.paused = false; beat(X.k + 1); },
+      xPrev: () => { X.paused = false; beat(X.k - 1); },
+      xPause: () => { if (X.paused) { X.paused = false; beat(X.k); } else { X.paused = true; hush(); X.run += 1; update(); } },
+      xVoice: () => { X.voice = !X.voice; if (!X.paused) beat(X.k); else update(); },
+      play: () => { if (X.on) explainStop(); return playing ? stop() : play(); },
       to: d => { stop(); to(+d.f); },
       jump: d => { stop(); to(+d.f); },
       fwd: () => { stop(); to(stepTo(D.frames, i, step, 1)); },
@@ -606,6 +683,6 @@ export default {
     let alive = true;
     api.geek(g.id, `replay${q ? `?${q}` : ''}`).then(d => { if (alive) { D = d; i = 0; paint(); } },
       e => { if (alive) { D = e instanceof Error ? e : new Error(String(e)); paint(); } });
-    return () => { alive = false; dragging = false; if (timer) clearInterval(timer); clearTimeout(rz); window.removeEventListener('resize', onResize); off(); offs.forEach(f => f()); };
+    return () => { alive = false; dragging = false; hush(); X.run += 1; if (timer) clearInterval(timer); clearTimeout(rz); window.removeEventListener('resize', onResize); off(); offs.forEach(f => f()); };
   },
 };
