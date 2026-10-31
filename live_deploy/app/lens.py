@@ -355,10 +355,14 @@ def share_stats(candles: list[dict], ltp: float, today: date, nifty: Optional[li
         return {"ret": {}, "spark": [], "days": 0}
     now = ltp or s[-1][1]
     first_day = s[0][0]
+    # a period's base is the last close on or before its first day, read
+    # from everything stored: a year ago on a weekend or a holiday is the
+    # trading day before it, not a missing return
+    full = _closes(candles)
     ret = {}
     for k, days in PERIODS:
         start = today - timedelta(days=days)
-        base = _at(s, start) if first_day <= start else None
+        base = _at(full, start) if full[0][0] <= start else None
         ret[k] = _r((now / base - 1) * 100) if base else None
     hi = max([h for _, _, h, _ in s] + [now])
     lo = min([low for _, _, _, low in s] + [now])

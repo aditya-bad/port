@@ -176,6 +176,19 @@ def test_a_shares_year():
     assert lens.share_stats([], 10.0, TODAY) == {"ret": {}, "spark": [], "days": 0}
 
 
+def test_a_year_ago_on_a_weekend_takes_the_friday_before():
+    """A year before Saturday 31 Oct 2026 is Friday 31 Oct 2025; a year
+    before Monday 2 Nov 2026 is Sunday 2 Nov 2025: the base is the last
+    close on or before it, from everything stored (a year back on a weekend
+    or a holiday used to show no return at all)."""
+    from datetime import date
+    for today in (date(2026, 10, 31), date(2026, 11, 2), date(2026, 11, 1)):
+        up = candles(lambda i: 100 * 1.001 ** i, end=today)
+        base = next(c["close"] for c in reversed(up) if c["date"].date() <= today - timedelta(days=365))
+        s = lens.share_stats(up, up[-1]["close"], today)
+        assert s["ret"]["1Y"] == pytest.approx((up[-1]["close"] / base - 1) * 100, abs=0.01), today
+
+
 def test_volatility_and_beta_against_nifty():
     wig = lambda i: 0.01 * math.sin(i * 1.7)                         # noqa: E731
     nifty = candles(lambda i: 20000 * math.exp(sum(wig(j) for j in range(i + 1))))
