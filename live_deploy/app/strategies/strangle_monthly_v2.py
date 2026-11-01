@@ -204,6 +204,13 @@ at its 11:55 last trade (342.30). So:
     the closest premium when its own premium is within
     `round_strike_tolerance_pct` (15%) of target at entry, or inside the
     band on a roll or end-of-day replacement.
+  - FAR STRIKES, a hard rule: on NIFTY, while the contract is more than
+    `far_expiry_days` (27) from expiry, every strike it takes is a
+    multiple of 100 (`far_expiry_strike_multiple`): never one ending in
+    50, at entry, on a roll, at the end-of-day check or roll-out, for a
+    hedge, or where the strike-cross cap would snap onto the other side's
+    strike (an older leg's 50 strike caps to the nearest 100 short of it).
+    Counted from the day being traded, so a replay counts as the day did.
   Every quoted price is kept (strategy_quotes) and a hold's end is noted
   (HOLD_OVER), so the day check's replay prices and holds as the app did.
 
@@ -660,6 +667,7 @@ docstring for the two other bridging fixes this delegation needs
 """
 
 import logging
+import math
 from datetime import date, datetime, time, timedelta
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
@@ -667,6 +675,7 @@ from zoneinfo import ZoneInfo
 from .. import clock
 from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver
+from ..options.resolver import is_multiple
 from .intraday_dtt_adjusted import IntradayDTTAdjustedStrategy
 from .pivot_supertrend import _parse_hhmm
 from .registry import register_strategy
@@ -695,6 +704,9 @@ AGED = "Priced from a live quote: no recent trade"
 HOLD_OVER = "Every leg priced again: management resumes"
 # Strikes that trade: where a strangle leans when a premium allows (LIVE PRICES).
 ROUND_STRIKES = {"BANKNIFTY": 500, "BANKEX": 500, "SENSEX": 500}
+# Far from expiry, the only strikes it may take at all (FAR STRIKES): on
+# NIFTY, more than far_expiry_days (27) out, never a strike ending in 50.
+FAR_STRIKES = {"NIFTY": 100}
 
 
 class SameStrike(Exception):
@@ -779,6 +791,11 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
         # the band on a roll or end-of-day replacement.
         "round_strike_multiple": None,
         "round_strike_tolerance_pct": 0.15,
+        # A hard rule: while the contract is more than far_expiry_days out,
+        # every strike it takes is a multiple of this (None = 100 on NIFTY:
+        # never a strike ending in 50; off elsewhere; 0 = off).
+        "far_expiry_strike_multiple": None,
+        "far_expiry_days": 27,
         # A contract's last trade is its price only this fresh; older, the
         # bid/ask mid (LIVE PRICES in the module docstring).
         "live_trade_minutes": 3,
@@ -916,6 +933,9 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         rm = cfg.get("round_strike_multiple")
         self.round_strike_multiple = float(rm) if rm is not None else float(ROUND_STRIKES.get(self.instrument, 0))
         self.round_strike_tolerance_pct = float(cfg.get("round_strike_tolerance_pct", 0.15))
+        fm = cfg.get("far_expiry_strike_multiple")
+        self.far_strike_multiple = float(fm) if fm is not None else float(FAR_STRIKES.get(self.instrument, 0))
+        self.far_expiry_days = int(cfg.get("far_expiry_days", 27))
         self.live_within = timedelta(minutes=float(cfg.get("live_trade_minutes", 3)))
 
         self.eod_check_time = _parse_hhmm(cfg.get("eod_check_time", "15:13"))
@@ -1114,11 +1134,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             tol = self.round_strike_tolerance_pct
             ce_leg = await self.resolver.get_leg_by_premium(
                 self.instrument, expiry, "CE", target_premium, strike_window=self.adjustment_strike_window,
-                check_liquidity=True, **self._live_pick((target_premium * (1 - tol), target_premium * (1 + tol))),
+                check_liquidity=True, **self._live_pick((target_premium * (1 - tol), target_premium * (1 + tol)), expiry),
             )
             pe_leg = await self.resolver.get_leg_by_premium(
                 self.instrument, expiry, "PE", target_premium, strike_window=self.adjustment_strike_window,
-                check_liquidity=True, **self._live_pick((target_premium * (1 - tol), target_premium * (1 + tol))),
+                check_liquidity=True, **self._live_pick((target_premium * (1 - tol), target_premium * (1 + tol)), expiry),
             )
         except NoKiteSession:
             logger.warning(
@@ -1163,6 +1183,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             # See module docstring's "LONG-DATED ENTRY OVERRIDE".
             "days_to_expiry": days_to_expiry, "long_days_override": long_days_override,
             "strike_selection_capital_pct": effective_capital_pct,
+            # FAR STRIKES: the multiple every strike had to be (None: no rule)
+            "strike_multiple": self._far_multiple(expiry),
         }
         for side, leg in (("CE", ce_leg), ("PE", pe_leg)):
             price = leg.last_price
@@ -1695,12 +1717,36 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         if self.enable_hedging:
             await self._close_hedge_for(runner, ts, leg["token"], trigger)
 
-    def _live_pick(self, prefer_range: Optional[tuple] = None) -> dict:
-        """get_leg_by_premium's live pricing and round-strike lean (LIVE
-        PRICES in the module docstring)."""
+    def _far_multiple(self, expiry=None) -> Optional[float]:
+        """FAR STRIKES: the multiple every strike must be while the contract
+        is more than far_expiry_days from expiry (100 on NIFTY: never a
+        strike ending in 50), counted from the day being traded (the
+        tick's, so a replay counts as the day did); None when the rule is
+        off or the contract is that close."""
+        m = getattr(self, "far_strike_multiple", 0)
+        exp = expiry if expiry is not None else getattr(self, "contract_expiry", None)
+        today = getattr(self, "today", None)
+        if not m or exp is None or today is None:
+            return None
+        if isinstance(exp, datetime):
+            exp = exp.date()
+        return m if (exp - today).days > getattr(self, "far_expiry_days", 27) else None
+
+    def _pick_rules(self) -> dict:
+        """The rules any strike search must keep, for the DTT adjusted
+        `_adjust` borrowed under active_management (FAR STRIKES)."""
+        m = self._far_multiple()
+        return {"strike_multiple": m} if m else {}
+
+    def _live_pick(self, prefer_range: Optional[tuple] = None, expiry=None) -> dict:
+        """get_leg_by_premium's live pricing, round-strike lean and the far
+        strikes rule (LIVE PRICES and FAR STRIKES in the module docstring)."""
         out = {"live": True}
         if self.round_strike_multiple and prefer_range and prefer_range[1] > 0:
             out.update(prefer_multiple=self.round_strike_multiple, prefer_range=(max(prefer_range[0], 0.05), prefer_range[1]))
+        m = self._far_multiple(expiry)
+        if m:
+            out["strike_multiple"] = m
         return out
 
     async def _pick_leg(self, runner, side: str, target_premium: float, exclude_strikes=None,
@@ -1745,6 +1791,12 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             # chased; CE strikes descend TOWARD the PE's strike — either
             # reaching (not just passing) the opposite strike is the cap.
             crosses = (leg.strike >= opposite_strike) if side == "PE" else (leg.strike <= opposite_strike)
+            m = self._far_multiple()
+            if crosses and m and not is_multiple(opposite_strike, m):
+                # FAR STRIKES: the other side's strike is one this rule
+                # wouldn't take (opened before it); cap to the nearest
+                # allowed strike short of it instead of onto it
+                opposite_strike = (math.floor(opposite_strike / m) * m) if side == "PE" else (math.ceil(opposite_strike / m) * m)
             if crosses:
                 logger.info(
                     "%s: %s roll's %.2f-premium-target strike (%.2f) would reach/cross "
@@ -2238,6 +2290,9 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 sign = 1 if side == "CE" else -1
                 target_strike = short_leg_obj.strike + sign * point_distance
                 strikes = await self.resolver.list_strikes(self.instrument, self.contract_expiry, side)
+                m = self._far_multiple()
+                if m:   # FAR STRIKES: a hedge is a strike too
+                    strikes = [s for s in strikes if is_multiple(s, m)]
                 nearest = min(strikes, key=lambda s: abs(s - target_strike))
                 hedge = await self.resolver.get_leg(self.instrument, self.contract_expiry, nearest, side)
                 price = await self.resolver.get_live_price(hedge)
@@ -2247,6 +2302,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 hedge = await self.resolver.get_leg_by_premium(
                     self.instrument, self.contract_expiry, side, target_for_log,
                     strike_window=self.adjustment_strike_window, exclude_strikes={short_leg_obj.strike}, live=True,
+                    **({"strike_multiple": self._far_multiple()} if self._far_multiple() else {}),
                 )
                 price = hedge.last_price
         except Exception as e:

@@ -962,9 +962,12 @@ class IntradayDTTAdjustedStrategy(StrategyBase):
         target = self.adjustment_size_pct * bigger_now
         exclude = {leg["strike"] for leg in self.legs[side]}
         try:
+            # a strategy borrowing this method (strangle_monthly_v2's
+            # active_management) may add rules to the search (its FAR STRIKES)
             leg = await self.resolver.get_leg_by_premium(
                 self.options_underlying, self.expiry_selector, side, target,
                 strike_window=self.adjustment_strike_window, exclude_strikes=exclude,
+                **getattr(self, "_pick_rules", dict)(),
             )
             price = await self.resolver.get_ltp(leg)
             # Underlying spot AT this adjustment/roll leg's own resolution

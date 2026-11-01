@@ -533,3 +533,119 @@ def test_on_sensex_it_leans_to_round_strikes_when_the_premium_allows(pool_run, m
                  for side in ("CE", "PE")]
         assert any(l.strike % 500 for l in plain), "the closest premiums weren't round: the lean chose"
     pool_run(go)
+
+
+# ── FAR STRIKES: on NIFTY, more than 27 days out, never a strike ending in 50 ──
+
+async def plain_pick(strat, side, target, **kw):
+    """The pick with no FAR STRIKES rule: what it would take without it."""
+    return await strat.resolver.get_leg_by_premium("NIFTY", strat.contract_expiry, side, target,
+                                                   strike_window=strat.adjustment_strike_window, live=True, **kw)
+
+
+def test_on_nifty_far_from_expiry_it_never_takes_a_strike_ending_in_50(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)   # 14 Oct, the 24 Nov contract: 41 days out
+        legs = await shorts(sim)
+        assert len(legs) == 2
+        for p in legs:
+            assert float(p["metadata"]["strike"]) % 100 == 0, p["symbol"]
+            assert p["metadata"]["trigger_values"]["strike_multiple"] == 100
+        strat = sim.runner.strategy
+        target = legs[0]["metadata"]["trigger_values"]["target_premium"]
+        plain = [(await plain_pick(strat, side, target)).strike for side in ("CE", "PE")]
+        assert all(s % 100 == 50 for s in plain), f"the closest premiums were 50 strikes ({plain}): the rule chose"
+        await assert_book_consistent(pool, sim.dep_id)
+    pool_run(go)
+
+
+def test_within_27_days_a_strike_ending_in_50_can_be_taken(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch, far_expiry_days=60)   # 41 days out is now "near"
+        legs = await shorts(sim)
+        assert sorted(float(p["metadata"]["strike"]) for p in legs) == [23250.0, 26750.0]
+        assert all(p["metadata"]["trigger_values"]["strike_multiple"] is None for p in legs)
+        strat = sim.runner.strategy
+        assert strat._pick_rules() == {}
+        strat.far_expiry_days = 27
+        assert strat._pick_rules() == {"strike_multiple": 100.0}, "active management's searches keep the rule"
+        strat.today = strat.contract_expiry - timedelta(days=27)   # the day it turns 27 days out
+        assert strat._pick_rules() == {} and strat._far_multiple() is None
+    pool_run(go)
+
+
+def test_rolls_and_replacements_far_from_expiry_take_only_100_strikes(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        strat = sim.runner.strategy
+        targets = (40, 75, 120, 166.7, 240, 320)
+        for side in ("CE", "PE"):
+            for t in targets:
+                leg, _ = await strat._pick_leg(sim.runner, side, t)
+                assert leg.strike % 100 == 0, (side, t, leg.strike)
+        strat.far_strike_multiple = 0   # the rule off: some of the same searches land on a 50 strike
+        off = [(await strat._pick_leg(sim.runner, side, t))[0].strike for side in ("CE", "PE") for t in targets]
+        assert any(s % 100 == 50 for s in off), off
+    pool_run(go)
+
+
+def test_the_strike_cross_cap_stops_short_of_an_old_50_strike(pool_run, monkeypatch):
+    """A call sold before the rule (or a contract that came within 27 days
+    and went out again in a replay) at 25,050: a put chasing premium past
+    it caps at 25,000, not onto 25,050."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        strat = sim.runner.strategy
+        strat.legs["CE"][0]["strike"] = 25050.0
+        leg, _ = await strat._pick_leg(sim.runner, "PE", 2000)
+        assert leg.strike == 25000.0
+        strat.legs["CE"][0]["strike"] = 26700.0
+        strat.legs["PE"][0]["strike"] = 24950.0
+        leg, _ = await strat._pick_leg(sim.runner, "CE", 2000)
+        assert leg.strike == 25000.0
+        strat.far_strike_multiple = 0
+        leg, _ = await strat._pick_leg(sim.runner, "CE", 2000)
+        assert leg.strike == 24950.0, "without the rule it caps onto the other side's strike"
+    pool_run(go)
+
+
+def test_hedges_far_from_expiry_take_only_100_strikes(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch, enable_hedging=True)
+        longs = [p for p in await sim.open_positions() if p["side"] == "long"]
+        assert len(longs) == 2
+        assert all(float(p["metadata"]["strike"]) % 100 == 0 for p in longs), [p["symbol"] for p in longs]
+        strat = sim.runner.strategy
+        # a hedge kept a fixed distance from its short (a roll): 150 points
+        # from 26,700 is 26,850; the nearest it may take is a 100 strike
+        short = next(p for p in await shorts(sim) if p["symbol"].endswith("CE"))
+        stub = dataclasses.make_dataclass("Stub", ["instrument_token", "strike"])(999, 26700.0)
+        await strat._resolve_and_open_hedge(sim.runner, sim.market.now, "CE", stub, float(short["avg_entry_price"]), "test", 150)
+        assert strat.hedges[999]["strike"] in (26800.0, 26900.0)
+    pool_run(go)
+
+
+def test_the_resolver_rule_leaves_no_other_strike_and_says_so_when_none_is_priced(pool_run, monkeypatch):
+    async def go(pool):
+        import pytest
+        sim = await start(pool, monkeypatch)
+        strat = sim.runner.strategy
+        assert (await plain_pick(strat, "CE", 166.7)).strike % 100 == 50
+        assert (await plain_pick(strat, "CE", 166.7, strike_multiple=100)).strike % 100 == 0
+        with pytest.raises(ValueError, match="only multiples of 100000"):
+            await plain_pick(strat, "CE", 166.7, strike_multiple=100000)
+    pool_run(go)
+
+
+def test_active_managements_extra_legs_far_from_expiry_take_only_100_strikes(pool_run, monkeypatch):
+    """After converging under active_management the borrowed DTT
+    `_adjust` sells the extra legs: its strike search keeps the rule."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch, convergence_mode="active_management")
+        strat = sim.runner.strategy
+        strat.adjustment_size_pct = 0.25   # as _active_management_tick sets it
+        for bigger in (300, 420, 560):
+            await strat._adjust(sim.runner, sim.market.now, "PE", bigger)
+        pes = [float(p["metadata"]["strike"]) for p in await shorts(sim) if p["symbol"].endswith("PE")]
+        assert len(pes) == 4 and all(s % 100 == 0 for s in pes), pes   # without it: 23200, 23250, 23300, 23350
+    pool_run(go)

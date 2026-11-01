@@ -555,6 +555,7 @@ class OptionsResolver:
         liquidity_tolerance_pct: Optional[float] = None,
         live: bool = False, prefer_multiple: Optional[float] = None,
         prefer_range: Optional[tuple[float, float]] = None,
+        strike_multiple: Optional[float] = None,
     ) -> OptionLeg:
         """
         The leg (of `option_type`) whose current LTP is closest to
@@ -572,6 +573,11 @@ class OptionsResolver:
         closest premium when its own premium is inside `prefer_range`
         (lo, hi); the closest such one to target. None in range: the
         usual pick.
+
+        `strike_multiple`: a hard rule, unlike `prefer_multiple`: only
+        strikes that are multiples of it are candidates at all (e.g. 100
+        on NIFTY far from expiry: never a strike ending in 50). None of
+        them priced: ValueError, never a strike outside the rule.
 
         `liquidity_tolerance_pct` (falls back to the resolver's own
         default; None/0 = off): a liquidity TIE-BREAK, not a filter. Every
@@ -637,6 +643,8 @@ class OptionsResolver:
         step = await self.get_strike_step(underlying, expiry, exchange)
         all_strikes = await self.list_strikes(underlying, expiry, option_type, exchange)
 
+        if strike_multiple:   # a hard rule: the others aren't candidates at all
+            all_strikes = [s for s in all_strikes if is_multiple(s, strike_multiple)]
         window = [s for s in all_strikes if abs(s - atm) <= strike_window * step + step / 2]
         candidates = window or all_strikes   # fallback: window too tight for this chain
         candidates = [s for s in candidates if s not in exclude]
@@ -676,6 +684,7 @@ class OptionsResolver:
                 f"Could not fetch quotes for any {option_type} leg near ATM "
                 f"for {underlying} {expiry}"
                 + (f" (excluding strikes {sorted(exclude)})" if exclude else "")
+                + (f" (only multiples of {strike_multiple:g})" if strike_multiple else "")
             )
 
         rounded = None
