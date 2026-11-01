@@ -207,8 +207,43 @@ def test_a_trade_scene_holds_at_its_moment_with_the_numbers_said():
         if d["booked"] is not None:
             assert f"₹{round(abs(d['booked'])):,}" in said, sc["title"]
     gap = next(sc for sc in s["scenes"] if sc["title"] == "15:13 · End-of-day check")
-    assert gap["data"]["booked"] == 1200.0 and "stands at plus ₹893." in gap["steps"][-1]["text"]
+    assert gap["data"]["booked"] == 1200.0
     assert s["series"]["pnl"][gap["data"]["at"]] == 893.0 or round(s["series"]["pnl"][gap["data"]["at"]]) == 893
+
+
+def test_what_is_booked_and_what_is_open_is_said_and_carried():
+    """The P&L is never just one number: where a trade's P&L is said, so
+    is how much of it is booked and how the open positions stand, and the
+    box's booked figure moves by what the trade books (before → after)."""
+    s = build()
+    gap = next(sc for sc in s["scenes"] if sc["title"] == "15:13 · End-of-day check")
+    # the 24,500 put's roll booked ₹4,387.50 earlier; the 25,300 call's close books ₹1,200 here
+    assert gap["data"]["booked_before"] == 4387.5 and gap["data"]["booked_after"] == 5587.5
+    assert gap["steps"][-1]["text"] == "After the roll, the cycle stands at plus ₹893, with ₹5,588 booked and the open positions down ₹4,694."
+    for sc in (x for x in s["scenes"] if x["kind"] == "trade" and x["data"].get("booked_after") is not None):
+        d = sc["data"]
+        mine = sum(f["pnl"] or 0 for f in d["fills"] if not f["opening"] and f["leg"] is not None)
+        assert round(d["booked_after"] - d["booked_before"], 2) == round(mine, 2), sc["title"]
+    w = next(sc for sc in s["scenes"] if sc["kind"] == "wrap")["data"]
+    assert round(w["booked"] + w["open"], 2) == w["total"] and [x["title"] for x in w["trades"]] == [
+        sc["title"] for sc in s["scenes"] if sc["kind"] == "trade"]
+    assert ", with ₹" in texts(s, "wrap")[0] and "booked and the open positions" in texts(s, "wrap")[0]
+
+
+def test_every_open_legs_price_at_every_step():
+    """The option prices drawn under the index, and the positions table,
+    come from the same steps as the index: each open leg's own price."""
+    s, D = build(), sample()
+    S = s["series"]
+    assert len(S["held"]) == len(S["t"])
+    frames = {f["t"]: f for f in D["frames"]}
+    for i, t in enumerate(S["t"]):
+        assert S["held"][i] == [[h[0], round(h[1], 2)] for h in frames[t]["legs"]]
+    roll = next(sc for sc in s["scenes"] if sc["title"] == "13:40 · Roll")["data"]
+    closed = [f for f in roll["fills"] if not f["opening"]]
+    opened = [f for f in roll["fills"] if f["opening"]]
+    assert [s["legs"][f["leg"]]["what"] for f in closed] == ["24,500 put"] and closed[0]["entry"] == 119.5
+    assert [s["legs"][f["leg"]]["what"] for f in opened] == ["24,800 put"] and opened[0]["sold"]
 
 
 def test_it_ends_on_what_made_the_result():

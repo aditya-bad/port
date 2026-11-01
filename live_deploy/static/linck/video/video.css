@@ -111,6 +111,27 @@ body.record #cap { font-size: calc((100vh - 100vw * 780 / 1600) * 0.27); }
 #stage .wfl { font: 600 18px var(--f-body); }
 .row rect { fill: var(--card); stroke: var(--line2); stroke-width: 1.5; } #stage .roww { font: 650 20px var(--f-body); }
 
+/* the desk: option prices, positions, the P&L box */
+.bend.ce { fill: var(--wt); stroke: var(--paper); stroke-width: 2; } .bend.pe { fill: var(--b); stroke: var(--paper); stroke-width: 2; }
+.bend.shut { fill: var(--paper); stroke: var(--ink); stroke-width: 2.4; }
+.ln-opt { fill: none; stroke-width: 2.6; stroke-linejoin: round; stroke-linecap: round; }
+.ln-opt.ce { stroke: var(--wt); } .ln-opt.pe { stroke: var(--b); }
+.mk.in.ce { fill: var(--wt); stroke: var(--paper); stroke-width: 2.5; } .mk.in.pe { fill: var(--b); stroke: var(--paper); stroke-width: 2.5; }
+.mk.out { fill: var(--paper); stroke-width: 3; } .mk.out.ce { stroke: var(--wt); } .mk.out.pe { stroke: var(--b); }
+#stage .mkt { font: 600 13px var(--f-mono); paint-order: stroke; stroke: var(--paper); stroke-width: 5px; }
+#stage .mkt.ce { fill: color-mix(in oklch, var(--wt) 80%, var(--ink)); } #stage .mkt.pe { fill: color-mix(in oklch, var(--b) 80%, var(--ink)); }
+.phead .dot.ce { fill: var(--wt); stroke: var(--paper); stroke-width: 2; } .phead .dot.pe { fill: var(--b); stroke: var(--paper); stroke-width: 2; }
+#stage .pheadt { font: 700 14px var(--f-mono); paint-order: stroke; stroke: var(--paper); stroke-width: 5px; }
+#stage .pheadt.ce { fill: color-mix(in oklch, var(--wt) 75%, var(--ink)); } #stage .pheadt.pe { fill: color-mix(in oklch, var(--b) 75%, var(--ink)); }
+.prow .pbg { fill: var(--card); stroke: var(--line2); stroke-width: 1.5; }
+.prow .strip { stroke: none; fill: var(--line2); } .prow.ce .strip { fill: var(--wt); } .prow.pe .strip { fill: var(--b); }
+.prow.closed .pbg { fill: var(--soft); stroke-dasharray: 5 4; } .prow.new .pbg { fill: var(--ys); stroke: var(--ink); }
+#stage .pw { font: 650 18px var(--f-body); } #stage .pm { font: 500 13px var(--f-mono); fill: var(--mute); }
+#stage .pp { font: 700 18px var(--f-mono); font-variant-numeric: tabular-nums; } #stage .pp.good { fill: var(--g); } #stage .pp.bad { fill: var(--r); }
+#stage .prow.closed .pw { fill: var(--mute); }
+#stage .pnlv2 { font: 650 24px var(--f-display); font-variant-numeric: tabular-nums; } #stage .pnlv2.good { fill: var(--g); } #stage .pnlv2.bad { fill: var(--r); }
+#stage .fl.sm { font-size: 12px; }
+
 /* life.js */
 .lf-stamp rect { fill: color-mix(in oklch, var(--card) 70%, transparent); stroke-width: 5; }
 #stage .lf-stamp text { font: 800 34px var(--f-mono); letter-spacing: .14em; text-transform: uppercase; }

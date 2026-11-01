@@ -8,7 +8,8 @@ didn't trade (strategy_decisions), the deployment (its name, capital,
 config) in; the story out:
 
   {title, name, episode, index, live, as_of, start, end,
-   series: {t, idx, vix, pnl, booked, ce, pe},     at most MAX_POINTS steps
+   series: {t, idx, vix, pnl, booked, ce, pe, held},  at most MAX_POINTS steps
+           (held: each open leg's price at that step, [[leg, price]])
    legs:   [{what, kind, strike, sold, qty, entry, exit, a, b}],
    scenes: [{kind, title, data, steps: [{text, say, span, cue}]}]}
 
@@ -273,7 +274,7 @@ def _series(D: dict) -> tuple[dict, list[int]]:
     keep |= {e["frame"] for e in D.get("events") or [] if 0 <= e.get("frame", -1) < n} | {n - 1}
     keep = sorted(keep)
     kinds = [l.get("kind") for l in legs]
-    out = {k: [] for k in ("t", "idx", "vix", "pnl", "booked", "ce", "pe")}
+    out = {k: [] for k in ("t", "idx", "vix", "pnl", "booked", "ce", "pe", "held")}
     for i in keep:
         f = frames[i]
         out["t"].append(f["t"])
@@ -288,6 +289,8 @@ def _series(D: dict) -> tuple[dict, list[int]]:
                 seen[kd] = True
         out["ce"].append(round(side["CE"], 2) if seen["CE"] else None)
         out["pe"].append(round(side["PE"], 2) if seen["PE"] else None)
+        # each open leg's price here: [leg, price] (the option prices chart, the positions table)
+        out["held"].append([[h[0], round(float(h[1]), 2)] for h in f.get("legs") or [] if h[0] < len(kinds)])
     return out, keep
 
 
@@ -382,7 +385,8 @@ def build(D: dict, *, dep: dict, strategy_label: str, decisions: Optional[list] 
     for n, e in enumerate(events):
         if e in big:
             nxt = events[n + 1] if n + 1 < len(events) else None
-            scenes.append(_trade(e, prev, nxt, S, keep, legs, entry_of, strategy, is_strangle, cfg, capital, index, when, n + 1, len(events)))
+            scenes.append(_trade(e, prev, nxt, S, keep, legs, entry_of, strategy, is_strangle, cfg, capital, index, when, n + 1, len(events),
+                                 frames))
         prev = e
     if len(events) > len(big):
         rest = [e for e in events if e not in big]
@@ -409,12 +413,14 @@ def build(D: dict, *, dep: dict, strategy_label: str, decisions: Optional[list] 
         scenes.append(_now(fz, raw_legs, legs, S, cfg, capital, total, index, is_strangle, as_of, D))
 
     # 9. the end
-    end = f"So that's {episode}: {signed(total)}{' so far' if live else ''}."
+    end = f"So that's {episode}: {tally(total, booked, ' so far' if live else '')}."
     take = _takeaway(fz.get("split"), events, total, index, when)
     if take:
         end += " " + take
     end += " It's still running, so make this video again later to see how the rest of it goes." if live else " Thanks for watching."
-    scenes.append({"kind": "wrap", "title": "That's it", "data": {"total": round(total, 2), "live": live},
+    scenes.append({"kind": "wrap", "title": "That's it", "data": {
+        "total": round(total, 2), "booked": round(booked, 2), "open": round(total - booked, 2), "live": live,
+        "trades": [{"title": sc["title"], "booked": sc["data"]["booked"]} for sc in scenes if sc["kind"] == "trade"]},
                    "steps": [step(end, "end")]})
 
     return {"v": 1, "title": f"{name} · {episode}", "name": name, "episode": episode, "strategy": strategy,
@@ -575,7 +581,19 @@ def _lead(move: str, head: str, why: str) -> str:
     return f"{head}, {why[0].lower()}{why[1:]}"
 
 
-def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capital, index, when, n, of) -> dict:
+def tally(pnl: float, booked: float, so_far: str = "") -> str:
+    """'plus ₹893, with ₹1,200 booked and the open positions down ₹307'."""
+    op = pnl - booked
+    head = f"{signed(pnl)}{so_far}"
+    if abs(op) < 1:
+        return f"{head}, all of it booked"
+    if abs(booked) < 1:
+        return f"{head}, all of it on the positions still open"
+    b = rs(booked) if booked >= 0 else signed(booked)
+    return f"{head}, with {b} booked and the open positions {'up' if op > 0 else 'down'} {rs(abs(op))}"
+
+
+def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capital, index, when, n, of, frames=None) -> dict:
     fam = _family(e)
     v = e.get("values") or {}
     at = _at(keep, e["frame"])
@@ -593,11 +611,36 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
     cb = e.get("closed_before") or {}
     data: dict[str, Any] = {"family": fam, "trigger": e.get("trigger"), "at": at, "w": [w0, w1], "label": e["label"], "n": n, "of": of,
                             "t": e["t"], "fills": [], "booked": cb.get("booked") if cb else e.get("booked"), "pnl": e.get("pnl"), "spot": spot}
+    sym_leg = lambda sym, opening: next((j for j, l in enumerate(legs) if l["symbol"] == sym and l["t0"] and (  # noqa: E731
+        abs((_t(l["t0"]) - _t(e["t"])).total_seconds()) <= 120 if opening else
+        _t(l["t0"]) <= _t(e["t"]) and (l["t1"] is None or abs((_t(l["t1"]) - _t(e["t"])).total_seconds()) <= 120))), None)
     for f in (e.get("closed_before") or {}).get("fills", []) + (e.get("fills") or []):
         what, k, kind = _contract(f["symbol"])
+        j = sym_leg(f["symbol"], f["opening"])
+        entry = None
+        if not f["opening"]:
+            if j is not None and legs[j].get("entry") is not None:
+                entry = legs[j]["entry"]
+            elif f.get("pnl") is not None and f.get("qty"):
+                # what it was opened at, from what closing it booked
+                entry = round(float(f["price"]) + (1 if f["action"] == "buy" else -1) * float(f["pnl"]) / float(f["qty"]), 2)
         data["fills"].append({"verb": ("Sell" if f["action"] == "sell" else "Buy") + ("" if f["opening"] else " back"),
                               "what": what, "price": f["price"], "qty": f["qty"], "pnl": f.get("pnl"), "opening": f["opening"],
-                              "strike": k, "kind": kind})
+                              "strike": k, "kind": kind, "leg": j, "entry": entry,
+                              "sold": (f["action"] == "sell") == bool(f["opening"])})
+    # the P&L booked before this trade and after it (the box moves what a
+    # close books from open to booked when it's said). Only legs in this
+    # video count: the frames' booked P&L is theirs. The trade's frame may
+    # be the moment after it (a closed leg no longer held) or just before.
+    fr = frames[e["frame"]] if frames and 0 <= e.get("frame", -1) < len(frames) else None
+    after = None
+    if fr is not None:
+        mine = [x for x in data["fills"] if not x["opening"] and x["leg"] is not None]
+        this = sum(float(x["pnl"] or 0) for x in mine)
+        held_now = {h[0] for h in fr.get("legs") or []}
+        post = not mine or any(x["leg"] not in held_now for x in mine)
+        after = float(fr.get("booked") or 0) + (0 if post else this)
+        data["booked_after"], data["booked_before"] = round(after, 2), round(after - this, 2)
     steps = []
     mv = (e.get("since") or {}).get("idx")
     move = ""
@@ -679,7 +722,8 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
             data["gauge"]["after"] = round(new_small, 2)
             steps.append(step(s, "open"))
         if e.get("pnl") is not None:
-            steps.append(step(f"After the roll, {'the cycle' if strangle else 'it'} stands at {signed(e['pnl'])}.", "pnl"))
+            said = tally(e["pnl"], after) if after is not None else signed(e["pnl"])
+            steps.append(step(f"After the roll, {'the cycle' if strangle else 'it'} stands at {said}.", "pnl"))
 
     elif fam == "target":
         made, tgt = float(v["total_cycle_profit"]), v.get("checkpoint_target")
@@ -739,7 +783,8 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
         if bk is not None and not any("books" in st["text"] or "costs" in st["text"] for st in steps):
             steps.append(step(f"That {'books' if bk >= 0 else 'costs'} {rs(abs(bk))}.", "booked"))
         if e.get("pnl") is not None:
-            steps.append(step(f"After it, {'the cycle' if strangle else 'it'} stands at {signed(e['pnl'])}.", "pnl"))
+            said = tally(e["pnl"], after) if after is not None else signed(e["pnl"])
+            steps.append(step(f"After it, {'the cycle' if strangle else 'it'} stands at {said}.", "pnl"))
     if e.get("repaired"):
         steps.append(step("This trade was written in afterwards by a repair, from the market's own prices, because the app wasn't trading at that moment.", "note"))
     return {"kind": "trade", "title": title, "data": data, "steps": steps}
@@ -815,7 +860,9 @@ def _now(fz: dict, raw_legs: list, legs: list, S: dict, cfg: dict, capital: floa
         j, mark = h[0], h[1]
         if j < len(legs):
             held.append({**legs[j], "mark": mark, "stale": h[3]})
-    data: dict[str, Any] = {"held": [{"what": h["what"], "mark": h["mark"], "entry": h["entry"], "sold": h["sold"]} for h in held]}
+    data: dict[str, Any] = {"held": [{"what": h["what"], "mark": h["mark"], "entry": h["entry"], "sold": h["sold"],
+                                      "qty": h["qty"], "kind": h["kind"]} for h in held],
+                            "booked": round(float(fz.get("booked") or 0), 2), "total": round(total, 2)}
     steps = []
     if held:
         parts = [f"the {h['what']} is at {money(h['mark'])}, against {money(h['entry'])} when it {'sold' if h['sold'] else 'bought'} it"
