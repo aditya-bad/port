@@ -18,10 +18,16 @@ config) in; the story out:
 the voice), `cue` what the stage animates while it's said.
 
 The scenes, in order: what's in the video (open), how the strategy
-plays (rules), the market over the window (market), each trade with its
-reason and numbers (trade), the checks that held it back (checks), the
-P&L on the way (journey), where the money came from (split), where a
-running cycle stands now (now), and the end (wrap).
+plays (rules), the market over the window (market), the trades (trade:
+in full, with the stretch before it told while the market plays; run:
+the trades between the full ones as quick beats on one desk, so a cycle
+with ten rolls explains the rule once and plays the rest), the checks
+that held it back (checks), the P&L on the way (journey), where the
+money came from (split), where a running cycle stands now (now), and
+the end (wrap).
+
+In full (_full): every trade when there are FULL_MAX or fewer; else the
+first, the first of each rule, and every entry, exit, checkpoint and stop.
 
 Every number is from the replay or the strategy's own record; a rule's
 reason is what it recorded when it acted. Where a value wasn't recorded
@@ -44,7 +50,8 @@ from .speech import spoken
 
 IST = ZoneInfo("Asia/Kolkata")
 MAX_POINTS = 480          # steps drawn on a chart
-MAX_TRADES = 12           # trades given a scene of their own
+FULL_MAX = 5              # trades told in full; the rest are quick beats on one desk (a run)
+BEATS_MAX = 8             # beats said one by one in a run; past that, the quieter ones together
 MAX_CHECKS = 5            # checks that held it back, said
 INDEX_SAID = {"NIFTY 50": "Nifty", "NIFTY BANK": "Bank Nifty", "NIFTY FIN SERVICE": "Fin Nifty",
               "NIFTY MIDCAP SELECT": "Midcap Nifty", "SENSEX": "Sensex", "BANKEX": "Bankex"}
@@ -376,24 +383,23 @@ def build(D: dict, *, dep: dict, strategy_label: str, decisions: Optional[list] 
     # 3. the market
     scenes.append(_market(S, D, legs, index, when, live, is_strangle))
 
-    # 4. each trade (the biggest MAX_TRADES; the rest said in passing)
-    big = events
-    if len(events) > MAX_TRADES:
-        rank = sorted(events, key=lambda e: (e["kind"] not in ("new", "entry", "exit"), -abs(e.get("booked") or 0)))
-        big = sorted(rank[:MAX_TRADES], key=lambda e: e["t"])
-    prev = None
+    # 4. each trade: the ones that matter in full; the others, between
+    # them, as quick beats on one desk (a run), the market playing on
+    full = _full(events)
+    explained: set = set()
+    prev, run = None, []
     for n, e in enumerate(events):
-        if e in big:
-            nxt = events[n + 1] if n + 1 < len(events) else None
-            scenes.append(_trade(e, prev, nxt, S, keep, legs, entry_of, strategy, is_strangle, cfg, capital, index, when, n + 1, len(events),
-                                 frames))
+        if n in full:
+            if run:
+                scenes.append(_run(run, prev_of(events, run[0]), S, keep, legs, index, when, events, explained, frames))
+                run = []
+            scenes.append(_trade(e, prev, None, S, keep, legs, entry_of, strategy, is_strangle, cfg, capital, index, when, n + 1, len(events),
+                                 frames, explained))
+        else:
+            run.append(e)
         prev = e
-    if len(events) > len(big):
-        rest = [e for e in events if e not in big]
-        scenes.append({"kind": "more", "title": "The smaller trades", "data": {
-            "marks": [{"at": _at(keep, e["frame"]), "label": e["label"], "booked": e.get("booked")} for e in rest]},
-            "steps": [step(f"There were {len(rest)} smaller trades as well. Together they booked "
-                           f"{signed(sum(e.get('booked') or 0 for e in rest))}.", "marks")]})
+    if run:
+        scenes.append(_run(run, prev_of(events, run[0]), S, keep, legs, index, when, events, explained, frames))
 
     # 5. what held it back
     chk = _checks(decisions or [], S, when)
@@ -420,12 +426,14 @@ def build(D: dict, *, dep: dict, strategy_label: str, decisions: Optional[list] 
     end += " It's still running, so make this video again later to see how the rest of it goes." if live else " Thanks for watching."
     scenes.append({"kind": "wrap", "title": "That's it", "data": {
         "total": round(total, 2), "booked": round(booked, 2), "open": round(total - booked, 2), "live": live,
-        "trades": [{"title": sc["title"], "booked": sc["data"]["booked"]} for sc in scenes if sc["kind"] == "trade"]},
+        "trades": [{"title": sc["title"], "booked": sc["data"]["booked"]} if sc["kind"] == "trade" else
+                   {"title": sc["data"]["chip"], "booked": sc["data"]["booked"]} for sc in scenes if sc["kind"] in ("trade", "run")]},
                    "steps": [step(end, "end")]})
 
     return {"v": 1, "title": f"{name} · {episode}", "name": name, "episode": episode, "strategy": strategy,
             "strategy_label": strategy_label, "index": index, "live": live, "as_of": as_of.isoformat(),
             "start": D.get("start"), "end": D.get("end"), "series": S,
+            "events": [{"at": _at(keep, e["frame"]), "t": e["t"], "label": e["label"], "booked": e.get("booked")} for e in events],
             "legs": [{k: v for k, v in l.items() if k not in ("symbol", "t0", "t1")} for l in legs],
             "scenes": scenes}
 
@@ -593,7 +601,166 @@ def tally(pnl: float, booked: float, so_far: str = "") -> str:
     return f"{head}, with {b} booked and the open positions {'up' if op > 0 else 'down'} {rs(abs(op))}"
 
 
-def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capital, index, when, n, of, frames=None) -> dict:
+def prev_of(events: list, e: dict) -> Optional[dict]:
+    i = next(n for n, x in enumerate(events) if x is e)
+    return events[i - 1] if i else None
+
+
+def _full(events: list) -> set:
+    """Which trades get a scene of their own: all of them if there are
+    few; else the first, the first of each rule (where it's explained),
+    and every entry, exit, checkpoint and stop. The rest are beats in runs
+    between them, the market playing on (the biggest of them said as such)."""
+    if len(events) <= FULL_MAX:
+        return set(range(len(events)))
+    keep, seen = {0}, set()
+    for i, e in enumerate(events):
+        if e.get("trigger") not in seen:
+            seen.add(e.get("trigger"))
+            keep.add(i)
+        if _family(e) in ("target", "stop", "entry") or e["kind"] in ("new", "entry", "exit"):
+            keep.add(i)
+    return keep
+
+
+def _walk(S: dict, w0: int, at: int, index: str, legs: list) -> Optional[str]:
+    """What the options and the P&L did between the trade before and this
+    one, said while the desk plays that stretch (ending a step short of
+    the trade: what the picture shows when it's said)."""
+    a, z = w0, max(w0, at - 1)
+    if z - a < 3:
+        return None
+    sides = []
+    for k, name in (("ce", "call"), ("pe", "put")):
+        x0, x1 = S[k][a], S[k][z]
+        if x0 is not None and x1 is not None and abs(x1 - x0) >= 0.5:
+            sides.append(f"the {name} side went from {money(x0)} to {money(x1)}")
+    p = [(i, S["pnl"][i]) for i in range(a, z + 1) if S["pnl"][i] is not None]
+    if not sides and len(p) < 2:
+        return None
+    s = ""
+    if sides:
+        s = f"Watch the options while {index} moves: " + ", and ".join(sides) + ". "
+    if len(p) >= 2:
+        p0, p1 = p[0][1], p[-1][1]
+        lo, hi = min(p, key=lambda x: x[1]), max(p, key=lambda x: x[1])
+        s += f"The P&L went from {signed(p0)} to {signed(p1)}"
+        room = max(300.0, 0.1 * (hi[1] - lo[1]))
+        if lo[1] < min(p0, p1) - room:
+            s += f", after dipping to {signed(lo[1])} at {hhmm(S['t'][lo[0]])}"
+        elif hi[1] > max(p0, p1) + room:
+            s += f", after touching {signed(hi[1])} at {hhmm(S['t'][hi[0]])}"
+        s += "."
+    return s.strip()
+
+
+def _fills_short(fills: list) -> str:
+    """'bought back the 24,500 put at ₹61 and sold the 24,800 put at ₹118'."""
+    out = []
+    for f in fills:
+        what = _contract(f["symbol"])[0]
+        verb = ("sold" if f["opening"] else "sold back") if f["action"] == "sell" else ("bought" if f["opening"] else "bought back")
+        out.append(f"{verb} the {what} at {money(f['price'])}")
+    return ", ".join(out[:-1]) + (" and " if len(out) > 1 else "") + out[-1] if out else ""
+
+
+def _booking(bk) -> str:
+    if bk is None:
+        return ""
+    return f", booking {rs(bk)}" if bk >= 0 else f", a loss of {rs(-bk)}"
+
+
+def _run(run: list, before: Optional[dict], S: dict, keep: list, legs: list, index: str, when: When, events: list,
+         explained: set, frames) -> dict:
+    """Trades between the full ones, played as quick beats on one desk:
+    the market plays on from the trade before, each trade a sentence
+    ('40 minutes later, at 24,950, the put side was down to 46% of the
+    call, so it rolled: bought back … and sold …, booking ₹900') as the
+    playhead reaches it. More than BEATS_MAX: the biggest said one by one,
+    the quieter ones between them together."""
+    ats = [_at(keep, e["frame"]) for e in run]
+    w0 = _at(keep, before["frame"]) if before else 0
+    last = len(S["t"]) - 1
+    w1 = min(last, ats[-1] + max(2, (ats[-1] - w0) // 12))
+    rolls = all(e.get("label") == "Roll" for e in run)
+    noun = ("roll" if rolls else "trade") + ("s" if len(run) != 1 else "")
+    said = set(range(len(run)))
+    if len(run) > BEATS_MAX:
+        said = set(sorted(range(len(run)), key=lambda i: -abs(run[i].get("booked") or 0))[:BEATS_MAX - 1])
+        # a quiet one alone between two said is said too: a group is two or more
+        for i in range(len(run)):
+            if i not in said and (i == 0 or i - 1 in said) and (i == len(run) - 1 or i + 1 in said):
+                said.add(i)
+    beats, steps, segs = [], [], []
+    prev_t = before["t"] if before else run[0]["t"]
+    gains = [i for i in range(len(run)) if (run[i].get("booked") or 0) > 0]
+    losses = [i for i in range(len(run)) if (run[i].get("booked") or 0) < 0]
+    top = set()
+    if len(run) >= 3:
+        if gains:
+            top.add(max(gains, key=lambda i: run[i]["booked"]))
+        if losses:
+            top.add(min(losses, key=lambda i: run[i]["booked"]))
+    group: list = []
+
+    def flush_group():
+        nonlocal prev_t
+        if not group:
+            return
+        g = [run[i] for i in group]
+        bk = sum(e.get("booked") or 0 for e in g)
+        s = (f"{'Then' if segs else 'First'} {_n(len(g))} {'more' if segs else 'quick ones'}, from {hhmm(g[0]['t'])} to {hhmm(g[-1]['t'])}, the same way" +
+             (f", {'booking' if bk >= 0 else 'costing'} {rs(abs(bk))} together." if any(e.get("booked") is not None for e in g) else "."))
+        steps.append(step(s, "beat"))
+        segs.append({"to": ats[group[-1]], "beats": list(group)})
+        prev_t = g[-1]["t"]
+        group.clear()
+
+    for i, e in enumerate(run):
+        v = e.get("values") or {}
+        num = next(n for n, x in enumerate(events) if x is e) + 1
+        beats.append({"at": ats[i], "t": e["t"], "label": e["label"], "booked": e.get("booked"), "n": num,
+                      "fills": [{"what": _contract(f["symbol"])[0], "opening": f["opening"], "price": f["price"],
+                                 "kind": _contract(f["symbol"])[2]} for f in e.get("fills") or []]})
+        if i not in said:
+            group.append(i)
+            continue
+        flush_group()
+        lead = later(prev_t, e["t"])
+        spot = e.get("idx")
+        s = f"{lead}{f', with {index} at {pts(spot)}' if spot else ''}, "
+        if e.get("trigger") in BALANCE and v.get("smaller_sum") is not None and v.get("bigger_sum"):
+            sm, bg = SIDE.get(v.get("smaller_side"), "smaller"), SIDE.get(v.get("bigger_side"), "bigger")
+            s += f"the {sm} side was down to {pct(v['smaller_sum'], v['bigger_sum'])}% of the {bg}, so it {'rolled' if e.get('label') == 'Roll' else 'acted'}: "
+        else:
+            s += f"{e['label'].lower()}: it "
+        s += _fills_short(e.get("fills") or []) + _booking(e.get("booked")) + "."
+        bk = e.get("booked")
+        if bk is not None and i in top and abs(bk) >= 1:
+            s += f" That's the biggest {'gain' if bk > 0 else 'loss'} in this stretch."
+        steps.append(step(s[0].upper() + s[1:], "beat"))
+        segs.append({"to": ats[i], "beats": [i]})
+        prev_t = e["t"]
+    flush_group()
+    if any(e.get("trigger") in explained for e in run):
+        intro = (f"The next {_n(len(run))} {noun} follow the same rule, so here they are, quickly." if len(run) > 1 else
+                 f"This {noun} follows the same rule.")
+        steps[0] = step(f"{intro} {steps[0]['text']}", "beat")
+    explained.update(e.get("trigger") for e in run)
+    a = _t(run[0]["t"])
+    z = _t(run[-1]["t"])
+    span = f"{a:%H:%M}–{z:%H:%M}" if a.date() == z.date() else f"{a:%a %H:%M} – {z:%a %H:%M}"
+    bk = [e.get("booked") for e in run if e.get("booked") is not None]
+    fr = frames[run[-1]["frame"]] if frames and 0 <= run[-1].get("frame", -1) < len(frames) else {}
+    return {"kind": "run", "title": f"{span} · {len(run)} {noun}", "data": {
+        "w": [w0, w1], "beats": beats, "segs": segs, "of": len(events), "noun": noun,
+        "booked": round(sum(bk), 2) if bk else None, "chip": f"{len(run)} {noun}",
+        "pnl": fr.get("pnl")}, "steps": steps}
+
+
+def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capital, index, when, n, of, frames=None,
+           explained: Optional[set] = None) -> dict:
+    explained = explained if explained is not None else set()
     fam = _family(e)
     v = e.get("values") or {}
     at = _at(keep, e["frame"])
@@ -605,11 +772,26 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
     # a little room after it, never the hours that came next
     w1 = min(last, at + max(2, (at - w0) // 8))
     spot = e.get("idx")
+    # the market plays from the trade before (its step) to the last step
+    # that still shows the positions this trade changes: a trade right at
+    # a step's end is already in that step (its prices are its end's)
+    frm = max(w0, min(at, _at(keep, prev["frame"]))) if prev is not None else w0
+    gone, came = set(), set()
+    for f in (e.get("closed_before") or {}).get("fills", []) + (e.get("fills") or []):
+        j = next((n for n, l in enumerate(legs) if l["symbol"] == f["symbol"] and l["t0"] and (
+            abs((_t(l["t0"]) - _t(e["t"])).total_seconds()) <= 120 if f["opening"] else
+            _t(l["t0"]) < _t(e["t"]) and l["t1"] is not None and abs((_t(l["t1"]) - _t(e["t"])).total_seconds()) <= 120)), None)
+        if j is not None:
+            (came if f["opening"] else gone).add(j)
+    pre = max(frm, at - 1)
+    while pre > frm and ((gone and not gone <= {h[0] for h in S["held"][pre]}) or (came & {h[0] for h in S["held"][pre]})):
+        pre -= 1
+    walk = _walk(S, frm, pre + 1, index, legs) if prev is not None else None
     head = when(e["t"], cap=True)
     title = f"{hhmm(e['t'])} · " + {"target": "Checkpoint hit", "stop": "Stop hit"}.get(
         fam, "End-of-day check" if e.get("trigger") == "eod_gap_check" else e["label"])
     cb = e.get("closed_before") or {}
-    data: dict[str, Any] = {"family": fam, "trigger": e.get("trigger"), "at": at, "w": [w0, w1], "label": e["label"], "n": n, "of": of,
+    data: dict[str, Any] = {"family": fam, "trigger": e.get("trigger"), "at": at, "w": [w0, w1], "from": frm, "pre": pre, "label": e["label"], "n": n, "of": of,
                             "t": e["t"], "fills": [], "booked": cb.get("booked") if cb else e.get("booked"), "pnl": e.get("pnl"), "spot": spot}
     sym_leg = lambda sym, opening: next((j for j, l in enumerate(legs) if l["symbol"] == sym and l["t0"] and (  # noqa: E731
         abs((_t(l["t0"]) - _t(e["t"])).total_seconds()) <= 120 if opening else
@@ -699,6 +881,8 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
                                       else v.get("ratio") or cfg.get("adjustment_trigger_ratio", 0.5))}
         if move:
             steps.append(step(move, "move"))
+        if walk:
+            steps.append(step(walk, "walk"))
         s = f"Watch the two sides. The {bg} side is now worth {money(bigv)}, and the {sm} side has shrunk to {money(small)}."
         if mv is not None and ((bg == "call" and mv > 0) or (bg == "put" and mv < 0)):
             s += f" The market moved toward the {bg}, so it got pricier, while the {sm}, further away, lost value."
@@ -708,10 +892,14 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
             fl = round(data["gauge"]["line"] * 100)
             s = (f"This is the end-of-day check. It won't carry a gap wider than {fl}% overnight, and {money(small)} "
                  f"is only {p}% of {money(bigv)}, so it acts.")
+        elif e.get("trigger") in explained:
+            r = round(data["gauge"]["line"] * 100)
+            s = f"The same rule as before: {money(small)} is {p}% of {money(bigv)}, under the {r}% line, so it rolls again."
         else:
             r = round(data["gauge"]["line"] * 100)
             s = (f"Here's the rule. If one side falls below {r}% of the other, the strangle is lopsided: the market is leaning on "
                  f"the {bg}, and the {sm} is too far away to earn much. {money(small)} is just {p}% of {money(bigv)}, so the rule fires.")
+        explained.add(e.get("trigger"))
         steps.append(step(s, "ratio"))
         for s in _fills_sentence(closes, entry_of, e["t"], spot, lead="First it"):
             steps.append(step(s, "close"))
@@ -730,6 +918,8 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
         data["gauge"] = {"made": made, "target": tgt}
         if move and prev is not None:
             steps.append(step(move, "move"))
+            if walk:
+                steps.append(step(walk, "walk"))
         s = f"{'By now' if move and prev is not None else head + ','} the cycle's profit {'has reached' if move and prev is not None else 'reaches'} {rs(made)}"
         parts = [f"{rs(v['cycle_realized_pnl'])} booked" if v.get("cycle_realized_pnl") is not None else None,
                  f"{rs(v['unrealized'])} still open" if v.get("unrealized") is not None else None]
@@ -754,6 +944,8 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
         data["gauge"] = {"base": v.get("convergence_premium"), "now": v.get("combined_now"), "stop": v.get("stop_level")}
         if move and prev is not None:
             steps.append(step(move, "move"))
+            if walk:
+                steps.append(step(walk, "walk"))
             head = "By now"
         if e.get("trigger") == "convergence_stop":
             s = (f"{head}, its call and put are at the same strike. That's a straddle, and a straddle has no cushion: any move hurts it.")
@@ -773,6 +965,8 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
     else:   # an exit, or a change worded by its rule
         why = rule_why(strategy, e.get("trigger") or "", v)
         steps.append(step(_lead(move, head, why), "move"))
+        if walk and move and prev is not None:
+            steps.append(step(walk, "walk"))
         vals = [(k.replace("_", " "), x) for k, x in v.items() if isinstance(x, (int, float)) and not isinstance(x, bool)][:4]
         if vals:
             data["values"] = [{"k": k, "v": x} for k, x in vals]

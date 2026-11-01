@@ -37,7 +37,7 @@ function chip(p, x, y, s, cls = '') {
 function chart(p, box, i0, i1, o = {}) {
   const s = S(), key = o.key || 'idx';
   const vals = [];
-  for (let i = i0; i <= i1; i++) if (s[key][i] != null) vals.push(s[key][i]);
+  for (const k2 of [key, ...(o.also || [])]) for (let i = i0; i <= i1; i++) if (s[k2][i] != null) vals.push(s[k2][i]);   // every line drawn fits
   for (const v of o.extra || []) if (v != null) vals.push(v);
   if (o.zero) vals.push(0);
   let lo = Math.min(...vals), hi = Math.max(...vals);
@@ -95,7 +95,8 @@ function chart(p, box, i0, i1, o = {}) {
       E('line', { x1: xs(a), x2: xs(b), y1: y, y2: y, class: `band ${L.kind === 'CE' ? 'ce' : 'pe'}` }, bands);
       if (L.a >= i0) E('circle', { cx: xs(L.a), cy: y, r: 6, class: `bend ${L.kind === 'CE' ? 'ce' : 'pe'}` }, bands);
       if (L.b != null && L.b <= i1) E('circle', { cx: xs(L.b), cy: y, r: 6, class: 'bend shut' }, bands);
-      T(bands, xs(a) + 6, y + (L.kind === 'CE' ? -9 : 21), `${fmt(L.strike)} ${L.kind === 'CE' ? 'call' : 'put'}`, `bandt ${L.kind === 'CE' ? 'ce' : 'pe'}`, 'start');
+      if (!o.lastLabels || L.b == null || L.b >= i1)
+        T(bands, xs(a) + 6, y + (L.kind === 'CE' ? -9 : 21), `${fmt(L.strike)} ${L.kind === 'CE' ? 'call' : 'put'}`, `bandt ${L.kind === 'CE' ? 'ce' : 'pe'}`, 'start');
     }
   }
   const areas = {};
@@ -156,7 +157,7 @@ function slideIn(el, t, a, d = 0.45) {
 // two bars and the line the rule acts at (the strangle's balance)
 function balance(p, x, y, h, g0) {
   const g = G(p, 'bal');
-  const top = Math.max(g0.big, g0.small, g0.big0 || 0, g0.small0 || 0, g0.after || 0) * 1.12 || 1;
+  const top = Math.max(g0.big, g0.small, g0.big0 || 0, g0.small0 || 0, g0.after || 0) * 1.3 || 1;
   const yv = v => y + h - (v / top) * h;
   E('line', { x1: x - 20, x2: x + 380, y1: y + h, y2: y + h, class: 'axis' }, g);
   const bars = [0, 1].map(i => {
@@ -268,13 +269,13 @@ function prices(p, box, i0, i1, o = {}) {
       inM = G(mg, 'pmk');
       E('circle', { cx: xs(l.a), cy: ys(l.entry), r: 7, class: `mk in ${sideCls(l)}` }, inM);
       const right = xs(l.a) > box.x + box.w * 0.62;
-      if (o.labels) T(inM, xs(l.a) + (right ? -12 : 12), ys(l.entry) + dy, `${l.what} · ${verbOf(l)} ${px(l.entry)}`, `mkt ${sideCls(l)}`, right ? 'end' : 'start');
+      if (o.labels && (!o.only || o.only.has(j))) T(inM, xs(l.a) + (right ? -12 : 12), ys(l.entry) + dy, `${l.what} · ${verbOf(l)} ${px(l.entry)}`, `mkt ${sideCls(l)}`, right ? 'end' : 'start');
       op(inM, 0);
     }
     if (l.b != null && l.b <= i1 && l.exit != null) {
       outM = G(mg, 'pmk');
       E('circle', { cx: xs(l.b), cy: ys(l.exit), r: 7, class: `mk out ${sideCls(l)}` }, outM);
-      if (o.labels) T(outM, xs(l.b) - 12, ys(l.exit) + dy, `closed ${px(l.exit)}`, `mkt ${sideCls(l)}`, 'end');
+      if (o.labels && (!o.only || o.only.has(j))) T(outM, xs(l.b) - 12, ys(l.exit) + dy, `closed ${px(l.exit)}`, `mkt ${sideCls(l)}`, 'end');
       op(outM, 0);
     }
     const head = G(g, 'phead');
@@ -306,8 +307,9 @@ function prices(p, box, i0, i1, o = {}) {
         if (!open || !o.heads || !x.show) { op(x.head, 0); continue; }
         shown.push([j, ys(M[j][pi]), M[j][pi]]);
       }
-      // the prices beside the dots, pushed apart so none hides another
+      // the prices beside the dots, pushed apart so none hides another (past five, the dots alone)
       shown.sort((a, b) => a[1] - b[1]);
+      const say = shown.length <= 5;
       let last = -1e9;
       for (const [j, y, v] of shown) {
         const x = legs[j], ly = Math.max(y, last + 20);
@@ -315,35 +317,58 @@ function prices(p, box, i0, i1, o = {}) {
         op(x.head, x.show);
         tr(x.head, xs(i), y);
         x.ht.setAttribute('y', (ly - y + 5).toFixed(1));
-        txt(x.ht, px(v));
+        txt(x.ht, say ? px(v) : '');
       }
     },
   };
 }
 
 // the positions table: each leg held at that moment, what it was opened
-// at, its price now and its P&L; a close stays on as "closed" with what
-// it booked, a new leg comes in marked "new"
+// at, its price now and its P&L, with a bar that grows and shrinks with
+// it; a close stays on as "closed" with what it booked, a new leg comes in
+// marked "new". More legs than rows: each side's legs as one row.
 function positions(p, x, y, w, nRows) {
   const g = G(p, 'pos');
   T(g, x, y, 'Positions', 'fl', 'start');
-  const n = Math.max(1, Math.min(5, nRows)), h = Math.min(54, 250 / n);
+  const n = Math.max(1, Math.min(5, nRows)), h = Math.min(54, 230 / n);
+  const bx = x + w * 0.64, bw = 64;   // the P&L bar: from a zero tick, right for a gain, left for a loss
+  let scale = 1;
   const rows = Array.from({ length: n }, (_, r) => {
-    const rg = G(g, 'prow'), yy = y + 12 + r * h;
-    E('rect', { x, y: yy, width: w, height: h - 6, rx: 8, class: 'pbg' }, rg);
-    const strip = E('rect', { x, y: yy, width: 7, height: h - 6, rx: 3, class: 'strip' }, rg);
-    const a = T(rg, x + 20, yy + (h - 6) * 0.45, '', 'pw', 'start');
-    const b = T(rg, x + 20, yy + (h - 6) * 0.84, '', 'pm', 'start');
-    const c = T(rg, x + w - 16, yy + (h - 6) * 0.45, '', 'pp', 'end');
-    const d = T(rg, x + w - 16, yy + (h - 6) * 0.84, '', 'pm', 'end');
+    const rg = G(g, 'prow'), yy = y + 12 + r * h, hh = h - 6;
+    E('rect', { x, y: yy, width: w, height: hh, rx: 8, class: 'pbg' }, rg);
+    E('rect', { x, y: yy, width: 7, height: hh, rx: 3, class: 'strip' }, rg);
+    E('line', { x1: bx, x2: bx, y1: yy + hh * 0.2, y2: yy + hh * 0.8, class: 'pzero' }, rg);
+    const bar = E('rect', { x: bx, y: yy + hh * 0.3, width: 0, height: hh * 0.4, rx: 2, class: 'pbar' }, rg);
+    const a = T(rg, x + 20, yy + hh * 0.45, '', 'pw', 'start');
+    const b = T(rg, x + 20, yy + hh * 0.84, '', 'pm', 'start');
+    const c = T(rg, x + w - 16, yy + hh * 0.45, '', 'pp', 'end');
+    const d = T(rg, x + w - 16, yy + hh * 0.84, '', 'pm', 'end');
     op(rg, 0);
-    return { rg, strip, a, b, c, d };
+    return { rg, bar, a, b, c, d };
   });
   const none = T(g, x + 20, y + 40, 'nothing open', 'pm', 'start');
   const more = T(g, x + w, y, '', 'pm', 'end');
+  const grouped = list => {
+    if (list.length <= n) return list;
+    const by = new Map();
+    for (const v of list) {
+      const key = `${v.cls}|${v.state || ''}|${v.sold}`;
+      if (!by.has(key)) by.set(key, []);
+      by.get(key).push(v);
+    }
+    return [...by.values()].map(vs => (vs.length === 1 ? vs[0] : {
+      ...vs[0], n: vs.length,
+      what: `${vs.length} ${vs[0].cls === 'ce' ? 'calls' : vs[0].cls === 'pe' ? 'puts' : 'legs'}`,
+      entry: vs.reduce((a, v) => a + (v.entry || 0), 0), mark: vs.reduce((a, v) => a + (v.mark || 0), 0),
+      pnl: vs.some(v => v.pnl == null) ? null : vs.reduce((a, v) => a + v.pnl, 0),
+      o: Math.max(...vs.map(v => (v.o == null ? 1 : v.o))),
+    }));
+  };
   return {
     g,
-    set(list) {
+    scale(v) { scale = Math.max(1, v); },
+    set(list0) {
+      const list = grouped(list0);
       op(none, list.length ? 0 : 1);
       txt(more, list.length > n ? `+${list.length - n} more` : '');
       rows.forEach((r, i) => {
@@ -351,22 +376,29 @@ function positions(p, x, y, w, nRows) {
         if (!v) { op(r.rg, 0); return; }
         op(r.rg, v.o == null ? 1 : v.o);
         r.rg.setAttribute('class', `prow ${v.cls || ''} ${v.state || ''}`);
+        const verb = v.sold ? 'sold' : 'bought', all = v.n ? ' in all' : '';
         txt(r.a, `${v.sold ? 'Short' : 'Long'} ${v.what}`);
-        txt(r.b, v.state === 'closed' ? `${v.sold ? 'sold' : 'bought'} ${px(v.entry)} → closed ${px(v.mark)}`
-          : v.state === 'new' ? `${v.sold ? 'sold' : 'bought'} just now at ${px(v.entry)}`
-            : `${v.sold ? 'sold' : 'bought'} ${px(v.entry)} → now ${px(v.mark)}`);
+        txt(r.b, v.state === 'closed' ? `${verb} ${px(v.entry)}${all} → closed ${px(v.mark)}`
+          : v.state === 'new' ? `${verb} just now at ${px(v.entry)}${all}`
+            : `${verb} ${px(v.entry)}${all} → now ${px(v.mark)}`);
         txt(r.c, v.pnl == null ? '' : sinr(v.pnl));
         r.c.setAttribute('class', `pp ${tone(v.pnl)}`);
         txt(r.d, v.state === 'closed' ? 'booked' : v.state === 'new' ? 'new' : 'open');
+        const bwid = v.pnl == null ? 0 : Math.min(bw, Math.abs(v.pnl) / scale * bw);
+        r.bar.setAttribute('width', bwid.toFixed(1));
+        r.bar.setAttribute('x', (v.pnl < 0 ? bx - bwid : bx).toFixed(1));
+        r.bar.setAttribute('class', `pbar ${tone(v.pnl)}`);
       });
     },
   };
 }
 
-// the P&L box: booked, open and the total at the moment shown
-function pnlBox(p, x, y, w) {
-  const g = G(p, 'pnlchip');
-  E('rect', { x, y, width: w, height: 142, rx: 12 }, g);
+// the P&L box: booked, open and the total at the moment shown; with
+// `sp` ({i0, i1}), the total P&L's line under them, drawn to the playhead
+function pnlBox(p, x, y, w, sp = null) {
+  const g = G(p, 'pnlchip'), s = S();
+  const hh = sp ? 182 : 142;
+  E('rect', { x, y, width: w, height: hh, rx: 12 }, g);
   const head = T(g, x + 24, y + 30, 'P&L', 'fl', 'start');
   const when = T(g, x + w - 24, y + 30, '', 'mono mute pwhen', 'end');
   const cols = ['Booked', 'Open', 'Total'].map((l, i) => {
@@ -374,15 +406,39 @@ function pnlBox(p, x, y, w) {
     T(g, cx0, y + 60, l, 'fl sm', 'start');
     return T(g, cx0, y + 96, '', i === 2 ? 'pnlv' : 'pnlv2', 'start');
   });
-  const note = T(g, x + 24, y + 128, '', 'tb', 'start');
+  let spark = null;
+  if (sp) {
+    const vals = [0];
+    for (let i = sp.i0; i <= sp.i1; i++) if (s.pnl[i] != null) vals.push(s.pnl[i]);
+    let lo = Math.min(...vals), hi = Math.max(...vals);
+    if (hi - lo < 1) { hi += 1; lo -= 1; }
+    const bx = x + 24, bw = w - 48, by = y + 112, bh = 40;
+    const sx = i => bx + (i - sp.i0) / Math.max(1, sp.i1 - sp.i0) * bw, sy = v => by + bh - (v - lo) / (hi - lo) * bh;
+    E('line', { x1: bx, x2: bx + bw, y1: sy(0), y2: sy(0), class: 'sparkzero' }, g);
+    const line = E('path', { class: 'spark' }, g), dot = E('circle', { r: 5, class: 'sparkdot' }, g);
+    spark = i => {
+      let d = '', pen = false, last = null;
+      for (let q = sp.i0; q <= Math.min(i, sp.i1); q++) {
+        const v = s.pnl[q];
+        if (v == null) { pen = false; continue; }
+        d += `${pen ? 'L' : 'M'}${sx(q).toFixed(1)} ${sy(v).toFixed(1)}`;
+        pen = true; last = [q, v];
+      }
+      line.setAttribute('d', d);
+      op(dot, last ? 1 : 0);
+      if (last) { dot.setAttribute('cx', sx(last[0]).toFixed(1)); dot.setAttribute('cy', sy(last[1]).toFixed(1)); dot.setAttribute('class', `sparkdot ${tone(last[1])}`); }
+    };
+  }
+  const note = T(g, x + 24, y + hh - 12, '', 'tb', 'start');
   return {
-    g,
+    g, h: hh,
     set(label, whenS, booked, total, noteS, noteV) {
       txt(head, label); txt(when, whenS);
       const open = total == null || booked == null ? null : total - booked;
       [booked, open, total].forEach((v, i) => { txt(cols[i], sinr(v)); cols[i].setAttribute('class', `${i === 2 ? 'pnlv' : 'pnlv2'} ${tone(v)}`); });
       txt(note, noteS || ''); note.setAttribute('class', `tb ${tone(noteV)}`);
     },
+    spark(i) { if (spark) spark(i); },
   };
 }
 
@@ -420,7 +476,7 @@ DRAW.open = (p, sc, cx) => {
     op(g, 0);
     return g;
   });
-  const trades = st().scenes.filter(x => x.kind === 'trade').map(x => x.data.at);
+  const trades = (st().events || st().scenes.filter(x => x.kind === 'trade').map(x => x.data)).map(x => x.at);
   const dots = trades.map(i => { const c = E('circle', { cx: ch.xs(i), cy: ch.ys(s.pnl[i] || 0), r: 7, class: 'evdot' }, R); op(c, 0); return c; });
   const cnt = T(R, 900, 690, `${d.trades} trade${d.trades === 1 ? '' : 's'}`, 'bigs', 'start');
   const jH = Math.max(0, cx.find('hook')), jT = cx.find('title'), jC = cx.find('count');
@@ -602,7 +658,10 @@ DRAW.trade = (p, sc, cx) => {
   let pr = null;
   if (opt) {
     T(p, 60, 436, 'Option prices', 'fl', 'start');
-    pr = prices(p, { x: 60, y: 452, w: 820, h: 210 }, w0, w1, { labels: true, heads: true });
+    // with many legs on the chart, words only on the ones this trade opens or closes
+    const touched = new Set(d.fills.map(f => f.leg).filter(j => j != null));
+    const many = Lg.filter(l => isOpt(l) && l.a <= w1 && (l.b == null || l.b > w0)).length > 4;
+    pr = prices(p, { x: 60, y: 452, w: 820, h: 210 }, w0, w1, { labels: true, heads: true, only: many ? touched : null });
   }
   // the moment
   const ev = G(p, 'event');
@@ -623,8 +682,9 @@ DRAW.trade = (p, sc, cx) => {
     T(zone, zx - 14, ch.ys(ks[ks.length - 1]) + 22, 'it profits while the price stays in here →', 'zonet', 'end');
     op(zone, 0);
   }
-  // the right-hand side
-  const box = pnlBox(p, 980, 116, 560);
+  // the right-hand side: the P&L (its line from the trade before), the positions, the rule
+  const frm = d.from == null ? w0 + Math.round((at - w0) * 0.25) : d.from;
+  const box = pnlBox(p, 980, 116, 560, { i0: w0, i1: at });
   // which fills say what, and when: the k-th close on the k-th step that closes, …
   const stepsOf = cues => cx.steps.map((x, j) => (cues.includes(x.cue) ? j : -1)).filter(j => j >= 0);
   const sayC = stepsOf(['close']), sayO = stepsOf(['legs', 'open']);
@@ -637,7 +697,12 @@ DRAW.trade = (p, sc, cx) => {
   let most = 0;
   for (let i = w0; i <= at; i++) most = Math.max(most, (s.held[i] || []).length);
   const atRows = (s.held[at] || []).filter(([j]) => !gone.has(j) && !fresh.has(j)).length + closes.length + opens.length;
-  const pos = positions(p, 980, 290, 560, Math.max(most, atRows));
+  const pos = positions(p, 980, 330, 560, Math.max(most, atRows));
+  // the bars' scale: the biggest P&L a leg shows in this scene
+  let big = 1;
+  for (let q = w0; q <= at; q++) for (const [j, m] of s.held[q] || []) big = Math.max(big, Math.abs(legPnl(Lg[j], m) || 0));
+  d.fills.forEach(f => { big = Math.max(big, Math.abs(f.pnl || 0)); });
+  pos.scale(big);
   const rowOf = ([j, m]) => { const L = Lg[j]; return { what: L.what, sold: L.sold, entry: L.entry, mark: m, pnl: legPnl(L, m), cls: sideCls(L) }; };
   // what the rule saw
   const viz = G(p);
@@ -729,12 +794,16 @@ DRAW.trade = (p, sc, cx) => {
   let note = null;
   const jN = cx.find('note');
   if (jN >= 0) { note = T(p, 60, 750, 'written in afterwards by a repair, from market prices', 'mono mute', 'start'); op(note, 0); }
+  // the walk: from the trade before to this one, over every step that tells it
+  let wl = 0;
+  while (wl + 1 < cx.steps.length && ['spot', 'move', 'walk'].includes(cx.steps[wl + 1].cue) && ['spot', 'move', 'walk'].includes(cx.steps[wl].cue)) wl++;
+  const wa = cx.at[0][0], wb = lerp(cx.at[wl][0], cx.at[wl][1], 0.9);
   return (t, rt) => {
-    // the playhead walks up to the moment while the first step is said,
-    // index and options and P&L together, then stays there
-    const i = lerp(w0 + (at - w0) * 0.25, at, cx.cue(t, 0, 0, 0.85));
+    // the playhead plays the market from the trade before to this one while
+    // that stretch is told, index and options and P&L together, then stays
+    const i = lerp(frm, at, k(t, wa, wb));
     // short of the moment, the step before it: the trade's own step already holds what it opens
-    const there = i >= at - 1e-6, pi = there ? at : Math.min(Math.round(clamp(i, w0, at)), Math.max(w0, at - 1));
+    const there = i >= at - 1e-6, pi = there ? at : Math.min(Math.round(clamp(i, w0, at)), d.pre ?? Math.max(w0, at - 1));
     // one step for every number shown: the index, each option, the positions, the P&L
     ch.reveal(i, rt);
     const iv = s.idx[pi];
@@ -770,6 +839,7 @@ DRAW.trade = (p, sc, cx) => {
       booked = d.booked_before == null ? s.booked[at] : (t >= tB ? d.booked_after : d.booked_before);
     }
     pos.set(rows);
+    box.spark(there ? at : pi);
     const bookedNow = there && d.booked != null && jB >= 0 && t >= tB;
     box.set(there ? `P&L at ${hm(d.t)}` : 'P&L', there ? dayOf(d.t) : `${dayOf(s.t[pi])} ${hm(s.t[pi])}`, booked, total,
       bookedNow ? `booked on this trade ${sinr(d.booked)}` : '', d.booked);
@@ -778,6 +848,91 @@ DRAW.trade = (p, sc, cx) => {
     if (note) fade(note, t, cx.at[jN][0]);
   };
 };
+// ── 4b. a run: trades between the full ones, as quick beats ────────────
+// The same desk, the market playing on: each step walks the playhead to
+// the trade it tells, the positions and the P&L moving all the way; each
+// trade is marked on the charts as it's reached, and logged at the bottom
+// right with what it booked, a counter showing how far through the run it is.
+DRAW.run = (p, sc, cx) => {
+  const d = sc.data, s = S(), Lg = st().legs;
+  const [w0, w1] = d.w, beats = d.beats, segs = d.segs;
+  const last = beats[beats.length - 1].at;
+  const opt = Lg.some(l => isOpt(l) && l.a <= w1 && (l.b == null || l.b >= w0));
+  const strikes = Lg.filter(l => l.strike && l.a <= w1 && (l.b == null || l.b >= w0)).map(l => l.strike);
+  const ch = chart(p, { x: 60, y: 170, w: 820, h: opt ? 210 : 470 }, w0, w1, { strikes: true, extra: strikes, lastLabels: true });
+  const ixV = T(p, 60, 150, '', 'bigs ixv', 'start'), ixD = T(p, 300, 150, '', 'mono ixd', 'start');
+  let pr = null;
+  if (opt) {
+    T(p, 60, 436, 'Option prices', 'fl', 'start');
+    pr = prices(p, { x: 60, y: 452, w: 820, h: 210 }, w0, w1, { labels: false, heads: true });
+  }
+  // each trade marked where it happened, once the playhead gets there
+  const marks = beats.map(b => {
+    const g = G(p, 'beatmk');
+    E('line', { x1: ch.xs(b.at), x2: ch.xs(b.at), y1: 170, y2: opt ? 662 : 640, class: 'bline' }, g);
+    E('circle', { cx: ch.xs(b.at), cy: 170 + (opt ? 210 : 470), r: 6, class: `bdot ${tone(b.booked)}` }, g);
+    op(g, 0);
+    return g;
+  });
+  const box = pnlBox(p, 980, 116, 560, { i0: w0, i1: w1 });
+  let most = 0;
+  for (let i = w0; i <= w1; i++) most = Math.max(most, (s.held[i] || []).length);
+  const pos = positions(p, 980, 330, 560, most);
+  let big = 1;
+  for (let q = w0; q <= w1; q++) for (const [j, m] of s.held[q] || []) big = Math.max(big, Math.abs(legPnl(Lg[j], m) || 0));
+  pos.scale(big);
+  // the log: the counter and the last three trades
+  const log = G(p, 'blog');
+  T(log, 980, 600, d.noun.replace(/s$/, '') === 'roll' ? 'Rolls' : 'Trades', 'fl', 'start');
+  const cnt = T(log, 1540, 600, '', 'mono', 'end');
+  const lines = [0, 1, 2].map(q => {
+    const g = G(log, 'bline2');
+    E('rect', { x: 980, y: 612 + q * 50, width: 560, height: 42, rx: 8, class: 'pbg' }, g);
+    const a = T(g, 998, 640 + q * 50, '', 'mono', 'start'), b = T(g, 1524, 640 + q * 50, '', 'pp', 'end');
+    op(g, 0);
+    return { g, a, b };
+  });
+  const said = b => {
+    const shut = b.fills.filter(f => !f.opening).map(f => f.what), opened = b.fills.filter(f => f.opening).map(f => f.what);
+    const k2 = shut.length === 1 && opened.length === 1 && shut[0].split(' ')[1] === opened[0].split(' ')[1]
+      ? `${shut[0].split(' ')[1]} ${shut[0].split(' ')[0]} → ${opened[0].split(' ')[0]}` : [...shut.map(x => `− ${x}`), ...opened.map(x => `+ ${x}`)].join(', ');
+    return `${hm(b.t)}  ${k2}`;
+  };
+  // the playhead's stops: each step walks to its segment's last trade
+  const stops = segs.map(g => g.to);
+  return (t, rt, j) => {
+    const jj = Math.min(j, stops.length - 1);
+    const a = jj === 0 ? w0 : stops[jj - 1], b = stops[jj];
+    const f = k(t, cx.at[jj][0], lerp(cx.at[jj][0], cx.at[jj][1], 0.85));
+    const i = lerp(a, b, f), pi = Math.round(i);
+    ch.reveal(i, rt);
+    const iv = s.idx[pi];
+    if (iv != null) txt(ch.lab, fmt(iv));
+    txt(ixV, iv == null ? '' : `${st().index} ${fmt(iv)}`);
+    const dv = iv != null && s.idx[w0] != null ? iv - s.idx[w0] : null;
+    txt(ixD, dv == null || Math.round(Math.abs(dv)) < 1 ? '' : `${dv >= 0 ? '▲' : '▼'} ${fmt(Math.abs(dv))} since ${hm(s.t[w0])}`);
+    ixD.setAttribute('class', `mono ixd ${dv > 0 ? 'good' : dv < 0 ? 'bad' : 'mute'}`);
+    ixD.setAttribute('x', (60 + ixV.getComputedTextLength() + 18).toFixed(1));
+    if (pr) pr.reveal(i, pi);
+    pos.set((s.held[pi] || []).map(([q, m]) => { const L = Lg[q]; return { what: L.what, sold: L.sold, entry: L.entry, mark: m, pnl: legPnl(L, m), cls: sideCls(L) }; }));
+    box.set('P&L', `${dayOf(s.t[pi])} ${hm(s.t[pi])}`, s.booked[pi], s.pnl[pi], '', null);
+    box.spark(pi);
+    const done = beats.filter(x => x.at <= pi + 1e-9);
+    marks.forEach((m, q) => op(m, beats[q].at <= i + 1e-9 ? 1 : 0));
+    txt(cnt, done.length ? `${done.length} of ${beats.length}` : '');
+    const recent = done.slice(-3).reverse();
+    lines.forEach((l, q) => {
+      const x = recent[q];
+      if (!x) { op(l.g, 0); return; }
+      op(l.g, 1);
+      l.g.setAttribute('class', `bline2 ${q === 0 ? 'now' : ''}`);
+      txt(l.a, said(x));
+      txt(l.b, x.booked == null ? '' : sinr(x.booked));
+      l.b.setAttribute('class', `pp ${tone(x.booked)}`);
+    });
+  };
+};
+
 function fmt2(v) { return Math.abs(v) < 10 && v % 1 ? v.toFixed(2) : fmt(v); }
 
 // ── the smaller trades ─────────────────────────────────────────────────
@@ -830,7 +985,7 @@ DRAW.checks = (p, sc, cx) => {
 DRAW.journey = (p, sc, cx) => {
   const s = S(), n = s.pnl.length - 1, d = sc.data;
   const ch = chart(p, { x: 80, y: 200, w: 1340, h: 430 }, 0, n, { key: 'pnl', money: true, zero: true, area: true, also: ['booked'] });
-  const trades = st().scenes.filter(x => x.kind === 'trade').map(x => x.data);
+  const trades = st().events || st().scenes.filter(x => x.kind === 'trade').map(x => x.data);
   const dots = trades.map(x => { const c = E('circle', { cx: ch.xs(x.at), cy: ch.ys(s.pnl[x.at] || 0), r: 7, class: 'evdot' }, p); op(c, 0); return { c, at: x.at }; });
   const marks = [];
   for (const [i, lbl] of [[d.hi, 'best'], [d.lo, 'lowest']]) {

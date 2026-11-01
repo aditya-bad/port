@@ -117,3 +117,119 @@ DECISIONS = [
     {"t": at(0, 15, 13), "rule": "eod_gap_check", "outcome": "no_action", "summary": "PE/CE 0.92 ≥ floor 0.80: gap small enough to hold overnight."},
 ]
 NOW = at(2, 15, 25)
+
+
+def busy_sample():
+    """busy(seed) for the first seed whose market makes exactly ten rolls."""
+    for seed in range(1, 200):
+        D = _busy(seed)
+        if D:
+            return D
+    raise AssertionError("no seed makes ten rolls")
+
+
+def _busy(seed):
+    """One strangle cycle over three days with ten 50% rolls, still
+    running: what a busy cycle's video has to fit. Every price is from one
+    simple option model, so the rule's numbers, the legs and the P&L agree.
+    Frames as the replay makes them: a step's prices are at its end, so a
+    trade's own step already holds what it opened."""
+    rnd = random.Random(seed)
+    path, v = [], 25000.0
+    # a rally over two days, then a fall: the put rolls up after it, then the call down
+    goals = [25200.0, 25400.0, 25600.0, 25800.0, 26000.0, 26200.0, 26400.0, 26600.0, 26300.0, 26000.0, 25700.0, 25450.0]
+    for d in range(3):
+        t = at(d, 9, 15)
+        for i in range(75):
+            q = min(3, i // 19)
+            goal, left = goals[4 * d + q], (19 if q < 3 else 18) - (i - 19 * q)
+            v += (goal - v) / (left + 4) + rnd.gauss(0, 7)
+            path.append((t, round(v, 2)))
+            t += timedelta(minutes=5)
+    expiry = DAYS[0] + timedelta(days=30)
+
+    def price(kind, k, s, t):
+        days = max((expiry - t).total_seconds() / 86400, 0.5)
+        intrinsic = max(0.0, (s - k) if kind == "CE" else (k - s))
+        return round(intrinsic + 140 * math.exp(-abs(s - k) / 330) * math.sqrt(days / 30), 2)
+
+    spot_at = lambda t: next(v for tt, v in reversed(path) if tt <= t)  # noqa: E731
+    legs = []
+
+    def open_leg(kind, k, t):
+        legs.append({"symbol": f"NIFTY26NOV{int(k)}{kind}", "side": "short", "qty": 75, "kind": kind, "strike": float(k),
+                     "t0": t, "t1": None, "entry": price(kind, k, spot_at(t), t), "exit": None, "realized": None})
+        return legs[-1]
+
+    def near(kind, target, t, not_k=None):
+        s = spot_at(t)
+        ks = [round(s / 100) * 100 + i * 100 for i in range(-20, 21)]
+        atm = round(s / 100) * 100
+        ks = [k for k in ks if (k >= atm if kind == "CE" else k <= atm)]   # out of the money or at it, as a strangle sells
+        if not_k is not None:   # a roll moves closer to the market
+            ks = [k for k in ks if (k < not_k if kind == "CE" else k > not_k)]
+        return min(ks, key=lambda k: abs(price(kind, k, s, t) - target)) if ks else None
+
+    t0 = at(0, 10, 0)
+    ce, pe = open_leg("CE", near("CE", 120, t0), t0), open_leg("PE", near("PE", 120, t0), t0)
+    events = [{"t": t0, "kind": "new", "label": "New cycle", "trigger": "initial_entry",
+               "values": {"target_premium": 120.0, "days_to_expiry": 30},
+               "fills": [("sell", ce, True), ("sell", pe, True)], "booked": None}]
+    # the 50% rule, checked every step: the smaller side under half the bigger rolls to ~87.5% of it
+    rolls, last = 0, t0
+    for t, s in path:
+        if t - last < timedelta(minutes=20) or rolls >= 10:
+            continue
+        pc, pp = price("CE", ce["strike"], s, t), price("PE", pe["strike"], s, t)
+        big, small = (("CE", pc), ("PE", pp)) if pc >= pp else (("PE", pp), ("CE", pc))
+        if small[1] > 0.5 * big[1]:
+            continue
+        old = ce if small[0] == "CE" else pe
+        k = near(small[0], 0.875 * big[1], t, old["strike"])
+        if k is None:   # nothing closer to roll to
+            continue
+        old["t1"], old["exit"] = t, small[1]
+        old["realized"] = round((old["entry"] - old["exit"]) * old["qty"], 2)
+        new = open_leg(small[0], k, t)
+        if small[0] == "CE":
+            ce = new
+        else:
+            pe = new
+        events.append({"t": t, "kind": "roll", "label": "Roll", "trigger": "continuous_50pct_trigger",
+                       "values": {"bigger_side": big[0], "smaller_side": small[0], "bigger_sum": big[1], "smaller_sum": small[1], "ratio": 0.5},
+                       "fills": [("buy", old, False), ("sell", new, True)], "booked": old["realized"]})
+        rolls, last = rolls + 1, t
+    if rolls != 10:
+        return None
+    frames = []
+    for t, s in path:
+        asof = t + timedelta(minutes=5)
+        booked, openp, held = 0.0, 0.0, []
+        for j, l in enumerate(legs):
+            if l["t0"] > asof:
+                continue
+            if l["t1"] is not None and l["t1"] <= asof:
+                booked += l["realized"]
+                continue
+            m = price(l["kind"], l["strike"], s, t)
+            openp += (l["entry"] - m) * l["qty"]
+            held.append([j, m, round((l["entry"] - m) * l["qty"], 2), False, None])
+        frames.append({"t": t.isoformat(), "idx": s, "vix": 13.0, "booked": round(booked, 2), "pnl": round(booked + openp, 2),
+                       "legs": held, "split": None})
+    frame_of = lambda t: max(i for i, f in enumerate(frames) if datetime.fromisoformat(f["t"]) <= t)  # noqa: E731
+    out_events, prev = [], None
+    for e in events:
+        i = frame_of(e["t"])
+        fills = [{"action": a, "symbol": l["symbol"], "qty": 75.0, "price": l["entry"] if op else l["exit"], "opening": op,
+                  "pnl": None if op else l["realized"]} for a, l, op in e["fills"]]
+        x = {"t": e["t"].isoformat(), "frame": i, "kind": e["kind"], "label": e["label"], "trigger": e["trigger"], "values": e["values"],
+             "fills": fills, "booked": e["booked"], "idx": frames[i]["idx"], "vix": 13.0, "pnl": frames[i]["pnl"]}
+        if prev:
+            x["since"] = {"idx": round(x["idx"] - prev["idx"], 2), "vix": None, "pnl": None, "t": prev["t"]}
+        out_events.append(x)
+        prev = x
+    out_legs = [{"symbol": l["symbol"], "side": "short", "qty": 75, "entry": l["entry"], "kind": l["kind"], "strike": l["strike"],
+                 "t0": l["t0"].isoformat(), "t1": l["t1"].isoformat() if l["t1"] else None, "exit": l["exit"], "realized": l["realized"]}
+                for l in legs]
+    return {"episodes": [{"n": 16, "label": "Cycle 16"}], "selected": [1, 1], "frames": frames, "legs": out_legs, "events": out_events,
+            "start": t0.isoformat(), "end": frames[-1]["t"], "index_name": "NIFTY 50", "interval": "5minute"}

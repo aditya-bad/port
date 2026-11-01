@@ -132,6 +132,14 @@ body.record #cap { font-size: calc((100vh - 100vw * 780 / 1600) * 0.27); }
 #stage .pnlv2 { font: 650 24px var(--f-display); font-variant-numeric: tabular-nums; } #stage .pnlv2.good { fill: var(--g); } #stage .pnlv2.bad { fill: var(--r); }
 #stage .fl.sm { font-size: 12px; }
 
+.pzero { stroke: var(--line2); stroke-width: 1.5; }
+.pbar { fill: var(--line2); } .pbar.good { fill: color-mix(in oklch, var(--g) 70%, white); } .pbar.bad { fill: color-mix(in oklch, var(--r) 65%, white); }
+.spark { fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linejoin: round; } .sparkzero { stroke: var(--line2); stroke-width: 1.2; stroke-dasharray: 4 4; }
+.sparkdot { fill: var(--ink); stroke: var(--card); stroke-width: 2; } .sparkdot.good { fill: var(--g); } .sparkdot.bad { fill: var(--r); }
+.bline { stroke: var(--line2); stroke-width: 1.4; stroke-dasharray: 3 5; }
+.bdot { fill: var(--y); stroke: var(--ink); stroke-width: 1.5; } .bdot.good { fill: var(--g); } .bdot.bad { fill: var(--r); }
+.bline2 .pbg { fill: var(--card); stroke: var(--line2); stroke-width: 1.5; } .bline2.now .pbg { fill: var(--ys); stroke: var(--ink); }
+
 /* life.js */
 .lf-stamp rect { fill: color-mix(in oklch, var(--card) 70%, transparent); stroke-width: 5; }
 #stage .lf-stamp text { font: 800 34px var(--f-mono); letter-spacing: .14em; text-transform: uppercase; }

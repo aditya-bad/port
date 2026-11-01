@@ -16,11 +16,18 @@ pw = pytest.importorskip("playwright.sync_api")
 
 
 @pytest.fixture(scope="module")
-def page():
+def pwr():
+    with pw.sync_playwright() as p:
+        yield p
+
+
+@pytest.fixture(scope="module")
+def page(pwr):
     s = V.build(sample(), dep=DEP, strategy_label="Monthly strangle", decisions=DECISIONS, now=NOW)
     narr = [[{"dur": 4.0 if (i, j) == (0, 0) else 1.0, "caps": [{"t": 0, "text": st["text"]}], "file": f"{i + 1:02d}-{j + 1:02d}"}
              for j, st in enumerate(sc["steps"])] for i, sc in enumerate(s["scenes"])]
-    with pw.sync_playwright() as p:
+    if True:
+        p = pwr
         b = p.chromium.launch()
         pg = b.new_page(viewport={"width": 1280, "height": 720})
         errors = []
@@ -129,6 +136,7 @@ def test_on_the_walk_the_index_the_options_and_the_pnl_are_one_moment(page):
             assert r["pi"] >= 0, r["when"]
             assert r["ix"] == r["ixExp"], (sc["title"], r)
             assert r["heads"] == r["headsExp"], (sc["title"], r)
+            assert r["pi"] <= sc["data"]["pre"], "short of the trade, the positions before it"
             assert r["box"] == r["boxExp"], (sc["title"], r)
             assert len(r["rows"]) == len(r["rowsExp"]) and all(w in row for w, row in zip(r["rowsExp"], r["rows"])), (sc["title"], r)
             seen.append(r)
@@ -191,3 +199,175 @@ def test_the_pnl_journey_and_the_end_say_what_is_booked_and_what_is_open(page):
     for x in w["trades"]:
         if x["booked"] is not None:
             assert f"{x['title']}  {fmt(x['booked'])}" in text or f"{x['title']} {fmt(x['booked'])}" in text, x
+
+
+def _open(p, s):
+    narr = [[{"dur": 3.0, "caps": [{"t": 0, "text": st["text"]}], "file": f"{i + 1:02d}-{j + 1:02d}"}
+             for j, st in enumerate(sc["steps"])] for i, sc in enumerate(s["scenes"])]
+    b = p.chromium.launch()
+    pg = b.new_page(viewport={"width": 1280, "height": 720})
+    errors = []
+    pg.on("pageerror", lambda e: errors.append(str(e)))
+    pg.add_init_script(f"window.__STORY = {json.dumps(s)}; window.__NARR = {json.dumps(narr)};")
+    pg.goto(f"{STAGE.as_uri()}?record=1")
+    pg.story, pg.errors = s, errors
+    return b, pg
+
+
+@pytest.fixture(scope="module")
+def busy(pwr):
+    from tests.unit.video_sample import at, busy_sample
+    s = V.build(busy_sample(), dep=DEP, strategy_label="Monthly strangle", now=at(2, 15, 25))
+    b, pg = _open(pwr, s)
+    yield pg
+    b.close()
+
+
+def seek(pg, k, tau):
+    pg.evaluate("([s, t]) => window.__seek(s, t)", [k, tau])
+
+
+def scene(pg, pred):
+    return 1 + next(i for i, sc in enumerate(pg.story["scenes"]) if pred(sc))
+
+
+SHOWN = """() => {
+  const S = STORY.series, when = document.querySelector('#layer .pwhen').textContent;
+  const pi = S.t.findIndex(t => `${dayOf(t)} ${hm(t)}` === when);
+  const box = [...document.querySelectorAll('#layer .pnlchip text')].filter(e => /pnlv/.test(e.getAttribute('class'))).map(e => e.textContent);
+  const spark = (document.querySelector('#layer .spark') || { getAttribute: () => '' }).getAttribute('d') || '';
+  const bars = [...document.querySelectorAll('#layer .prow')].filter(%s).map(r => ({
+    w: +r.querySelector('.pbar').getAttribute('width'), cls: r.querySelector('.pbar').getAttribute('class'),
+    pnl: r.querySelector('.pp').textContent }));
+  return { pi, box, boxExp: [sinr(S.booked[pi]), sinr(S.pnl[pi] - S.booked[pi]), sinr(S.pnl[pi])], pts: (spark.match(/[ML]/g) || []).length, bars };
+}""" % VISIBLE
+
+
+def test_the_market_plays_from_the_trade_before_across_every_step_that_tells_it(page):
+    """The 11:20 checkpoint: the stretch since the 15:13 check is told in
+    two steps (the move, then the options and the P&L), and the playhead
+    takes both to get there: it starts at the check, is part way at the
+    end of the first, and reaches the step before the trade at the second."""
+    page.evaluate("window.__ready")
+    k = scene(page, lambda sc: sc["title"] == "11:20 · Checkpoint hit")
+    d = page.story["scenes"][k - 1]["data"]
+    plan = page.evaluate("n => window.__plan(n)", k)
+    assert [st["cue"] for st in page.story["scenes"][k - 1]["steps"]][:2] == ["move", "walk"]
+    seek(page, k, 0.02)
+    start = page.evaluate(SHOWN)["pi"]
+    st0, st1 = plan["steps"][0], plan["steps"][1]
+    seek(page, k, st0["T0"] + st0["D"] - 0.05)
+    mid = page.evaluate(SHOWN)["pi"]
+    seek(page, k, st1["T0"] + st1["D"] * 0.3)
+    later_ = page.evaluate(SHOWN)["pi"]
+    assert start == d["from"] and start < mid < later_ < d["at"], (start, mid, later_, d["from"], d["at"])
+    seek(page, k, st1["T0"] + st1["D"] - 0.05)
+    assert page.evaluate("() => document.querySelector('#layer .pnlchip text').textContent") == "P&L at 11:20", "there by the end of the second"
+
+
+def test_the_pnl_line_and_each_positions_bar_move_with_the_market(page):
+    page.evaluate("window.__ready")
+    k = scene(page, lambda sc: sc["title"] == "15:13 · End-of-day check")
+    plan = page.evaluate("n => window.__plan(n)", k)
+    seen = []
+    for j, f in ((0, 0.3), (0, 0.8), (1, 0.3)):
+        st = plan["steps"][j]
+        seek(page, k, st["T0"] + st["D"] * f)
+        r = page.evaluate(SHOWN)
+        assert r["box"] == r["boxExp"], r
+        for b in r["bars"]:
+            sign = "good" if b["pnl"].startswith("+") else "bad" if b["pnl"].startswith("−") else ""
+            assert sign in b["cls"] and (b["w"] > 0) == bool(sign), b
+        seen.append(r)
+    assert seen[0]["pts"] < seen[1]["pts"] < seen[2]["pts"], "the P&L line draws on"
+    assert len({tuple(b["w"] for b in r["bars"]) for r in seen}) == 3, "and the bars grow and shrink"
+
+
+def test_a_run_plays_each_trade_as_a_beat_with_the_desk_moving(busy):
+    busy.evaluate("window.__ready")
+    k = scene(busy, lambda sc: sc["kind"] == "run")
+    d = busy.story["scenes"][k - 1]["data"]
+    plan = busy.evaluate("n => window.__plan(n)", k)
+    for j, (g, st) in enumerate(zip(d["segs"], plan["steps"])):
+        seek(busy, k, st["T0"] + st["D"] - 0.05)
+        r = busy.evaluate(SHOWN)
+        assert r["pi"] == g["to"] and r["box"] == r["boxExp"], (j, r)
+        reached = [b for b in d["beats"] if b["at"] <= g["to"]]
+        counter = busy.evaluate("() => [...document.querySelectorAll('#layer .blog text')].map(e => e.textContent)")
+        assert f"{len(reached)} of {len(d['beats'])}" in counter
+        newest = busy.evaluate("() => document.querySelector('#layer .bline2.now').textContent")
+        assert newest.startswith(busy.evaluate("t => hm(t)", reached[-1]["t"])), newest
+        marks = busy.evaluate("() => [...document.querySelectorAll('#layer .beatmk')].filter(e => +e.getAttribute('opacity') > 0).length")
+        assert marks == len(reached)
+    assert busy.errors == []
+
+
+def test_every_scene_of_a_busy_cycle_draws_without_errors(busy):
+    n = busy.evaluate("window.__ready")
+    for k in range(1, n + 1):
+        plan = busy.evaluate("n => window.__plan(n)", k)
+        for st in plan["steps"]:
+            seek(busy, k, st["T0"] + st["D"] - 0.05)
+    assert busy.errors == []
+
+
+def test_more_legs_than_rows_are_shown_by_side(page):
+    """Seven legs in a five-row table: a side's legs as one row (how many,
+    sold for in all, now, their P&L), not five rows and '+2 more'."""
+    page.evaluate("window.__ready")
+    rows = page.evaluate("""() => {
+      const g = G(document.querySelector('#layer')), t = positions(g, 980, 330, 560, 5);
+      const leg = (cls, entry, mark, pnl) => ({ what: `${cls}`, sold: true, entry, mark, pnl, cls });
+      t.set([leg('ce', 100, 120, -1500), leg('pe', 90, 60, 2250), leg('pe', 80, 50, 2250), leg('pe', 70, 40, 2250), leg('pe', 60, 30, 2250),
+             leg('ce', 110, 100, 750), leg('ce', 50, 40, 750)]);
+      const out = [...g.querySelectorAll('.prow')].filter(e => +e.getAttribute('opacity') > 0).map(e => e.textContent);
+      g.remove();
+      return out;
+    }""")
+    assert len(rows) == 2
+    calls = next(r for r in rows if "3 calls" in r)
+    puts = next(r for r in rows if "4 puts" in r)
+    assert "Short 3 calls" in calls and "sold ₹260 in all → now ₹260" in calls and "₹0" in calls
+    assert "Short 4 puts" in puts and "sold ₹300 in all → now ₹180" in puts and "+₹9,000" in puts
+
+
+def test_the_journeys_booked_line_fits_on_its_chart(busy):
+    """Ten rolls booking ₹33,879 while the total fell: the booked line was
+    drawn off the top of a chart scaled to the total alone."""
+    busy.evaluate("window.__ready")
+    k = scene(busy, lambda sc: sc["kind"] == "journey")
+    plan = busy.evaluate("n => window.__plan(n)", k)
+    seek(busy, k, plan["total"] - 0.1)
+    ys = busy.evaluate("""() => {
+      const d = document.querySelector('#layer .ln-booked').getAttribute('d');
+      return d.match(/[ML][\\d.]+ ([\\d.-]+)/g).map(x => +x.split(' ')[1]);
+    }""")
+    assert ys and min(ys) >= 200 - 1 and max(ys) <= 630 + 1, (min(ys), max(ys))
+
+
+def test_the_walk_ends_on_the_prices_it_says(busy):
+    """The 10:40 roll is at a step's end, so the step before it already
+    held the new put: the picture stopped on ₹98.86 while the voice said
+    the put went 'to ₹176.39'. The walk now ends on the last step that
+    still shows the positions the trade changes, the one it describes."""
+    busy.evaluate("window.__ready")
+    k = scene(busy, lambda sc: sc["kind"] == "trade" and sc["title"] == "10:40 · Roll")
+    sc = busy.story["scenes"][k - 1]
+    d, S = sc["data"], busy.story["series"]
+    plan = busy.evaluate("n => window.__plan(n)", k)
+    st1 = plan["steps"][1]
+    last = None
+    for q in range(1, 40):   # the last moment before the playhead reaches the trade
+        seek(busy, k, st1["T0"] + st1["D"] * q / 40)
+        if busy.evaluate("() => document.querySelector('#layer .pnlchip text').textContent") != "P&L":
+            break
+        last = busy.evaluate(SHOWN)
+        heads = busy.evaluate("() => [...document.querySelectorAll('#layer .phead')].filter(%s).map(e => e.textContent).sort()" % VISIBLE)
+        rows = busy.evaluate("() => [...document.querySelectorAll('#layer .prow')].filter(%s).map(e => e.textContent)" % VISIBLE)
+    assert last and last["pi"] == d["pre"]
+    shut = next(f["what"] for f in d["fills"] if not f["opening"])
+    new = next(f["what"] for f in d["fills"] if f["opening"])
+    assert any(shut in r for r in rows) and not any(new in r for r in rows), ("the positions before the roll", rows)
+    walk = sc["steps"][1]["text"]
+    for h in heads:
+        assert f"to {h}" in walk, (h, walk)

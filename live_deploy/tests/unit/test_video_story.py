@@ -110,7 +110,7 @@ def test_another_strategy_is_told_from_its_recorded_rule():
     rules = texts(s, "rules")
     assert rules[0].startswith("Here's how this strategy plays. It sells a call and a put at the same strike")
     assert rules[-1] == "The settings it runs with: entry time 09:20; per-leg stop 40%."
-    exit_ = " ".join(texts(s, "trade")[-3:])
+    exit_ = " ".join(texts(s, "trade")[-4:])
     assert "Its leg stop rule acted, seeing leg price 162.5 · stop 160." in exit_
 
 
@@ -181,7 +181,10 @@ def test_each_trade_picks_up_from_the_one_before():
     assert texts(s, title="15:13 · End-of-day check")[0].startswith("The next afternoon, at 15:13, Nifty had dropped 124 points, to 24,897.")
     assert texts(s, title="13:40 · Roll")[0].startswith("Four hours later")
     cp = texts(s, title="11:20 · Checkpoint hit")
-    assert cp[0].startswith("The next morning, at 11:20, Nifty") and cp[1].startswith("By now the cycle's profit has reached ₹9,412")
+    assert cp[0].startswith("The next morning, at 11:20, Nifty") and cp[2].startswith("By now the cycle's profit has reached ₹9,412")
+    # between them, said while the desk plays the stretch: the options and the P&L on the way
+    assert cp[1] == ("Watch the options while Nifty moves: the call side went from ₹99.87 to ₹156.23, and the put side went from "
+                     "₹185.72 to ₹172.03. The P&L went from plus ₹893 to plus ₹918, after dipping to plus ₹226 at 15:20.")
 
 
 @pytest.mark.parametrize("a,b,said", [
@@ -248,3 +251,66 @@ def test_every_open_legs_price_at_every_step():
 
 def test_it_ends_on_what_made_the_result():
     assert "What made it? Mostly time passing: ₹5,089 of it." in texts(build(), "wrap")[0]
+
+
+# ── a busy cycle: ten rolls ──────────────────────────────────────────
+
+def busy(**kw):
+    from tests.unit.video_sample import at, busy_sample
+    return V.build(busy_sample(), dep=DEP, strategy_label="Monthly strangle", now=at(2, 15, 25), **kw)
+
+
+def test_a_busy_cycle_tells_the_trades_that_matter_in_full_and_plays_the_rest_as_beats(monkeypatch):
+    """Ten rolls: the entry and the first roll (where the rule is
+    explained) in full; the nine after it as beats on one desk, the market
+    playing on. Every trade is in it once, in order, and the video is far
+    shorter than a scene a trade."""
+    s = busy()
+    kinds = [(sc["kind"], sc["title"]) for sc in s["scenes"] if sc["kind"] in ("trade", "run")]
+    assert [k for k, _ in kinds] == ["trade", "trade", "run"]
+    run = next(sc for sc in s["scenes"] if sc["kind"] == "run")
+    assert len(run["data"]["beats"]) == 9 and run["title"].endswith("· 9 rolls")
+    told = [sc["data"]["t"] for sc in s["scenes"] if sc["kind"] == "trade"] + [b["t"] for b in run["data"]["beats"]]
+    assert told == [e["t"] for e in s["events"]]
+    said = " ".join(st["text"] for sc in s["scenes"] for st in sc["steps"])
+    assert said.count("Here's the rule.") == 1, "the rule explained once"
+    assert run["steps"][0]["text"].startswith("The next nine rolls follow the same rule, so here they are, quickly.")
+    words = sum(len(st["text"].split()) for sc in s["scenes"] for st in sc["steps"])
+    monkeypatch.setattr(V, "FULL_MAX", 100)
+    every = busy()
+    assert [sc["kind"] for sc in every["scenes"]].count("trade") == 11
+    assert words <= 0.75 * sum(len(st["text"].split()) for sc in every["scenes"] for st in sc["steps"])
+
+
+def test_a_run_says_its_biggest_trades_and_the_quiet_ones_together(monkeypatch):
+    monkeypatch.setattr(V, "BEATS_MAX", 4)
+    run = next(sc for sc in busy()["scenes"] if sc["kind"] == "run")
+    beats, segs = run["data"]["beats"], run["data"]["segs"]
+    assert [i for g in segs for i in g["beats"]] == list(range(len(beats))), "every trade, in order"
+    assert all(g["to"] == beats[g["beats"][-1]]["at"] for g in segs), "each step walks to its last trade"
+    groups = [g for g in segs if len(g["beats"]) > 1]
+    assert groups and all(len(g["beats"]) >= 2 for g in groups)
+    for g, st in zip(segs, run["steps"]):
+        if len(g["beats"]) > 1:
+            assert "the same way" in st["text"] and f"{V._n(len(g['beats']))} " in st["text"]
+    biggest = max(beats, key=lambda b: b["booked"] or 0)
+    assert any(f"booking {V.rs(biggest['booked'])}. That's the biggest gain in this stretch." in st["text"] for st in run["steps"])
+
+
+def test_the_stretch_before_a_trade_is_told_from_the_options_and_the_pnl():
+    """Said while the desk plays from the trade before to this one: the
+    two sides' prices and the P&L, at the stretch's ends (the step before
+    the trade: what the picture shows when it's said)."""
+    s = busy()
+    roll = next(sc for sc in s["scenes"] if sc["kind"] == "trade" and sc["title"].endswith("Roll"))
+    d, S = roll["data"], s["series"]
+    assert [st["cue"] for st in roll["steps"]][:2] == ["move", "walk"]
+    a, z = d["from"], d["pre"]
+    assert d["from"] == s["events"][0]["at"], "from the trade before"
+    # the roll is at 10:40:00, a step's end: the 10:35 step already holds it, so the stretch ends at 10:30
+    gone = {f["leg"] for f in d["fills"] if not f["opening"]}
+    assert z == d["at"] - 2 and gone <= {h[0] for h in S["held"][z]} and not gone <= {h[0] for h in S["held"][z + 1]}
+    walk = roll["steps"][1]["text"]
+    assert f"the call side went from {V.money(S['ce'][a])} to {V.money(S['ce'][z])}" in walk
+    assert f"the put side went from {V.money(S['pe'][a])} to {V.money(S['pe'][z])}" in walk
+    assert f"The P&L went from {V.signed(S['pnl'][a])} to {V.signed(S['pnl'][z])}" in walk
