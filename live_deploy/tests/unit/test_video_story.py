@@ -25,7 +25,7 @@ def texts(s, kind=None, title=None):
 
 def test_the_scenes_in_order_with_a_scene_for_each_trade():
     s = build()
-    assert [sc["kind"] for sc in s["scenes"]] == ["open", "rules", "market", "trade", "trade", "trade", "trade",
+    assert [sc["kind"] for sc in s["scenes"]] == ["open", "market", "trade", "trade", "trade", "trade",
                                                  "checks", "journey", "split", "now", "wrap"]
     assert [sc["title"] for sc in s["scenes"] if sc["kind"] == "trade"] == [
         "10:00 · New cycle", "13:40 · Roll", "15:13 · End-of-day check", "11:20 · Checkpoint hit"]
@@ -50,25 +50,28 @@ def test_each_trade_says_why_with_the_numbers_the_strategy_saw():
     gap = " ".join(texts(s, title="15:13 · End-of-day check"))
     assert "It won't carry a gap wider than 80% overnight, and ₹105 is only 70% of ₹150, so it acts." in gap
     cp = " ".join(texts(s, title="11:20 · Checkpoint hit"))
-    assert "the cycle's profit reaches ₹9,412: ₹5,588 booked and ₹3,825 still open." in cp
+    assert "the cycle's profit has reached ₹9,412: ₹5,588 booked and ₹3,825 still open." in cp
     assert "Its checkpoint is ₹5,000, 0.5% of the ₹10,00,000 capital." in cp
     assert "Closing those legs books plus ₹3,825." in cp
     assert "And it starts the next cycle straight away. It sells the 25,400 call at ₹118" in cp
 
 
 def test_the_strangles_rules_from_its_own_settings():
-    cards = texts(build(), "rules")
+    assert "rules" not in [sc["kind"] for sc in build()["scenes"]], "only when asked for"
+    s = build(explain_rules=True)
+    assert [sc["kind"] for sc in s["scenes"]][:3] == ["open", "rules", "market"]
+    cards = texts(s, "rules")
     assert "if one falls below 50% of the other, it rolls the cheaper one closer to the market." in cards[1]
     assert cards[2] == "Every day at 15:13 it checks again, and it won't carry a gap wider than 80% overnight."
     other = V.build(sample(), dep={**DEP, "config": {**DEP["config"], "adjustment_trigger_ratio": 0.4, "eod_check_time": "15:05"}},
-                    strategy_label="Monthly strangle", now=NOW)
+                    strategy_label="Monthly strangle", now=NOW, explain_rules=True)
     said = texts(other, "rules")
     assert "below 40% of the other" in said[1] and said[2].startswith("Every day at 15:05")
 
 
 def test_a_running_cycle_is_told_up_to_now_with_where_it_stands():
     s = build()
-    assert "It started Tuesday the 27th at 10:00, and it's still running, so this is where it stands at 15:25 today." in texts(s, "open")[0]
+    assert "It started Tuesday the 27th at 10:00 and it's still running: this is where it stands at 15:25 today." in texts(s, "open")[1]
     now = texts(s, "now")
     assert now[0].startswith("So where does it stand right now, at 15:25? The 25,400 call is at")
     assert "The roll comes below 50%" in now[1]
@@ -78,8 +81,9 @@ def test_a_running_cycle_is_told_up_to_now_with_where_it_stands():
 def test_a_finished_one_has_no_now_and_says_when_it_ran():
     s = build(live=False)
     assert "now" not in [sc["kind"] for sc in s["scenes"]]
-    assert "It ran from Tuesday the 27th at 10:00 to Thursday the 29th at 15:25." in texts(s, "open")[0]
+    assert "from Tuesday the 27th at 10:00 to Thursday the 29th at 15:25." in texts(s, "open")[1]
     assert texts(s, "wrap")[0].endswith("Thanks for watching.")
+    assert texts(s, "open")[0] == "Four trades, while Nifty swung 197 points, and it finished up ₹11,438. Here's how.", "no deep dip: the plain hook"
 
 
 def test_the_checks_that_held_it_back_once_each_and_in_words():
@@ -102,7 +106,7 @@ def test_another_strategy_is_told_from_its_recorded_rule():
     D["events"] = [D["events"][0], {**D["events"][1], "trigger": "leg_stop", "values": {"leg_price": 162.5, "stop": 160},
                                     "kind": "exit", "label": "Exit", "fills": D["events"][1]["fills"][:1]}]
     s = V.build(D, dep={**DEP, "strategy_name": "intraday_dtt_simple", "config": {"entry_time": "09:20", "per_leg_stop_loss_pct": 0.4}},
-                strategy_label="DTT straddle", now=NOW)
+                strategy_label="DTT straddle", now=NOW, explain_rules=True)
     rules = texts(s, "rules")
     assert rules[0].startswith("Here's how this strategy plays. It sells a call and a put at the same strike")
     assert rules[-1] == "The settings it runs with: entry time 09:20; per-leg stop 40%."
@@ -154,3 +158,58 @@ def test_the_voice_writes_a_clip_a_step_with_its_captions_timed(tmp_path, monkey
     clip = voice.read_wav(tmp_path / "narr" / "01-01.wav")
     assert abs(len(clip) / voice.SR - st["dur"]) < 0.01
     assert json.loads((tmp_path / "narr.json").read_text()) == narr
+
+
+def test_it_opens_on_the_most_telling_fact():
+    s = build()
+    assert texts(s, "open")[0] == ("At one point this cycle was down ₹916, on Tuesday the 27th at 13:00. "
+                                   "And it's now up ₹6,877. Here's how it climbed back.")
+    assert [st["cue"] for st in s["scenes"][0]["steps"]] == ["hook", "title", "count"]
+    assert texts(s, "open")[2] == "₹9,412 is booked, and the positions still open are down ₹2,536, over four trades. Let's go through them."
+    from app.video.story import _hook, When
+    S = {"pnl": [0.0, 500.0, 900.0], "idx": [100.0, 120.0, 110.0], "t": [NOW.isoformat()] * 3}
+    w = When(NOW, False)
+    best = [{"label": "Roll", "t": NOW.isoformat(), "booked": 600.0}]
+    assert _hook(S, best, 900.0, False, "Nifty", w, {}, 0, True).startswith(
+        "One roll, on Thursday the 29th at 15:25, booked ₹600: 67% of everything this cycle has made.")
+    lost = {**S, "pnl": [0.0, -200.0, -900.0]}
+    assert _hook(lost, [], -900.0, False, "Nifty", w, {}, 0, True) == "This one lost ₹900. Let's find exactly where it went wrong."
+
+
+def test_each_trade_picks_up_from_the_one_before():
+    s = build()
+    assert texts(s, title="15:13 · End-of-day check")[0].startswith("The next afternoon, at 15:13, Nifty had dropped 124 points, to 24,897.")
+    assert texts(s, title="13:40 · Roll")[0].startswith("Four hours later")
+    cp = texts(s, title="11:20 · Checkpoint hit")
+    assert cp[0].startswith("The next morning, at 11:20, Nifty") and cp[1].startswith("By now the cycle's profit has reached ₹9,412")
+
+
+@pytest.mark.parametrize("a,b,said", [
+    ((10, 0, 27), (10, 40, 27), "40 minutes later"),
+    ((10, 0, 27), (11, 10, 27), "An hour later"),
+    ((10, 0, 27), (13, 40, 27), "Four hours later"),
+    ((15, 13, 27), (9, 20, 28), "The next morning, at 09:20"),
+    ((15, 13, 23), (11, 0, 26), "On Monday morning, at 11:00"),
+    ((10, 0, 21), (14, 0, 26), "Five days later, on Monday afternoon, at 14:00"),
+])
+def test_how_long_between_trades_as_said(a, b, said):
+    at = lambda h, m, d: datetime(2026, 10, d, h, m, tzinfo=IST).isoformat()  # noqa: E731
+    assert V.later(at(*a), at(*b)) == said
+
+
+def test_a_trade_scene_holds_at_its_moment_with_the_numbers_said():
+    s = build()
+    for sc in (x for x in s["scenes"] if x["kind"] == "trade"):
+        d = sc["data"]
+        assert d["w"][1] - d["at"] <= max(2, (d["at"] - d["w"][0]) // 8), "no hours after the moment on the chart"
+        assert s["series"]["pnl"][d["at"]] == d["pnl"], "the P&L shown at the moment is the one said"
+        said = " ".join(st["text"] for st in sc["steps"])
+        if d["booked"] is not None:
+            assert f"₹{round(abs(d['booked'])):,}" in said, sc["title"]
+    gap = next(sc for sc in s["scenes"] if sc["title"] == "15:13 · End-of-day check")
+    assert gap["data"]["booked"] == 1200.0 and "stands at plus ₹893." in gap["steps"][-1]["text"]
+    assert s["series"]["pnl"][gap["data"]["at"]] == 893.0 or round(s["series"]["pnl"][gap["data"]["at"]]) == 893
+
+
+def test_it_ends_on_what_made_the_result():
+    assert "What made it? Mostly time passing: ₹5,089 of it." in texts(build(), "wrap")[0]

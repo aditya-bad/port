@@ -29,6 +29,8 @@ test('make a video of the replay, watch it with its chapters, delete it', async 
   assert.match(await p.locator('[data-videos]').innerText(), new RegExp(`Make a video of\\s+${label}`));
   assert.equal(await p.locator('[data-vid-voice] option').count(), 4);
   await p.selectOption('[data-vid-voice]', 'bf_emma');
+  assert.equal(await p.locator('[data-vid-explain]').isChecked(), false, 'how the strategy works: off unless asked for');
+  await p.check('[data-vid-explain]');
   await p.click('[data-act="vMake"]');
   await p.waitForSelector('.vid-row');
   const row = p.locator('.vid-row').first();

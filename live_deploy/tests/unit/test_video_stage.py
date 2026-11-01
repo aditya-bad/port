@@ -64,3 +64,24 @@ def test_each_step_lasts_as_long_as_its_voice(page):
     first = plan["steps"][0]
     assert first["D"] >= 4.0 + 0.6 - 1e-6 and first["dur"] == 4.0
     assert plan["steps"][1]["T0"] == pytest.approx(first["D"])
+
+
+def test_a_trade_is_shown_at_its_moment_while_it_is_explained(page):
+    """The chart stops at the trade and stays there while the rest is
+    said: the P&L box shows the P&L at that moment (the number said), not
+    one from hours later (a video once said 'booked ₹750' over a chart
+    already at the next morning, its box showing −₹1k)."""
+    page.evaluate("window.__ready")
+    for k, sc in enumerate(page.story["scenes"], 1):
+        if sc["kind"] != "trade":
+            continue
+        d = sc["data"]
+        hm = d["t"][11:16]
+        plan = page.evaluate("n => window.__plan(n)", k)
+        for st in plan["steps"][1:]:
+            page.evaluate("([s, t]) => window.__seek(s, t)", [k, st["T0"] + st["D"] - 0.05])
+            box = page.locator("#layer .pnlchip").text_content()
+            assert f"P&L at {hm}" in box, (sc["title"], box)
+            assert f"₹{round(abs(d['pnl'])):,}" in box, (sc["title"], box)
+        if d["booked"] is not None:
+            assert f"booked on this trade +₹{round(d['booked']):,}" in page.locator("#layer .pnlchip").text_content(), sc["title"]

@@ -1,6 +1,6 @@
 """Videos API: a replay told as a narrated, animated MP4 (app/video/).
 
-POST   /v2/deployments/{id}/videos   {from, to, voice}: tells the story of
+POST   /v2/deployments/{id}/videos   {from, to, voice, explain}: tells the story of
        those episodes (the replay page's choice; the latest by default) as
        it stands now, and queues it. A cycle still running is told up to now.
 GET    /v2/deployments/{id}/videos   its videos, newest first
@@ -38,6 +38,7 @@ class MakeVideo(BaseModel):
     from_: Optional[int] = Field(None, alias="from")
     to: Optional[int] = None
     voice: Optional[str] = None
+    explain: bool = False          # include how the strategy works, before the trades
 
 
 def _out(r) -> dict:
@@ -98,7 +99,7 @@ async def make(deployment_id: UUID, body: MakeVideo, request: Request):
     try:
         story = V.build(D, dep=dict(dep), strategy_label=(META.get(dep["strategy_name"]) or {}).get("label") or dep["strategy_name"],
                         decisions=[{"t": r["decided_at"], "rule": r["rule"], "outcome": r["outcome"], "summary": r["summary"]} for r in rows],
-                        now=now)
+                        now=now, explain_rules=body.explain)
     except V.NoStory as e:
         raise HTTPException(409, f"{e} {D.get('market_error') or ''}".strip())
     a, z = D["selected"]

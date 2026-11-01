@@ -43,7 +43,7 @@ def test_a_video_is_made_served_with_chapters_and_deleted(client, videos, tmp_pa
     info = client.get("/v2/videos/info").json()
     assert info["can_make"] is True and info["default_voice"] == "af_heart" and len(info["voices"]) == 4
     d = straddle_day(client)
-    r = client.post(f"/v2/deployments/{d['id']}/videos", json={"voice": "bm_george"})
+    r = client.post(f"/v2/deployments/{d['id']}/videos", json={"voice": "bm_george", "explain": True})
     assert r.status_code == 200, r.text
     v = r.json()
     assert (v["status"], v["title"], v["live"], v["voice"], v["ep_from"], v["ep_to"]) == ("queued", "Trade 1", False, "bm_george", 1, 1)
@@ -75,7 +75,11 @@ def test_a_video_is_made_served_with_chapters_and_deleted(client, videos, tmp_pa
 def test_one_caught_half_made_starts_again_and_one_waits_for_memory(client, videos, monkeypatch):
     d = straddle_day(client, "vid wait")
     v = client.post(f"/v2/deployments/{d['id']}/videos", json={}).json()
-    sql(client, "UPDATE videos SET status = 'drawing', progress = 0.5 WHERE id = $1", __import__("uuid").UUID(v["id"]))
+    from uuid import UUID
+    story = sql(client, "SELECT story FROM videos WHERE id = $1", UUID(v["id"]))[0]["story"]
+    kinds = [sc["kind"] for sc in (story if isinstance(story, dict) else __import__("json").loads(story))["scenes"]]
+    assert "rules" not in kinds and kinds[:2] == ["open", "market"], "how the strategy works: only when asked for"
+    sql(client, "UPDATE videos SET status = 'drawing', progress = 0.5 WHERE id = $1", UUID(v["id"]))
     assert client.portal.call(videos.requeue) == 1
     v = client.get(f"/v2/videos/{v['id']}").json()
     assert (v["status"], v["progress"]) == ("queued", 0) and "restarted" in v["note"]

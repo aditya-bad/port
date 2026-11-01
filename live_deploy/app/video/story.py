@@ -136,6 +136,84 @@ def _words(s: str) -> int:
     return len(s.split())
 
 
+NUM = ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"]
+
+
+def _n(x: int) -> str:
+    return NUM[x] if 0 <= x < len(NUM) else str(x)
+
+
+def later(a, b) -> str:
+    """How long after one trade the next came, as said: 'Forty minutes
+    later', 'Two hours later', 'The next afternoon, at 15:13', 'Three days
+    later, on Monday morning, at 09:20'."""
+    a, b = _t(a), _t(b)
+    if a.date() == b.date():
+        m = (b - a).total_seconds() / 60
+        if m < 55:
+            return f"{max(5, round(m / 5) * 5)} minutes later"
+        h = m / 60
+        if h < 1.3:
+            return "An hour later"
+        if h < 1.8:
+            return "An hour and a half later"
+        return f"{_n(round(h)).capitalize()} hours later"
+    part = "morning" if b.hour < 12 else "afternoon"
+    days = (b.date() - a.date()).days
+    if days == 1 or (days == 3 and a.weekday() == 4 and b.weekday() == 0):
+        return f"{'The next' if days == 1 else 'On Monday'} {part}, at {b:%H:%M}"
+    return f"{_n(days).capitalize()} days later, on {WEEKDAY[b.weekday()]} {part}, at {b:%H:%M}"
+
+
+def _hook(S: dict, events: list, total: float, live: bool, index: str, when: "When", cfg: dict, capital: float,
+          strangle: bool) -> str:
+    """The first thing said: the most telling fact in the data, so the
+    rest is worth watching. Every number in it is the replay's own."""
+    p = [(i, v) for i, v in enumerate(S["pnl"]) if v is not None]
+    if not p:
+        return "Here's how it went, trade by trade."
+    lo, hi = min(p, key=lambda x: x[1]), max(p, key=lambda x: x[1])
+    now_word = "it's now" if live else "it finished"
+    unit = "cycle" if strangle else "run"
+    if total > 0 and lo[1] < 0 and -lo[1] >= 0.1 * total:
+        return (f"At one point this {unit} was down {rs(-lo[1])}, {when.day_of(_t(S['t'][lo[0]]))} at {hhmm(S['t'][lo[0]])}. "
+                f"And {now_word} up {rs(total)}. Here's how it climbed back.")
+    if total < 0 and hi[1] > 0 and hi[1] >= 0.1 * -total:
+        return (f"At one point this {unit} was up {rs(hi[1])}. And {now_word} down {rs(-total)}. "
+                f"So where did it slip? Let's find out.")
+    best = max((e for e in events if (e.get("booked") or 0) > 0), key=lambda e: e["booked"], default=None)
+    if best and total > 0 and 0.4 <= best["booked"] / total <= 1:
+        return (f"One {best['label'].lower()}, {when.day_of(_t(best['t']))} at {hhmm(best['t'])}, booked {rs(best['booked'])}: "
+                f"{pct(best['booked'], total)}% of everything this {unit} has made. Let's see why it happened.")
+    if total < 0:
+        return f"This one lost {rs(-total)}. Let's find exactly where it went wrong."
+    cp = float(cfg.get("checkpoint_profit_pct_of_capital", cfg.get("checkpoint_pct", 0.005))) * capital
+    if live and strangle and cp and 0.6 * cp <= total < cp:
+        return (f"It's {rs(cp - total)} away from its checkpoint, the moment it books everything and starts again. "
+                f"Will it get there? First, how it got here.")
+    ix = [v for v in S["idx"] if v is not None]
+    swing = f", while {index} swung {pts(max(ix) - min(ix))} points" if len(ix) > 1 and max(ix) - min(ix) >= 1 else ""
+    return f"{_n(len(events)).capitalize()} trade{'s' if len(events) != 1 else ''}{swing}, and {now_word} {'up' if total >= 0 else 'down'} {rs(abs(total))}. Here's how."
+
+
+def _takeaway(sp, events: list, total: float, index: str, when: "When") -> str:
+    """One line on what made the result, from the split or the biggest trade."""
+    if sp and any(abs(x) >= 1 for x in sp):
+        parts = {"time passing": sp[0], f"{index}'s move": sp[1], "volatility": sp[2]}
+        if total >= 0:
+            k = max(parts, key=parts.get)
+            if parts[k] > 0:
+                return f"What made it? Mostly {k}: {rs(parts[k])} of it."
+        else:
+            k = min(parts, key=parts.get)
+            if parts[k] < 0:
+                return f"What hurt most? {k[0].upper()}{k[1:]}: it cost {rs(-parts[k])}."
+    best = max(events, key=lambda e: abs(e.get("booked") or 0), default=None)
+    if best and best.get("booked"):
+        return f"The trade that mattered most: the {best['label'].lower()} {when.plain_day(best['t'])}, {signed(best['booked'])}."
+    return ""
+
+
 def step(text: str, cue: str, **extra) -> dict:
     text = " ".join(text.split())
     s = {"text": text, "say": spoken(text), "cue": cue,
@@ -226,7 +304,7 @@ def _step_of(S: dict, t) -> int:
 # ── the scenes ───────────────────────────────────────────────────────
 
 def build(D: dict, *, dep: dict, strategy_label: str, decisions: Optional[list] = None,
-          now: Optional[datetime] = None) -> dict:
+          now: Optional[datetime] = None, explain_rules: bool = False) -> dict:
     frames = D.get("frames") or []
     if not frames:
         raise NoStory("This replay has no prices to show, so there's nothing to draw.")
@@ -266,32 +344,31 @@ def build(D: dict, *, dep: dict, strategy_label: str, decisions: Optional[list] 
     first_entry = next((e for e in events if (e.get("values") or {}).get("target_premium") is not None), None)
     scenes: list[dict] = []
 
-    # 1. what this video is
-    opening = _pick(seed, ["Let's walk through", "Here's", "Okay, let's look at"])
+    # 1. what this video is: the most telling fact first, then what it is
+    hook = _hook(S, events, total, live, index, when, cfg, capital, is_strangle)
+    opening = _pick(seed, ["This is", "We're looking at", "Here's"])
     s1 = f"{opening} {episode} of {name}, the {strategy_label} on {index}"
     if live:
-        s1 += f". It started {when.plain_day(D['start'])} at {hhmm(D['start'])}, and it's still running, so this is where it stands at {hhmm(as_of)} {when.plain_day(as_of)}."
+        s1 += f". It started {when.plain_day(D['start'])} at {hhmm(D['start'])} and it's still running: this is where it stands at {hhmm(as_of)} {when.plain_day(as_of)}."
     else:
-        s1 += f". It ran from {when.plain_day(D['start'])} at {hhmm(D['start'])} to {when.plain_day(D['end'])} at {hhmm(D['end'])}."
+        s1 += f", from {when.plain_day(D['start'])} at {hhmm(D['start'])} to {when.plain_day(D['end'])} at {hhmm(D['end'])}."
     open_now = total - booked
-    s2 = f"The short version: it's {'up' if total >= 0 else 'down'} {rs(abs(total))}{' so far' if live else ''}."
+    n_tr = f"{_n(len(events))} trade{'s' if len(events) != 1 else ''}"
     if abs(open_now) >= 1:
-        s2 += f" {rs(booked)} of that is booked, and {rs(open_now)} is in positions still open."
-    elif events:
-        s2 += " All of it is booked; nothing is left open."
-    n_adj = sum(1 for e in events if e["kind"] in ("adjustment", "roll", "hedge", "added", "leg_closed"))
-    s3 = f"{len(events)} trade{'s' if len(events) != 1 else ''}"
-    s3 += f", {n_adj} of them adjustments." if n_adj else "."
-    s3 += " Let's see what it did, and why."
+        s2 = (f"{rs(booked)} is booked, and the positions still open are {'up' if open_now > 0 else 'down'} {rs(abs(open_now))}, "
+              f"over {n_tr}. Let's go through them.")
+    else:
+        s2 = f"All of it is booked, over {n_tr}. Let's go through them."
     scenes.append({"kind": "open", "title": episode, "data": {
         "name": name, "strategy": strategy_label, "episode": episode, "index": index, "live": live,
         "window": (f"{_t(D['start']):%d %b %H:%M} → now, {as_of:%d %b %H:%M}" if live else
                    f"{_t(D['start']):%d %b %H:%M} → {_t(D['end']):%d %b %H:%M}"),
         "total": round(total, 2), "booked": round(booked, 2), "open": round(open_now, 2), "trades": len(events)},
-        "steps": [step(s1, "title"), step(s2, "headline"), step(s3, "count")]})
+        "steps": [step(hook, "hook"), step(s1, "title"), step(s2, "count")]})
 
-    # 2. how the strategy plays
-    scenes.append(_rules(strategy, strategy_label, cfg, capital, index, first_entry))
+    # 2. how the strategy plays: only when asked for
+    if explain_rules:
+        scenes.append(_rules(strategy, strategy_label, cfg, capital, index, first_entry))
 
     # 3. the market
     scenes.append(_market(S, D, legs, index, when, live, is_strangle))
@@ -333,6 +410,9 @@ def build(D: dict, *, dep: dict, strategy_label: str, decisions: Optional[list] 
 
     # 9. the end
     end = f"So that's {episode}: {signed(total)}{' so far' if live else ''}."
+    take = _takeaway(fz.get("split"), events, total, index, when)
+    if take:
+        end += " " + take
     end += " It's still running, so make this video again later to see how the rest of it goes." if live else " Thanks for watching."
     scenes.append({"kind": "wrap", "title": "That's it", "data": {"total": round(total, 2), "live": live},
                    "steps": [step(end, "end")]})
@@ -503,16 +583,16 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
     # from the trade before to a little after this one; an entry, on to the next trade
     w0 = _at(keep, prev["frame"]) if prev else 0
     w0 = max(0, min(w0, at - 12))
-    after = max(12, (at - w0) // 3)
-    if fam == "entry":
-        after = max(after, ((_at(keep, nxt["frame"]) if nxt else last) - at) * 3 // 4)
-    w1 = min(last, at + after)
+    # the chart stops at the moment and stays there while it's explained:
+    # a little room after it, never the hours that came next
+    w1 = min(last, at + max(2, (at - w0) // 8))
     spot = e.get("idx")
     head = when(e["t"], cap=True)
     title = f"{hhmm(e['t'])} · " + {"target": "Checkpoint hit", "stop": "Stop hit"}.get(
         fam, "End-of-day check" if e.get("trigger") == "eod_gap_check" else e["label"])
+    cb = e.get("closed_before") or {}
     data: dict[str, Any] = {"family": fam, "trigger": e.get("trigger"), "at": at, "w": [w0, w1], "label": e["label"], "n": n, "of": of,
-                            "fills": [], "booked": e.get("booked"), "pnl": e.get("pnl"), "spot": spot}
+                            "t": e["t"], "fills": [], "booked": cb.get("booked") if cb else e.get("booked"), "pnl": e.get("pnl"), "spot": spot}
     for f in (e.get("closed_before") or {}).get("fills", []) + (e.get("fills") or []):
         what, k, kind = _contract(f["symbol"])
         data["fills"].append({"verb": ("Sell" if f["action"] == "sell" else "Buy") + ("" if f["opening"] else " back"),
@@ -522,10 +602,21 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
     mv = (e.get("since") or {}).get("idx")
     move = ""
     if spot:
-        move = f"{head}, {index} is at {pts(spot)}"
-        if mv is not None and prev is not None and abs(mv) >= 1:
-            move += f", {'up' if mv > 0 else 'down'} {pts(mv)} points since the last trade"
-        move += "."
+        if prev is not None and mv is not None:
+            # told while the chart draws the stretch from the trade before to this one
+            lead = later(prev["t"], e["t"])
+            if abs(mv) < 1:
+                move = f"{lead}, {index} was right back where it had been, at {pts(spot)}."
+            else:
+                verb = ("climbed" if abs(mv) >= 100 else "edged up") if mv > 0 else ("dropped" if abs(mv) >= 100 else "slipped")
+                move = _pick(f"{e['t']}|move", [
+                    f"{lead}, {index} had {verb} {pts(mv)} points, to {pts(spot)}.",
+                    f"{lead}. {index} is now at {pts(spot)}, {pts(mv)} points {'higher' if mv > 0 else 'lower'} than at the last trade.",
+                ])
+            if fam in ("balance", "target", "stop"):
+                move += _pick(f"{e['t']}|ask", ["", " So what does the strategy do?", " Here's what it saw."])
+        else:
+            move = f"{head}, {index} is at {pts(spot)}."
     fills = e.get("fills") or []
     closes = [f for f in fills if not f["opening"]]
     opens = [f for f in fills if f["opening"]]
@@ -593,7 +684,9 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
     elif fam == "target":
         made, tgt = float(v["total_cycle_profit"]), v.get("checkpoint_target")
         data["gauge"] = {"made": made, "target": tgt}
-        s = f"{head}, the cycle's profit reaches {rs(made)}"
+        if move and prev is not None:
+            steps.append(step(move, "move"))
+        s = f"{'By now' if move and prev is not None else head + ','} the cycle's profit {'has reached' if move and prev is not None else 'reaches'} {rs(made)}"
         parts = [f"{rs(v['cycle_realized_pnl'])} booked" if v.get("cycle_realized_pnl") is not None else None,
                  f"{rs(v['unrealized'])} still open" if v.get("unrealized") is not None else None]
         parts = [x for x in parts if x]
@@ -615,6 +708,9 @@ def _trade(e, prev, nxt, S, keep, legs, entry_of, strategy, strangle, cfg, capit
 
     elif fam == "stop":
         data["gauge"] = {"base": v.get("convergence_premium"), "now": v.get("combined_now"), "stop": v.get("stop_level")}
+        if move and prev is not None:
+            steps.append(step(move, "move"))
+            head = "By now"
         if e.get("trigger") == "convergence_stop":
             s = (f"{head}, its call and put are at the same strike. That's a straddle, and a straddle has no cushion: any move hurts it.")
             if v.get("convergence_premium") is not None:

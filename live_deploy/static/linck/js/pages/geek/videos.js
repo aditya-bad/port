@@ -21,7 +21,7 @@ const mb = b => (b == null ? '' : `${(b / 1e6).toFixed(1)} MB`);
 export function videosPanel(depId, current) {
   const host = document.createElement('div');
   host.className = 'vid-host';
-  const S = { info: null, list: [], playing: null, voice: null, busy: false, open: false, timer: null, alive: true };
+  const S = { info: null, list: [], playing: null, voice: null, explain: false, busy: false, open: false, timer: null, alive: true };
 
   async function load() {
     try {
@@ -75,6 +75,7 @@ export function videosPanel(depId, current) {
       <h3>Videos <span class="s">the replay told by a narrator: what it did, why, and with what numbers</span></h3>
       ${info.can_make === false ? html`<p class="gk-note" data-vid-cant>${info.why}</p>` : html`<div class="vid-make row">
         <span class="small">Make a video of <b>${sel.label}</b>${sel.open ? html` <span class="tiny mute">· still running, told up to now</span>` : ''}</span>
+        <label class="small row" style="gap:6px" title="Before the trades: what the strategy does, and the rules it trades by"><input type="checkbox" data-vid-explain ${S.explain ? 'checked' : ''}> Include how the strategy works</label>
         <label class="small">Voice <select data-vid-voice>${(info.voices || []).map(x => html`<option value="${x.id}" ${x.id === S.voice ? 'selected' : ''}>${x.label}</option>`)}</select></label>
         <button type="button" class="btn btn-sm btn-primary" data-act="vMake" ${S.busy || busy ? 'disabled' : ''}>${busy ? 'Being made…' : S.busy ? 'Starting…' : '🎬 Make video'}</button>
         <span class="tiny mute">Made on the server one at a time, at low priority: it can take a while, and keeps going if you leave this page.</span>
@@ -90,7 +91,7 @@ export function videosPanel(depId, current) {
       const sel = current();
       S.busy = true; S.error = ''; paint();
       try {
-        await api.makeVideo(depId, { from: sel.from, to: sel.to, voice: S.voice });
+        await api.makeVideo(depId, { from: sel.from, to: sel.to, voice: S.voice, explain: S.explain });
         say('Video queued: it’s being made on the server.');
       } catch (e) { fail(e, 'Couldn’t start the video'); }
       S.busy = false;
@@ -123,7 +124,10 @@ export function videosPanel(depId, current) {
     e.preventDefault();
     handlers[b.dataset.act](b.dataset, b);
   };
-  const onChange = e => { if (e.target.matches('[data-vid-voice]')) S.voice = e.target.value; };
+  const onChange = e => {
+    if (e.target.matches('[data-vid-voice]')) S.voice = e.target.value;
+    if (e.target.matches('[data-vid-explain]')) S.explain = e.target.checked;
+  };
   host.addEventListener('click', onClick);
   host.addEventListener('change', onChange);
   load();

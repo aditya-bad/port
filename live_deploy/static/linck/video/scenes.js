@@ -236,6 +236,7 @@ DRAW.open = (p, sc, cx) => {
     E('circle', { cx: 104, cy: 439, r: 7, class: 'livedot' }, live);
     T(live, 120, 446, 'RUNNING', 'livet', 'start');
   }
+  // the hook: the P&L's whole path, its low and high marked, the total rolling up
   const R = G(p);
   T(R, 900, 200, d.live ? 'P&L so far' : 'P&L', 'fl', 'start');
   const big = T(R, 900, 268, '', `huge ${tone(d.total)}`, 'start');
@@ -244,20 +245,30 @@ DRAW.open = (p, sc, cx) => {
   if (Math.abs(d.open) >= 1) chip(chips, 900 + b1.w + 12, 320, `open ${sinr(d.open)}`, 'soft');
   const n = s.pnl.length - 1;
   const ch = chart(R, { x: 900, y: 400, w: 560, h: 220 }, 0, n, { key: 'pnl', money: true, zero: true, area: true });
+  const ps = s.pnl.map((v, i) => [i, v]).filter(x => x[1] != null);
+  const ext = ps.length ? [ps.reduce((a, b) => (b[1] < a[1] ? b : a)), ps.reduce((a, b) => (b[1] > a[1] ? b : a))] : [];
+  const marks = ext.map(([i, v], q) => {
+    const g = G(R, 'mark');
+    E('circle', { cx: ch.xs(i), cy: ch.ys(v), r: 8, class: q ? 'high' : 'low' }, g);
+    T(g, clamp(ch.xs(i), 940, 1420), ch.ys(v) + (q ? -16 : 30), sinr(v), `markt ${q ? 'high' : 'low'}`);
+    op(g, 0);
+    return g;
+  });
   const trades = st().scenes.filter(x => x.kind === 'trade').map(x => x.data.at);
   const dots = trades.map(i => { const c = E('circle', { cx: ch.xs(i), cy: ch.ys(s.pnl[i] || 0), r: 7, class: 'evdot' }, R); op(c, 0); return c; });
   const cnt = T(R, 900, 690, `${d.trades} trade${d.trades === 1 ? '' : 's'}`, 'bigs', 'start');
-  const jH = cx.find('headline'), jC = cx.find('count');
+  const jH = Math.max(0, cx.find('hook')), jT = cx.find('title'), jC = cx.find('count');
   return (t, rt) => {
-    pop(L, t, 0, 0.6);
-    if (live) op(live.querySelector('.livedot'), 0.5 + 0.5 * Math.sin(rt * 4));
     op(R, k(t, cx.at[jH][0], cx.at[jH][0] + 0.4));
-    countUp(big, t, cx.at[jH][0], cx.at[jH][1] * 0.8 + cx.at[jH][0] * 0.2, 0, d.total, v => sinr(v));
-    pop(chips, t, lerp(cx.at[jH][0], cx.at[jH][1], 0.7), 0.5);
-    ch.reveal(lerp(0, n, cx.cue(t, jC, 0, 0.8)), rt);
-    op(ch.g, k(t, cx.at[jC][0], cx.at[jC][0] + 0.3));
-    dots.forEach((c, i) => pop(c, t, lerp(cx.at[jC][0], cx.at[jC][1], 0.2 + 0.6 * (trades[i] / Math.max(1, n))), 0.4));
-    pop(cnt, t, lerp(cx.at[jC][0], cx.at[jC][1], 0.7), 0.5);
+    ch.reveal(lerp(0, n, cx.cue(t, jH, 0, 0.75)), rt);
+    countUp(big, t, cx.at[jH][0], lerp(cx.at[jH][0], cx.at[jH][1], 0.75), 0, d.total, v => sinr(v));
+    marks.forEach((m, q) => pop(m, t, lerp(cx.at[jH][0], cx.at[jH][1], 0.3 + 0.35 * q), 0.5));
+    pop(L, t, jT >= 0 ? cx.at[jT][0] : 0, 0.6);
+    if (live) op(live.querySelector('.livedot'), 0.5 + 0.5 * Math.sin(rt * 4));
+    const c0 = jC >= 0 ? cx.at[jC][0] : cx.at[jH][1];
+    pop(chips, t, c0, 0.5);
+    dots.forEach((c, i) => pop(c, t, c0 + 0.3 + 0.25 * i, 0.4));
+    pop(cnt, t, c0 + 0.5, 0.5);
   };
 };
 
@@ -409,21 +420,24 @@ DRAW.trade = (p, sc, cx) => {
   if (d.family === 'entry' && sold.length >= 2) {
     const ks = sold.map(f => f.strike).sort((a, b) => a - b);
     zone = G(p, 'zone');
-    E('rect', { x: ch.xs(at), y: ch.ys(ks[ks.length - 1]), width: ch.xs(w1) - ch.xs(at), height: ch.ys(ks[0]) - ch.ys(ks[ks.length - 1]), class: 'zone' }, zone);
-    T(zone, (ch.xs(at) + ch.xs(w1)) / 2, (ch.ys(ks[0]) + ch.ys(ks[ks.length - 1])) / 2 + 6, 'it profits while the price stays in here', 'zonet');
+    const zx = Math.min(ch.xs(at), 60 + 860 * 0.55);
+    E('rect', { x: zx, y: ch.ys(ks[ks.length - 1]), width: 920 - zx, height: ch.ys(ks[0]) - ch.ys(ks[ks.length - 1]), class: 'zone' }, zone);
+    T(zone, (zx + 920) / 2, (ch.ys(ks[0]) + ch.ys(ks[ks.length - 1])) / 2 + 6, 'it profits while the price stays in here', 'zonet');
     op(zone, 0);
   }
   // the P&L, as it goes
+  // the P&L box: the P&L where the chart is (the moment, once it gets
+  // there: the number the narrator says), and what this trade booked
   const pnlG = G(p, 'pnlchip');
   E('rect', { x: 980, y: 130, width: 560, height: 74, rx: 12 }, pnlG);
-  T(pnlG, 1004, 160, 'P&L', 'fl', 'start');
+  const pnlL = T(pnlG, 1004, 160, 'P&L', 'fl', 'start');
   const pnlV = T(pnlG, 1004, 192, '', 'pnlv', 'start');
   const timeV = T(pnlG, 1516, 192, '', 'mono mute', 'end');
+  const bookedV = T(pnlG, 1516, 160, '', 'tb', 'end');
   // what the rule saw
   const viz = G(p);
   let set = () => {};
   const jFirst = 0, last = cx.at.length - 1;
-  const after = t => k(t, cx.at[Math.min(1, last)][0], cx.at[last][1]);   // the chart after the moment
   if (d.family === 'balance' && d.gauge) {
     const g0 = { ...d.gauge };
     const side = g0.small_side === 'put' ? 'pe' : 'ce', bside = side === 'pe' ? 'ce' : 'pe';
@@ -519,14 +533,20 @@ DRAW.trade = (p, sc, cx) => {
   const jN = cx.find('note');
   if (jN >= 0) { note = T(p, 60, 620, 'written in afterwards by a repair, from market prices', 'mono mute', 'start'); op(note, 0); }
   return (t, rt) => {
-    // the chart walks up to the moment, then on past it
-    const i = t < cx.at[jFirst][1] ? lerp(w0 + (at - w0) * 0.25, at, cx.cue(t, jFirst, 0, 0.85)) : lerp(at, w1, after(t));
-    const v = ch.reveal(i, rt);
+    // the chart walks up to the moment while the first step is said, then
+    // stays there: everything after it is said about that moment
+    const i = lerp(w0 + (at - w0) * 0.25, at, cx.cue(t, jFirst, 0, 0.85));
+    const there = i >= at - 1e-6;
+    ch.reveal(i, rt);
     pop(ev, t, lerp(cx.at[0][0], cx.at[0][1], 0.75), 0.5);
-    const pi = Math.round(clamp(i, w0, w1));
-    txt(pnlV, sinr(s.pnl[pi])); pnlV.setAttribute('class', `pnlv ${tone(s.pnl[pi])}`);
-    txt(timeV, `${dayOf(s.t[pi])} ${hm(s.t[pi])}`);
-    void v;
+    const pi = Math.round(clamp(i, w0, at));
+    const pnl = there && d.pnl != null ? d.pnl : s.pnl[pi];
+    txt(pnlL, there ? `P&L at ${hm(d.t)}` : 'P&L');
+    txt(pnlV, sinr(pnl)); pnlV.setAttribute('class', `pnlv ${tone(pnl)}`);
+    txt(timeV, there ? dayOf(d.t) : `${dayOf(s.t[pi])} ${hm(s.t[pi])}`);
+    const booked = d.booked != null && jB >= 0 && t >= lerp(cx.at[jB][0], cx.at[jB][1], 0.5);
+    txt(bookedV, booked ? `booked on this trade ${sinr(d.booked)}` : '');
+    bookedV.setAttribute('class', `tb ${tone(d.booked)}`);
     set(t, rt);
     tickets.forEach((g, n) => slideIn(g, t, when[n]));
     if (fx) fx.go(t, lerp(cx.at[jB][0], cx.at[jB][1], 0.7));
