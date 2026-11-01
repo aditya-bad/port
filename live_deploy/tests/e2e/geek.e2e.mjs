@@ -319,7 +319,10 @@ test('a cycle’s own page has everything, set against the other cycles', async 
   assert.match(await vs.locator('.sp-run').innerHTML(), /#5</, 'this one in blue, not marked "now"');
   assert.match(await vs.locator('.nb-run').innerHTML(), /#5 ended −₹3,852/);
   const day = await vs.locator('.gk-panel', { hasText: 'Day by day' }).locator('.tr.att').innerText();
-  assert.match(day, /^End · day 9\.1/);
+  // cycle 5 ran from 49 trading days ago, 10:00, to 40, 13:40 (tests/e2e/serve.py seed_geek)
+  const back = n => { const d = new Date(Date.now() + 330 * 60000); d.setUTCHours(0, 0, 0, 0); while (n > 0) { d.setUTCDate(d.getUTCDate() - 1); if (d.getUTCDay() % 6) n--; } return d; };
+  const ran = ((back(40).getTime() + 13 * 3600e3 + 40 * 60e3) - (back(49).getTime() + 10 * 3600e3)) / 86400e3;
+  assert.match(day, new RegExp(`^End · day ${(Math.floor(ran * 10) / 10).toFixed(1).replace('.', '\\.')}`), 'its length, in days and tenths, rounded down');
   assert.equal(await vs.locator('.rg.me').count(), 1, 'its bar outlined among the rest');
   assert.match(await vs.locator('.gk-panel', { hasText: 'This cycle vs the others' }).innerText(), /Result, gross[\s\S]*9th best of 9/);
   // its rolls, charted as on Adjustments

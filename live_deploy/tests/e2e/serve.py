@@ -854,11 +854,20 @@ async def seed_geek(pool, prices, live_times):
     cfg = {**defaults, "instrument_tokens": [TOKEN["NIFTY"]], "instrument": "NIFTY", "convergence_stop_pct": 0.08}
     d = await queries.create_deployment(pool, GEEK_NAME, "strangle_monthly_v2", "positional", float(GEEK_CAP), cfg)
     dep = d["id"]
-    await pool.execute("UPDATE deployments SET created_at=$2 WHERE id=$1", dep, TODAY - timedelta(days=80))
     Q, G = 75, random.Random(5)
 
     def at(days, hh, mm):
-        return datetime.combine((TODAY - timedelta(days=days)).date(), time(hh, mm), IST)
+        """`days` trading days before today, at hh:mm: a cycle never opens or
+        trades on a weekend, whatever day the tests run (counted in calendar
+        days, on a Monday the open cycle began on a Saturday, with no index
+        prices for the replay to draw)."""
+        d, n = TODAY.date(), days
+        while n > 0:
+            d -= timedelta(days=1)
+            if d.weekday() < 5:
+                n -= 1
+        return datetime.combine(d, time(hh, mm), IST)
+    await pool.execute("UPDATE deployments SET created_at=$2 WHERE id=$1", dep, at(80, 9, 0))
 
     def meta(trigger, action, leg, strike, cycle, expiry, role=None, tv=None, tb=None):
         m = {"trigger": trigger, "action": action, "leg": leg, "strike": strike, "cycle_id": cycle,
