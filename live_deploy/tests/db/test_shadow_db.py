@@ -48,9 +48,15 @@ def svc(pool, disp, quote=None, freeze=None, margins=flat_margin, free=1e9, **kw
     async def funds():
         return free
     f = shadow.FreezeLimits(pool, freeze if freeze is not None else {"NIFTY": 1800})
+    # a partial fill is watched for follow_s (a minute live): a second here,
+    # unless a test watches it on purpose
+    kw.setdefault("follow_s", 1)
+    # legs placed 0.1s apart (0.4 live): the price trail each fill keeps is that much shorter
+    kw.setdefault("leg_gap_s", 0.1)
     s = shadow.ShadowService(pool, disp, {"shadow": {"limit_buffer_pct": 0.5}}, quotes=q, margins=margins, funds=funds,
                              freeze=f, batch_s=0.05, **kw)
     s.asked = asked
+    s.trail_keep_s = 0.3
     return s
 
 

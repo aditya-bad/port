@@ -27,9 +27,8 @@ from app.repair import engine
 from app.repair.market import IST, MinuteBook, natural_order
 from app.strategies.registry import list_strategies
 from tests.sim import INDEX, FakeKite, Sim
-from tests.strategies.helpers import cfg
+from tests.strategies.helpers import cfg, mode_of
 
-POSITIONAL = {"strangle_monthly_v2", "calendar_btst", "trend_credit_spread", "weekly_ema_st_spread"}
 VIX = 264969
 SECONDS = (0, 20, 40, 59)
 
@@ -160,7 +159,7 @@ def chain_oi(monkeypatch):
 
 
 async def parity(pool, monkeypatch, strategy, stall="11:00", path=base, **over):
-    mode = "positional" if strategy in POSITIONAL else "intraday"
+    mode = mode_of(strategy)
     config = cfg(strategy, **over)
     chain_oi(monkeypatch)
     start = path(datetime(2026, 1, 1, 9, 15))
@@ -413,7 +412,7 @@ def test_the_day_check_finds_nothing_on_a_day_the_app_traded_as_its_strategy(str
     async def go(pool):
         from app.repair import daycheck as D
         chain_oi(monkeypatch)
-        mode = "positional" if strategy in POSITIONAL else "intraday"
+        mode = mode_of(strategy)
         sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), mode=mode, spot=base(datetime(2026, 1, 1, 9, 15)))
         day = sim.market.today
         await D.capture_states(pool, day, "open")
@@ -442,7 +441,7 @@ def test_a_day_flagged_only_for_its_old_fill_times_checks_clean_once_the_fix_is_
         from app.repair import daycheck as D
         assert sorted(D.CANDLE_STAMPED) == sorted(CANDLE_STAMPED)
         chain_oi(monkeypatch)
-        mode = "positional" if strategy in POSITIONAL else "intraday"
+        mode = mode_of(strategy)
         sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), mode=mode, spot=base(datetime(2026, 1, 1, 9, 15)))
         day = sim.market.today
         await D.capture_states(pool, day, "open")

@@ -7,39 +7,18 @@ fill (time, instrument, side, quantity, price, reason) must match.
 A difference means some decision depends on memory the strategy didn't
 rebuild from the database — fix the strategy, not this test."""
 
-import math
 from datetime import timedelta
 
 import pytest
 
-from app.strategies.registry import list_strategies
 from tests.sim import Sim
-from tests.strategies.helpers import assert_book_consistent, cfg
+from tests.strategies.helpers import DAYS, STRATS, assert_book_consistent, cfg, market, mode_of, sim_time, trading_days
 
-STRATS = sorted(s["name"] for s in list_strategies())
-POSITIONAL = {"strangle_monthly_v2", "calendar_btst", "trend_credit_spread", "weekly_ema_st_spread"}
-DAYS = {"weekly_ema_st_spread": 10}
 CRASH_EVERY = [7, 23]          # minutes; co-prime with the market's rhythms
 
 
-def market(day_i):
-    def spot(t):
-        m = (t.hour * 60 + t.minute) - 555
-        return 25000 + 250 * math.sin((m + day_i * 120) / 60.0) + 40 * day_i * (1 if day_i % 2 else -1)
-    return spot
-
-
-def trading_days(start, n):
-    d, out = start, []
-    while len(out) < n:
-        if d.weekday() < 5:
-            out.append(d)
-        d += timedelta(days=1)
-    return out
-
-
 async def run(pool, monkeypatch, strategy, crash_every=None, name="run", path=market, over=None, watch=None):
-    mode = "positional" if strategy in POSITIONAL else "intraday"
+    mode = mode_of(strategy)
     sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy, **(over or {})), mode=mode, spot=25000, name=name)
     step = 5 if strategy in DAYS else 1
     n = 0
@@ -65,25 +44,22 @@ async def run(pool, monkeypatch, strategy, crash_every=None, name="run", path=ma
     return fills
 
 
-def sim_time(d, hhmm):
-    from datetime import datetime
-    return datetime.combine(d, datetime.strptime(hhmm, "%H:%M").time())
-
-
-@pytest.mark.parametrize("crash_every", CRASH_EVERY)
 @pytest.mark.parametrize("strategy", STRATS)
-def test_a_crashed_and_restarted_strategy_trades_exactly_like_an_uninterrupted_one(strategy, crash_every, pool_run, monkeypatch):
+def test_a_crashed_and_restarted_strategy_trades_exactly_like_an_uninterrupted_one(strategy, pool_run, monkeypatch):
+    """Killed every 7 minutes, and every 23: each run against the one
+    uninterrupted run (the same sessions, so it's run once)."""
     async def go(pool):
         base = await run(pool, monkeypatch, strategy, name="uninterrupted")
-        crashed = await run(pool, monkeypatch, strategy, crash_every=crash_every, name="crashed")
         assert base, f"{strategy} never traded — the comparison would prove nothing"
-        if crashed != base:
-            diff = next(i for i, (a, b) in enumerate(zip(base + [None], crashed + [None])) if a != b)
-            raise AssertionError(
-                f"{strategy}, killed every {crash_every} min: fill #{diff} differs\n"
-                f"  uninterrupted: {base[diff] if diff < len(base) else 'none'}\n"
-                f"  crashed:       {crashed[diff] if diff < len(crashed) else 'none'}\n"
-                f"  ({len(base)} vs {len(crashed)} fills)")
+        for crash_every in CRASH_EVERY:
+            crashed = await run(pool, monkeypatch, strategy, crash_every=crash_every, name=f"crashed{crash_every}")
+            if crashed != base:
+                diff = next(i for i, (a, b) in enumerate(zip(base + [None], crashed + [None])) if a != b)
+                raise AssertionError(
+                    f"{strategy}, killed every {crash_every} min: fill #{diff} differs\n"
+                    f"  uninterrupted: {base[diff] if diff < len(base) else 'none'}\n"
+                    f"  crashed:       {crashed[diff] if diff < len(crashed) else 'none'}\n"
+                    f"  ({len(base)} vs {len(crashed)} fills)")
     pool_run(go)
 
 
@@ -104,25 +80,28 @@ def converging(day_i):
     return spot
 
 
-@pytest.mark.parametrize("crash_every", CRASH_EVERY)
-def test_a_converged_strangle_restarted_trades_and_holds_state_like_an_uninterrupted_one(crash_every, pool_run, monkeypatch):
+def test_a_converged_strangle_restarted_trades_and_holds_state_like_an_uninterrupted_one(pool_run, monkeypatch):
     """Same fills, and after every tick the same convergence: converged,
-    its premium, the trailing stop's low."""
+    its premium, the trailing stop's low; killed every 7 minutes, and every 23."""
     def recorder(into):
         return lambda st: into.append((st.converged, st.convergence_premium, st._trailing_floor))
 
     async def go(pool):
         over = {"convergence_mode": "trailing_stop"}
-        base_state, crashed_state = [], []
+        base_state = []
         base = await run(pool, monkeypatch, "strangle_monthly_v2", name="uninterrupted", path=converging, over=over,
                          watch=recorder(base_state))
         assert any(c for c, _, _ in base_state), "the path must reach a straddle, or this proves nothing"
-        crashed = await run(pool, monkeypatch, "strangle_monthly_v2", crash_every=crash_every, name="crashed",
-                            path=converging, over=over, watch=recorder(crashed_state))
-        assert crashed == base, next(
-            f"fill #{i}: uninterrupted {a}, crashed {b}" for i, (a, b) in enumerate(zip(base + [None], crashed + [None])) if a != b)
-        assert crashed_state == base_state, next(
-            f"tick #{i}: uninterrupted {a}, crashed {b}" for i, (a, b) in enumerate(zip(base_state, crashed_state)) if a != b)
+        for crash_every in CRASH_EVERY:
+            crashed_state = []
+            crashed = await run(pool, monkeypatch, "strangle_monthly_v2", crash_every=crash_every, name=f"crashed{crash_every}",
+                                path=converging, over=over, watch=recorder(crashed_state))
+            assert crashed == base, next(
+                f"every {crash_every} min, fill #{i}: uninterrupted {a}, crashed {b}"
+                for i, (a, b) in enumerate(zip(base + [None], crashed + [None])) if a != b)
+            assert crashed_state == base_state, next(
+                f"every {crash_every} min, tick #{i}: uninterrupted {a}, crashed {b}"
+                for i, (a, b) in enumerate(zip(base_state, crashed_state)) if a != b)
     pool_run(go)
 
 
@@ -153,7 +132,7 @@ async def run_killed_after(pool, monkeypatch, strategy, kill_at):
             raise Killed()
         return r
     monkeypatch.setattr(queries, "record_fill", dying_record_fill)
-    mode = "positional" if strategy in POSITIONAL else "intraday"
+    mode = mode_of(strategy)
     sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), mode=mode, spot=25000, name=f"kill{kill_at}")
     step = 5 if strategy in DAYS else 1
     killed = False

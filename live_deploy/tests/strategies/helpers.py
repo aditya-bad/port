@@ -1,6 +1,43 @@
-"""Shared checks for strategy simulations."""
+"""Shared checks and fixtures for strategy simulations: which strategies
+there are, how each runs (positional or intraday, and for how many
+days), one market for them all, and the book's invariants."""
+
+import math
+from datetime import date, datetime, timedelta
 
 from app.strategies.registry import list_strategies
+
+STRATS = sorted(s["name"] for s in list_strategies())
+# Run as positional (held across days); the rest are intraday.
+POSITIONAL = {"strangle_monthly_v2", "calendar_btst", "trend_credit_spread", "weekly_ema_st_spread"}
+# Trading days to simulate where 3 aren't enough: the hourly-signal
+# strategy needs a week of candles before its indicators exist.
+DAYS = {"weekly_ema_st_spread": 10}
+
+
+def mode_of(strategy: str) -> str:
+    return "positional" if strategy in POSITIONAL else "intraday"
+
+
+def market(day_i: int):
+    """An oscillating, drifting market: plenty of signal flips."""
+    def spot(t):
+        m = (t.hour * 60 + t.minute) - 555
+        return 25000 + 250 * math.sin((m + day_i * 120) / 60.0) + 40 * day_i * (1 if day_i % 2 else -1)
+    return spot
+
+
+def trading_days(start: date, n: int) -> list:
+    d, out = start, []
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def sim_time(d: date, hhmm: str) -> datetime:
+    return datetime.combine(d, datetime.strptime(hhmm, "%H:%M").time())
 
 
 def cfg(strategy: str, **over) -> dict:

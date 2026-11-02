@@ -11,8 +11,7 @@ import pytest
 from app.db import queries
 from app.geek import dtt_adjusted as G
 from tests.sim import Sim
-from tests.strategies.helpers import cfg
-from tests.strategies.test_all_strategies_smoke import market, trading_days
+from tests.strategies.helpers import cfg, market, trading_days
 
 IST = ZoneInfo("Asia/Kolkata")
 BOTH = ["intraday_dtt_adjusted", "intraday_dtt_advanced"]

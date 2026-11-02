@@ -10,7 +10,7 @@ from app.repair import engine
 from app.repair.market import MinuteBook
 from tests.repair_market import candles_source, flat, ist_minute
 from tests.sim import Sim
-from tests.strategies.helpers import assert_book_consistent, cfg
+from tests.strategies.helpers import assert_book_consistent, cfg, mode_of
 
 
 async def stalled_dtt(pool, monkeypatch, **over):
@@ -221,7 +221,6 @@ import math  # noqa: E402
 
 from app.strategies.registry import list_strategies  # noqa: E402
 
-POSITIONAL = {"strangle_monthly_v2", "calendar_btst", "trend_credit_spread", "weekly_ema_st_spread"}
 
 
 def wave(t):
@@ -238,7 +237,7 @@ def wave_candles(m):
 @pytest.mark.parametrize("strategy", sorted(s["name"] for s in list_strategies()))
 def test_every_strategy_replays_applies_and_keeps_a_consistent_book(strategy, pool_run, monkeypatch):
     async def go(pool):
-        mode = "positional" if strategy in POSITIONAL else "intraday"
+        mode = mode_of(strategy)
         sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), mode=mode, spot=25000)
         await sim.walk("09:15", "12:15", every_min=1, spot_fn=wave)
         w = window(sim)

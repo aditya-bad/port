@@ -40,7 +40,9 @@ const DETECT = () => {
   const R = runs.map(x => ({ ...x, c: clip(x.el, x.rc) })).filter(x => x.c);
   const hit = (a, b, pad = 1) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > pad && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > pad;
   const layer = el => { const l = el.closest('.appbar, .bnav, .cmp-bar, .selbar, .scrim, .wiz, .menu, .ss-bar'); return l ? l.className.split(' ')[0] : 'page'; };
-  for (let i = 0; i < R.length; i++) for (let j = i + 1; j < R.length; j++) {
+  // top to bottom: a run only meets the runs that start above its bottom (the same pairs, without testing every one)
+  R.sort((a, b) => a.c.top - b.c.top);
+  for (let i = 0; i < R.length; i++) for (let j = i + 1; j < R.length && R[j].c.top < R[i].c.bottom - 2; j++) {
     const a = R[i], b = R[j];
     if (a.el === b.el || a.el.contains(b.el) || b.el.contains(a.el) || layer(a.el) !== layer(b.el)) continue;
     if (hit(a.c, b.c, 2)) out.push(`text/text "${a.t}" × "${b.t}"`);
@@ -57,25 +59,39 @@ let b;
 test.before(async () => { b = await browser(); });
 test.after(async () => { await b.close(); });
 
+// Four windows at a time (a browser context each, so every page is the one
+// in front: Chromium holds back background tabs), each taking the next
+// route from one list; every page gets the same checks after the same
+// settle. The time was nearly all waiting.
+const AT_ONCE = Number(process.env.E2E_PAGES_AT_ONCE || 4);
+
+async function check(p, r) {
+  const problems = [];
+  await p.goto(`${BASE}/linck/#/${r}`);
+  await p.waitForSelector('main *', { timeout: 8000 });
+  await p.waitForTimeout(1200);
+  const name = r.replace(/[0-9a-f-]{36}/, 'ID');
+  const { sw, cw } = await p.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
+  if (sw > cw + 1) problems.push(`${name}: scrolls sideways (${sw} > ${cw})`);
+  const text = await p.evaluate(() => document.querySelector('main')?.innerText || '');
+  if (/undefined|NaN|\[object Object\]/.test(text)) problems.push(`${name}: shows undefined/NaN`);
+  for (const f of await p.evaluate(DETECT)) problems.push(`${name}: ${f}`);
+  return problems;
+}
+
 for (const width of WIDTHS) {
   test(`every page at ${width}px`, async () => {
-    const ctx = await context(b, { width, height: 900 });
-    const problems = [];
-    for (const r of ROUTES) {
-      const p = await ctx.newPage();
-      await p.goto(`${BASE}/linck/#/${r}`);
-      await p.waitForSelector('main *', { timeout: 8000 });
-      await p.waitForTimeout(1200);
-      const name = r.replace(/[0-9a-f-]{36}/, 'ID');
-      const { sw, cw } = await p.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
-      if (sw > cw + 1) problems.push(`${name}: scrolls sideways (${sw} > ${cw})`);
-      const text = await p.evaluate(() => document.querySelector('main')?.innerText || '');
-      if (/undefined|NaN|\[object Object\]/.test(text)) problems.push(`${name}: shows undefined/NaN`);
-      for (const f of await p.evaluate(DETECT)) problems.push(`${name}: ${f}`);
-      await p.close();
-    }
-    problems.push(...ctx.errors);
-    await ctx.close();
+    const todo = [...ROUTES], problems = [];
+    await Promise.all(Array.from({ length: AT_ONCE }, async () => {
+      const ctx = await context(b, { width, height: 900 });
+      try {
+        for (let r = todo.shift(); r !== undefined; r = todo.shift()) {
+          const p = await ctx.newPage();
+          try { problems.push(...await check(p, r)); } finally { await p.close(); }
+        }
+        problems.push(...ctx.errors);
+      } finally { await ctx.close(); }
+    }));
     assert.deepEqual(problems, []);
   });
 }

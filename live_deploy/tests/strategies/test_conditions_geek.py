@@ -18,17 +18,14 @@ import pytest
 from app.deployments.runner import DeploymentRunner
 from app.deployments.strategy_base import StrategyBase
 from app.geek import common
-from app.strategies.registry import list_strategies
 from tests.sim import Sim
-from tests.strategies.helpers import cfg
-from tests.strategies.test_all_strategies_smoke import DAYS, POSITIONAL, market, trading_days
+from tests.strategies.helpers import DAYS, STRATS, cfg, market, mode_of, trading_days
 
 IST = ZoneInfo("Asia/Kolkata")
-STRATS = sorted(s["name"] for s in list_strategies())
 
 
 async def _run(pool, monkeypatch, strategy, name, days=None):
-    mode = "positional" if strategy in POSITIONAL else "intraday"
+    mode = mode_of(strategy)
     sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), mode=mode, spot=25000, name=name)
     step = 5 if strategy in DAYS else 1
     for i, d in enumerate(trading_days(sim.market.today, days or DAYS.get(strategy, 2))):

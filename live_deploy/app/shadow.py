@@ -590,6 +590,7 @@ class ShadowService:
         self.margin_on = bool(cfg.get("margin", True))
         self.buffer_pct = float(cfg.get("limit_buffer_pct", BUFFER_PCT))
         self.leg_gap_s = float(leg_gap_s if leg_gap_s is not None else cfg.get("leg_gap_s", LEG_GAP_S))
+        self.trail_keep_s = 1.0   # how long a fill's price trail outlives its last sample
         self.freeze = freeze or FreezeLimits(pool, cfg.get("freeze_qty"))
         self.quotes = quotes or self._kite_quotes
         self.margins = margins or self._kite_margins
@@ -659,7 +660,7 @@ class ShadowService:
                 if p:
                     self._trails[token].append((loop.time(), float(p)))
                 await asyncio.sleep(every_s)
-            await asyncio.sleep(self.batch_s + 1)    # kept until the trade that needs it is checked
+            await asyncio.sleep(self.batch_s + self.trail_keep_s)    # kept until the trade that needs it is checked
         finally:
             self._trails.pop(token, None)
 

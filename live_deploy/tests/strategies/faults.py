@@ -16,37 +16,18 @@ Used by test_faults.py."""
 
 from __future__ import annotations
 
-import math
 from datetime import timedelta
 
 from app.db import queries
 from tests.sim import INDEX, Sim, ist
-from tests.strategies.helpers import assert_book_consistent, cfg
+from tests.strategies.helpers import DAYS, assert_book_consistent, cfg, market, mode_of, trading_days
 
-POSITIONAL = {"strangle_monthly_v2", "calendar_btst", "trend_credit_spread", "weekly_ema_st_spread"}
-DAYS = {"weekly_ema_st_spread": 10}
 TRENDING = {"strangle_monthly_v2"}
 
 FAULTS = [
     "none", "bad_ticks", "feed_gap", "spike", "kite_down", "fill_fails", "fill_fails_twice",
     "no_leg_price", "corrupt_state", "state_unreadable", "dup_ticks", "kite_hangs",
 ]
-
-
-def market(day_i):
-    def spot(t):
-        m = (t.hour * 60 + t.minute) - 555
-        return 25000 + 250 * math.sin((m + day_i * 120) / 60.0) + 40 * day_i * (1 if day_i % 2 else -1)
-    return spot
-
-
-def trading_days(start, n):
-    d, out = start, []
-    while len(out) < n:
-        if d.weekday() < 5:
-            out.append(d)
-        d += timedelta(days=1)
-    return out
 
 
 class Out:
@@ -68,7 +49,7 @@ class Out:
 
 async def run(pool, monkeypatch, strategy: str, fault: str) -> Out:
     out = Out()
-    mode = "positional" if strategy in POSITIONAL else "intraday"
+    mode = mode_of(strategy)
     sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), mode=mode, spot=25000, name=f"{strategy}/{fault}")
     step = 5 if strategy in DAYS else 1
     days = trading_days(sim.market.today, DAYS.get(strategy, 3))

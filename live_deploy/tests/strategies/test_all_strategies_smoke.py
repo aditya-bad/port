@@ -8,43 +8,18 @@ real runner, resolver and fill engine — with a restart mid-session and
     missed square-off closed first thing the next session.
 A new strategy is picked up automatically from the registry."""
 
-import math
-from datetime import timedelta
 
 import pytest
 
-from app.strategies.registry import list_strategies
 from tests.sim import Sim
-from tests.strategies.helpers import assert_book_consistent, cfg
+from tests.strategies.helpers import DAYS, STRATS, assert_book_consistent, cfg, market, mode_of, trading_days
 
-STRATS = sorted(s["name"] for s in list_strategies())
-POSITIONAL = {"strangle_monthly_v2", "calendar_btst", "trend_credit_spread", "weekly_ema_st_spread"}
-# Trading days to simulate: the hourly-signal strategy needs a week of
-# candles before its indicators exist; pivots need the previous day.
-DAYS = {"weekly_ema_st_spread": 10}
-
-
-def market(day_i):
-    """An oscillating, drifting market: plenty of signal flips."""
-    def spot(t):
-        m = (t.hour * 60 + t.minute) - 555
-        return 25000 + 250 * math.sin((m + day_i * 120) / 60.0) + 40 * day_i * (1 if day_i % 2 else -1)
-    return spot
-
-
-def trading_days(start, n):
-    d, out = start, []
-    while len(out) < n:
-        if d.weekday() < 5:
-            out.append(d)
-        d += timedelta(days=1)
-    return out
 
 
 @pytest.mark.parametrize("strategy", STRATS)
 def test_strategy_trades_and_survives_sessions_restarts_and_a_missed_close(strategy, pool_run, monkeypatch):
     async def go(pool):
-        mode = "positional" if strategy in POSITIONAL else "intraday"
+        mode = mode_of(strategy)
         sim = await Sim.create(pool, monkeypatch, strategy, cfg(strategy), mode=mode, spot=25000)
         squares_off = mode == "intraday" and bool(sim.runner.config.get("force_exit_time"))
         step = 5 if strategy in DAYS else 1

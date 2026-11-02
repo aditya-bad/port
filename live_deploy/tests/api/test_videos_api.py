@@ -21,7 +21,7 @@ pytest.importorskip("playwright")
 @pytest.fixture
 def videos(client, monkeypatch, tmp_path):
     monkeypatch.setenv("LINCK_VIDEO_FAKE_VOICE", "1")
-    monkeypatch.setenv("LINCK_VIDEO_FPS", "2")
+    monkeypatch.setenv("LINCK_VIDEO_FPS", "1")   # the lengths and chapters are what is checked, not the frames
     monkeypatch.setenv("LINCK_VIDEO_DIR", str(tmp_path))
     no_kite(monkeypatch, client)
     return client.app.state.videos

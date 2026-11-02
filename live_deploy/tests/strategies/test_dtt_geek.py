@@ -9,8 +9,7 @@ from zoneinfo import ZoneInfo
 from app.db import queries
 from app.geek import dtt_straddle as G
 from tests.sim import Sim
-from tests.strategies.helpers import cfg
-from tests.strategies.test_all_strategies_smoke import market, trading_days
+from tests.strategies.helpers import cfg, market, trading_days
 
 S = "intraday_dtt_simple"
 IST = ZoneInfo("Asia/Kolkata")
