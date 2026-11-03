@@ -687,3 +687,91 @@ def test_a_put_that_never_traded_is_priced_at_the_apps_own_quotes(pool_run, monk
         r = await D.check_deployment(pool, await dep_row(pool, sim), d2, MinuteBook(d2, candles_source(sim, flat(up))), sim.kite)
         assert r["status"] != "ok", "without the app's log it can't follow the app (the flags of 29 and 30 Oct)"
     pool_run(go)
+
+
+# DTT Sensex Strangle, 3 Nov 09:22: the call hadn't traded in minutes, so
+# the app priced it from its bid/ask (₹605.18), the put was under half of
+# that, and the re-check on the same quote confirmed the roll. The replay
+# re-checked at the candle's price instead, which wasn't under half: it
+# refused, and went its own way from 09:22.
+
+def test_a_roll_the_apps_own_quote_confirmed_is_confirmed_in_the_replay_too(pool_run, monkeypatch):
+    async def go(pool):
+        from app.options import OptionsResolver
+        from tests.sim import find_spot, side_sum
+        sim = await Sim.create(pool, monkeypatch, "strangle_monthly_v2", cfg("strangle_monthly_v2"), mode="positional", spot=25000)
+        await sim.tick("10:00", spot=25000)
+        call = next(p for p in await sim.open_positions() if p["symbol"].endswith("CE"))
+        tok, key = int(call["instrument_token"]), f"{sim.runner.strategy.exchange}:{call['symbol']}"
+        near = await find_spot(sim, lambda p: 0.53 <= side_sum(p, "PE") / side_sum(p, "CE") <= 0.56, step=5)
+        d2 = sim.market.today + timedelta(days=1)
+        await sim.tick(f"{sim.market.today} 15:29", spot=25000)
+        await D.capture_states(pool, d2, "open")
+
+        orig = sim.dispatcher.publish
+
+        def publish():   # the call doesn't trade all day: the app prices it from its quote
+            orig()
+            sim.dispatcher.last_price_times[tok] -= timedelta(days=1)
+        sim.dispatcher.publish = publish
+        rich = {"on": True}
+        real = OptionsResolver.get_quotes
+
+        async def quotes(self, keys):   # its bid/ask 12% over the model: the put falls under half of it
+            out = await real(self, keys)
+            if rich["on"] and key in out:
+                mid = out[key]["last_price"] * 1.12
+                out[key] = {**out[key], "depth": {"buy": [{"price": round(mid - 0.05, 2)}], "sell": [{"price": round(mid + 0.05, 2)}]}}
+            return out
+        monkeypatch.setattr(OptionsResolver, "get_quotes", quotes)
+        t = datetime.combine(d2, time(9, 15))
+        while t <= datetime.combine(d2, time(15, 29)):
+            await sim.tick(t, spot=near)
+            t += timedelta(minutes=1 if t < datetime.combine(d2, time(9, 40)) else 10)
+        rolls = await pool.fetch("SELECT executed_at FROM position_lots WHERE deployment_id = $1 AND reason = 'continuous_50pct_trigger'",
+                                 sim.dep_id)
+        assert [f"{r['executed_at'].astimezone(IST):%H:%M}" for r in rolls] == ["09:20", "09:20"], "rolled on the call's quote"
+        rich["on"] = False   # the replay's quotes are its own (candles), and the app's log
+
+        r = await D.check_deployment(pool, await dep_row(pool, sim), d2, MinuteBook(d2, candles_source(sim, flat(near))), sim.kite)
+        assert r["status"] == "ok", (r["headline"], r["diff"])
+    pool_run(go)
+
+
+def test_the_replay_holds_back_a_spike_in_the_apps_log_once_as_the_strangle_now_does():
+    """DTT Sensex Strangle, 3 Nov: the app took 77600CE's quote at ₹722.38
+    (13:34:31), ₹1,066.10 (13:34:46) and ₹724.05 (13:35:01), and rolled on
+    the middle one. Replayed today, the strangle's own spike guard holds it
+    back; a replay tick that sees the same logged quote again doesn't count
+    as the second quote that would confirm the jump."""
+    import asyncio
+    from app.repair import engine as E
+    from app.strategies import strangle_monthly_v2 as V
+
+    at = lambda h, m, s=0: datetime(2026, 11, 3, h, m, s)   # noqa: E731
+    log = {"rows": {11: [(at(13, 34, 31), 722.38), (at(13, 34, 46), 1066.10), (at(13, 35, 1), 724.05)]},
+           "notes": {}, "holds": []}
+    strat = V.StrangleMonthlyV2Strategy()
+    strat.legs = {"CE": [{"token": 11, "symbol": "SENSEX26NOV77600CE"}], "PE": [{"token": 12, "symbol": "SENSEX26NOV75000PE"}]}
+    strat._stale_quotes = {}
+    E._honour_prices(strat, log, [])
+    disp = type("D", (), {"last_prices": {11: 690.0, 12: 496.93},
+                          "last_price_times": {11: at(13, 20), 12: at(13, 34, 40)}})()
+    runner = type("R", (), {"strategy": strat, "dispatcher": disp})()
+    run = lambda h, m, s=0: asyncio.run(strat._leg_prices(runner, at(h, m, s).replace(tzinfo=IST)))[11]   # noqa: E731
+    assert run(13, 34, 40) == 722.38
+    assert run(13, 34, 46) == 722.38, "the spike is held back"
+    assert run(13, 34, 59) == 722.38, "the same quote seen again on a later tick is not a second quote"
+    assert run(13, 35, 1) == 724.05
+
+
+def test_the_replay_plays_the_session_to_15_40_as_the_app_trades():
+    """Claude Deployment (trend credit spread), 3 Nov: a 15:30 tick closed
+    its 15:25 candle and the flip exit traded; F&O trades until 15:40
+    (the runner takes ticks until then). The replay stopped at 15:30, never
+    closed that candle the same day, and flagged the exit."""
+    from app.repair import engine as E
+    from app.repair.market import SESSION_CLOSE
+    assert D.CLOSE == SESSION_CLOSE == time(15, 40)
+    mins = E.Window(date(2026, 11, 3), time(9, 15)).minutes
+    assert mins[-1].time() == time(15, 39) and any(m.time() == time(15, 30) for m in mins)

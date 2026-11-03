@@ -50,7 +50,12 @@ from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
-SESSION_OPEN, SESSION_CLOSE = time(9, 15), time(15, 30)
+# The session the replay plays: F&O trades until 15:40 under the 2026
+# closing auction (the runner takes ticks until then:
+# DeploymentRunner._MARKET_CLOSE_TIME). Ending at 15:30, the replay never
+# closed a 5-minute strategy's 15:25 candle the same day: the trend credit
+# spread's 15:30 flip exit of 3 Nov was flagged as one it wouldn't make.
+SESSION_OPEN, SESSION_CLOSE = time(9, 15), time(15, 40)
 KITE_NEVER_TRADED = datetime(1970, 1, 1, 5, 30)   # Kite's trade time for a contract that never traded (epoch, in IST)
 
 UP_FIRST = ("open", "up", "down", "close")
@@ -101,6 +106,20 @@ def naive_ist(dt: datetime) -> datetime:
 
 def minute_of(dt: datetime) -> datetime:
     return naive_ist(dt).replace(second=0, microsecond=0)
+
+
+# How long a price the app took from a quote stands for that contract (the
+# strangle keeps one 90 s when it can't refresh it: _QUOTE_STALE_KEEP).
+APP_QUOTE_KEPT = timedelta(seconds=90)
+
+
+def logged_at(rows: list, t: datetime) -> Optional[float]:
+    """The last of `rows` ([(at, price)], oldest first) at or before `t`,
+    if it's no older than APP_QUOTE_KEPT."""
+    i = bisect.bisect_right([at for at, _ in rows], t)
+    if i and t - rows[i - 1][0] <= APP_QUOTE_KEPT:
+        return rows[i - 1][1]
+    return None
 
 
 def session_minutes(day: date, start: time, end: time) -> list[datetime]:
@@ -557,6 +576,12 @@ class ReplayKite:
         self.app_picks: dict[datetime, list[dict]] = {}
         self.followed: dict[tuple, dict] = {}
         self.moment: Optional[float] = None
+        # token -> [(at, price)], oldest first: each price the app took from
+        # that contract's live bid/ask (strategy_quotes, naive IST). A
+        # quote() of it within APP_QUOTE_KEPT of one says what the app's
+        # did: re-checking a trigger at the candle instead refused the
+        # roll the app's quote confirmed (DTT Sensex Strangle, 3 Nov 09:22)
+        self.app_log: dict[int, list] = {}
         self._masters: dict[str, list] = {}
         self._by_key: dict[str, dict] = {}
         self._by_token: dict[int, dict] = {}
@@ -620,6 +645,10 @@ class ReplayKite:
                 got = (c["high"] - span if self.book.inverse.get(tok) else c["low"] + span, self.clock.now)
             elif self.moment is None and (tok, self.clock.minute) in self.app_quotes:
                 got = (self.app_quotes[(tok, self.clock.minute)], self.clock.now)
+            elif self.moment is None and self.app_log.get(tok):
+                q = logged_at(self.app_log[tok], self.clock.now)
+                if q is not None:
+                    got = (q, self.clock.now)
             if got is None:
                 continue
             out[str(k)] = (tok, got[0], got[1])

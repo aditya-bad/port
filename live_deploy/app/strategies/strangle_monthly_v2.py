@@ -1587,6 +1587,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         Sensex Strangle: 77600CE quoted ₹722.38 at 13:34:31, ₹1,066.10 at
         13:34:46 and ₹724.05 at 13:35:01; the 15 s in between set off a
         roll of the put."""
+        if not hasattr(self, "_quote_ref"):   # built without on_start (the day check's tests)
+            self._quote_ref, self._jump_pending = {}, {}
         now = _naive_ist(ts)
         ref = self._quote_ref.get(token)
         fresh = ref is not None and ref[0] > 0 and now - _naive_ist(ref[1]) <= _QUOTE_STALE_KEEP

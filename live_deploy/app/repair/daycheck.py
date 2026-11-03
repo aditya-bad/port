@@ -42,9 +42,9 @@ from typing import Callable, Optional
 
 from ..candles import parse_contract
 from . import engine
-from .market import IST, MinuteBook
+from .market import IST, SESSION_CLOSE, MinuteBook
 
-OPEN, CLOSE = time(9, 15), time(15, 30)
+OPEN, CLOSE = time(9, 15), SESSION_CLOSE   # the replay's session (market.SESSION_CLOSE)
 MATCH_WITHIN = timedelta(minutes=3)
 
 

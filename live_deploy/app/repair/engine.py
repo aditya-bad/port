@@ -39,7 +39,7 @@ from ..db import queries
 from ..deployments.runner import DeploymentRunner
 from ..strategies.registry import get_strategy_class
 from .market import (
-    IST, ORDERS, VIX_TOKEN, MinuteBook, ReplayClock, ReplayDispatcher, ReplayKite,
+    IST, ORDERS, SESSION_CLOSE, VIX_TOKEN, MinuteBook, ReplayClock, ReplayDispatcher, ReplayKite,
     STEP_SECONDS, kite_lookup, minute_of, naive_ist, natural_order, replaying, session_minutes,
 )
 
@@ -56,7 +56,7 @@ class AlreadyRepaired(Exception):
 class Window:
     day: date
     start: time
-    end: time = time(15, 30)
+    end: time = SESSION_CLOSE
 
     @property
     def minutes(self) -> list[datetime]:
@@ -430,10 +430,20 @@ def _honour_prices(strategy, log: dict, held: list) -> None:
         return
     from ..strategies.strangle_monthly_v2 import _SESSION_OPEN
 
-    def app_price(token: int, t: datetime, untraded: bool) -> Optional[float]:
+    vetted: dict[tuple, float] = {}   # (token, when the app took it) -> the price the strategy takes from it
+
+    async def app_price(runner, token: int, symbol: str, t: datetime, untraded: bool) -> Optional[float]:
         got = [(at, px) for at, px in log["rows"].get(token, ()) if at <= t]
         if got and t - got[-1][0] <= QUOTE_KEPT:
-            return got[-1][1]
+            # each price the app took is put through the strategy's own
+            # rules for a quote (the strangle's SPIKES) once, at the moment
+            # it was taken: the replay's ticks see one quote several times,
+            # and must not count it as the second quote that confirms a jump
+            at, px = got[-1]
+            if (token, at) not in vetted:
+                vet = getattr(runner.strategy, "_vet_quote", None)
+                vetted[(token, at)] = (await vet(runner, at, token, symbol, px))[0] if vet else px
+            return vetted[(token, at)]
         if log["rows"]:
             return None
         # an older log: a price noted when it changed, for a leg not traded that day
@@ -456,7 +466,8 @@ def _honour_prices(strategy, log: dict, held: list) -> None:
                 if p is None:
                     return None
                 traded = runner.dispatcher.last_price_times.get(leg["token"])
-                q = app_price(int(leg["token"]), t, traded is None or naive_ist(traded) < session_open)
+                q = await app_price(runner, int(leg["token"]), leg.get("symbol", ""), t,
+                                    traded is None or naive_ist(traded) < session_open)
                 if q is not None:
                     p = q
                     me._stale_quotes[leg["token"]] = (q, ts)   # it closes there too (exit_price)
@@ -651,7 +662,9 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     held_off: list[dict] = []
     _honour_refusals(strategy, await _app_refusals(conn, dep["id"], window.day, app_fills or []), held_off)
     app_held: list[dict] = []
-    _honour_prices(strategy, await _app_price_log(conn, dep["id"], window.day, app_fills or []), app_held)
+    price_log = await _app_price_log(conn, dep["id"], window.day, app_fills or [])
+    kite.app_log = price_log["rows"]   # re-checking a trigger asks quote(): it says what the app's did
+    _honour_prices(strategy, price_log, app_held)
     runner = ReplayRunner(dep, TxPool(conn), disp, strategy, clock, run, window)
     runner.app_prices = app_prices
     minutes = window.minutes
