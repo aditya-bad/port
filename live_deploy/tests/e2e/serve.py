@@ -150,9 +150,18 @@ async def seed():
         else:
             realized = 0.0
             while day < TODAY - timedelta(days=4):
+                if day.weekday() >= 5:
+                    # a cycle opens and closes on a trading day: on a weekend
+                    # there's no index history, and the replay of the latest
+                    # cycle (opened on Sun 25 Oct, run on 3 Nov) had no index
+                    # level to judge its strikes by
+                    day += timedelta(days=1)
+                    continue
                 hold = R.randint(3, 12)
                 o = datetime.combine(day.date(), time(9, 21), IST)
                 c = min(o + timedelta(days=hold, hours=5), datetime.combine((TODAY - timedelta(days=1)).date(), time(15, 0), IST))
+                while c.weekday() >= 5:
+                    c -= timedelta(days=1)
                 pnl = R.uniform(4000, 22000) if R.random() < 0.65 else -R.uniform(3000, 18000)
                 await pair_trade(pool, d["id"], ix, o, c, pnl, "checkpoint" if pnl > 0 else "cycle stop",
                                  adjust=R.random() < 0.35)

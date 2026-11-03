@@ -344,6 +344,145 @@ def test_the_quote_is_asked_for_at_most_every_15s_and_kept_90s_if_kite_fails(poo
     pool_run(go)
 
 
+# ── SPIKES: a one-off quote or a wide book isn't a price ──────────────
+# DTT Sensex Strangle, 3 Nov: 77600CE (no trade in minutes, priced from
+# its quote) read ₹722.38 at 13:34:31, ₹1,066.10 at 13:34:46 and ₹724.05
+# at 13:35:01. The 15 s in between set the 50% roll off; the re-check's
+# own quote was as wild and confirmed it; the put went from 75000 to
+# 76500. Here: the call untraded the next day, priced from its quote, and
+# that quote set as each test needs.
+
+def _book(mid, half):
+    return {"buy": [{"price": round(mid - half, 2), "quantity": 1500, "orders": 5}],
+            "sell": [{"price": round(mid + half, 2), "quantity": 1500, "orders": 5}]}
+
+
+async def quoted_call(sim, monkeypatch):
+    """The next day, the CE untraded; `set(mid, half=0.05)` makes its
+    quote's book that (None: the market's own). Patched on the resolver's
+    class, so it survives a restart."""
+    from app.options import OptionsResolver
+    d2, tok = await next_day_untraded_call(sim)
+    strat = sim.runner.strategy
+    key = f"{strat.exchange}:{strat.legs['CE'][0]['symbol']}"
+    book = {"mid": None, "half": 0.05}
+    real = OptionsResolver.get_quotes
+
+    async def quotes(self, keys):
+        out = await real(self, keys)
+        if book["mid"] is not None and key in out:
+            out[key] = {**out[key], "depth": _book(book["mid"], book["half"])}
+        return out
+    monkeypatch.setattr(OptionsResolver, "get_quotes", quotes)
+
+    def set_(mid, half=0.05):
+        book["mid"], book["half"] = mid, half
+    return d2, tok, set_
+
+
+def _spike(sim):
+    """A call price that puts the put under 40% of it."""
+    pe = next(l for l in sim.runner.strategy.legs["PE"])
+    return round(sim.dispatcher.last_prices[pe["token"]] / 0.4, 2)
+
+
+def test_a_one_off_quote_spike_doesnt_roll(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        d2, tok, quote = await quoted_call(sim, monkeypatch)
+        t0 = ist_at(sim, d2, "09:30")
+        await sim.tick(t0, spot=25000)
+        normal = sim.runner.strategy._stale_quotes[tok][0]
+        spike = _spike(sim)
+        assert spike > 1.25 * normal
+        quote(spike)
+        await sim.tick(t0 + timedelta(seconds=15), spot=25000)
+        quote(None)
+        await sim.tick(t0 + timedelta(seconds=30), spot=25000)
+        assert closes(await sim.fills()) == [], "a quote that stood for 15 s rolls nothing"
+        held = [r for r in await decisions(sim) if r["rule"] == "quote_guard"]
+        assert len(held) == 1 and held[0]["data"]["kept"] == round(normal, 2)
+        rows = await pool.fetch("SELECT at, price FROM strategy_quotes WHERE deployment_id = $1 AND instrument_token = $2 "
+                                "ORDER BY at", sim.dep_id, tok)
+        assert [round(float(r["price"]), 2) for r in rows][:2] == [round(normal, 2)] * 2, \
+            "what's recorded is the price taken, so the day check's replay takes it too"
+    pool_run(go)
+
+
+def test_a_jump_a_second_quote_agrees_with_is_taken(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        d2, tok, quote = await quoted_call(sim, monkeypatch)
+        t0 = ist_at(sim, d2, "09:30")
+        await sim.tick(t0, spot=25000)
+        quote(_spike(sim))
+        await sim.tick(t0 + timedelta(seconds=15), spot=25000)
+        assert closes(await sim.fills()) == []
+        await sim.tick(t0 + timedelta(seconds=30), spot=25000)
+        rolled = closes(await sim.fills())
+        assert [f["reason"] for f in rolled] == ["continuous_50pct_trigger"], "15 s later the quote still says so: the move is real"
+    pool_run(go)
+
+
+def test_a_wide_book_is_no_price_for_an_untraded_leg(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        d2, tok, quote = await quoted_call(sim, monkeypatch)
+        sim.market.vol = 0.13          # the checkpoint would be met on the quote's mid
+        t0 = ist_at(sim, d2, "09:30")
+        normal = sim.market.price_of(sim.market.by_token[tok])
+        quote(normal, half=0.15 * normal)   # a spread of 30% of the mid
+        await sim.tick(t0, spot=25000)
+        assert closes(await sim.fills()) == [], "it holds, as with no quote at all"
+        summaries = [r["summary"] for r in await decisions(sim)]
+        assert any("close enough together" in x for x in summaries)
+        assert "Priced from a live quote: not traded yet today" not in summaries
+    pool_run(go)
+
+
+def test_the_re_check_refuses_when_a_quote_is_far_from_the_price_it_checks(pool_run, monkeypatch):
+    """Ticks set the roll off; the put's quote a moment later is 30% under
+    its tick. Before, the quote's price was acted on; now the two
+    disagree, so it waits, noted as the usual refusal."""
+    async def go(pool):
+        from app.options import OptionsResolver
+        sim = await start(pool, monkeypatch)
+        up = await find_spot(sim, lambda p: side_sum(p, "PE") <= 0.45 * side_sum(p, "CE"), step=25)
+        pe = sim.runner.strategy.legs["PE"][0]
+        key = f"{sim.runner.strategy.exchange}:{pe['symbol']}"
+        real = OptionsResolver.get_quotes
+
+        async def quotes(self, keys):
+            out = await real(self, keys)
+            if key in out:
+                out[key] = {**out[key], "depth": _book(out[key]["last_price"] * 0.7, 0.05)}
+            return out
+        monkeypatch.setattr(OptionsResolver, "get_quotes", quotes)
+        await sim.tick("11:00", spot=up)
+        assert closes(await sim.fills()) == []
+        rows = [r for r in await decisions(sim) if r["rule"] == "continuous_50pct_trigger"]
+        assert len(rows) == 1 and rows[0]["outcome"] == "blocked"
+        assert rows[0]["summary"] == "Not acted on: live quotes don't confirm the tick prices", \
+            "the day check's replay holds off on this exact wording"
+        assert rows[0]["data"]["jumped"] == [pe["symbol"]]
+    pool_run(go)
+
+
+def test_a_spike_just_after_a_restart_is_held_back_too(pool_run, monkeypatch):
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        d2, tok, quote = await quoted_call(sim, monkeypatch)
+        t0 = ist_at(sim, d2, "09:30")
+        await sim.tick(t0, spot=25000)
+        normal = sim.runner.strategy._stale_quotes[tok][0]
+        await sim.restart()
+        assert sim.runner.strategy._quote_ref[tok][0] == normal, "its last quoted price, read back from what was recorded"
+        quote(_spike(sim))
+        await sim.tick(t0 + timedelta(seconds=15), spot=25000)
+        assert closes(await sim.fills()) == []
+    pool_run(go)
+
+
 def ist_at(sim, day, hhmm):
     h, m = map(int, hhmm.split(":"))
     return sim.market.now.replace(year=day.year, month=day.month, day=day.day, hour=h, minute=m, second=0, microsecond=0)

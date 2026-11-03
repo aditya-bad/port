@@ -416,6 +416,18 @@ class DeploymentRunner:
         except Exception:
             logger.exception("%s: could not record a quote", self.deployment_name)
 
+    async def recent_quotes(self, tokens, since: datetime) -> dict:
+        """{token: (price, at)}: the last price recorded (record_quote) for
+        each of `tokens` since `since`, for a strategy coming back from a
+        restart or rebuild to pick up where its quotes stood."""
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=self._IST)
+        rows = await self.pool.fetch(
+            "SELECT DISTINCT ON (instrument_token) instrument_token, at, price FROM strategy_quotes "
+            "WHERE deployment_id = $1 AND instrument_token = ANY($2::bigint[]) AND at >= $3 "
+            "ORDER BY instrument_token, at DESC", self.deployment_id, [int(t) for t in tokens], since)
+        return {int(r["instrument_token"]): (float(r["price"]), r["at"]) for r in rows}
+
     async def record_decision(
         self, ts: datetime, rule: str, outcome: str, summary: str, data: Optional[dict] = None,
     ) -> None:

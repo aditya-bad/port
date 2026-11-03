@@ -275,3 +275,21 @@ def test_live_price_is_a_recent_trade_else_the_bid_ask_else_nothing():
                        "depth": {"buy": [], "sell": []}}, now) == (None, "none")
     assert live_price({"last_price": 125.9, "last_trade_time": datetime(2026, 10, 30, 9, 10), "depth": {}}, now) == (None, "none"), \
         "a trade before the open is yesterday's"
+
+
+def test_a_wide_bid_ask_is_no_price_when_a_spread_limit_is_given():
+    """SPIKES (3 Nov): a mid stands for a price only while the book is
+    narrow: 10% of the mid or ₹2, whichever is wider."""
+    from datetime import datetime
+    from app.options.resolver import live_price, spread_ok
+    now = datetime(2026, 11, 3, 13, 34)
+    old = datetime(2026, 11, 3, 9, 40)
+    wide = {"buy": [{"price": 650.0}], "sell": [{"price": 1420.0}]}
+    narrow = {"buy": [{"price": 720.0}], "sell": [{"price": 724.0}]}
+    cap = (0.10, 2.0)
+    assert live_price({"last_price": 690.0, "last_trade_time": old, "depth": wide}, now) == (1035.0, "mid"), "no limit: as before"
+    assert live_price({"last_price": 690.0, "last_trade_time": old, "depth": wide}, now, max_spread=cap) == (690.0, "old_trade")
+    assert live_price({"depth": wide}, now, max_spread=cap) == (None, "none")
+    assert live_price({"depth": narrow}, now, max_spread=cap) == (722.0, "mid")
+    assert spread_ok(4.0, 5.5, cap), "a cheap contract's ₹1.50 spread is inside the ₹2 floor"
+    assert not spread_ok(4.0, 6.5, cap)

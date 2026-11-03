@@ -84,10 +84,23 @@ _SESSION_OPEN = dtime(9, 15)
 LIVE_WITHIN = timedelta(minutes=3)
 
 
-def live_price(q: dict, now: datetime, live_within: timedelta = LIVE_WITHIN) -> tuple[Optional[float], str]:
+def spread_ok(bid: float, ask: float, max_spread: Optional[tuple[float, float]]) -> bool:
+    """Whether a bid/ask is narrow enough for its mid to stand for a price:
+    `max_spread` is (fraction of the mid, rupees), the wider of the two
+    allowed; None allows any. A book of ₹650 / ₹1,420 has a mid of
+    ₹1,035 that nobody is dealing at."""
+    if not max_spread:
+        return True
+    pct, floor = max_spread
+    return ask - bid <= max(pct * (bid + ask) / 2, floor)
+
+
+def live_price(q: dict, now: datetime, live_within: timedelta = LIVE_WITHIN,
+               max_spread: Optional[tuple[float, float]] = None) -> tuple[Optional[float], str]:
     """(price, source) of one quote() entry, as a trade could be done now:
     its last trade if that was in the last `live_within` ("trade"); else
-    the bid/ask mid when both sides are quoted ("mid"); else a last trade
+    the bid/ask mid when both sides are quoted ("mid"), and, with
+    `max_spread`, no wider than it (spread_ok); else a last trade
     from today's session ("old_trade"); else (None, "none") — a strike
     nobody has traded today and nobody quotes both ways has no price to
     trade at. A thin contract's last trade can be days old: priced at
@@ -110,7 +123,7 @@ def live_price(q: dict, now: datetime, live_within: timedelta = LIVE_WITHIN) -> 
     buy, sell = depth.get("buy") or [], depth.get("sell") or []
     bid = buy[0].get("price") if buy else None
     ask = sell[0].get("price") if sell else None
-    if bid and ask:
+    if bid and ask and spread_ok(bid, ask, max_spread):
         return round((bid + ask) / 2, 2), "mid"
     if last and today:
         return float(last), "old_trade"
@@ -556,6 +569,7 @@ class OptionsResolver:
         live: bool = False, prefer_multiple: Optional[float] = None,
         prefer_range: Optional[tuple[float, float]] = None,
         strike_multiple: Optional[float] = None,
+        max_spread: Optional[tuple[float, float]] = None,
     ) -> OptionLeg:
         """
         The leg (of `option_type`) whose current LTP is closest to
@@ -565,7 +579,8 @@ class OptionsResolver:
         done now (`live_price`: a trade in the last 3 minutes, else the
         bid/ask mid), from one quote() over the window, instead of its
         last traded price however old; a strike with neither is left out.
-        The returned leg's last_price is that price.
+        The returned leg's last_price is that price. `max_spread`: a mid
+        counts only when its bid/ask is no wider (spread_ok).
 
         `prefer_multiple` / `prefer_range` (with `live`): a strike that's a
         multiple of `prefer_multiple` (e.g. 500 on BANKNIFTY/BANKEX/SENSEX,
@@ -663,7 +678,7 @@ class OptionsResolver:
             now = clock.now_ist()
             ltp_resp = {}
             for k in keys:
-                px, _src = live_price(quotes.get(k) or {}, now)
+                px, _src = live_price(quotes.get(k) or {}, now, max_spread=max_spread)
                 if px is not None:
                     ltp_resp[k] = {"last_price": px}
         else:
@@ -1025,13 +1040,14 @@ class OptionsResolver:
                     await asyncio.sleep(delay)
         raise last_exc
 
-    async def get_live_price(self, leg_or_key: Union[OptionLeg, str]) -> float:
+    async def get_live_price(self, leg_or_key: Union[OptionLeg, str],
+                             max_spread: Optional[tuple[float, float]] = None) -> float:
         """What a trade in it could be done at now (`live_price`). Raises
         ValueError when it has none (no trade today, no two-sided book)."""
         from .. import clock
         key = leg_or_key.key if isinstance(leg_or_key, OptionLeg) else leg_or_key
         q = (await self.get_quotes([key])).get(key) or {}
-        px, _src = live_price(q, clock.now_ist())
+        px, _src = live_price(q, clock.now_ist(), max_spread=max_spread)
         if px is None:
             raise ValueError(f"No live price for {key}: no trade today and no bid and ask")
         return px

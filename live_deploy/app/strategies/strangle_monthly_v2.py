@@ -214,6 +214,29 @@ at its 11:55 last trade (342.30). So:
   Every quoted price is kept (strategy_quotes) and a hold's end is noted
   (HOLD_OVER), so the day check's replay prices and holds as the app did.
 
+SPIKES (3 Nov 2026): a bid/ask mid is a price only while the book is
+narrow. On 3 Nov the DTT Sensex Strangle's 77600CE (no trade in minutes,
+priced from its quote) read ₹722.38 at 13:34:31, ₹1,066.10 at 13:34:46 and
+₹724.05 at 13:35:01. That one 15-second reading set the 50% trigger off
+(the put at ₹496.93 against it), the re-check's own quote a moment later
+was as wild (₹1,036.10) and confirmed it, and the put was rolled from
+75000 to 76500, near the money. At ₹722 the ratio was 0.69. So:
+  - A mid counts only when ask - bid is at most `quote_max_spread_pct`
+    (10%) of it or `quote_max_spread_abs` (₹2), whichever is wider: for
+    pricing a leg, for the re-check, and in strike searches. A wider book
+    is treated as no quote (an untraded leg holds; an aged one keeps its
+    last trade from today; a strike search leaves the strike out).
+  - A leg's quoted price that jumps more than `quote_jump_pct` (25%) from
+    its last quoted price of the last 90 s isn't taken: the earlier price
+    stands until a second quote at least 10 s later agrees with the jump
+    (noted as quote_guard). What's recorded is the price taken.
+  - The re-check refutes a trigger when any leg's quote is more than
+    `quote_jump_pct` from the price the leg was managed on: the two looks
+    disagree, so it waits and looks again (noted as the usual refusal).
+  - Each leg's last quoted price comes back on a restart or rebuild from
+    what was recorded (runner.recent_quotes), so a spike just after one
+    is held back the same way.
+
 ──────────────────────────────────────────────────────────────────────
 4. CHECKPOINT PROFIT TARGET
 ──────────────────────────────────────────────────────────────────────
@@ -675,7 +698,7 @@ from zoneinfo import ZoneInfo
 from .. import clock
 from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver
-from ..options.resolver import is_multiple
+from ..options.resolver import is_multiple, spread_ok
 from .intraday_dtt_adjusted import IntradayDTTAdjustedStrategy
 from .pivot_supertrend import _parse_hhmm
 from .registry import register_strategy
@@ -702,6 +725,13 @@ _QUOTE_STALE_KEEP = timedelta(seconds=90)
 QUOTED = "Priced from a live quote: not traded yet today"
 AGED = "Priced from a live quote: no recent trade"
 HOLD_OVER = "Every leg priced again: management resumes"
+# SPIKES: a quoted price that jumps this far from the leg's last one waits
+# for a second quote at least this much later to agree (quotes are asked
+# for every 15 s, so the next one).
+_QUOTE_JUMP_SECOND_LOOK = timedelta(seconds=10)
+# The re-check's own note when it refuses: the day check's replay holds off
+# the rule on this exact wording (app/repair/engine.py QUOTE_REFUSED).
+QUOTE_REFUSED = "Not acted on: live quotes don't confirm the tick prices"
 # Strikes that trade: where a strangle leans when a premium allows (LIVE PRICES).
 ROUND_STRIKES = {"BANKNIFTY": 500, "BANKEX": 500, "SENSEX": 500}
 # Far from expiry, the only strikes it may take at all (FAR STRIKES): on
@@ -719,26 +749,16 @@ def _naive_ist(dt: datetime) -> datetime:
     return dt.astimezone(_IST).replace(tzinfo=None) if dt.tzinfo is not None else dt
 
 
-def _quote_mid(q: dict) -> Optional[float]:
+def _quote_mid(q: dict, max_spread: Optional[tuple] = None) -> Optional[float]:
     """Bid/ask mid from a kite.quote() entry, only when both sides are
-    quoted: no last-price fallback (for a leg with no trade today, its
-    last price is the previous session's)."""
+    quoted and, with `max_spread`, no wider than it (SPIKES): no
+    last-price fallback (for a leg with no trade today, its last price is
+    the previous session's)."""
     depth = q.get("depth") or {}
     buy, sell = depth.get("buy") or [], depth.get("sell") or []
     bid = buy[0].get("price") if buy else None
     ask = sell[0].get("price") if sell else None
-    return (bid + ask) / 2 if bid and ask else None
-
-
-def _quote_price(q: dict) -> Optional[float]:
-    """Bid/ask mid from a kite.quote() entry, else its last_price."""
-    depth = q.get("depth") or {}
-    buy, sell = depth.get("buy") or [], depth.get("sell") or []
-    bid = buy[0].get("price") if buy else None
-    ask = sell[0].get("price") if sell else None
-    if bid and ask:
-        return (bid + ask) / 2
-    return q.get("last_price")
+    return (bid + ask) / 2 if bid and ask and spread_ok(bid, ask, max_spread) else None
 SUPPORTED_INSTRUMENTS = {
     "NIFTY": "NFO", "BANKNIFTY": "NFO", "SENSEX": "BFO", "BANKEX": "BFO",
 }
@@ -799,6 +819,13 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
         # A contract's last trade is its price only this fresh; older, the
         # bid/ask mid (LIVE PRICES in the module docstring).
         "live_trade_minutes": 3,
+        # SPIKES: a bid/ask mid stands for a price only when the spread is
+        # no wider than this fraction of it, or this many rupees, whichever
+        # is wider; a quoted price that jumps more than quote_jump_pct from
+        # the leg's last one waits for a second quote (0 = off).
+        "quote_max_spread_pct": 0.10,
+        "quote_max_spread_abs": 2.0,
+        "quote_jump_pct": 0.25,
         "eod_check_time": "15:13",
         "eod_gap_floor": 0.80,
         "eod_rollout_instead_of_straddle": True,
@@ -810,6 +837,10 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
     },
 )
 class StrangleMonthlyV2Strategy(StrategyBase):
+
+    # SPIKES: the defaults on_start reads from config, for one built without it
+    quote_max_spread: Optional[tuple] = (0.10, 2.0)
+    quote_jump_pct: float = 0.25
     # A single cycle spans many calendar days (checkpoint-to-checkpoint,
     # potentially the better part of a month) -- "day" would be
     # meaningless here (see StrategyBase.ADJUSTMENT_GROUP_BY's own
@@ -879,6 +910,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # next, and when each kind of refute was last noted.
         self._stale_report: Optional[list] = None
         self._stale_quotes: dict[int, tuple[float, datetime]] = {}   # token -> (bid/ask mid, when quoted)
+        # SPIKES: each leg's last quoted price taken (restored on start from
+        # what was recorded) and a jump waiting for a second quote
+        self._quote_ref: dict[int, tuple[float, datetime]] = {}
+        self._jump_pending: dict[int, tuple[float, datetime]] = {}
         self._stale_quoted_at: Optional[datetime] = None
         self._quoted_set: set = set()
         self._holding = False
@@ -937,6 +972,9 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self.far_strike_multiple = float(fm) if fm is not None else float(FAR_STRIKES.get(self.instrument, 0))
         self.far_expiry_days = int(cfg.get("far_expiry_days", 27))
         self.live_within = timedelta(minutes=float(cfg.get("live_trade_minutes", 3)))
+        sp = float(cfg.get("quote_max_spread_pct", 0.10) or 0)
+        self.quote_max_spread = (sp, float(cfg.get("quote_max_spread_abs", 2.0) or 0)) if sp > 0 else None
+        self.quote_jump_pct = float(cfg.get("quote_jump_pct", 0.25) or 0)
 
         self.eod_check_time = _parse_hhmm(cfg.get("eod_check_time", "15:13"))
         if self.eod_check_time is None:
@@ -1013,6 +1051,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
 
         await self._resume_from_db(runner)
         await self._resume_convergence(runner)
+        await self._restore_quote_refs(runner)
 
     # ── Tick consumption ────────────────────────────────────────────────
 
@@ -1496,19 +1535,23 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         out = {}
         record = getattr(runner, "record_quote", None)
         for token, key in keys.items():
-            mid = _quote_mid(quotes.get(key) or {})
+            mid = _quote_mid(quotes.get(key) or {}, self.quote_max_spread)
+            if mid is not None:
+                mid = await self._vet_quote(runner, ts, token, key.split(":", 1)[1], mid)
             if mid is None:
                 self._stale_quotes.pop(token, None)
                 if token in untraded:
                     await self._decide_once_a_day(
                         runner, ts, "stale_price_guard", "blocked",
-                        f"Holding: {key.split(':', 1)[1]} hasn't traded today and its quote has no bid and ask to price it from")
+                        f"Holding: {key.split(':', 1)[1]} hasn't traded today and its quote has no bid and ask "
+                        "close enough together to price it from")
                     return None
                 continue
-            out[token] = mid
-            self._stale_quotes[token] = (mid, ts)
+            px, at = mid
+            out[token] = px
+            self._stale_quotes[token] = (px, at)
             if record is not None:
-                await record(ts, token, mid)
+                await record(ts, token, px)   # the price taken: on a held-back jump, the earlier one
         if set(out) != self._quoted_set:
             # which legs are priced from their quote changed: said once
             self._quoted_set = set(out)
@@ -1519,6 +1562,53 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                                    {"quote": {sym[t]: round(px, 2) for t, px in out.items()},
                                     "tokens": {str(t): round(px, 2) for t, px in out.items()}})
         return out
+
+    async def _restore_quote_refs(self, runner) -> None:
+        """Each open leg's last quoted price of the last 90 s, from what was
+        recorded (SPIKES): the reference a jump is measured from survives
+        a restart or rebuild."""
+        recent = getattr(runner, "recent_quotes", None)
+        tokens = [leg["token"] for side_legs in self.legs.values() for leg in side_legs]
+        if recent is None or not tokens:
+            return
+        try:
+            got = await recent(tokens, clock.now_ist() - _QUOTE_STALE_KEEP)
+        except Exception:
+            logger.exception("%s: couldn't read back the recorded quotes", runner.deployment_name)
+            return
+        for token, (px, at) in got.items():
+            self._quote_ref[int(token)] = (float(px), _naive_ist(at))
+
+    async def _vet_quote(self, runner, ts, token: int, symbol: str, mid: float) -> tuple[float, datetime]:
+        """(price, quoted at) to take from a leg's quote (SPIKES): its mid,
+        unless that jumps more than `quote_jump_pct` from the leg's last
+        quoted price of the last 90 s; then that earlier price, until a
+        second quote at least 10 s later agrees with the jump. 3 Nov, DTT
+        Sensex Strangle: 77600CE quoted ₹722.38 at 13:34:31, ₹1,066.10 at
+        13:34:46 and ₹724.05 at 13:35:01; the 15 s in between set off a
+        roll of the put."""
+        now = _naive_ist(ts)
+        ref = self._quote_ref.get(token)
+        fresh = ref is not None and ref[0] > 0 and now - _naive_ist(ref[1]) <= _QUOTE_STALE_KEEP
+        if not (self.quote_jump_pct and fresh and abs(mid - ref[0]) > self.quote_jump_pct * ref[0]):
+            self._quote_ref[token] = (mid, ts)
+            self._jump_pending.pop(token, None)
+            return mid, ts
+        pend = self._jump_pending.get(token)
+        if pend is not None and abs(mid - pend[0]) <= self.quote_jump_pct * pend[0]:
+            if now - _naive_ist(pend[1]) >= _QUOTE_JUMP_SECOND_LOOK:   # a second look agrees: the market moved
+                self._quote_ref[token] = (mid, ts)
+                self._jump_pending.pop(token, None)
+                return mid, ts
+            return ref
+        self._jump_pending[token] = (mid, ts)
+        await self._decide(
+            runner, ts, "quote_guard", "no_action",
+            f"Held back {symbol}'s quote of {mid:,.2f}: {abs(mid / ref[0] - 1) * 100:.0f}% from {ref[0]:,.2f} "
+            f"{(now - _naive_ist(ref[1])).total_seconds():.0f} s before; kept that until a second quote agrees",
+            {"symbol": symbol, "quote": round(mid, 2), "kept": round(ref[0], 2)},
+        )
+        return ref
 
     def _aged_legs(self, runner, ts, stale: list[str]) -> list[str]:
         """Symbols of open short legs that traded this session, but not in
@@ -1578,7 +1668,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         on, or None (refuted, or still cooling down from a recent refute)
         meaning: treat this trigger as not fired. If quotes can't be
         fetched, returns the tick prices unchanged — they already passed
-        the freshness gate, and a REST hiccup must never block management."""
+        the freshness gate, and a REST hiccup must never block management.
+        A leg's quote counts only as `_confirm_price` takes it (SPIKES); one
+        without a usable price stays at the price it was managed on. A
+        quote more than `quote_jump_pct` from that price refutes the
+        trigger: the two looks disagree, so it waits and looks again."""
         until = self._confirm_cooldown_until.get(name)
         if until is not None and ts < until:
             return None
@@ -1593,20 +1687,26 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             )
             return prices
         confirmed: dict[int, float] = {}
+        jumped: list[str] = []
         for token, key in keys.items():
             q = quotes.get(key)
-            px = _quote_price(q) if q else None
-            if px is None:
+            if not q:
                 logger.warning(
                     "%s: %s fired but no live quote for %s — acting on tick prices",
                     runner.deployment_name, name, key,
                 )
                 return prices
+            px = self._confirm_price(q, ts)
+            managed = prices[token]
+            if px is None:
+                px = managed   # nothing in the quote to price it at now: it stays at its own price
+            elif self.quote_jump_pct and managed > 0 and abs(px - managed) > self.quote_jump_pct * managed:
+                jumped.append(key.split(":", 1)[1])
             confirmed[token] = px
 
         tick_view = {leg["symbol"]: prices[leg["token"]] for leg in legs}
         quote_view = {leg["symbol"]: round(confirmed[leg["token"]], 2) for leg in legs}
-        if still_fires(confirmed):
+        if not jumped and still_fires(confirmed):
             logger.info(
                 "%s: %s confirmed by live quotes (tick %s, quote %s)",
                 runner.deployment_name, name, tick_view, quote_view,
@@ -1617,9 +1717,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         if noted is None or ts - noted >= _REFUTE_NOTE_EVERY:
             self._refute_noted[name] = ts
             await self._decide(
-                runner, ts, name, "blocked",
-                "Not acted on: live quotes don't confirm the tick prices",
-                {"tick": tick_view, "quote": quote_view}, fault=True,
+                runner, ts, name, "blocked", QUOTE_REFUSED,
+                {"tick": tick_view, "quote": quote_view, **({"jumped": jumped} if jumped else {})}, fault=True,
             )
         logger.warning(
             "%s: %s fired on tick prices %s but live quotes %s don't confirm it — "
@@ -1627,6 +1726,21 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             tick_view, quote_view, _CONFIRM_COOLDOWN.seconds,
         )
         return None
+
+    def _confirm_price(self, q: dict, ts) -> Optional[float]:
+        """A leg's price from its quote, for the re-check (SPIKES): the
+        bid/ask mid when the book is narrow enough; else its last trade,
+        unless that's known to be older than `live_trade_minutes`. None:
+        nothing in the quote to price it at now."""
+        mid = _quote_mid(q, self.quote_max_spread)
+        if mid is not None:
+            return mid
+        last, at = q.get("last_price"), q.get("last_trade_time")
+        if not last:
+            return None
+        if isinstance(at, datetime) and _naive_ist(ts) - _naive_ist(at) > self.live_within:
+            return None
+        return float(last)
 
     # ── Section 4 / general: full flatten ───────────────────────────────
 
@@ -1739,9 +1853,12 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         return {"strike_multiple": m} if m else {}
 
     def _live_pick(self, prefer_range: Optional[tuple] = None, expiry=None) -> dict:
-        """get_leg_by_premium's live pricing, round-strike lean and the far
-        strikes rule (LIVE PRICES and FAR STRIKES in the module docstring)."""
+        """get_leg_by_premium's live pricing (a mid only from a narrow book),
+        round-strike lean and the far strikes rule (LIVE PRICES, SPIKES and
+        FAR STRIKES in the module docstring)."""
         out = {"live": True}
+        if self.quote_max_spread:
+            out["max_spread"] = self.quote_max_spread
         if self.round_strike_multiple and prefer_range and prefer_range[1] > 0:
             out.update(prefer_multiple=self.round_strike_multiple, prefer_range=(max(prefer_range[0], 0.05), prefer_range[1]))
         m = self._far_multiple(expiry)
@@ -1809,7 +1926,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 if without is not None and without["strike"] == opposite_strike:
                     raise SameStrike(f"{side} {opposite_strike:g}")
                 leg = await self.resolver.get_leg(self.instrument, self.contract_expiry, opposite_strike, side)
-                price = await self.resolver.get_live_price(leg)
+                price = await self.resolver.get_live_price(leg, max_spread=self.quote_max_spread)
 
         return leg, price
 

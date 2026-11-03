@@ -30,7 +30,7 @@ def strategy(pe_strike_for_target, enabled=True):
     async def get_leg(inst, exp, strike, side):
         return SimpleNamespace(strike=strike, last_price=100.0)
 
-    async def get_ltp(leg):
+    async def get_ltp(leg, **k):
         return 100.0
     s.resolver = SimpleNamespace(get_leg_by_premium=get_leg_by_premium, get_leg=get_leg, get_ltp=get_ltp,
                                  get_live_price=get_ltp)

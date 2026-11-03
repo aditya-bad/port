@@ -33,6 +33,7 @@ test('the Now tab shows the engine card and Geek mode opens full screen', async 
   assert.equal(await chromeHidden(p), false, 'the normal page is back');
   await p.keyboard.press('g');
   await p.waitForURL(/\/geek$/);
+  await p.waitForSelector('.gk .gk-next');   // Geek mode drawn and listening: a key pressed sooner is lost
   await p.keyboard.press('c');
   await p.waitForURL(/\/geek\/cycles$/);
   await p.waitForSelector('.gk-tbl .tr:not(.th)');
@@ -270,7 +271,17 @@ test('cycles: spotlight, is-this-normal band and the day-by-day table', async ()
   // hover lights a line and names it; clicking opens it
   const line = p.locator('#spot .sp[data-c="5"]');
   await line.scrollIntoViewIfNeeded();
-  const pt = await line.locator('.hit').evaluate(e => { const q = e.getPointAtLength(e.getTotalLength() * 0.85), m = e.getScreenCTM(); return { x: q.x * m.a + m.e, y: q.y * m.d + m.f }; });
+  // a point on its line that no other line covers (where they cross depends
+  // on the running cycle's length, so on the day the tests run)
+  const pt = await line.locator('.hit').evaluate(e => {
+    const m = e.getScreenCTM();
+    for (const f of [0.85, 0.7, 0.95, 0.55, 0.4, 0.25, 0.1]) {
+      const q = e.getPointAtLength(e.getTotalLength() * f), x = q.x * m.a + m.e, y = q.y * m.d + m.f;
+      if (document.elementFromPoint(x, y) === e) return { x, y };
+    }
+    return null;
+  });
+  assert.ok(pt, 'some point of cycle 5 is the one on top');
   await p.mouse.move(pt.x, pt.y);
   await p.waitForFunction(() => document.querySelector('#spot .sp[data-c="5"]').classList.contains('lit'));
   assert.match(await p.locator('#spot .sp-info').innerText(), /^#5 · convergence stop · −₹3,852 after/);
