@@ -1,0 +1,6 @@
+# The experiment without TimesFM: the data, the baselines, the scoring.
+numpy>=2.4
+pandas>=3.1
+scipy>=1.17
+arch>=8.0
+pytest>=8

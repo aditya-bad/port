@@ -1,0 +1,6 @@
+# the data and what the experiment writes stay out of the repository
+*.csv.gz
+forecasts_timesfm.csv
+results/
+.pytest_cache/
+__pycache__/

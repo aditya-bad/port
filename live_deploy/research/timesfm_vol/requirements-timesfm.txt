@@ -1,0 +1,6 @@
+# The TimesFM step (forecast_timesfm.py), on a machine that can reach
+# Hugging Face. On a server without a GPU, install the CPU build of torch
+# first (much smaller than the default):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+-r requirements.txt
+timesfm[torch]==3.0.2
