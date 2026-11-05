@@ -12,6 +12,14 @@ the Repair page's "Run the day check"); by hand:
 
     docker exec -it live-deploy python3 custom_scripts/day_check.py --date 2026-10-22
     docker exec -it live-deploy python3 custom_scripts/day_check.py --date 2026-10-22 --deployment <id>
+    docker exec -it live-deploy python3 custom_scripts/day_check.py --date 2026-11-05 --deployment <id> --model-untraded
+
+--model-untraded (one deployment): a contract's minutes before its first
+trade that day are priced by model off its index, and the app's holds for
+want of a price aren't copied (MinuteBook.model_untraded). For a day the
+app's own pricing failed. The choice is kept (app_scratch
+"replay_model_untraded"), so that deployment's repair on the Repair page
+replays the same way; run the check again without it to drop it.
 
 It runs in its own process because a replay points the app's Kite client
 and clock at the past (app/repair/market.py: replaying), which the running
@@ -52,6 +60,19 @@ async def _stored(pool, day) -> dict:
     return out
 
 
+async def engine_choice(pool, day, dep_id: str, on: bool) -> None:
+    """Keep (or drop) --model-untraded for this deployment's day, for its repair."""
+    from app.repair.market import MODEL_UNTRADED_KEY
+    got = dict(await queries.get_app_scratch(pool, MODEL_UNTRADED_KEY, {}) or {})
+    deps = set(got.get(day.isoformat(), []))
+    deps = deps | {str(dep_id)} if on else deps - {str(dep_id)}
+    if deps:
+        got[day.isoformat()] = sorted(deps)
+    else:
+        got.pop(day.isoformat(), None)
+    await queries.set_app_scratch(pool, MODEL_UNTRADED_KEY, got)
+
+
 async def main(args) -> int:
     cfg = load_config()
     pool = await create_pool(cfg["database_url"])
@@ -68,8 +89,13 @@ async def main(args) -> int:
         kite = KiteConnect(api_key=cfg["api_key"])
         kite.set_access_token(session["access_token"])
         gate = KiteGate(kite, log=(lambda line: print(line, flush=True)) if args.verbose else None)
+        if getattr(args, "model_untraded", False) and not args.deployment:
+            raise RuntimeError("--model-untraded is for one deployment: give --deployment")
+        if args.deployment:
+            await engine_choice(pool, day, args.deployment, getattr(args, "model_untraded", False))
         book = MinuteBook(day, kite_minute_source(gate), await _stored(pool, day), lookup=kite_lookup(gate),
-                          ltp=kite_ltp(gate), history=gate.historical_data, quote=kite_quote(gate))
+                          ltp=kite_ltp(gate), history=gate.historical_data, quote=kite_quote(gate),
+                          model_untraded=bool(getattr(args, "model_untraded", False)))
         results = await daycheck.run_day(pool, day, book, gate, run_id=run_id,
                                          only=[args.deployment] if args.deployment else None,
                                          say=lambda s: print(s, flush=True))
@@ -95,4 +121,6 @@ if __name__ == "__main__":
     ap.add_argument("--deployment", help="only this deployment (its id)")
     ap.add_argument("--run", type=int, help="the day_check_runs row to report into (the app passes it)")
     ap.add_argument("--verbose", action="store_true", help="print every Kite request as it's made")
+    ap.add_argument("--model-untraded", action="store_true",
+                    help="price a contract's minutes before its first trade by model, and don't copy the app's holds")
     sys.exit(asyncio.run(main(ap.parse_args())))

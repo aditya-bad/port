@@ -663,6 +663,10 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     _honour_refusals(strategy, await _app_refusals(conn, dep["id"], window.day, app_fills or []), held_off)
     app_held: list[dict] = []
     price_log = await _app_price_log(conn, dep["id"], window.day, app_fills or [])
+    if getattr(book, "model_untraded", False):
+        # the repair prices what the app couldn't (MinuteBook.model_untraded):
+        # its holds for want of a price aren't copied
+        price_log["holds"] = []
     kite.app_log = price_log["rows"]   # re-checking a trigger asks quote(): it says what the app's did
     _honour_prices(strategy, price_log, app_held)
     runner = ReplayRunner(dep, TxPool(conn), disp, strategy, clock, run, window)
@@ -912,6 +916,15 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
             out.notes.append(f"{label}: Kite has no trade in it all day, so it's priced by model — Black-76 off "
                              f"{md['index']} at {md['iv'] * 100:.1f}% implied volatility, from "
                              f"{md['anchor']} (₹{md['anchor_price']:,.2f} with {md['index']} at {md['level']:,.2f}).")
+        elif origin == "kite+model":
+            md = book.models.get(tok) or {}
+            first = next((m for m in book.keys.get(tok, []) if book.rows[tok][m].get("volume")), None)
+            if tok in held or tok in disp.subscribed:
+                out.estimated.append(label)
+            out.notes.append(f"{label}: no trade on Kite until {first:%H:%M}" if first else f"{label}: no trade early in the day")
+            out.notes[-1] += (f"; before that it's priced by model — Black-76 off {md.get('index')} at "
+                              f"{md.get('iv', 0) * 100:.1f}% implied volatility, from {md.get('anchor')}." if md else
+                              "; before that it's priced by model off its index.")
         elif origin == "kite" and book.before.get(tok) and book.keys.get(tok) and (tok in held or tok in disp.subscribed):
             px, at = book.before[tok]
             out.notes.append(f"{label}: no trade until {book.keys[tok][0]:%H:%M}; before that, its last trade on Kite, "

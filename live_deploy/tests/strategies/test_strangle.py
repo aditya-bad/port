@@ -431,7 +431,7 @@ def test_a_wide_book_is_no_price_for_an_untraded_leg(pool_run, monkeypatch):
         sim.market.vol = 0.13          # the checkpoint would be met on the quote's mid
         t0 = ist_at(sim, d2, "09:30")
         normal = sim.market.price_of(sim.market.by_token[tok])
-        quote(normal, half=0.15 * normal)   # a spread of 30% of the mid
+        quote(normal, half=0.20 * normal)   # a spread of 40% of the mid
         await sim.tick(t0, spot=25000)
         assert closes(await sim.fills()) == [], "it holds, as with no quote at all"
         summaries = [r["summary"] for r in await decisions(sim)]
@@ -787,4 +787,91 @@ def test_active_managements_extra_legs_far_from_expiry_take_only_100_strikes(poo
             await strat._adjust(sim.runner, sim.market.now, "PE", bigger)
         pes = [float(p["metadata"]["strike"]) for p in await shorts(sim) if p["symbol"].endswith("PE")]
         assert len(pes) == 4 and all(s % 100 == 0 for s in pes), pes   # without it: 23200, 23250, 23300, 23350
+    pool_run(go)
+
+
+def test_a_held_legs_book_somewhat_wide_still_prices_it(pool_run, monkeypatch):
+    """5 Nov 2026, DTT Bankex Strangle: 64000CE hadn't traded and its book
+    was wider than the 10% a strike search takes, so every rule held from
+    09:20 to 12:46. A leg already held is priced from a book up to 30%
+    wide (THIN BOOKS)."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        d2, tok, quote = await quoted_call(sim, monkeypatch)
+        sim.market.vol = 0.13          # the checkpoint is met on the quote's mid
+        normal = sim.market.price_of(sim.market.by_token[tok])
+        quote(normal, half=0.10 * normal)   # a spread of 20% of the mid
+        await sim.tick(ist_at(sim, d2, "09:30"), spot=25000)
+        assert "checkpoint_target" in {f["reason"] for f in closes(await sim.fills())}, "managed, not held"
+    pool_run(go)
+
+
+def _capped(sim, monkeypatch, depth, last=None):
+    """The CE at 25,000, so a put chasing premium caps onto 25,000PE, whose
+    quote is `depth` with its last trade `last` (None: none today)."""
+    from app.options import OptionsResolver
+    strat = sim.runner.strategy
+    strat.legs["CE"][0]["strike"] = 25000.0
+    real = OptionsResolver.get_quotes
+
+    async def quotes(self, keys):
+        out = await real(self, keys)
+        for k in keys:
+            if k.endswith("25000PE"):
+                out[k] = {**(out.get(k) or {}), "depth": depth, "last_price": last or 0,
+                          "last_trade_time": None if last is None else sim.market.now}
+        return out
+    monkeypatch.setattr(OptionsResolver, "get_quotes", quotes)
+    return strat
+
+
+def test_the_strike_a_roll_is_forced_onto_sells_at_its_bid_when_its_book_is_wide(pool_run, monkeypatch):
+    """5 Nov 2026, DTT Sensex Strangle: the put roll capped onto 77600PE was
+    refused 70 times (09:23-15:09), "no live price": no trade that day and
+    a book wider than the strike search's 10%. The forced strike takes its
+    mid if its book is within 30%, else its bid, which a sell fills at."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        strat = _capped(sim, monkeypatch, {"buy": [{"price": 400.0, "quantity": 20}], "sell": [{"price": 700.0, "quantity": 20}]})
+        leg, price = await strat._pick_leg(sim.runner, "PE", 2000)
+        assert leg.strike == 25000.0 and price == 400.0, "a book 55% wide: sold at its bid"
+        strat = _capped(sim, monkeypatch, {"buy": [{"price": 500.0, "quantity": 20}], "sell": [{"price": 600.0, "quantity": 20}]})
+        _, price = await strat._pick_leg(sim.runner, "PE", 2000)
+        assert price == 550.0, "a book 18% wide: its mid"
+        strat = _capped(sim, monkeypatch, {"buy": [{"price": 450.0, "quantity": 20}], "sell": []})
+        _, price = await strat._pick_leg(sim.runner, "PE", 2000)
+        assert price == 450.0, "only a bid: the bid"
+        strat = _capped(sim, monkeypatch, {"buy": [], "sell": []})
+        try:
+            await strat._pick_leg(sim.runner, "PE", 2000)
+            raise AssertionError("no trade and no bid is still no price")
+        except ValueError:
+            pass
+    pool_run(go)
+
+
+def test_a_leg_that_never_ticks_is_priced_from_its_quote_after_2_minutes(pool_run, monkeypatch):
+    """5 Nov 2026: the feed was wrongly marked down at 11:43, so the puts
+    sold after it (Nifty 24350PE at 12:22, ...) were never subscribed and
+    never had a tick; every rule held to the close, the trailing stop too.
+    After 2 minutes with no tick, the leg is priced from its quote."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        tok = int(next(p for p in await shorts(sim) if p["symbol"].endswith("CE"))["instrument_token"])
+        orig = sim.dispatcher.publish
+
+        def publish():
+            orig()
+            sim.dispatcher.last_prices.pop(tok, None)
+            sim.dispatcher.last_price_times.pop(tok, None)
+        sim.dispatcher.publish = publish
+        sim.market.vol = 0.13          # the checkpoint is met
+        t0 = ist_at(sim, sim.market.today + timedelta(days=1), "10:00")
+        sim.market.now = sim.market.now.replace(day=t0.day)
+        sim.runner.strategy._no_tick_since.clear()   # counted from this session's first tick without one
+        await sim.tick(t0, spot=25000)
+        await sim.tick(t0 + timedelta(seconds=60), spot=25000)
+        assert closes(await sim.fills()) == [], "a minute without a tick still waits for one"
+        await sim.tick(t0 + timedelta(seconds=130), spot=25000)
+        assert "checkpoint_target" in {f["reason"] for f in closes(await sim.fills())}, "priced from its quote"
     pool_run(go)

@@ -237,6 +237,20 @@ was as wild (₹1,036.10) and confirmed it, and the put was rolled from
     what was recorded (runner.recent_quotes), so a spike just after one
     is held back the same way.
 
+THIN BOOKS (5 Nov 2026): the narrow limit above froze the DTT Bankex
+Strangle 09:20-12:46 (64000CE untraded, its book wider than 10%) and
+refused the DTT Sensex Strangle's put roll onto 77600PE 70 times. So the
+10% limit is only for choosing among strikes in a search; a leg already
+held, and the re-check, take a mid from a book up to
+`quote_wide_spread_pct` (30%) wide; the one strike the strike-cross cap
+allows sells at a trade from the last `live_trade_minutes`, else its
+mid within 30%, else its bid (what a sell fills at), else its last trade
+from today, and only with none of these is the roll refused.
+
+NO TICKS (5 Nov 2026): a held leg with no tick at all for 2 minutes
+(from 09:20) is priced from its quote, as one not traded today, instead
+of holding every rule until a tick comes.
+
 ──────────────────────────────────────────────────────────────────────
 4. CHECKPOINT PROFIT TARGET
 ──────────────────────────────────────────────────────────────────────
@@ -698,7 +712,7 @@ from zoneinfo import ZoneInfo
 from .. import clock
 from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver
-from ..options.resolver import is_multiple, spread_ok
+from ..options.resolver import is_multiple, live_price, spread_ok
 from .intraday_dtt_adjusted import IntradayDTTAdjustedStrategy
 from .pivot_supertrend import _parse_hhmm
 from .registry import register_strategy
@@ -731,6 +745,8 @@ HOLD_OVER = "Every leg priced again: management resumes"
 _QUOTE_JUMP_SECOND_LOOK = timedelta(seconds=10)
 # The re-check's own note when it refuses: the day check's replay holds off
 # the rule on this exact wording (app/repair/engine.py QUOTE_REFUSED).
+# NO TICKS: a held leg with no tick at all this long is priced from its quote
+_NO_TICK_QUOTE_AFTER = timedelta(minutes=2)
 QUOTE_REFUSED = "Not acted on: live quotes don't confirm the tick prices"
 # Strikes that trade: where a strangle leans when a premium allows (LIVE PRICES).
 ROUND_STRIKES = {"BANKNIFTY": 500, "BANKEX": 500, "SENSEX": 500}
@@ -826,6 +842,10 @@ BANK_INSTRUMENTS = {"BANKNIFTY", "BANKEX"}
         "quote_max_spread_pct": 0.10,
         "quote_max_spread_abs": 2.0,
         "quote_jump_pct": 0.25,
+        # THIN BOOKS: for a leg already held, and for the strike a roll is
+        # forced onto, a wider book still prices it (a mid up to this
+        # fraction of it apart); a strike search keeps the narrow limit
+        "quote_wide_spread_pct": 0.30,
         "eod_check_time": "15:13",
         "eod_gap_floor": 0.80,
         "eod_rollout_instead_of_straddle": True,
@@ -841,6 +861,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
     # SPIKES: the defaults on_start reads from config, for one built without it
     quote_max_spread: Optional[tuple] = (0.10, 2.0)
     quote_jump_pct: float = 0.25
+    quote_wide_spread: Optional[tuple] = (0.30, 2.0)
+    live_within: timedelta = timedelta(minutes=3)
     # A single cycle spans many calendar days (checkpoint-to-checkpoint,
     # potentially the better part of a month) -- "day" would be
     # meaningless here (see StrategyBase.ADJUSTMENT_GROUP_BY's own
@@ -904,6 +926,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # See module docstring's "STALE-PRICE GUARD".
         self._confirm_cooldown_until: dict[str, datetime] = {}
         self._waiting_for_price = False
+        self._no_tick_since: dict[int, datetime] = {}   # token -> first tick it had no price (NO TICKS)
         self._roll_blocked_noted: dict[str, datetime] = {}   # side -> when a roll that couldn't resolve was last noted
         self._stale_logged: set = set()
         # Geek mode's decision log (runner.record_decision): what to note
@@ -975,6 +998,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         sp = float(cfg.get("quote_max_spread_pct", 0.10) or 0)
         self.quote_max_spread = (sp, float(cfg.get("quote_max_spread_abs", 2.0) or 0)) if sp > 0 else None
         self.quote_jump_pct = float(cfg.get("quote_jump_pct", 0.25) or 0)
+        wp = float(cfg.get("quote_wide_spread_pct", 0.30) or 0)
+        self.quote_wide_spread = (wp, float(cfg.get("quote_max_spread_abs", 2.0) or 0)) if wp > 0 else None
+        if self.quote_max_spread is None:
+            self.quote_wide_spread = None
 
         self.eod_check_time = _parse_hhmm(cfg.get("eod_check_time", "15:13"))
         if self.eod_check_time is None:
@@ -1458,10 +1485,20 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         with what the app logged (app/repair/engine.py _honour_prices)."""
         prices: dict[int, float] = {}
         note = getattr(runner, "note_decision", None)
+        if not hasattr(self, "_no_tick_since"):   # built without on_start (the day check's tests)
+            self._no_tick_since = {}
+        unticked: list[str] = []
         for side_legs in self.legs.values():
             for leg in side_legs:
                 p = runner.dispatcher.last_prices.get(leg["token"])
                 if p is None:
+                    since = self._no_tick_since.setdefault(leg["token"], ts)
+                    if ts - since >= _NO_TICK_QUOTE_AFTER and _naive_ist(ts).time() >= _QUOTE_STALE_FROM:
+                        # NO TICKS: priced from its quote like a leg not
+                        # traded today (5 Nov 2026: no tick ever came for the
+                        # legs sold after the feed was wrongly marked down)
+                        unticked.append(leg["symbol"])
+                        continue
                     # wait for a live tick on every open leg; held for 10
                     # minutes, that's raised as an issue
                     self._waiting_for_price = True
@@ -1469,6 +1506,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                         await note(ts, "leg_prices", "blocked",
                                    f"Holding all management: no price for {leg['symbol']}", fault=True)
                     return None
+                self._no_tick_since.pop(leg["token"], None)
                 prices[leg["token"]] = p
         if self._waiting_for_price:
             self._waiting_for_price = False
@@ -1480,7 +1518,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         # 3) is priced from a live two-sided quote; a leg that traded
         # today but not lately is priced from its quote too.
         self._manage_ts = ts
-        stale = self._stale_legs(runner, ts)
+        stale = self._stale_legs(runner, ts) + unticked
         aged = self._aged_legs(runner, ts, stale)
         quoted = await self._quote_stale(runner, ts, stale, aged) if (stale or aged) else {}
         if quoted is None:
@@ -1535,7 +1573,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         out = {}
         record = getattr(runner, "record_quote", None)
         for token, key in keys.items():
-            mid = _quote_mid(quotes.get(key) or {}, self.quote_max_spread)
+            mid = _quote_mid(quotes.get(key) or {}, self.quote_wide_spread)
             if mid is not None:
                 mid = await self._vet_quote(runner, ts, token, key.split(":", 1)[1], mid)
             if mid is None:
@@ -1735,6 +1773,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         unless that's known to be older than `live_trade_minutes`. None:
         nothing in the quote to price it at now."""
         mid = _quote_mid(q, self.quote_max_spread)
+        if mid is None:   # THIN BOOKS: a held leg's wider book still prices it
+            mid = _quote_mid(q, self.quote_wide_spread)
         if mid is not None:
             return mid
         last, at = q.get("last_price"), q.get("last_trade_time")
@@ -1928,9 +1968,30 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 if without is not None and without["strike"] == opposite_strike:
                     raise SameStrike(f"{side} {opposite_strike:g}")
                 leg = await self.resolver.get_leg(self.instrument, self.contract_expiry, opposite_strike, side)
-                price = await self.resolver.get_live_price(leg, max_spread=self.quote_max_spread)
+                price = await self._forced_sell_price(leg)
 
         return leg, price
+
+    async def _forced_sell_price(self, leg) -> float:
+        """What the one strike a roll may take (the strike-cross cap) sells
+        at (THIN BOOKS): a trade in the last `live_trade_minutes`; else its
+        bid/ask mid with the book no wider than `quote_wide_spread`; else
+        its bid, which a sell fills at; else its last trade from today.
+        Raises ValueError with none of these. 5 Nov 2026: DTT Sensex
+        Strangle's put roll onto 77600PE was refused 70 times, 09:23 to
+        15:09, for a book wider than the strike-search limit."""
+        q = (await self.resolver.get_quotes([leg.key])).get(leg.key) or {}
+        now = clock.now_ist()
+        px, src = live_price(q, now, self.live_within, max_spread=self.quote_wide_spread)
+        if px is not None and src in ("trade", "mid"):
+            return px
+        buy = (q.get("depth") or {}).get("buy") or []
+        bid = buy[0].get("price") if buy else None
+        if bid:
+            return float(bid)
+        if px is not None:
+            return px
+        raise ValueError(f"No live price for {leg.key}: no trade today and no bid")
 
     async def _replace_leg(
         self, runner, ts, side: str, old: dict, target_premium: float, trigger: str,

@@ -57,6 +57,14 @@ async def claim(pool):
         "SELECT id FROM repair_jobs WHERE status = 'queued' ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING *")
 
 
+async def model_untraded(pool, day, dep_id) -> bool:
+    """Whether this deployment's day was checked with --model-untraded
+    (custom_scripts/day_check.py): its repair replays the same way."""
+    from app.repair.market import MODEL_UNTRADED_KEY
+    got = await queries.get_app_scratch(pool, MODEL_UNTRADED_KEY, {}) or {}
+    return str(dep_id) in set(got.get(day.isoformat(), []))
+
+
 async def main(args) -> int:
     cfg = load_config()
     pool = await create_pool(cfg["database_url"])
@@ -85,10 +93,12 @@ async def main(args) -> int:
                 if gate is None:
                     raise RuntimeError("No Kite session in the database — log in to Kite in the app first (the candles come from Kite).")
                 day = job["day"]
-                if day not in books:
-                    books[day] = MinuteBook(day, kite_minute_source(gate), await stored(pool, day), lookup=kite_lookup(gate),
-                                            ltp=kite_ltp(gate), history=gate.historical_data, quote=kite_quote(gate))
-                res = await dayrepair.run(pool, job["deployment_id"], day, books[day], gate, dict(job["choices"] or {}),
+                modelled = await model_untraded(pool, day, job["deployment_id"])
+                if (day, modelled) not in books:
+                    books[(day, modelled)] = MinuteBook(day, kite_minute_source(gate), await stored(pool, day), lookup=kite_lookup(gate),
+                                                        ltp=kite_ltp(gate), history=gate.historical_data, quote=kite_quote(gate),
+                                                        model_untraded=modelled)
+                res = await dayrepair.run(pool, job["deployment_id"], day, books[(day, modelled)], gate, dict(job["choices"] or {}),
                                           commit=job["kind"] == "apply", expected=job["expected"], author=job["author"])
                 await pool.execute("UPDATE repair_jobs SET status = 'done', result = $2, finished_at = now() WHERE id = $1",
                                    job["id"], daycheck._json(res))

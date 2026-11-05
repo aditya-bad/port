@@ -187,3 +187,38 @@ def test_close_error_reconnect_callbacks_track_state():
 def test_tick_modes(mode):
     d, _ = make(mode=mode)
     assert d.status["tick_mode"] == mode
+
+
+def test_a_late_close_from_the_old_connection_doesnt_mark_the_new_one_down():
+    """5 Nov 2026: the tick-stall watchdog reconnected at 11:43; the new
+    connection came up, then the old one's close (its closing handshake
+    timed out) arrived and marked the feed down for the rest of the day.
+    Every contract sold after that was only "registered", never subscribed,
+    so it never had a price."""
+    d, _ = make(token="tok", reactor_running=lambda: True)
+    d.bind_loop(asyncio.new_event_loop())
+    old = FakeTicker.made[-1]
+    d._on_connect(old, None)
+    d.reconnect("tok")                       # the watchdog's reconnect, same token
+    new = FakeTicker.made[-1]
+    assert new is not old and old.closed
+    d._on_connect(new, None)
+    d._on_error(old, 1006, "closing handshake timeout")
+    d._on_close(old, 1006, "closing handshake timeout")
+    assert d.connected is True and d.status["kite_connected"] is True
+    assert d.last_error is None, "the old connection's error isn't this one's"
+    d.add_instruments([{"instrument_token": 777, "symbol": "NIFTY26NOV24350PE"}])
+    assert [777] in new.subscribed, "a contract sold now is subscribed on the live connection"
+
+
+def test_ticks_on_a_connection_marked_down_mark_it_up_and_subscribe_what_was_waiting():
+    d, _ = make(token="tok")
+    d.bind_loop(asyncio.new_event_loop())
+    kws = FakeTicker.made[0]
+    d._on_connect(kws, None)
+    d._on_close(kws, 1006, "gone")           # marked down ...
+    d.add_instruments([{"instrument_token": 777, "symbol": "BANKEX26NOV64000PE"}])
+    assert [777] not in kws.subscribed, "registered only, while it looks down"
+    d._on_ticks(kws, [{"instrument_token": 256265, "last_price": 24500.0}])   # ... but its ticks still come
+    assert d.connected is True
+    assert 777 in kws.subscribed[-1], "what was waiting goes out with the first tick"

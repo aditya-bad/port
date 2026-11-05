@@ -546,3 +546,72 @@ def test_a_quote_of_zero_falls_through_to_history():
     b, k, calls, asked = quoted_book({"BFO:SENSEX26NOV99900CE": (0.0, None)})
     assert k.ltp("BFO:SENSEX26NOV99900CE") == {}
     assert calls, "asked Kite's history instead"
+
+
+def _untraded_book(model_untraded, pe_today=None):
+    """SENSEX at 12:00-12:01; its 79000PE last traded the day before (Kite's
+    quote says so), or, with `pe_today`, first trades at 12:01."""
+    from app.geek.optionmath import fwd_price, years_to
+    prev = date(2026, 10, 20)
+    t = datetime.combine(prev, time(15, 10))
+    p = fwd_price("PE", 79500, 79000, years_to(SX_EXPIRY, (t + timedelta(seconds=59)).replace(tzinfo=M.IST)), 0.16)
+    idx = sensex_index()
+
+    def source(token, start, end):
+        if token == SENSEX:
+            if start.date() < DAY:
+                return [{"date": t, "open": 79500, "high": 79500, "low": 79500, "close": 79500}]
+            return [{"date": at(k), "open": o, "high": h, "low": l, "close": c} for k, (o, h, l, c) in idx.items()]
+        if start.date() < DAY:
+            return [{"date": t, "open": p, "high": p, "low": p, "close": p}]
+        if pe_today is not None:
+            return [{"date": at("12:01").replace(tzinfo=M.IST), "open": pe_today, "high": pe_today,
+                     "low": pe_today, "close": pe_today, "volume": 20}]
+        return []
+
+    key = "BFO:SENSEX26O2979000PE"
+
+    def quote(keys):   # Kite's quote: its last trade, the day before (or today, with pe_today)
+        last = at("12:01") if pe_today is not None else t
+        return {k: {"last_price": pe_today or p, "last_trade_time": last} for k in keys if k == key}
+    b = M.MinuteBook(DAY, source, quote=quote, model_untraded=model_untraded)
+    b.note(SENSEX, "SENSEX")
+    b.note(SX_PE, "SENSEX26O2979000PE")
+    b._key_of[SX_PE] = key
+    clock = M.ReplayClock(DAY)
+    clock.set(at("12:00"), M.UP_FIRST, 3)
+
+    class Real:
+        def instruments(self, exchange=None):
+            return [{"instrument_token": SX_PE, "tradingsymbol": "SENSEX26O2979000PE", "exchange": "BFO"}] if exchange == "BFO" else []
+    return b, M.ReplayKite(Real(), b, clock), key
+
+
+def test_a_repair_can_price_a_strike_with_no_trade_all_day_by_model_and_quote_it():
+    """5 Nov 2026, DTT Sensex Strangle: the put roll capped onto 77600PE,
+    which never traded that day; live it was refused for no price, and the
+    day check, standing it at its last trade with no book, refused it the
+    same way. A repair run with model_untraded prices it by model off
+    SENSEX and quotes a book around that, so the roll the strategy would
+    have made with a price is made."""
+    b, k, key = _untraded_book(False)
+    q = k.quote([key])[key]
+    assert b.origin[SX_PE] == "quote" and q["depth"] == {"buy": [], "sell": []}, "the day check's usual reading: no book"
+    b, k, key = _untraded_book(True)
+    q = k.quote([key])[key]
+    assert b.origin[SX_PE] == "model" and b.models[SX_PE]["index"] == "SENSEX"
+    assert q["depth"]["buy"] and q["depth"]["sell"], "a book around the model's price"
+    assert q["last_trade_time"].date() == DAY
+
+
+def test_a_repair_prices_the_minutes_before_a_contracts_first_trade_by_model():
+    """5 Nov 2026, DTT Bankex Strangle: 61500PE first traded at 12:46; the
+    app held every rule until then. Before its first trade the repair
+    prices it by model; from it, at Kite's candles."""
+    b, _, _ = _untraded_book(True, pe_today=120.0)
+    rows = b.load(SX_PE)
+    assert b.origin[SX_PE] == "kite+model"
+    assert rows[at("12:01")]["close"] == 120.0, "Kite's own candle from its first trade"
+    assert rows[at("12:00")]["volume"] == 0 and rows[at("12:00")]["close"] > 0, "modelled before it"
+    b, _, _ = _untraded_book(False, pe_today=120.0)
+    assert set(b.load(SX_PE)) == {at("12:01")} and b.origin[SX_PE] == "kite", "without it: Kite's candles only"

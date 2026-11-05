@@ -28,12 +28,15 @@ def strategy(pe_strike_for_target, enabled=True):
         return SimpleNamespace(strike=pe_strike_for_target, last_price=100.0)
 
     async def get_leg(inst, exp, strike, side):
-        return SimpleNamespace(strike=strike, last_price=100.0)
+        return SimpleNamespace(strike=strike, last_price=100.0, key=f"NFO:{strike:g}{side}")
 
     async def get_ltp(leg, **k):
         return 100.0
+
+    async def get_quotes(keys):   # a two-sided book at 100 for the capped strike
+        return {k: {"depth": {"buy": [{"price": 99.9}], "sell": [{"price": 100.1}]}} for k in keys}
     s.resolver = SimpleNamespace(get_leg_by_premium=get_leg_by_premium, get_leg=get_leg, get_ltp=get_ltp,
-                                 get_live_price=get_ltp)
+                                 get_live_price=get_ltp, get_quotes=get_quotes)
 
     async def confirm(runner, ts, name, prices, fires):
         return prices

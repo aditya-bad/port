@@ -672,6 +672,28 @@ def test_where_the_app_held_at_the_open_for_its_put_the_replay_holds_too(pool_ru
     pool_run(go)
 
 
+def test_a_repair_with_model_untraded_doesnt_copy_the_apps_holds(pool_run, monkeypatch):
+    """5 Nov 2026, DTT Bankex Strangle: the app held every rule 09:20-12:46
+    for want of a price (a book too wide for the strangle's limit), and the
+    day check, copying the app's holds, called the day "ok". Checked with
+    model_untraded, the replay doesn't copy them: it trades where the
+    strategy would have with a price."""
+    async def go(pool):
+        def prepare(sim, put, d2):
+            tok, orig = int(put["instrument_token"]), sim.dispatcher.publish
+
+            def publish():   # its first trade, as the app saw it, at 09:26
+                orig()
+                if sim.market.now < datetime.combine(d2, time(9, 26)):
+                    sim.dispatcher.last_price_times[tok] -= timedelta(days=1)
+            sim.dispatcher.publish = publish
+        sim, d2, up, rolls = await strangle_next_day(pool, monkeypatch, prepare)
+        book = MinuteBook(d2, candles_source(sim, flat(up)), model_untraded=True)
+        r = await D.check_deployment(pool, await dep_row(pool, sim), d2, book, sim.kite)
+        assert r["status"] != "ok" and "09:15" in {f["minute"] for f in r["diff"]["missed"]}, (r["headline"], r["diff"])
+    pool_run(go)
+
+
 def test_a_put_that_never_traded_is_priced_at_the_apps_own_quotes(pool_run, monkeypatch):
     async def go(pool):
         def prepare(sim, put, d2):

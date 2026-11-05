@@ -56,6 +56,9 @@ IST = ZoneInfo("Asia/Kolkata")
 # closed a 5-minute strategy's 15:25 candle the same day: the trend credit
 # spread's 15:30 flip exit of 3 Nov was flagged as one it wouldn't make.
 SESSION_OPEN, SESSION_CLOSE = time(9, 15), time(15, 40)
+# app_scratch key: {day: [deployment ids]} checked and repaired with
+# MinuteBook.model_untraded (custom_scripts/day_check.py --model-untraded)
+MODEL_UNTRADED_KEY = "replay_model_untraded"
 KITE_NEVER_TRADED = datetime(1970, 1, 1, 5, 30)   # Kite's trade time for a contract that never traded (epoch, in IST)
 
 UP_FIRST = ("open", "up", "down", "close")
@@ -142,8 +145,17 @@ class MinuteBook:
 
     def __init__(self, day: date, source: Callable, stored: Optional[dict] = None,
                  lookup: Optional[Callable] = None, ltp: Optional[Callable] = None,
-                 history: Optional[Callable] = None, quote: Optional[Callable] = None):
+                 history: Optional[Callable] = None, quote: Optional[Callable] = None,
+                 model_untraded: bool = False):
         self.day = day
+        # MODEL UNTRADED (a repair's choice, never the day check's usual
+        # reading): a contract's minutes before its first trade of the day
+        # are priced by model off its index (_model) and quoted around that,
+        # instead of standing at a last trade from an earlier day with no
+        # book. For a day the app's own pricing failed (5 Nov 2026: a book
+        # too wide for the strangle's limit, a feed that took no new
+        # contracts), what the strategy would have done had it had a price.
+        self.model_untraded = model_untraded
         self.source = source
         self.stored = stored or {}
         self.lookup = lookup                 # tradingsymbol -> its row in Kite's master (or None)
@@ -265,6 +277,10 @@ class MinuteBook:
             q = self._quoted_before_day(token)
             if q is not None:
                 self.before[token] = q
+                modelled = self._model(token, self._master(token)) if self.model_untraded else None
+                if modelled:
+                    self.rows[token], self.keys[token], self.origin[token] = modelled, sorted(modelled), "model"
+                    return self.rows[token]
                 self.rows[token], self.keys[token], self.origin[token] = {}, [], "quote"
                 return self.rows[token]
             open_, close = datetime.combine(self.day, SESSION_OPEN), datetime.combine(self.day, SESSION_CLOSE)
@@ -292,6 +308,13 @@ class MinuteBook:
                 rows[m] = {"open": float(c["open"]), "high": float(c["high"]), "low": float(c["low"]),
                            "close": float(c["close"]), "volume": int(c.get("volume") or 0),
                            "oi": int(c.get("oi") or 0)}
+            if rows and self.model_untraded and min(rows) > datetime.combine(self.day, SESSION_OPEN) \
+                    and self.symbols.get(token) not in INDEX_LABELS.values() and token not in INDEX_LABELS:
+                first = min(rows)
+                early = {m: c for m, c in (self._model(token, row) or {}).items() if m < first}
+                if early:
+                    rows = {**early, **rows}
+                    origin = "kite+model"
             if not rows:
                 modelled = self._model(token, row)
                 if modelled:

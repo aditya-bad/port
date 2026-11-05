@@ -58,6 +58,7 @@ FIELDS: dict[str, dict[str, Any]] = {
     "quote_max_spread_pct": {"label": "Widest bid/ask", "help": "A bid/ask counts as a price only this narrow, as a fraction of its middle (0.10 = 10%)"},
     "quote_max_spread_abs": {"label": "Widest bid/ask in rupees", "help": "Or this many rupees, whichever is wider"},
     "quote_jump_pct": {"label": "Quote jump", "help": "A quoted price this far from the last one waits for a second quote to agree (0.25 = 25%; 0 = off)"},
+    "quote_wide_spread_pct": {"label": "Widest bid/ask for a held leg", "help": "A leg already held, or the one strike a roll is forced onto, is priced from a book up to this wide (0.30 = 30% of its mid)"},
     "strike_liquidity_tolerance_pct": {"label": "Liquidity tolerance", "help": "How far from the target premium a more liquid strike may be, as a fraction"},
     "adjustment_trigger_ratio": {"label": "Adjustment trigger", "help": "Weaker side ÷ stronger side that triggers an adjustment"},
     "adjustment_band_min": {"label": "Adjustment band low", "help": "Lower edge of the replacement premium band"},

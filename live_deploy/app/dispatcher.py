@@ -398,7 +398,22 @@ class LiveDataDispatcher:
 
     # ── Kite callbacks — fire from KiteTicker's background thread ──────
 
+    def _stale(self, ws, what: str) -> bool:
+        """True for an event from a connection that isn't the current one
+        (5 Nov 2026: the tick-stall watchdog reconnected at 11:43; the new
+        connection came up and subscribed everything, then the old one's
+        close, late after its closing handshake timed out, marked the feed
+        disconnected for the rest of the day while ticks kept coming, so no
+        contract sold after it was ever subscribed). Kite's library hands
+        each callback the KiteTicker it came from."""
+        if self._kws is None or ws is self._kws:
+            return False
+        logger.info("Kite WebSocket %s from an earlier connection ignored", what)
+        return True
+
     def _on_connect(self, ws, response):
+        if self._stale(ws, "connect"):
+            return
         self.connected = True
         self.last_error = None
         logger.info(
@@ -426,10 +441,14 @@ class LiveDataDispatcher:
             )
 
     def _on_close(self, ws, code, reason):
+        if self._stale(ws, "close"):
+            return
         self.connected = False
         logger.warning("Kite WebSocket closed: %s %s", code, reason)
 
     def _on_error(self, ws, code, reason):
+        if self._stale(ws, "error"):
+            return
         self.last_error = f"{code}: {reason}"
         logger.error("Kite WebSocket error: %s %s", code, reason)
 
@@ -453,6 +472,8 @@ class LiveDataDispatcher:
     _AUTO_RETRY_AFTER_GIVEUP_DELAY = 60   # seconds
 
     def _on_noreconnect(self, ws):
+        if self._stale(ws, "give-up"):
+            return
         self.connected = False
         # `status.needs_login` is computed as `self._kws is None` (see
         # that property below) -- leaving _kws pointing at this now-dead
@@ -590,6 +611,16 @@ class LiveDataDispatcher:
         point between that thread and the asyncio event loop the
         broadcaster (and every downstream consumer) runs on.
         """
+        if not self.connected and self._kws is not None and ws is self._kws:
+            # ticks from the current connection: it's up, whatever said
+            # otherwise; anything registered while it looked down goes out
+            # now (subscribing a token twice is harmless at Kite)
+            self.connected = True
+            logger.warning("Kite ticks are arriving on a connection marked down — marking it connected "
+                           "and subscribing all %d token(s)", len(self.instrument_tokens))
+            if self.instrument_tokens:
+                ws.subscribe(self.instrument_tokens)
+                ws.set_mode(self._kite_mode, self.instrument_tokens)
         self.ticks_received += len(ticks)
         self.last_tick_at = datetime.now(timezone.utc)
         for t in ticks:
