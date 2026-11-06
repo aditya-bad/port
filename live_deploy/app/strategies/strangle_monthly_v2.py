@@ -247,6 +247,17 @@ allows sells at a trade from the last `live_trade_minutes`, else its
 mid within 30%, else its bid (what a sell fills at), else its last trade
 from today, and only with none of these is the roll refused.
 
+From 09:30 a held leg whose book still has no usable mid (wider than 30%,
+or an ask only) is priced at its ask: a short is bought back at the ask
+(6 Nov 2026, DTT Bankex Strangle: 64000CE held every rule 09:20-11:10).
+A hold note says what the book was (bid / ask, or one side only).
+
+FAR PICKS (6 Nov 2026): a roll whose nearest priced strike is more than
+25% outside its band isn't made (09:15, few BSE strikes have traded:
+the Sensex call roll sold 83000CE at 100.00 for a target of about 337,
+then rolled straight back); it's tried again on the next tick. The one
+strike the strike-cross cap allows is exempt.
+
 NO TICKS (5 Nov 2026): a held leg with no tick at all for 2 minutes
 (from 09:20) is priced from its quote, as one not traded today, instead
 of holding every rule until a tick comes.
@@ -745,6 +756,10 @@ HOLD_OVER = "Every leg priced again: management resumes"
 _QUOTE_JUMP_SECOND_LOOK = timedelta(seconds=10)
 # The re-check's own note when it refuses: the day check's replay holds off
 # the rule on this exact wording (app/repair/engine.py QUOTE_REFUSED).
+# FAR PICKS: a roll's replacement may be this far outside its band, no further
+_BAND_SLACK = 0.25
+# THIN BOOKS: from this time a held leg with no usable mid is priced at its ask
+_ASK_FROM = time(9, 30)
 # NO TICKS: a held leg with no tick at all this long is priced from its quote
 _NO_TICK_QUOTE_AFTER = timedelta(minutes=2)
 QUOTE_REFUSED = "Not acted on: live quotes don't confirm the tick prices"
@@ -763,6 +778,26 @@ _REFUTE_NOTE_EVERY = timedelta(minutes=5)
 
 def _naive_ist(dt: datetime) -> datetime:
     return dt.astimezone(_IST).replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def _book_top(q: dict) -> tuple[Optional[float], Optional[float]]:
+    """(best bid, best ask) of a kite.quote() entry; None for an empty side."""
+    depth = q.get("depth") or {}
+    buy, sell = depth.get("buy") or [], depth.get("sell") or []
+    bid = buy[0].get("price") if buy else None
+    ask = sell[0].get("price") if sell else None
+    return (float(bid) if bid else None), (float(ask) if ask else None)
+
+
+def _book_said(bid: Optional[float], ask: Optional[float]) -> str:
+    """The top of a book in words, for a hold note: wide or one-sided."""
+    if bid and ask:
+        return f"bid {bid:,.2f} / ask {ask:,.2f}"
+    if bid:
+        return f"bid only, {bid:,.2f}"
+    if ask:
+        return f"ask only, {ask:,.2f}"
+    return "no bid or ask"
 
 
 def _quote_mid(q: dict, max_spread: Optional[tuple] = None) -> Optional[float]:
@@ -1573,7 +1608,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         out = {}
         record = getattr(runner, "record_quote", None)
         for token, key in keys.items():
-            mid = _quote_mid(quotes.get(key) or {}, self.quote_wide_spread)
+            q = quotes.get(key) or {}
+            mid = _quote_mid(q, self.quote_wide_spread)
+            bid, ask = _book_top(q)
+            if mid is None and ask and _naive_ist(ts).time() >= _ASK_FROM:
+                # THIN BOOKS: a short leg is bought back at the ask, so with no
+                # usable mid that's its price (6 Nov 2026, DTT Bankex Strangle:
+                # 64000CE untraded with no usable mid, every rule held to 11:10)
+                mid = float(ask)
             if mid is not None:
                 mid = await self._vet_quote(runner, ts, token, key.split(":", 1)[1], mid)
             if mid is None:
@@ -1582,7 +1624,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                     await self._decide_once_a_day(
                         runner, ts, "stale_price_guard", "blocked",
                         f"Holding: {key.split(':', 1)[1]} hasn't traded today and its quote has no bid and ask "
-                        "close enough together to price it from")
+                        f"close enough together to price it from ({_book_said(bid, ask)})",
+                        {"bid": bid, "ask": ask})
                     return None
                 continue
             px, at = mid
@@ -1926,6 +1969,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             strike_window=self.adjustment_strike_window, exclude_strikes=exclude, **self._live_pick(prefer_range),
         )
         price = leg.last_price
+        self._picked_capped = False
 
         # STRIKE-CROSS CAP (confirmed requirement — see module docstring's
         # new "STRIKE-CROSS CAP" note, right after Section 6): a strangle
@@ -1969,6 +2013,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                     raise SameStrike(f"{side} {opposite_strike:g}")
                 leg = await self.resolver.get_leg(self.instrument, self.contract_expiry, opposite_strike, side)
                 price = await self._forced_sell_price(leg)
+                self._picked_capped = True
 
         return leg, price
 
@@ -2026,6 +2071,25 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                                  "It's tried again on the next tick that still calls for it.",
                                  key=f"roll:{side}", day=ts.date(), ttl=timedelta(hours=6),
                                  data={"trigger": trigger, "side": side, "symbol": old["symbol"]})
+            return False
+        lo, hi = prefer_range or (0, 0)
+        price = picked[1]
+        if lo > 0 and not getattr(self, "_picked_capped", False) and \
+                not lo * (1 - _BAND_SLACK) <= price <= hi * (1 + _BAND_SLACK):
+            # FAR PICKS: the nearest priced strike is nowhere near the band
+            # (6 Nov 2026 09:15, DTT Sensex Strangle: almost nothing on BFO
+            # had traded yet; the call roll sold 83000CE at 100.00 for a
+            # target of about 337, then rolled straight back). Not rolled;
+            # tried again on the next tick that still calls for it.
+            last = self._roll_blocked_noted.get(side)
+            if last is None or ts - last >= timedelta(minutes=5):
+                self._roll_blocked_noted[side] = ts
+                await self._decide(runner, ts, trigger, "blocked",
+                                   f"Not rolled: the nearest priced {side} strike, {getattr(picked[0], 'tradingsymbol', picked[0].strike)} at "
+                                   f"{price:,.2f}, is far outside the band {lo:,.2f}–{hi:,.2f}; "
+                                   f"{old['symbol']} stays on and the roll is tried again",
+                                   {**trigger_values, "side": side, "picked": getattr(picked[0], "tradingsymbol", picked[0].strike),
+                                    "price": price, "band": [round(lo, 2), round(hi, 2)]}, fault=True)
             return False
         old_hedge = self.hedges.get(old["token"])
         point_distance = old_hedge["point_distance"] if old_hedge else None

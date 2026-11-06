@@ -664,7 +664,7 @@ a.cell-name:hover b { text-decoration: underline; }
 /* shares and funds tables */
 .lens-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
 .ls-tbl, .mf-tbl, .sip-tbl { overflow-x: auto; }
-.ls-row { grid-template-columns: minmax(150px, 1.6fr) 90px 64px 84px 84px 96px 104px 84px 72px 120px 100px; min-width: 1120px; padding: 4px 0; }
+.ls-row { grid-template-columns: minmax(150px, 1.6fr) 90px 72px 84px 96px 84px 96px 104px 84px 72px 120px 100px; min-width: 1220px; padding: 4px 0; }
 .mf-row { grid-template-columns: minmax(240px, 2.6fr) 84px 80px 90px 96px 96px 108px 64px 104px; min-width: 1040px; padding: 6px 0; }
 .sip-row { grid-template-columns: minmax(220px, 2fr) 96px 150px 100px 64px 90px; min-width: 760px; }
 .sip-row.off { color: var(--mute); }
@@ -684,7 +684,12 @@ a.cell-name:hover b { text-decoration: underline; }
 .lens-spark path { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .lens-spark.up path { stroke: var(--g); }
 .lens-spark.down path { stroke: var(--r); }
-.ls-detail { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 20px; padding: 14px 0 18px; border-bottom: 1.5px solid var(--ink); background: var(--soft); padding-left: 12px; padding-right: 12px; min-width: 1120px; }
+.ls-detail { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 20px; padding: 14px 0 18px; border-bottom: 1.5px solid var(--ink); background: var(--soft); padding-left: 12px; padding-right: 12px; min-width: 1220px; }
+.ls-dive { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 14px; }
+.ls-sub { margin: 10px 0 0; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--mute); }
+.trd-row { grid-template-columns: 110px 90px 90px 100px 120px minmax(60px, 1fr); padding: 3px 0; }
+.ls-more > summary { cursor: pointer; padding: 6px 0; }
+.mf-detail { min-width: 1040px; display: block; }
 .ls-cells { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px 14px; align-content: start; }
 .ls-cells > div { display: flex; flex-direction: column; gap: 1px; }
 .ls-cells .l { font-size: 11px; font-weight: 700; color: var(--mute); }
@@ -754,6 +759,11 @@ a.cell-name:hover b { text-decoration: underline; }
   .ls-detail { grid-template-columns: 1fr; min-width: 0; }
   .lens-tools .input.search { width: 100%; }
   .fy-tbl, .ltr-tbl { overflow: visible; }
+  .trd-row { min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; padding: 10px 0; }
+  .trd-row .num { text-align: left; }
+  .trd-row > [data-l]::before { content: attr(data-l); display: block; font-family: var(--f-body); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--mute); }
+  .trd-row.th { display: none; }
+  .mf-detail { min-width: 0; }
   .fy-row, .with-slab .fy-row, .ltr-row, .lot-row { min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; padding: 10px 0; }
   .fy-row > :first-child, .ltr-row .cell-name { grid-column: 1 / -1; }
   .fy-row .num, .ltr-row .num, .lot-row .num { text-align: left; }

@@ -429,14 +429,53 @@ def test_a_wide_book_is_no_price_for_an_untraded_leg(pool_run, monkeypatch):
         sim = await start(pool, monkeypatch)
         d2, tok, quote = await quoted_call(sim, monkeypatch)
         sim.market.vol = 0.13          # the checkpoint would be met on the quote's mid
-        t0 = ist_at(sim, d2, "09:30")
+        t0 = ist_at(sim, d2, "09:25")
         normal = sim.market.price_of(sim.market.by_token[tok])
         quote(normal, half=0.20 * normal)   # a spread of 40% of the mid
         await sim.tick(t0, spot=25000)
         assert closes(await sim.fills()) == [], "it holds, as with no quote at all"
         summaries = [r["summary"] for r in await decisions(sim)]
-        assert any("close enough together" in x for x in summaries)
+        held = [x for x in summaries if "close enough together" in x]
+        assert held and f"bid {normal * 0.8:,.2f} / ask {normal * 1.2:,.2f}" in held[0], "the hold says what the book was"
         assert "Priced from a live quote: not traded yet today" not in summaries
+    pool_run(go)
+
+
+def test_from_09_30_a_held_leg_with_no_usable_mid_is_priced_at_its_ask(pool_run, monkeypatch):
+    """6 Nov 2026, DTT Bankex Strangle: 64000CE hadn't traded and its book
+    had no usable mid; every rule held 09:20-11:10, its trailing stop due.
+    A short leg is bought back at the ask, so from 09:30 that's its price
+    (a book wider than 30%, or an ask only)."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        d2, tok, quote = await quoted_call(sim, monkeypatch)
+        normal = sim.market.price_of(sim.market.by_token[tok])
+        quote(normal, half=0.20 * normal)   # a spread of 40% of the mid
+        await sim.tick(ist_at(sim, d2, "09:31"), spot=25000)
+        strat = sim.runner.strategy
+        assert round(strat._stale_quotes[tok][0], 2) == round(normal * 1.2, 2), "priced at the ask"
+        assert "Priced from a live quote: not traded yet today" in [r["summary"] for r in await decisions(sim)]
+    pool_run(go)
+
+
+def test_a_held_leg_with_a_bid_only_still_holds_and_says_so(pool_run, monkeypatch):
+    async def go(pool):
+        from app.options import OptionsResolver
+        sim = await start(pool, monkeypatch)
+        d2, tok, quote = await quoted_call(sim, monkeypatch)
+        strat = sim.runner.strategy
+        key = f"{strat.exchange}:{strat.legs['CE'][0]['symbol']}"
+        real = OptionsResolver.get_quotes
+
+        async def bid_only(self, keys):
+            out = await real(self, keys)
+            if key in out:
+                out[key] = {**out[key], "depth": {"buy": [{"price": 150.0, "quantity": 20}], "sell": []}}
+            return out
+        monkeypatch.setattr(OptionsResolver, "get_quotes", bid_only)
+        await sim.tick(ist_at(sim, d2, "09:31"), spot=25000)
+        held = [r["summary"] for r in await decisions(sim) if "close enough together" in r["summary"]]
+        assert held and "bid only, 150.00" in held[0]
     pool_run(go)
 
 
@@ -874,4 +913,29 @@ def test_a_leg_that_never_ticks_is_priced_from_its_quote_after_2_minutes(pool_ru
         assert closes(await sim.fills()) == [], "a minute without a tick still waits for one"
         await sim.tick(t0 + timedelta(seconds=130), spot=25000)
         assert "checkpoint_target" in {f["reason"] for f in closes(await sim.fills())}, "priced from its quote"
+    pool_run(go)
+
+
+def test_a_roll_isnt_made_onto_a_strike_far_outside_its_band(pool_run, monkeypatch):
+    """6 Nov 2026 09:15, DTT Sensex Strangle: almost no BSE strike had
+    traded yet, so the call roll's nearest priced strike was 83000CE at
+    100.00 for a target of about 337; it sold that, then rolled straight
+    back. A replacement more than 25% outside its band isn't made."""
+    async def go(pool):
+        import dataclasses
+        sim = await start(pool, monkeypatch)
+        strat = sim.runner.strategy
+        old = strat.legs["CE"][0]
+        real = strat.resolver.get_leg_by_premium
+
+        async def far(*a, **k):   # the only strike with a price, a third of the target
+            leg = await real(*a, **k)
+            return dataclasses.replace(leg, strike=leg.strike + 1000, last_price=100.0)
+        monkeypatch.setattr(strat.resolver, "get_leg_by_premium", far)
+        prices = {l["token"]: 200.0 for s_ in strat.legs.values() for l in s_}
+        done = await strat._replace_leg(sim.runner, sim.market.now, "CE", old, 337.0, "continuous_50pct_trigger", {}, prices,
+                                        prefer_range=(308.0, 366.0))
+        assert done is False and strat.legs["CE"][0] is old and closes(await sim.fills()) == []
+        assert any("far outside the band" in r["summary"] for r in await decisions(sim))
+        monkeypatch.setattr(strat.resolver, "get_leg_by_premium", real)
     pool_run(go)

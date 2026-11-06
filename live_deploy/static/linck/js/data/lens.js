@@ -43,6 +43,9 @@ async function followHistory(again = false) {
 }
 
 // The holdings' year, by symbol, when it's in.
+// HOLDING DEEP DIVE: what the uploaded tradebook says of one holding (by
+// ISIN): its trades, its open lots, how much is long term (lens_trades).
+export const tradesOf = isin => (isin && st.t && st.t.analysis && (st.t.analysis.holdings || []).find(p => p.isin === isin)) || null;
 export const yearOf = sym => (st.y && st.y.state === 'ready' && st.y.insights.shares[sym]) || null;
 
 // ── Live prices ────────────────────────────────────────────────────────

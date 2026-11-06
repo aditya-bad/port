@@ -151,3 +151,24 @@ def test_under_a_year_the_return_over_the_time_held_not_a_yearly_rate():
     assert by["OLD"]["xirr"] == pytest.approx((1.3 ** (365 / 877) - 1) * 100, abs=0.05) and by["OLD"]["return_pct"] == 30.0
     assert by["GONE"]["xirr"] is None and by["GONE"]["return_pct"] == 30.0 and by["GONE"]["days"] == 59, "sold out: first buy to last sale"
     assert a["totals"]["all"]["xirr"] is not None, "the whole still has its yearly rate"
+
+
+def test_each_holding_says_how_much_is_long_term_and_lists_every_trade_as_uploaded():
+    """HOLDING DEEP DIVE: first in, first out, a sale takes the oldest lot;
+    what's left over a year is long term, with its gain on paper; the
+    next short-term lot to turn long term; every trade as uploaded."""
+    from datetime import date
+    from app import lens_trades as T
+    tr = [{"symbol": "INFY", "isin": "INE009A01021", "trade_date": date(2024, 1, 10), "trade_type": "buy", "quantity": 10,
+           "price": 1500, "trade_id": "1", "exchange": "NSE", "segment": "EQ"},
+          {"symbol": "INFY", "isin": "INE009A01021", "trade_date": date(2026, 6, 1), "trade_type": "buy", "quantity": 5,
+           "price": 1700, "trade_id": "2", "exchange": "NSE", "segment": "EQ"},
+          {"symbol": "INFY", "isin": "INE009A01021", "trade_date": date(2026, 7, 1), "trade_type": "sell", "quantity": 3,
+           "price": 1800, "trade_id": "3", "exchange": "NSE", "segment": "EQ"}]
+    a = T.analyse(tr, {"INE009A01021": {"qty": 12, "ltp": 1900, "value": 22800, "symbol": "INFY"}}, date(2026, 11, 6))
+    h = a["holdings"][0]
+    assert (h["long_qty"], h["long_gain"], h["short_qty"], h["short_gain"]) == (7.0, 2800.0, 5.0, 1000.0)
+    assert h["next_long_term"] == "2027-06-02"
+    assert [(x["day"], x["type"], x["qty"], x["price"], x["value"]) for x in h["history"]] == [
+        ("2024-01-10", "buy", 10.0, 1500.0, 15000.0), ("2026-06-01", "buy", 5.0, 1700.0, 8500.0),
+        ("2026-07-01", "sell", 3.0, 1800.0, 5400.0)]

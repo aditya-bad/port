@@ -14,6 +14,7 @@ import { sect, empty, loading } from '../ui/components.js';
 import { say, fail } from '../ui/toast.js';
 import * as book from '../data/book.js';
 import { pollStatus } from '../data/live.js';
+import { openDialog } from '../ui/dialog.js';
 
 const SNOOZES = [['30m', '30 min'], ['2h', '2 hours'], ['today', 'Until tomorrow']];
 const snoozed = x => x.snoozed_until && new Date(x.snoozed_until) > new Date();
@@ -186,7 +187,7 @@ function dayCheckSection(c, day) {
       <span class="grow"></span>
       <button type="button" class="btn btn-sm" data-act="runCheck" ${c.run && c.run.status === 'running' ? 'disabled' : ''}>Run the day check${c.day ? ` for ${dDay(fromDay(day || c.day))}` : ' now'}</button>
     </div>
-    ${counts.length || done.length ? html`<div class="dc-counts">${counts.map(([k, n]) => html`<span>${pill(k)} ${n}</span>`)}${done.length ? html`<span><span class="dc-pill t-done" data-tip="Repaired, or ignored with its numbers left as they are">Done</span> ${done.length}</span>` : ''}</div>` : ''}
+    ${counts.length || done.length ? html`<div class="dc-counts">${counts.map(([k, n]) => html`<span>${pill(k)} ${n}</span>`)}${done.length ? html`<span><span class="dc-pill t-done" data-tip="Repaired, or ignored with its numbers left as they are">Done</span> ${done.length}</span>` : ''}${todo.length > 1 ? html`<span class="grow"></span><button type="button" class="btn btn-sm btn-quiet" data-act="ignoreAll" data-tip="${'Ignore every deployment still to do for this day:\ntheir numbers stand, they move to Done.\nEach can be brought back with Undo ignore.'}">Ignore all ${todo.length}</button>` : ''}</div>` : ''}
     ${!results.length ? empty('', c.day ? 'No results for this day yet.' : 'The day check runs by itself once the 17:00 export succeeds. Each deployment’s day is replayed from its open on Kite’s 1-minute candles and checked against what the app did.')
       : html`<div class="dc-list">${todo.map(x => checkRow(x, todo.length <= 3, c.day, rc[x.deployment_id], 'todo'))}
         ${!todo.length && done.length ? html`<p class="small mute dc-clear" style="margin:0">Nothing left to do for this day: ${done.length === 1 ? 'the flagged deployment is' : `all ${done.length} flagged are`} repaired or ignored.</p>` : ''}
@@ -264,6 +265,25 @@ export default {
           say('Ignored. Its numbers stand: it’s in Done and no longer marked as flagged.');
           await Promise.all([loadChecks(), book.load(['book'])]);
         } catch (e) { fail(e, 'Couldn’t ignore it'); }
+      },
+      ignoreAll: () => {
+        const todo = ((dc && dc.results) || []).filter(x => x.status !== 'ok' && !isDone(x));
+        if (!todo.length) return;
+        openDialog({
+          kicker: 'CONFIRM', title: `Ignore all ${todo.length} for ${dDay(fromDay(dc.day))}?`,
+          lines: ['Their numbers stand as the app left them; each moves to Done and stops being marked as flagged. Undo ignore brings any of them back.',
+                  ...todo.map(x => `• ${x.name}`)],
+          okLabel: `Ignore ${todo.length}`,
+          onOk: async () => {
+            let n = 0;
+            for (const x of todo) {
+              try { await api.dismissDay(dc.day, x.deployment_id); n += 1; } catch (e) { fail(e, `Couldn’t ignore ${x.name}`); }
+            }
+            say(`Ignored ${plural(n, 'deployment')}. Their numbers stand; they’re in Done.`);
+            await Promise.all([loadChecks(), book.load(['book'])]);
+            return true;
+          },
+        });
       },
       unignoreDay: async x => {
         try { await api.dismissDay(dc.day, x.dep, true); say('Back on the list, and flagged again.'); await Promise.all([loadChecks(), book.load(['book'])]); }

@@ -4139,6 +4139,38 @@
        "gain": 841.28
       }
      ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 260.0,
+     "short_gain": 6193.92,
+     "slab_qty": 0.0,
+     "next_long_term": "2026-11-12",
+     "history": [
+      {
+       "day": "2025-11-11",
+       "type": "buy",
+       "qty": 86.0,
+       "price": 1561.31,
+       "value": 134272.66,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 86.0,
+       "price": 1393.71,
+       "value": 119859.06,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 88.0,
+       "price": 1499.07,
+       "value": 131918.16,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": 246.0
     },
     {
@@ -4274,6 +4306,110 @@
        "gain": 3550.66
       }
      ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 2210.0,
+     "short_gain": 73847.21,
+     "slab_qty": 0.0,
+     "next_long_term": "2026-10-28",
+     "history": [
+      {
+       "day": "2025-10-27",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 115.65,
+       "value": 21298.91,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-11-26",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 118.22,
+       "value": 21772.22,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-12-26",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 120.79,
+       "value": 22245.53,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-01-25",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 123.36,
+       "value": 22718.84,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-02-24",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 125.93,
+       "value": 23192.15,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-03-26",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 128.5,
+       "value": 23665.46,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-04-25",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 131.07,
+       "value": 24138.77,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-05-25",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 133.64,
+       "value": 24612.08,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-06-24",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 136.21,
+       "value": 25085.39,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-07-24",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 138.78,
+       "value": 25558.7,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-08-23",
+       "type": "buy",
+       "qty": 184.167,
+       "price": 141.35,
+       "value": 26032.01,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-09-22",
+       "type": "buy",
+       "qty": 184.163,
+       "price": 143.92,
+       "value": 26504.74,
+       "exchange": "BSE"
+      }
+     ],
      "avg_days_open": 200.0
     },
     {
@@ -4326,6 +4462,38 @@
        "term": "short",
        "long_term_on": "2027-06-30",
        "gain": -10928.5
+      }
+     ],
+     "long_qty": 50.0,
+     "long_gain": -5151.0,
+     "short_qty": 100.0,
+     "short_gain": -15728.0,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-01-31",
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 50.0,
+       "price": 2339.74,
+       "value": 116987.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 50.0,
+       "price": 2332.71,
+       "value": 116635.5,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 50.0,
+       "price": 2455.29,
+       "value": 122764.5,
+       "exchange": "NSE"
       }
      ],
      "avg_days_open": 270.0
@@ -4463,6 +4631,110 @@
        "gain": 4901.7
       }
      ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 3120.4,
+     "short_gain": 80129.24,
+     "slab_qty": 0.0,
+     "next_long_term": "2026-10-28",
+     "history": [
+      {
+       "day": "2025-10-27",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 55.89,
+       "value": 14533.24,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-11-26",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 57.13,
+       "value": 14855.69,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-12-26",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 58.37,
+       "value": 15178.13,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-01-25",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 59.62,
+       "value": 15503.17,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-02-24",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 60.86,
+       "value": 15825.61,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-03-26",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 62.1,
+       "value": 16148.05,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-04-25",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 63.34,
+       "value": 16470.49,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-05-25",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 64.58,
+       "value": 16792.93,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-06-24",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 65.83,
+       "value": 17117.97,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-07-24",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 67.07,
+       "value": 17440.41,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-08-23",
+       "type": "buy",
+       "qty": 260.033,
+       "price": 68.31,
+       "value": 17762.85,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-09-22",
+       "type": "buy",
+       "qty": 260.037,
+       "price": 69.55,
+       "value": 18085.57,
+       "exchange": "BSE"
+      }
+     ],
      "avg_days_open": 200.0
     },
     {
@@ -4517,6 +4789,38 @@
        "gain": -5250.0
       }
      ],
+     "long_qty": 300.0,
+     "long_gain": -5142.0,
+     "short_qty": 600.0,
+     "short_gain": -8061.0,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-01-31",
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 300.0,
+       "price": 246.08,
+       "value": 73824.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 300.0,
+       "price": 238.31,
+       "value": 71493.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 300.0,
+       "price": 246.44,
+       "value": 73932.0,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": 270.0
     },
     {
@@ -4560,6 +4864,30 @@
        "term": "short",
        "long_term_on": "2027-08-09",
        "gain": 38556.0
+      }
+     ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 600.0,
+     "short_gain": 84096.0,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-06-30",
+     "history": [
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 300.0,
+       "price": 179.52,
+       "value": 53856.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-08-08",
+       "type": "buy",
+       "qty": 300.0,
+       "price": 202.8,
+       "value": 60840.0,
+       "exchange": "NSE"
       }
      ],
      "avg_days_open": 100.0
@@ -4614,6 +4942,38 @@
        "term": "short",
        "long_term_on": "2027-06-30",
        "gain": -11734.08
+      }
+     ],
+     "long_qty": 46.0,
+     "long_gain": -17828.68,
+     "short_qty": 94.0,
+     "short_gain": -24503.68,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-01-31",
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 46.0,
+       "price": 1442.69,
+       "value": 66363.74,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 46.0,
+       "price": 1332.71,
+       "value": 61304.66,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 48.0,
+       "price": 1299.57,
+       "value": 62379.36,
+       "exchange": "NSE"
       }
      ],
      "avg_days_open": 268.0
@@ -4751,6 +5111,110 @@
        "gain": 1945.68
       }
      ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 1450.2,
+     "short_gain": 34248.89,
+     "slab_qty": 0.0,
+     "next_long_term": "2026-10-28",
+     "history": [
+      {
+       "day": "2025-10-27",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 61.47,
+       "value": 7428.65,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-11-26",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 62.84,
+       "value": 7594.21,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-12-26",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 64.2,
+       "value": 7758.57,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-01-25",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 65.57,
+       "value": 7924.13,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-02-24",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 66.93,
+       "value": 8088.49,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-03-26",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 68.3,
+       "value": 8254.05,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-04-25",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 69.67,
+       "value": 8419.62,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-05-25",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 71.03,
+       "value": 8583.98,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-06-24",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 72.4,
+       "value": 8749.54,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-07-24",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 73.76,
+       "value": 8913.9,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-08-23",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 75.13,
+       "value": 9079.46,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-09-22",
+       "type": "buy",
+       "qty": 120.85,
+       "price": 76.5,
+       "value": 9245.02,
+       "exchange": "BSE"
+      }
+     ],
      "avg_days_open": 200.0
     },
     {
@@ -4803,6 +5267,38 @@
        "term": "short",
        "long_term_on": "2027-06-30",
        "gain": -2246.0
+      }
+     ],
+     "long_qty": 100.0,
+     "long_gain": -318.0,
+     "short_qty": 200.0,
+     "short_gain": -3127.0,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-01-31",
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 100.0,
+       "price": 435.15,
+       "value": 43515.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 100.0,
+       "price": 440.78,
+       "value": 44078.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 100.0,
+       "price": 454.43,
+       "value": 45443.0,
+       "exchange": "NSE"
       }
      ],
      "avg_days_open": 270.0
@@ -4859,6 +5355,38 @@
        "gain": 3780.0
       }
      ],
+     "long_qty": 500.0,
+     "long_gain": 4965.0,
+     "short_qty": 1000.0,
+     "short_gain": 8885.0,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-01-31",
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 500.0,
+       "price": 55.19,
+       "value": 27595.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 500.0,
+       "price": 54.91,
+       "value": 27455.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 500.0,
+       "price": 57.56,
+       "value": 28780.0,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": 270.0
     },
     {
@@ -4911,6 +5439,38 @@
        "term": "short",
        "long_term_on": "2027-06-30",
        "gain": -26819.4
+      }
+     ],
+     "long_qty": 60.0,
+     "long_gain": -24043.2,
+     "short_qty": 120.0,
+     "short_gain": -52891.8,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-01-31",
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 60.0,
+       "price": 827.52,
+       "value": 49651.2,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 60.0,
+       "price": 861.34,
+       "value": 51680.4,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 60.0,
+       "price": 873.79,
+       "value": 52427.4,
+       "exchange": "NSE"
       }
      ],
      "avg_days_open": 270.0
@@ -5048,6 +5608,110 @@
        "gain": -122.07
       }
      ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 0.0,
+     "short_gain": 0.0,
+     "slab_qty": 12.5,
+     "next_long_term": null,
+     "history": [
+      {
+       "day": "2025-10-27",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4122.0,
+       "value": 4295.12,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-11-26",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4213.6,
+       "value": 4390.57,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-12-26",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4305.2,
+       "value": 4486.02,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-01-25",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4396.8,
+       "value": 4581.47,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-02-24",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4488.4,
+       "value": 4676.91,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-03-26",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4580.0,
+       "value": 4772.36,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-04-25",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4671.6,
+       "value": 4867.81,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-05-25",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4763.2,
+       "value": 4963.25,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-06-24",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4854.8,
+       "value": 5058.7,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-07-24",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 4946.4,
+       "value": 5154.15,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-08-23",
+       "type": "buy",
+       "qty": 1.042,
+       "price": 5038.0,
+       "value": 5249.6,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-09-22",
+       "type": "buy",
+       "qty": 1.038,
+       "price": 5129.6,
+       "value": 5324.52,
+       "exchange": "BSE"
+      }
+     ],
      "avg_days_open": 200.0
     },
     {
@@ -5100,6 +5764,54 @@
        "term": "short",
        "long_term_on": "2027-09-18",
        "gain": 922.02
+      }
+     ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 100.0,
+     "short_gain": 10257.87,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-01-31",
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 33.0,
+       "price": 368.09,
+       "value": 12146.97,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 33.0,
+       "price": 350.65,
+       "value": 11571.45,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 34.0,
+       "price": 339.12,
+       "value": 11530.08,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-09-17",
+       "type": "buy",
+       "qty": 33.0,
+       "price": 456.2,
+       "value": 15054.6,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-09-17",
+       "type": "sell",
+       "qty": 33.0,
+       "price": 455.0,
+       "value": 15015.0,
+       "exchange": "NSE"
       }
      ],
      "avg_days_open": 143.0
@@ -5237,6 +5949,110 @@
        "gain": 24.0
       }
      ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 1800.0,
+     "short_gain": 4479.0,
+     "slab_qty": 0.0,
+     "next_long_term": "2026-10-28",
+     "history": [
+      {
+       "day": "2025-10-27",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 19.08,
+       "value": 2862.0,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-11-26",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 19.5,
+       "value": 2925.0,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2025-12-26",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 19.93,
+       "value": 2989.5,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-01-25",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 20.35,
+       "value": 3052.5,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-02-24",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 20.78,
+       "value": 3117.0,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-03-26",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 21.2,
+       "value": 3180.0,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-04-25",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 21.62,
+       "value": 3243.0,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-05-25",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 22.05,
+       "value": 3307.5,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-06-24",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 22.47,
+       "value": 3370.5,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-07-24",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 22.9,
+       "value": 3435.0,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-08-23",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 23.32,
+       "value": 3498.0,
+       "exchange": "BSE"
+      },
+      {
+       "day": "2026-09-22",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 23.74,
+       "value": 3561.0,
+       "exchange": "BSE"
+      }
+     ],
      "avg_days_open": 200.0
     },
     {
@@ -5291,6 +6107,38 @@
        "gain": -571.34
       }
      ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 0.0,
+     "short_gain": 0.0,
+     "slab_qty": 40.0,
+     "next_long_term": null,
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 13.0,
+       "price": 954.87,
+       "value": 12413.31,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 13.0,
+       "price": 997.63,
+       "value": 12969.19,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 14.0,
+       "price": 1040.81,
+       "value": 14571.34,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": 266.0
     },
     {
@@ -5334,6 +6182,30 @@
        "term": "short",
        "long_term_on": "2027-01-31",
        "gain": 3669.75
+      }
+     ],
+     "long_qty": 225.0,
+     "long_gain": 3665.25,
+     "short_qty": 225.0,
+     "short_gain": 3669.75,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-01-31",
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 225.0,
+       "price": 40.13,
+       "value": 9029.25,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 225.0,
+       "price": 40.11,
+       "value": 9024.75,
+       "exchange": "NSE"
       }
      ],
      "avg_days_open": 345.0
@@ -5390,6 +6262,38 @@
        "gain": -7500.0
       }
      ],
+     "long_qty": 1000.0,
+     "long_gain": -7680.0,
+     "short_qty": 2000.0,
+     "short_gain": -14870.0,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-01-31",
+     "history": [
+      {
+       "day": "2025-09-02",
+       "type": "buy",
+       "qty": 1000.0,
+       "price": 14.85,
+       "value": 14850.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-01-30",
+       "type": "buy",
+       "qty": 1000.0,
+       "price": 14.54,
+       "value": 14540.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 1000.0,
+       "price": 14.67,
+       "value": 14670.0,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": 270.0
     },
     {
@@ -5435,6 +6339,30 @@
        "gain": -639.0
       }
      ],
+     "long_qty": 0.0,
+     "long_gain": 0.0,
+     "short_qty": 60.0,
+     "short_gain": -1305.6,
+     "slab_qty": 0.0,
+     "next_long_term": "2027-06-30",
+     "history": [
+      {
+       "day": "2026-06-29",
+       "type": "buy",
+       "qty": 30.0,
+       "price": 104.76,
+       "value": 3142.8,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-08-08",
+       "type": "buy",
+       "qty": 30.0,
+       "price": 103.84,
+       "value": 3115.2,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": 100.0
     },
     {
@@ -5461,6 +6389,30 @@
      "held_qty": null,
      "oversold": 0.0,
      "lots": [],
+     "long_qty": 0.0,
+     "long_gain": null,
+     "short_qty": 0.0,
+     "short_gain": null,
+     "slab_qty": 0.0,
+     "next_long_term": null,
+     "history": [
+      {
+       "day": "2025-05-05",
+       "type": "buy",
+       "qty": 40.0,
+       "price": 690.0,
+       "value": 27600.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-07-29",
+       "type": "sell",
+       "qty": 40.0,
+       "price": 905.0,
+       "value": 36200.0,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": null
     },
     {
@@ -5487,6 +6439,30 @@
      "held_qty": null,
      "oversold": 0.0,
      "lots": [],
+     "long_qty": 0.0,
+     "long_gain": null,
+     "short_qty": 0.0,
+     "short_gain": null,
+     "slab_qty": 0.0,
+     "next_long_term": null,
+     "history": [
+      {
+       "day": "2025-08-03",
+       "type": "buy",
+       "qty": 30.0,
+       "price": 720.0,
+       "value": 21600.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2025-12-11",
+       "type": "sell",
+       "qty": 30.0,
+       "price": 410.0,
+       "value": 12300.0,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": null
     },
     {
@@ -5513,6 +6489,30 @@
      "held_qty": null,
      "oversold": 0.0,
      "lots": [],
+     "long_qty": 0.0,
+     "long_gain": null,
+     "short_qty": 0.0,
+     "short_gain": null,
+     "slab_qty": 0.0,
+     "next_long_term": null,
+     "history": [
+      {
+       "day": "2025-02-24",
+       "type": "buy",
+       "qty": 2000.0,
+       "price": 22.4,
+       "value": 44800.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-04-10",
+       "type": "sell",
+       "qty": 2000.0,
+       "price": 17.1,
+       "value": 34200.0,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": null
     },
     {
@@ -5539,6 +6539,30 @@
      "held_qty": null,
      "oversold": 0.0,
      "lots": [],
+     "long_qty": 0.0,
+     "long_gain": null,
+     "short_qty": 0.0,
+     "short_gain": null,
+     "slab_qty": 0.0,
+     "next_long_term": null,
+     "history": [
+      {
+       "day": "2025-12-31",
+       "type": "buy",
+       "qty": 150.0,
+       "price": 142.0,
+       "value": 21300.0,
+       "exchange": "NSE"
+      },
+      {
+       "day": "2026-08-28",
+       "type": "sell",
+       "qty": 150.0,
+       "price": 268.0,
+       "value": 40200.0,
+       "exchange": "NSE"
+      }
+     ],
      "avg_days_open": null
     }
    ],
@@ -7424,7 +8448,7 @@
      {
       "month": "2026-09",
       "holdings": 13,
-      "at_cost": 1784051.58,
+      "at_cost": 1784051.57,
       "largest": "HDFCBANK",
       "largest_pct": 21.6
      }

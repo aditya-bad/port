@@ -136,6 +136,7 @@ def lots(trades: list[dict], assets: Optional[dict] = None) -> dict[str, dict]:
     for t in trades:
         by[key_of(t)].append(t)
     out = {}
+    tlist: dict[str, list[dict]] = {}
     for k, ts in by.items():
         ts = sorted(ts, key=lambda t: (t["trade_date"], t.get("executed_at") or datetime.min, 0 if t["trade_type"] == "buy" else 1))
         kind = kind_of(ts[-1])
@@ -163,7 +164,10 @@ def lots(trades: list[dict], assets: Optional[dict] = None) -> dict[str, dict]:
             if q > EPS:
                 oversold += q
         last = ts[-1]
-        out[k] = {"key": k, "symbol": last["symbol"], "isin": last.get("isin"), "kind": kind, "asset": asset,
+        tlist[k] = [{"day": t["trade_date"].isoformat(), "type": t["trade_type"], "qty": float(t["quantity"]),
+                     "price": float(t["price"]), "value": round(float(t["quantity"]) * float(t["price"]), 2),
+                     "exchange": t.get("exchange")} for t in ts]
+        out[k] = {"key": k, "history": tlist[k], "symbol": last["symbol"], "isin": last.get("isin"), "kind": kind, "asset": asset,
                   "exchange": last.get("exchange"), "open": open_, "closed": closed, "trades": len(ts),
                   "first_day": ts[0]["trade_date"], "last_day": ts[-1]["trade_date"],
                   "bought": buys, "sold": sells, "oversold": oversold}
@@ -258,11 +262,14 @@ def analyse(trades: list[dict], holdings: Optional[dict] = None, today: Optional
             flows.append((today, value))
         # what each open lot is: its age, and when it turns long term
         lots_now = []
+        by_term = {"long": [0.0, 0.0], "short": [0.0, 0.0], "slab": [0.0, 0.0]}   # term -> [qty, gain]
         for l in x["open"]:
             age = (today - l["day"]).days
             lt_on = l["day"] + timedelta(days=LONG_TERM_DAYS + 1)
             gain = (px - l["price"]) * l["qty"] if px is not None else None
             tm = term(age, x["kind"], x["asset"], l["day"])
+            by_term[tm][0] += l["qty"]
+            by_term[tm][1] += gain or 0.0
             lots_now.append({"day": l["day"].isoformat(), "qty": _r(l["qty"], 4), "price": _r(l["price"], 4), "days": age,
                              "term": tm, "long_term_on": lt_on.isoformat() if tm != "slab" else None, "gain": _r(gain)})
             if tm == "short" and (lt_on - today).days <= 60 and gain is not None and gain > 0:
@@ -289,6 +296,12 @@ def analyse(trades: list[dict], holdings: Optional[dict] = None, today: Optional
             "return_pct": _r(ret), "days": span,
             "held_qty": held_qty, "oversold": _r(x["oversold"], 4),
             "lots": lots_now,
+            # HOLDING DEEP DIVE: how much is long term now, and every trade as uploaded
+            "long_qty": _r(by_term["long"][0], 4), "long_gain": _r(by_term["long"][1]) if px is not None else None,
+            "short_qty": _r(by_term["short"][0], 4), "short_gain": _r(by_term["short"][1]) if px is not None else None,
+            "slab_qty": _r(by_term["slab"][0], 4),
+            "next_long_term": min((l["long_term_on"] for l in lots_now if l["term"] == "short" and l["long_term_on"]), default=None),
+            "history": x["history"],
             "avg_days_open": _r(sum(l["qty"] * (today - l["day"]).days for l in x["open"]) / open_qty, 0) if open_qty > EPS else None,
         })
 

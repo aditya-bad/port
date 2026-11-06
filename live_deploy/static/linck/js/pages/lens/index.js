@@ -98,7 +98,7 @@ export default {
     });
     paint();
     loadHoldings();
-    if (tab === 'trades' || tab === 'habits') loadTrades();
+    if (['trades', 'habits', 'shares', 'funds'].includes(tab)) loadTrades();   // shares and funds show what the tradebook says of each
     startLive();
     return () => { off(); offActs(); offIn(); offSort(); offFiles(); stopLive(); };
   },

@@ -173,3 +173,28 @@ test('checking one deployment again runs it alone and says how it went on its ro
   assert.deepEqual(ctx.errors, []);
   await ctx.close();
 });
+
+test('Ignore all asks first, then ignores every one still to do; each comes back with Undo ignore', async () => {
+  const ctx = await context(b);
+  const p = await ctx.newPage();
+  await p.goto(`${BASE}/linck/#/repair`);
+  await p.waitForSelector('.dc-list > .dc-row');
+  const todo = p.locator('.dc-list > .dc-row');
+  const deps = await todo.evaluateAll(rs => rs.map(r => r.getAttribute('data-dc')));
+  const day = (await api(ctx, '/v2/day-checks')).day;
+  const restore = () => Promise.all(deps.map(dep => ctx.request.post(`${BASE}/v2/repair-cases/${day}/${dep}/dismiss`, { data: { undo: true } })));
+  try {
+    assert.equal(deps.length, 3);
+    await p.click('[data-act="ignoreAll"]');
+    const dlg = p.locator('.scrim [role="dialog"], .scrim .dialog').first();
+    await dlg.waitFor();
+    assert.match(await dlg.innerText(), /Ignore all 3[\s\S]*BankNifty DTT Plain[\s\S]*Nifty Strangle A[\s\S]*Nifty Monthly Strangle/);
+    assert.equal(await todo.count(), 3, 'nothing changes until you confirm');
+    await dlg.getByRole('button', { name: 'Ignore 3' }).click();
+    await until(async () => (await todo.count()) === 0);
+    assert.match(await p.locator('.dc-done > summary').innerText(), /3 done: repaired or ignored/);
+    assert.equal(await p.locator('[data-act="ignoreAll"]').count(), 0, 'nothing left to ignore');
+  } finally { await restore(); }
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

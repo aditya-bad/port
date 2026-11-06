@@ -5,7 +5,8 @@
 import { html } from '../../core/dom.js';
 import { inr, price, num, plural, tone, dShort, fromDay } from '../../core/format.js';
 import { sect, stat } from '../../ui/components.js';
-import { pctOr, inr0, signed, bars } from './parts.js';
+import { pctOr, inr0, signed, bars, dive, longLine } from './parts.js';
+import { tradesOf } from '../../data/lens.js';
 
 const PLAN = { direct: 'Direct', regular: 'Regular' };
 const OPTION = { growth: 'Growth', payout: 'IDCW payout', reinvestment: 'IDCW reinvest', idcw: 'IDCW' };
@@ -30,7 +31,7 @@ function kinds(funds) {
   return Object.values(by).sort((a, b) => b.value - a.value).map(x => ({ ...x, weight: x.value / total * 100 }));
 }
 
-export function render(st) {
+export function render(st, ui = {}) {
   const h = st.h, funds = h.mf, t = h.totals.mf;
   const sips = h.sips || [], active = sips.filter(s => s.status === 'ACTIVE');
   const sipOf = isin => active.filter(s => s.isin === isin).reduce((a, s) => a + s.monthly, 0);
@@ -51,10 +52,10 @@ export function render(st) {
     <div class="tbl mf-tbl" role="table" data-lens="mf">
       <div class="tr th mf-row" role="row"><span>Fund</span><span class="num">Units</span><span class="num">Avg NAV</span><span class="num">NAV</span>
         <span class="num">Invested</span><span class="num">Value</span><span class="num">P&L</span><span class="num">Weight</span><span class="num">SIP</span></div>
-      ${funds.map(f => html`<div class="tr mf-row" role="row" data-isin="${f.isin}">
+      ${funds.map(f => html`<div class="tr mf-row click ${ui.open === f.isin ? 'sel' : ''}" role="row" data-isin="${f.isin}" data-symbol="${f.isin}" data-act="open" data-s="${f.isin}" aria-expanded="${ui.open === f.isin}">
         <span class="cell-name"><b>${f.fund}</b><span>${[f.amc, f.folio ? `folio ${f.folio}` : ''].filter(Boolean).join(' · ') || f.isin}</span>
           <span class="mf-tags">${f.plan ? html`<span class="tag ${f.plan === 'regular' ? 'warn' : ''}">${PLAN[f.plan] || f.plan}</span>` : ''}${f.option ? html`<span class="tag">${OPTION[f.option] || f.option}</span>` : ''}${f.scheme_type ? html`<span class="tag">${f.scheme_type}</span>` : ''}</span></span>
-        <span class="num" data-l="Units">${num(f.units, 3)}</span>
+        <span class="num" data-l="Units">${num(f.units, 3)}${longLine(tradesOf(f.isin), f.units, 3)}</span>
         <span class="num" data-l="Avg NAV">${price(f.avg)}</span>
         <span class="num" data-l="NAV">${price(f.nav)}${f.nav_date ? html`<small>${dShort(fromDay(f.nav_date))}</small>` : ''}</span>
         <span class="num" data-l="Invested">${inr0(f.invested)}</span>
@@ -62,12 +63,12 @@ export function render(st) {
         <span class="num ${tone(f.pnl)}" data-l="P&L">${inr(f.pnl)}<small>${pctOr(f.pnl_pct)}</small></span>
         <span class="num" data-l="Weight">${(f.weight || 0).toFixed(1)}%</span>
         <span class="num" data-l="SIP">${sipOf(f.isin) ? `${inr0(sipOf(f.isin))}/mo` : '—'}</span>
-      </div>`)}
+      </div>${ui.open === f.isin ? html`<div class="ls-detail mf-detail" data-detail="${f.isin}">${dive(tradesOf(f.isin), st.t, 3)}</div>` : ''}`)}
       <div class="tr tot mf-row" role="row"><span>${plural(t.count, 'fund')}</span><span></span><span></span><span></span>
         <span class="num" data-l="Invested">${inr0(t.invested)}</span><span class="num" data-l="Value">${inr0(t.value)}</span>
         <span class="num ${tone(t.pnl)}" data-l="P&L">${inr(t.pnl)}</span><span></span><span class="num" data-l="SIP">${h.sip_monthly ? `${inr0(h.sip_monthly)}/mo` : ''}</span></div>
     </div>
-    <p class="tiny mute lens-note">Kite gives each fund’s last NAV, not its history, so there’s no “today” or yearly line for funds. P&L is against your average purchase NAV.</p>` : ''}
+    <p class="tiny mute lens-note">Kite gives each fund’s last NAV, not its history, so there’s no “today” or yearly line for funds. P&L is against your average purchase NAV. Click a fund for every purchase and redemption from your tradebook; under the units, LT: how much you’ve held over a year (long term).</p>` : ''}
     ${sips.length ? html`${sect('SIPs', `${active.length} active${sips.length > active.length ? ` · ${sips.length - active.length} not active` : ''}`)}
     <div class="tbl sip-tbl" role="table" data-lens="sips">
       <div class="tr th sip-row" role="row"><span>Fund</span><span class="num">Amount</span><span>How often</span><span>Next</span><span class="num">Done</span><span>Status</span></div>

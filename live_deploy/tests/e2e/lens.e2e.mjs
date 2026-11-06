@@ -186,6 +186,46 @@ test('Shares: every holding, found, filtered, sorted, and one opened against Nif
   await ctx.close();
 });
 
+// HOLDING DEEP DIVE: what you put in on each row, how much is long term
+// under the quantity, and each holding opened to every trade from the
+// tradebook, its lots and their terms.
+test('Shares and Funds: what you put in, how much is long term, and every trade of a holding from the tradebook', async () => {
+  const { ctx, p } = await lensPage();
+  await ctx.route('**/v2/lens/trades', r => r.fulfill({ json: FX.trades }));
+  await p.goto(`${BASE}/linck/#/lens/shares`);
+  await p.waitForSelector('[data-symbol="INFY"] [data-l="Qty"] small');
+  const infy = p.locator('[data-symbol="INFY"]');
+  assert.match(await infy.locator('[data-l="Qty"]').innerText(), /140\s*46 LT/);
+  assert.match(await infy.locator('[data-l="Invested"]').innerText(), /₹1,94,600/);
+  assert.match(await p.locator('[data-lens="equity"] .tot [data-l="Invested"]').innerText(), /₹18,66,460/);
+  await infy.click();
+  const d = p.locator('[data-dive="INE002A01011"]');
+  await d.waitFor();
+  const cells = await d.locator('.ls-cells').innerText();
+  assert.match(cells, /Long term\s+46\s+−₹17,829 on paper/);
+  assert.match(cells, /Short term\s+94\s+−₹24,504 on paper/);
+  assert.match(cells, /Next to turn long term\s+31 Jan[\s\S]*46 from then/);
+  assert.equal(await d.locator('[data-trades] .trd-row:not(.th)').count(), 3, 'every trade of it');
+  assert.match(await d.locator('[data-trades] .trd-row:not(.th)').first().innerText(), /29 Jun[\s\S]*Bought[\s\S]*48[\s\S]*1,299\.57[\s\S]*₹62,379/, 'newest first');
+  assert.match(await d.innerText(), /lot by lot[\s\S]*Long term[\s\S]*Short term\s*long from 31 Jan/i);
+  // where the tradebook doesn't add up to what Kite holds, it says so
+  await p.locator('[data-symbol="ITC"]').click();
+  assert.match(await p.locator('[data-dive="INE003A01011"]').innerText(), /Your tradebook leaves 300; Kite holds 400/);
+  assert.equal(await noSideways(p), 0);
+  // funds: the same, with units to three decimals
+  await p.goto(`${BASE}/linck/#/lens/funds`);
+  const uti = p.locator('[data-isin="INF789F01XA0"]');
+  await uti.waitFor();
+  await uti.click();
+  const fd = p.locator('[data-dive="INF789F01XA0"]');
+  await fd.waitFor();
+  assert.match(await fd.locator('.ls-cells').innerText(), /Long term\s+0\.000[\s\S]*Short term\s+2,210\.000/);
+  assert.match(await fd.innerText(), /22 Sep[\s\S]*Bought[\s\S]*184\.163[\s\S]*143\.92/);
+  assert.equal(await noSideways(p), 0);
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});
+
 test('live: a price from LinckLens’s own feed reprices the share and the totals', async () => {
   const ctx = await context(b, { width: 1440, height: 900, blockSW: true });
   const live = { ...FX.holdings, live: { connected: true, priced: 14, of: 14, last_tick_at: new Date().toISOString() } };

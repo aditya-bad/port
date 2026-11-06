@@ -7,8 +7,8 @@ import { inr, pct, price, num, plural, tone, dShort, fromDay } from '../../core/
 import { stat, chips } from '../../ui/components.js';
 import { line, yOf } from '../../ui/charts.js';
 import { registerScrub } from '../../ui/tooltip.js';
-import { yearOf } from '../../data/lens.js';
-import { pctOr, inr0, signed, yearProgress, rangeBar, spark, ASSET_SHORT } from './parts.js';
+import { yearOf, tradesOf } from '../../data/lens.js';
+import { pctOr, inr0, signed, yearProgress, rangeBar, spark, ASSET_SHORT, dive, longLine } from './parts.js';
 
 export const SORTS = [['value', 'Value'], ['pnl', 'P&L ₹'], ['pnl_pct', 'P&L %'], ['day', 'Today %'], ['y1', '1 year'], ['off_high', 'Off the high'], ['name', 'Name']];
 const key = {
@@ -77,7 +77,8 @@ function detail(r, st) {
       ${r.t1_qty ? cell('Not yet delivered', num(r.t1_qty, 0), 'T1: in your demat next settlement day') : ''}
       ${r.pledged_qty ? cell('Pledged', num(r.pledged_qty, 0), 'backing margin') : ''}
       ${cell('ISIN', r.isin || '—', r.exchange || '')}
-    </div></div>`;
+    </div>
+    ${dive(tradesOf(r.isin), st.t, 0)}</div>`;
 }
 
 export function render(st, ui) {
@@ -106,15 +107,16 @@ export function render(st, ui) {
       <button type="button" class="btn btn-sm" data-act="dir" aria-label="Reverse the order">${ui.dir === 'asc' ? '↑' : '↓'}</button>
     </div>
     <div class="tbl ls-tbl" role="table" data-lens="equity">
-      <div class="tr th ls-row" role="row"><span>Share</span><span>Weight</span><span class="num">Qty</span><span class="num">Avg cost</span><span class="num">Price</span>
+      <div class="tr th ls-row" role="row"><span>Share</span><span>Weight</span><span class="num">Qty</span><span class="num">Avg cost</span><span class="num">Invested</span><span class="num">Price</span>
         <span class="num">Value</span><span class="num">P&L</span><span class="num">Today</span><span class="num">1 year</span><span>52-week range</span><span>Year</span></div>
       ${list.map(r => {
         const y = yearOf(r.symbol), open = ui.open === r.symbol;
         return html`<div class="tr ls-row click ${open ? 'sel' : ''}" role="row" data-symbol="${r.symbol}" data-act="open" data-s="${r.symbol}" aria-expanded="${open}">
           <span class="cell-name"><b>${r.symbol}${r.asset !== 'stock' ? html` <span class="tag">${ASSET_SHORT[r.asset]}</span>` : ''}</b><span>${r.name || r.exchange || ''}</span></span>
           <span class="ls-w" data-l="Weight" data-tip="${`${r.symbol}\nShare of everything  ${(r.weight || 0).toFixed(2)}%`}"><i style="width:${(r.weight || 0) / mxw * 100}%"></i><b class="mono tiny">${(r.weight || 0).toFixed(1)}%</b></span>
-          <span class="num" data-l="Qty">${num(r.qty, 0)}${r.t1_qty ? html`<small>${num(r.t1_qty, 0)} T1</small>` : ''}</span>
+          <span class="num" data-l="Qty">${num(r.qty, 0)}${longLine(tradesOf(r.isin), r.qty, 0)}${r.t1_qty ? html`<small>${num(r.t1_qty, 0)} T1</small>` : ''}</span>
           <span class="num" data-l="Avg cost">${price(r.avg)}</span>
+          <span class="num" data-l="Invested">${inr0(r.invested)}</span>
           <span class="num" data-l="Price">${price(r.ltp)}</span>
           <span class="num" data-l="Value">${inr0(r.value)}</span>
           <span class="num ${tone(r.pnl)}" data-l="P&L">${inr(r.pnl)}<small>${pctOr(r.pnl_pct)}</small></span>
@@ -124,11 +126,12 @@ export function render(st, ui) {
           <span data-l="Year">${y ? spark(y.spark) : ''}</span>
         </div>${open ? detail(r, st) : ''}`;
       })}
-      ${list.length ? html`<div class="tr tot ls-row" role="row"><span>${list.length === rows.length ? plural(t.count, 'share') : `${list.length} of ${rows.length} shown`}</span><span></span><span></span><span></span><span></span>
+      ${list.length ? html`<div class="tr tot ls-row" role="row"><span>${list.length === rows.length ? plural(t.count, 'share') : `${list.length} of ${rows.length} shown`}</span><span></span><span></span><span></span>
+        <span class="num" data-l="Invested">${inr0(list.reduce((a, r) => a + r.invested, 0))}</span><span></span>
         <span class="num" data-l="Value">${inr0(list.reduce((a, r) => a + r.value, 0))}</span>
         <span class="num ${tone(list.reduce((a, r) => a + r.pnl, 0))}" data-l="P&L">${inr(list.reduce((a, r) => a + r.pnl, 0))}</span>
         <span class="num ${tone(t.day_change)}" data-l="Today">${list.length === rows.length && t.day_change != null ? inr(t.day_change) : ''}</span><span></span><span></span><span></span></div>`
         : html`<p class="small mute" style="margin:10px 0">No share matches.</p>`}
     </div>
-    <p class="tiny mute lens-note">Click a share for its year against what you paid. The range bar runs from the 52-week low to the high: the dot is the price now, the tick your average cost.</p>`;
+    <p class="tiny mute lens-note">Click a share for its year against what you paid, and every trade of it from your tradebook. Under the quantity, LT: how much you’ve held over a year (long term), from the tradebook. The range bar runs from the 52-week low to the high: the dot is the price now, the tick your average cost.</p>`;
 }
