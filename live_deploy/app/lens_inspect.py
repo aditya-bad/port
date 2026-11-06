@@ -333,7 +333,10 @@ def contributions(trades: list[dict], h: dict, candles: dict, nifty_candles: lis
     series = aligned(h.get("equity") or [], candles, days) if len(days) > 20 else {}
     v0 = [sum(xs) for xs in zip(*series.values())] if series else []
     base_year = (v0[-1] / v0[0] - 1) * 100 if v0 and v0[0] > 0 else None
-    base_xirr = ((T.analyse(trades, held, today)["totals"]["all"] or {}).get("xirr")) if trades else None
+    whole = T.analyse(trades, held, today) if trades else None
+    base_xirr = ((whole["totals"]["all"] or {}).get("xirr")) if whole else None
+    # what each made you in rupees, booked and on paper, from the trades
+    rupees = {p["isin"]: _r((p["realized"] or 0) + (p["unrealized"] or 0)) for p in (whole or {}).get("holdings", []) if p.get("isin")}
     names: dict[str, dict] = {}
     for r in (h.get("equity") or []) + (h.get("mf") or []):
         if r.get("isin"):
@@ -344,7 +347,10 @@ def contributions(trades: list[dict], h: dict, candles: dict, nifty_candles: lis
             names[t["isin"]] = {"symbol": t["symbol"], "weight": None, "held": False, "kind": T.kind_of(t), "pnl": None}
     out = []
     for isin, nm in names.items():
-        row = {"isin": isin, **nm, "xirr_without": None, "xirr_change": None, "year_without": None, "year_change": None}
+        row = {"isin": isin, **nm, "xirr_without": None, "xirr_change": None, "year_without": None, "year_change": None,
+               # INSPECTOR: one measure, in rupees: booked plus on paper (from the
+               # trades; Kite's P&L where the trades have none of it)
+               "rupees": rupees[isin] if isin in rupees else nm.get("pnl")}
         keep = [t for t in trades if t.get("isin") != isin]
         if trades and base_xirr is not None and len(keep) < len(trades):      # no trades of its own: nothing to take out
             x = ((T.analyse(keep, held, today)["totals"]["all"] or {}).get("xirr")) if keep else None
@@ -523,9 +529,10 @@ def opportunities(trades: list[dict], holdings: Optional[dict] = None, today: Op
                 room -= free
                 tax_later = (gain - free) * RATE["long"]
                 wait.append({"symbol": x["symbol"], "qty": _r(l["qty"], 3), "amount": _r(l["qty"] * h["ltp"]), "result": _r(gain),
-                             "note": f"long term from {on.isoformat()}", "days": (on - today).days, "save": _r(tax_now - tax_later)})
+                             "note": f"long term from {on.isoformat()}", "days": (on - today).days, "save": _r(tax_now - tax_later),
+                             "bought": l["day"].isoformat(), "long_term_on": on.isoformat()})
     if wait:
-        wait.sort(key=lambda w: w["days"])
+        wait.sort(key=lambda w: (w["days"], w["symbol"]))
         cards.append({"key": "wait", "title": "Wait before selling these", "saving": _r(sum(w["save"] for w in wait)),
                       "by": None,
                       "what": "They turn long term within 60 days. Sold before then the gain is short term (20%); after, long "

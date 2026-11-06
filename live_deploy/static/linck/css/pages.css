@@ -787,15 +787,32 @@ a.cell-name:hover b { text-decoration: underline; }
 .ins-btn:hover .gk-badge { background: var(--ink); color: var(--paper); }
 .ins-headline { margin: 0; font-family: var(--f-display); font-size: 21px; font-weight: 600; line-height: 1.4; max-width: 70ch; text-wrap: pretty; }
 .ins-headline b { font-family: var(--f-mono); font-size: 18px; }
+.ins-sum { margin: 0; font-size: 15px; line-height: 1.6; max-width: 80ch; text-wrap: pretty; }
+.ins-sum b { font-weight: 700; }
 .ins-yr { grid-template-columns: minmax(80px, 1fr) repeat(3, minmax(90px, 1fr)); }
 .ins-plan { grid-template-columns: minmax(140px, 1.6fr) repeat(3, minmax(90px, 1fr)); }
 .ins-av { grid-template-columns: minmax(140px, 1.6fr) repeat(3, minmax(90px, 1fr)); }
 .ins-ty { grid-template-columns: minmax(80px, 1fr) repeat(4, minmax(90px, 1fr)); }
 .ins-cmp { grid-template-columns: minmax(150px, 1.6fr) repeat(3, minmax(90px, 1fr)); }
-.ins-drag { grid-template-columns: minmax(160px, 1.6fr) 64px minmax(150px, 1.4fr) 84px minmax(150px, 1.4fr) 84px; min-width: 760px; }
+.ins-drag { grid-template-columns: minmax(160px, 1.6fr) 64px minmax(220px, 2fr) 140px; min-width: 600px; }
 .ins-drag.off { color: var(--mute); }
-.ins-drag > [data-l$="effect"] { display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; align-items: center; }
-.ins-drag > [data-l$="effect"] b { text-align: right; }
+.ins-drag > [data-l="Made or cost you"] { display: grid; grid-template-columns: minmax(0, 1fr) 96px; gap: 8px; align-items: center; }
+.ins-drag > [data-l="Made or cost you"] b { text-align: right; }
+.ins-drag .num small { display: block; font-size: 11px; }
+.ins-wait { grid-template-columns: minmax(150px, 1.6fr) 90px 84px 96px minmax(150px, 1.3fr) 104px; }
+.ins-wait.more { border-top-color: transparent; }
+.ins-todo { display: flex; flex-direction: column; gap: 8px; }
+.ins-todo-i { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; gap: 14px; align-items: center; padding: 14px 16px; border: 1px solid var(--line); border-left: 4px solid var(--g); background: var(--card); color: inherit; text-decoration: none; }
+.ins-todo-i:hover { border-color: var(--ink); }
+.ins-todo-i:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.ins-todo-i[data-todo="drag"] { border-left-color: var(--r); }
+.ins-todo-i .n { font-size: 13px; color: var(--mute); }
+.ins-todo-i .t { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ins-todo-i .h { font-family: var(--f-display); font-size: 17px; font-weight: 600; line-height: 1.3; text-wrap: pretty; }
+.ins-todo-i .w { color: var(--mute); max-width: 75ch; }
+.ins-todo-i .v { display: flex; flex-direction: column; align-items: flex-end; gap: 2px; }
+.ins-todo-i .v b { font-size: 17px; }
+.lens-legend .key.g { background: var(--g); height: 2.5px; }
 .ins-harv { display: grid; gap: 6px; }
 .ins-harv-i { display: grid; grid-template-columns: minmax(90px, 1fr) auto auto; gap: 12px; align-items: baseline; padding: 6px 0; border-bottom: 1px solid var(--line); }
 .ins-picks { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -804,6 +821,16 @@ a.cell-name:hover b { text-decoration: underline; }
   .ins-yr, .ins-plan, .ins-av, .ins-ty, .ins-cmp { grid-template-columns: minmax(0, 1.4fr) repeat(3, minmax(0, 1fr)); font-size: 12px; gap: 6px; }
   .ins-ty > :nth-child(5) { display: none; }
   .ins-harv-i { grid-template-columns: 1fr; gap: 2px; }
+  .ins-wait { min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; font-size: 12px; }
+  .ins-wait > :first-child { grid-column: 1 / -1; }
+  .ins-wait.more > :first-child { display: none; }
+  .ins-wait.th { display: none; }
+  .ins-wait > [data-l]::before { content: attr(data-l); display: block; font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--mute); }
+  .ins-drag { min-width: 0; grid-template-columns: minmax(0, 1fr) 52px; gap: 6px; }
+  .ins-drag > [data-l="Made or cost you"], .ins-drag > [data-l="Your return without it"] { grid-column: 1 / -1; }
+  .ins-drag.th > :nth-child(n+3) { display: none; }
+  .ins-todo-i { grid-template-columns: 20px minmax(0, 1fr); }
+  .ins-todo-i .v { grid-column: 2; align-items: flex-start; flex-direction: row; gap: 6px; }
 }
 .ins-yr, .ins-plan, .ins-av, .ins-ty, .ins-cmp { --minw: 0px; }        /* fit the phone; Geek's tables scroll */
 .ins-picks .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

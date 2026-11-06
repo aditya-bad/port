@@ -427,7 +427,7 @@ test('Inspector: a tradebook uploaded there says it worked, or that it failed an
         ? r.fulfill({ json: { files: [{ id: 9, name: 'tradebook-FY25.csv', rows: 2, added: 2, skipped: 0, first_day: '2025-04-03', last_day: '2026-03-20', problems: [] }] } })
         : r.fulfill({ status: 413, json: { detail: 'The file is too large' } });
     });
-    await p.goto(`${BASE}/linck/#/lens/inspect`);
+    await p.goto(`${BASE}/linck/#/lens/inspect/own`);
     await p.waitForSelector('.gk.ins .ins-up [data-import-btn]');
     assert.match(await p.locator('.gk-view').innerText(), /No trades imported[\s\S]*Console › Reports › Tradebook/);
     assert.equal(await p.locator('.gk-top [data-import-btn]').count(), 1, 'and from the top bar, on any view');
@@ -458,13 +458,24 @@ test('Inspector: your own money, the tax-free room, what if, and what each holdi
   await p.goto(`${BASE}/linck/#/lens/shares`);
   await p.waitForSelector('[data-act="inspect"]');
   await p.click('[data-act="inspect"]');
-  await p.waitForSelector('.gk.ins [data-own]');
+  // it opens on What to do: the few things worth doing, most saved first
+  await p.waitForSelector('.gk.ins [data-todo-total]');
   assert.match(p.url(), /#\/lens\/inspect$/);
   assert.equal(await p.locator('#top').isVisible(), false, 'the whole screen, like Geek mode');
+  assert.match(await p.locator('[data-todo-total]').innerText(), /Doing these saves you about ₹7,680 in tax this year\./);
+  assert.deepEqual(await p.locator('.ins-todo [data-todo]').evaluateAll(xs => xs.map(x => x.dataset.todo)), ['book_losses', 'wait', 'wait', 'book_tax_free', 'drag']);
+  const todo = await p.locator('.ins-todo').innerText();
+  assert.match(todo, /Book a loss on TATAMOTORS before 31 Mar 2027[\s\S]*₹3,780/);
+  assert.match(todo, /Don’t sell UTI NIFTY 50 INDEX FUND - DIRECT PLAN before 28 Oct '26\s+184\.167 of it turns long term in 1 day[\s\S]*₹1,751/, 'only the lot turning long term that day');
+  assert.match(todo, /Book ₹3,665 of long-term gain tax-free[\s\S]*225 SUZLON[\s\S]*₹458/);
+  assert.match(todo, /Look again at TATAMOTORS: it’s cost you −₹76,935/);
+  assert.match(await p.locator('.ins-todo [data-todo="book_losses"]').getAttribute('href'), /#\/lens\/inspect\/ideas$/);
+  await p.keyboard.press('o');
+  await p.waitForSelector('.gk.ins [data-own]');
   assert.match(await p.locator('[data-own]').innerText(), /You hold ₹24,62,477 at cost\. ₹24,52,009 of that is your own money; the other ₹10,468 is profit you booked and put back in\./);
   const t = await p.locator('.gk-tiles').allInnerTexts();
-  assert.match(t[0], /Your own money in\s+₹24,52,009[\s\S]*What you hold, at cost\s+₹24,62,477[\s\S]*Booked profit back in\s+\+₹10,468[\s\S]*Worth now\s+₹26,01,139/);
-  assert.match(t[1], /Gain on your own money\s+\+₹1,49,131\s+\+6\.1% of ₹24,52,009[\s\S]*A year, on your own money\s+\+8\.7%[\s\S]*Bought for each rupee of yours\s+₹1\.06/);
+  assert.equal(t.length, 1, 'one row of figures, each said once');
+  assert.match(t[0], /Worth now\s+₹26,01,139\s+from ₹24,52,009 of your own[\s\S]*Gain on your own money\s+\+₹1,49,131\s+\+6\.1% on what you put in[\s\S]*Each year, on your money\s+\+8\.7%[\s\S]*Sale money reused\s+₹1,37,915/);
   assert.match(await p.locator('[data-harvest="EMBASSY"]').innerText(), /33 sold 17 Sep '26, 33 back 17 Sep '26[\s\S]*\+₹2,868 booked/);
   assert.match(await p.locator('[data-ins="years"] [data-fy="2026-27"]').innerText(), /2026-27[\s\S]*₹9,28,436[\s\S]*₹1,25,615[\s\S]*\+₹19,768/);
   await p.waitForSelector('.gk.ins:not(.gk-in)', { timeout: 10000 });     // the way in has finished moving
@@ -472,7 +483,7 @@ test('Inspector: your own money, the tax-free room, what if, and what each holdi
   await p.mouse.move(box.x + box.width * 0.7, box.y + box.height / 2);
   await p.mouse.move(box.x + box.width * 0.8, box.y + box.height / 2);
   const tip = await until(() => p.evaluate(() => { const x = document.querySelector('.tip'); return x && x.style.display !== 'none' ? x.innerText.trim() : ''; }));
-  assert.match(tip, /Your own money in\s+₹[\d,]+[\s\S]*What you hold, at cost\s+₹[\d,]+[\s\S]*Sale money not reused\s+₹[\d,]+/);
+  assert.match(tip, /Booked profit \(or loss\) in what you hold\s+[+−-]?₹[\d,]+[\s\S]*Sale money not reused\s+₹[\d,]+[\s\S]*Your own money in\s+₹[\d,]+/);
   // keys switch views
   await p.keyboard.press('h');
   await p.waitForSelector('[data-idea="wait"]');
@@ -480,13 +491,28 @@ test('Inspector: your own money, the tax-free room, what if, and what each holdi
   assert.deepEqual(await p.locator('[data-idea]').evaluateAll(xs => xs.map(x => x.dataset.idea)), ['wait', 'book_losses', 'book_tax_free'], 'most saved first');
   assert.match(await p.locator('.gk-tiles').innerText(), /Less tax, about\s+₹12,712[\s\S]*Short-term gain booked\s+\+₹18,900[\s\S]*Tax-free room left\s+₹1,24,132/);
   assert.match(await p.locator('[data-idea="book_losses"]').innerText(), /about ₹3,780 less tax[\s\S]*TATAMOTORS[\s\S]*44[\s\S]*₹18,779[\s\S]*−₹19,120[\s\S]*cancels ₹18,900 of gains/);
-  assert.match(await p.locator('[data-idea="wait"] [data-item]').first().innerText(), /UTI NIFTY 50 INDEX FUND[\s\S]*184\.167[\s\S]*\+₹8,757[\s\S]*1 day · saves about ₹1,751/);
+  // each holding once, its lots with when bought and when long term
+  const uti = p.locator('[data-ins="wait"] [data-item="UTI NIFTY 50 INDEX FUND - DIRECT PLAN"]');
+  assert.equal(await uti.count(), 2, 'two lots of it');
+  assert.match(await uti.nth(0).innerText(), /UTI NIFTY 50 INDEX FUND[\s\S]*27 Oct '25[\s\S]*184\.167[\s\S]*\+₹8,757[\s\S]*28 Oct '26\s+in 1 day[\s\S]*₹1,751/);
+  assert.doesNotMatch(await uti.nth(1).innerText(), /UTI NIFTY/, 'the name once, on its first lot');
+  assert.match(await uti.nth(1).innerText(), /26 Nov '25[\s\S]*27 Nov '26\s+in 31 days[\s\S]*₹1,657/);
   await p.keyboard.press('t');
   await p.waitForSelector('[data-ins="plan"]');
   assert.match(p.url(), /inspect\/tax$/);
   assert.match(await p.locator('.gk-tiles').innerText(), /Booked long term this year\s+\+₹868[\s\S]*Tax-free room left\s+₹1,24,132\s+of ₹1,25,000[\s\S]*155 days/);
   assert.match(await p.locator('[data-plan="SUZLON"]').innerText(), /SUZLON[\s\S]*225[\s\S]*₹12,695[\s\S]*\+₹3,665/);
+  // gains you could book apart from losses the exemption doesn't cover
+  assert.match(await p.locator('[data-ins="available"]').innerText(), /SUZLON[\s\S]*\+₹3,665/);
+  assert.doesNotMatch(await p.locator('[data-ins="available"]').innerText(), /TATAMOTORS/);
+  assert.match(await p.locator('[data-ins="lt-losses"]').innerText(), /ITC[\s\S]*−₹318[\s\S]*TATAMOTORS[\s\S]*−₹24,043/);
+  // Remove holdings starts from the three held that cost you most
   await p.keyboard.press('w');
+  await p.waitForSelector('[data-whatif="auto"]');
+  assert.match(await p.locator('[data-whatif="auto"]').innerText(), /Starting with the 3 holdings that cost you most: TATAMOTORS, INFY, IDEA/);
+  await until(() => asked.length > 0);
+  assert.equal(asked.at(-1), 'INE002A01011,INE004A01011,INE011A01011');
+  await p.click('[data-act="clear"]');
   await p.waitForSelector('[data-whatif="none"]');
   await p.locator('[data-act="pick"]', { hasText: 'TATAMOTORS' }).click();
   await p.locator('[data-act="pick"]', { hasText: 'IDEA' }).click();
@@ -499,9 +525,11 @@ test('Inspector: your own money, the tax-free room, what if, and what each holdi
   await p.keyboard.press('d');
   await p.waitForSelector('[data-ins="drag"]');
   const drag = await p.locator('[data-drag]').evaluateAll(rs => rs.map(r => r.dataset.drag));
-  assert.deepEqual(drag.slice(0, 2), ['TATAMOTORS', 'INFY'], 'what held you back most, first');
-  assert.match(await p.locator('[data-drag="TATAMOTORS"]').innerText(), /−5\.5 pts[\s\S]*\+14\.3%[\s\S]*−4\.8 pts[\s\S]*\+8\.1%/);
-  assert.match(await p.locator('[data-drag="SGBDEC28"]').innerText(), /SGBDEC28[\s\S]*—/, 'no trades of its own: no XIRR effect');
+  assert.deepEqual(drag.slice(0, 2), ['BEL', 'PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN'], 'most made first');
+  assert.equal(drag.at(-1), 'TATAMOTORS', 'what cost you most, last');
+  assert.match(await p.locator('[data-drag-sum]').innerText(), /Altogether \+₹1,76,640\. Carried you: BEL \+₹84,096[\s\S]*Held you back: TATAMOTORS −₹76,935, INFY −₹42,332, IDEA −₹22,550\./);
+  assert.match(await p.locator('[data-drag="TATAMOTORS"]').innerText(), /−₹76,935[\s\S]*\+14\.3%\s+it costs 5\.5%/);
+  assert.match(await p.locator('[data-drag="SGBDEC28"]').innerText(), /SGBDEC28[\s\S]*\+₹27,509[\s\S]*—/, 'no trades of its own: no return to take it out of');
   // Esc goes back where it came from
   await p.keyboard.press('Escape');
   await p.waitForSelector('[data-lens="equity"]');
@@ -509,7 +537,7 @@ test('Inspector: your own money, the tax-free room, what if, and what each holdi
   assert.equal(await p.locator('#top').isVisible(), true);
   // a phone fits
   await p.setViewportSize({ width: 390, height: 844 });
-  for (const v of ['own', 'ideas', 'tax', 'whatif', 'drag']) {
+  for (const v of ['todo', 'own', 'ideas', 'tax', 'whatif', 'drag']) {
     await p.goto(`${BASE}/linck/#/lens/inspect/${v}`);
     await p.waitForSelector('.gk.ins .gk-view > *');
     assert.equal(await p.evaluate(() => document.documentElement.scrollWidth - innerWidth), 0, `${v} fits a phone`);

@@ -115,6 +115,10 @@ def test_with_and_without_and_what_each_holding_did():
     h["mf"] = [{"fund": "NO TRADES FUND", "isin": "INNT", "units": 1, "nav": 10, "value": 10, "weight": 0.1}]
     nt = next(r for r in I.contributions(trades, h, cs, nifty, TODAY) if r["isin"] == "INNT")
     assert nt["xirr_change"] is None and nt["xirr_without"] is None, "held with no trades: nothing to take out, not +0.0"
+    # INSPECTOR: one measure in rupees, booked plus on paper, from the trades
+    rows = {r["symbol"]: r for r in I.contributions(trades, h, cs, nifty, TODAY)}
+    assert rows["UP"]["rupees"] == pytest.approx(10 * (up[-1]["close"] - 100), abs=0.01)
+    assert rows["DOWN"]["rupees"] == pytest.approx(10 * (down[-1]["close"] - 100), abs=0.01) and rows["DOWN"]["rupees"] < 0
 
 
 # ── Tax opportunities ────────────────────────────────────────────────
@@ -166,6 +170,7 @@ def test_wait_before_selling_what_turns_long_term_soon():
     o = I.opportunities(trades, {"INA": {"ltp": 200, "asset": "stock"}}, TODAY)
     w = cards(o)["wait"]
     assert w["items"][0]["days"] == 24 and w["items"][0]["note"] == "long term from 2026-11-21"
+    assert (w["items"][0]["bought"], w["items"][0]["long_term_on"]) == ("2025-11-20", "2026-11-21"), "each lot says when it was bought and turns long term"
     assert w["saving"] == 2000.0, "₹10,000 at 20% now, nothing later within the room"
     loss = I.opportunities([t("B", "2025-11-20", "buy", 100, 100, "1")], {"INB": {"ltp": 90, "asset": "stock"}}, TODAY)
     assert "wait" not in cards(loss), "a lot at a loss: nothing to wait for"

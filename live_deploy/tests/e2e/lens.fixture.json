@@ -8934,31 +8934,15 @@
      "what": "They turn long term within 60 days. Sold before then the gain is short term (20%); after, long term (12.5%, or nothing within the tax-free room).",
      "items": [
       {
-       "symbol": "UTI NIFTY 50 INDEX FUND - DIRECT PLAN",
-       "qty": 184.167,
-       "amount": 30056.05,
-       "result": 8757.14,
-       "note": "long term from 2026-10-28",
-       "days": 1,
-       "save": 1751.43
-      },
-      {
-       "symbol": "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN",
-       "qty": 260.033,
-       "amount": 22986.92,
-       "result": 8453.67,
-       "note": "long term from 2026-10-28",
-       "days": 1,
-       "save": 1690.73
-      },
-      {
        "symbol": "AXIS ELSS TAX SAVER FUND - REGULAR PLAN",
        "qty": 120.85,
        "amount": 11190.71,
        "result": 3762.06,
        "note": "long term from 2026-10-28",
        "days": 1,
-       "save": 752.41
+       "save": 752.41,
+       "bought": "2025-10-27",
+       "long_term_on": "2026-10-28"
       },
       {
        "symbol": "ICICI PRUDENTIAL BALANCED ADVANTAGE FUND - REGULAR PLAN",
@@ -8967,25 +8951,31 @@
        "result": 723.0,
        "note": "long term from 2026-10-28",
        "days": 1,
-       "save": 144.6
-      },
-      {
-       "symbol": "UTI NIFTY 50 INDEX FUND - DIRECT PLAN",
-       "qty": 184.167,
-       "amount": 30056.05,
-       "result": 8283.83,
-       "note": "long term from 2026-11-27",
-       "days": 31,
-       "save": 1656.77
+       "save": 144.6,
+       "bought": "2025-10-27",
+       "long_term_on": "2026-10-28"
       },
       {
        "symbol": "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN",
        "qty": 260.033,
        "amount": 22986.92,
-       "result": 8131.23,
-       "note": "long term from 2026-11-27",
-       "days": 31,
-       "save": 1626.25
+       "result": 8453.67,
+       "note": "long term from 2026-10-28",
+       "days": 1,
+       "save": 1690.73,
+       "bought": "2025-10-27",
+       "long_term_on": "2026-10-28"
+      },
+      {
+       "symbol": "UTI NIFTY 50 INDEX FUND - DIRECT PLAN",
+       "qty": 184.167,
+       "amount": 30056.05,
+       "result": 8757.14,
+       "note": "long term from 2026-10-28",
+       "days": 1,
+       "save": 1751.43,
+       "bought": "2025-10-27",
+       "long_term_on": "2026-10-28"
       },
       {
        "symbol": "AXIS ELSS TAX SAVER FUND - REGULAR PLAN",
@@ -8994,7 +8984,9 @@
        "result": 3596.5,
        "note": "long term from 2026-11-27",
        "days": 31,
-       "save": 719.3
+       "save": 719.3,
+       "bought": "2025-11-26",
+       "long_term_on": "2026-11-27"
       },
       {
        "symbol": "ICICI PRUDENTIAL BALANCED ADVANTAGE FUND - REGULAR PLAN",
@@ -9003,7 +8995,31 @@
        "result": 660.0,
        "note": "long term from 2026-11-27",
        "days": 31,
-       "save": 132.0
+       "save": 132.0,
+       "bought": "2025-11-26",
+       "long_term_on": "2026-11-27"
+      },
+      {
+       "symbol": "PARAG PARIKH FLEXI CAP FUND - DIRECT PLAN",
+       "qty": 260.033,
+       "amount": 22986.92,
+       "result": 8131.23,
+       "note": "long term from 2026-11-27",
+       "days": 31,
+       "save": 1626.25,
+       "bought": "2025-11-26",
+       "long_term_on": "2026-11-27"
+      },
+      {
+       "symbol": "UTI NIFTY 50 INDEX FUND - DIRECT PLAN",
+       "qty": 184.167,
+       "amount": 30056.05,
+       "result": 8283.83,
+       "note": "long term from 2026-11-27",
+       "days": 31,
+       "save": 1656.77,
+       "bought": "2025-11-26",
+       "long_term_on": "2026-11-27"
       }
      ]
     },
@@ -9187,7 +9203,8 @@
     "xirr_without": 14.27,
     "xirr_change": -5.5,
     "year_without": 8.13,
-    "year_change": -4.82
+    "year_change": -4.82,
+    "rupees": -76935.0
    },
    {
     "isin": "INE002A01011",
@@ -9199,7 +9216,8 @@
     "xirr_without": 12.3,
     "xirr_change": -3.53,
     "year_without": 5.88,
-    "year_change": -2.57
+    "year_change": -2.57,
+    "rupees": -42332.36
    },
    {
     "isin": "INE001A01011",
@@ -9211,7 +9229,8 @@
     "xirr_without": 11.82,
     "xirr_change": -3.05,
     "year_without": 4.0,
-    "year_change": -0.68
+    "year_change": -0.68,
+    "rupees": -20879.0
    },
    {
     "isin": "INE006A01011",
@@ -9223,7 +9242,8 @@
     "xirr_without": 10.55,
     "xirr_change": -1.78,
     "year_without": 3.5,
-    "year_change": -0.19
+    "year_change": -0.19,
+    "rupees": -13203.0
    },
    {
     "isin": "INE011A01011",
@@ -9235,7 +9255,8 @@
     "xirr_without": 10.3,
     "xirr_change": -1.53,
     "year_without": 4.52,
-    "year_change": -1.21
+    "year_change": -1.21,
+    "rupees": -22550.0
    },
    {
     "isin": "INE000A01011",
@@ -9247,7 +9268,8 @@
     "xirr_without": 9.91,
     "xirr_change": -1.14,
     "year_without": 2.71,
-    "year_change": 0.6
+    "year_change": 0.6,
+    "rupees": 6193.92
    },
    {
     "isin": "INE528G01035",
@@ -9259,7 +9281,8 @@
     "xirr_without": 9.73,
     "xirr_change": -0.96,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": -10600.0
    },
    {
     "isin": "INE003A01011",
@@ -9271,7 +9294,8 @@
     "xirr_without": 9.52,
     "xirr_change": -0.75,
     "year_without": 3.43,
-    "year_change": -0.12
+    "year_change": -0.12,
+    "rupees": -3445.0
    },
    {
     "isin": "INE982J01020",
@@ -9283,7 +9307,8 @@
     "xirr_without": 9.41,
     "xirr_change": -0.64,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": -9300.0
    },
    {
     "isin": "INE009A01011",
@@ -9295,7 +9320,8 @@
     "xirr_without": 8.91,
     "xirr_change": -0.14,
     "year_without": 3.39,
-    "year_change": -0.08
+    "year_change": -0.08,
+    "rupees": 46.16
    },
    {
     "isin": "INE013A01011",
@@ -9307,7 +9333,8 @@
     "xirr_without": 8.85,
     "xirr_change": -0.08,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": -1305.6
    },
    {
     "isin": "INF179KB1HP9",
@@ -9319,7 +9346,8 @@
     "xirr_without": 8.64,
     "xirr_change": 0.13,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": 4829.52
    },
    {
     "isin": "INF109K01Z48",
@@ -9331,7 +9359,8 @@
     "xirr_without": 8.61,
     "xirr_change": 0.16,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": 4479.0
    },
    {
     "isin": "INE012A01011",
@@ -9343,7 +9372,8 @@
     "xirr_without": 8.42,
     "xirr_change": 0.35,
     "year_without": 2.93,
-    "year_change": 0.38
+    "year_change": 0.38,
+    "rupees": 7335.0
    },
    {
     "isin": "INE335Y01020",
@@ -9355,7 +9385,8 @@
     "xirr_without": 8.42,
     "xirr_change": 0.35,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": 8600.0
    },
    {
     "isin": "INE007A01011",
@@ -9367,7 +9398,8 @@
     "xirr_without": 8.25,
     "xirr_change": 0.52,
     "year_without": 2.53,
-    "year_change": 0.78
+    "year_change": 0.78,
+    "rupees": 13850.0
    },
    {
     "isin": "INE010A01011",
@@ -9379,7 +9411,8 @@
     "xirr_without": 8.12,
     "xirr_change": 0.65,
     "year_without": 2.59,
-    "year_change": 0.73
+    "year_change": 0.73,
+    "rupees": 13125.9
    },
    {
     "isin": "INE758T01015",
@@ -9391,7 +9424,8 @@
     "xirr_without": 7.7,
     "xirr_change": 1.07,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": 18900.0
    },
    {
     "isin": "INE008A01011",
@@ -9403,7 +9437,8 @@
     "xirr_without": null,
     "xirr_change": null,
     "year_without": 1.55,
-    "year_change": 1.76
+    "year_change": 1.76,
+    "rupees": 27509.44
    },
    {
     "isin": "INF846K01131",
@@ -9415,7 +9450,8 @@
     "xirr_without": 6.96,
     "xirr_change": 1.81,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": 34248.89
    },
    {
     "isin": "INF789F01XA0",
@@ -9427,7 +9463,8 @@
     "xirr_without": 4.84,
     "xirr_change": 3.93,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": 73847.21
    },
    {
     "isin": "INF879O01027",
@@ -9439,7 +9476,8 @@
     "xirr_without": 4.31,
     "xirr_change": 4.46,
     "year_without": null,
-    "year_change": null
+    "year_change": null,
+    "rupees": 80129.24
    },
    {
     "isin": "INE005A01011",
@@ -9451,7 +9489,8 @@
     "xirr_without": 3.88,
     "xirr_change": 4.89,
     "year_without": -1.77,
-    "year_change": 5.09
+    "year_change": 5.09,
+    "rupees": 84096.0
    }
   ],
   "year_ready": true
