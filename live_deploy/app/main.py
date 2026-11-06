@@ -416,7 +416,7 @@ async def startup() -> None:
     from .lens_feed import LensFeed
     app.state.lens_feed = LensFeed(dispatcher)
     app.state.lens_feed.start(loop)
-    app.state.lens = Lens(dispatcher, pool=db_pool, feed=app.state.lens_feed)
+    app.state.lens = Lens(dispatcher, pool=db_pool, feed=app.state.lens_feed, push=manager._push)
     app.state.lens_warm_task = asyncio.create_task(app.state.lens.warm_loop(), name="lens-warm-loop")
     app.state.candle_backfill_task = asyncio.create_task(
         manager.candle_backfill_loop(app.state.candles, after=app.state.lens.topup), name="candle-backfill-loop",

@@ -181,3 +181,47 @@ def test_ideas_are_ordered_by_what_they_save_and_cover_only_listed_equity():
               t("G", "2025-11-20", "buy", 100, 100, "2")]                                     # gold ETF turning long term: not 112A
     o = I.opportunities(trades, {"INA": {"ltp": 300, "asset": "stock"}, "ING": {"ltp": 200, "asset": "gold"}}, TODAY)
     assert [c["key"] for c in o["cards"]] == ["book_tax_free"] and o["saving"] == 125000 * 0.125
+
+
+def test_a_lot_about_to_turn_long_term_is_said_7_days_before_and_again_the_day_before():
+    """LONG-TERM ALERTS: each lot in "wait before selling", once at 7 days
+    and once at 1 day, with roughly what selling first would cost."""
+    from app.lens import long_term_lines
+    trades = [t("A", "2025-11-03", "buy", 100, 100, "1")]           # long term from 4 Nov 2026
+    seven = I.opportunities(trades, {"INA": {"ltp": 200, "asset": "stock"}}, date(2026, 10, 28))
+    lines, keys = long_term_lines(seven, set())
+    assert lines == ["A: 100 turn long term in 7 days, on 04 Nov. Selling before then costs about ₹2,000 more tax."]
+    assert long_term_lines(seven, set(keys)) == ([], []), "said once"
+    six = I.opportunities(trades, {"INA": {"ltp": 200, "asset": "stock"}}, date(2026, 10, 29))
+    assert long_term_lines(six, set(keys)) == ([], []), "nothing new between 7 days and the day before"
+    last = I.opportunities(trades, {"INA": {"ltp": 200, "asset": "stock"}}, date(2026, 11, 3))
+    lines2, _ = long_term_lines(last, set(keys))
+    assert lines2 == ["A: 100 turn long term tomorrow, on 04 Nov. Selling before then costs about ₹2,000 more tax."]
+    far = I.opportunities(trades, {"INA": {"ltp": 200, "asset": "stock"}}, date(2026, 10, 1))
+    assert long_term_lines(far, set()) == ([], []), "more than a week off: not yet"
+
+
+def test_the_long_term_alerts_are_pushed_once_and_remembered(pool_run):
+    from app.lens import Lens
+    from app.db.migrate import run_migrations
+
+    async def go(pool):
+        await run_migrations(pool)
+        pushed = []
+
+        async def push(title, body):
+            pushed.append((title, body))
+        lens = Lens(None, pool=pool, today=lambda: date(2026, 10, 28), push=push)
+        trades = [t("A", "2025-11-03", "buy", 100, 100, "1")]
+
+        async def _trades():
+            return trades
+
+        async def holdings(fresh=False):
+            return {"equity": [{"isin": "INA", "qty": 100, "ltp": 200, "value": 20000, "symbol": "A", "asset": "stock"}], "mf": []}
+        lens._trades, lens.holdings = _trades, holdings
+        await pool.execute("DELETE FROM app_scratch WHERE key = 'lens_long_term_alerts'")
+        assert await lens.send_long_term_alerts() == ["A: 100 turn long term in 7 days, on 04 Nov. Selling before then costs about ₹2,000 more tax."]
+        assert pushed == [("Lots turning long term", "A: 100 turn long term in 7 days, on 04 Nov. Selling before then costs about ₹2,000 more tax.")]
+        assert await lens.send_long_term_alerts() == [] and len(pushed) == 1, "remembered: not again"
+    pool_run(go)

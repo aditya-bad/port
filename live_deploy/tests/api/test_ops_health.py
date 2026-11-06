@@ -304,3 +304,85 @@ def test_open_tabs_are_told_which_alerts_are_repeats(push_on, monkeypatch):
     check(push_on, at("09:12"))
     assert [(e["event_type"], e["metadata"]["repeat"]) for e in seen] == [
         ("health_issue", False), ("health_issue", True), ("health_issue", True)]
+
+
+# ── Feed watchdog, and the strangles ready before the open ────────────
+# 5 Nov 2026: the feed was wrongly marked down at 11:43 and every contract
+# sold after it was never subscribed; ten deployments held all management
+# on legs with no price, the strangles' trailing stops included.
+
+def test_a_held_contract_with_no_ticks_is_subscribed_again_and_raised_if_it_never_ticks(push_on, pushes, kite_up, monkeypatch):
+    client = push_on
+    d = make_deployment(client, name="Nifty Strangle", start="now")
+    r = mgr(client).runners[d["id"]]
+    asked = []
+    monkeypatch.setattr(kite_up, "resubscribe", lambda toks: asked.append(sorted(toks)) or True)
+    monkeypatch.setattr(kite_up, "last_seen", {})
+    monkeypatch.setattr(r, "open_positions", {601: {"symbol": "NIFTY26NOV24350PE"}, 602: {"symbol": "NIFTY26NOV24350CE"}})
+    kite_up.last_seen[602] = at("12:22")
+    for hhmm, sec in (("12:22", 30), ("12:25", 0), ("12:28", 0), ("12:33", 0)):
+        monkeypatch.setattr(kite_up, "last_tick_at", at(hhmm, sec=sec))
+        monkeypatch.setattr(r, "last_tick_at", at(hhmm, sec=sec))
+        kite_up.last_seen[602] = at(hhmm, sec=sec)
+        check(client, at(hhmm, sec=sec))
+    assert asked == [[601], [601], [601]], "subscribed again at once, then every 5 minutes, not every minute"
+    x = client_issue(client, f"dep:{d['id']}:noticks:601")
+    assert x["title"] == "Nifty Strangle: no price for NIFTY26NOV24350PE" and "10 min" in x["detail"]
+    assert f"dep:{d['id']}:noticks:602" not in keys(client), "the one that ticks is fine"
+    # its first tick clears it
+    kite_up.last_seen[601] = at("12:34")
+    monkeypatch.setattr(kite_up, "last_tick_at", at("12:34"))
+    monkeypatch.setattr(r, "last_tick_at", at("12:34"))
+    check(client, at("12:34", sec=10))
+    assert f"dep:{d['id']}:noticks:601" not in keys(client)
+
+
+def test_a_strangle_not_ready_for_the_open_is_raised_at_09_10(push_on, pushes, kite_up, monkeypatch):
+    from types import SimpleNamespace
+    client = push_on
+    d = make_deployment(client, name="DTT Sensex Strangle", start="now")
+    r = mgr(client).runners[d["id"]]
+    monkeypatch.setattr(r, "strategy_name", "strangle_monthly_v2")
+    monkeypatch.setattr(r, "strategy", SimpleNamespace(legs={"CE": [{"token": 701}], "PE": []}))
+    monkeypatch.setattr(r, "open_positions", {701: {"symbol": "SENSEX26NOV82000CE"}, 702: {"symbol": "SENSEX26NOV77000PE"}})
+    monkeypatch.setattr(kite_up, "instrument_tokens", [265, 701])
+    check(client, at("09:05"))
+    assert f"dep:{d['id']}:ready" not in keys(client), "from 09:10"
+    check(client, at("09:10"))
+    x = client_issue(client, f"dep:{d['id']}:ready")
+    assert x["title"] == "DTT Sensex Strangle isn't ready for the open" and x["severity"] == "critical"
+    assert "doesn't hold SENSEX26NOV77000PE that the book does" in x["detail"]
+    assert "SENSEX26NOV77000PE not subscribed to Kite's feed" in x["detail"] and "before 09:15" in x["detail"]
+    assert "isn't ready" in titles(pushes, "Sensex")[0]
+    # restarted: its strategy holds both, both subscribed
+    monkeypatch.setattr(r, "strategy", SimpleNamespace(legs={"CE": [{"token": 701}], "PE": [{"token": 702}]}))
+    monkeypatch.setattr(kite_up, "instrument_tokens", [265, 701, 702])
+    check(client, at("09:12"))
+    assert f"dep:{d['id']}:ready" not in keys(client)
+
+
+def test_after_the_close_one_push_says_each_strangles_day(push_on, pushes):
+    """STRANGLE SUMMARY: once a market day after 15:40 — each strangle's
+    rolls, what closed it, how long a rule was held for a fault, and the
+    day's P&L — pushed once and kept on each deployment's Activity."""
+    client = push_on
+    d = make_deployment(client, name="DTT Sensex Strangle", strategy="strangle_monthly_v2", mode="positional", capital=150000)
+    add_fill(client, d["id"], "SENSEX26NOV77000PE", 901, "buy", 20, 400.0, at("09:30"), reason="continuous_50pct_trigger")
+    add_fill(client, d["id"], "SENSEX26NOV77600PE", 902, "sell", 20, 600.0, at("09:30"), reason="continuous_50pct_trigger")
+    add_fill(client, d["id"], "SENSEX26NOV82000CE", 903, "sell", 20, 250.0, at("15:13"), reason="eod_rollout")
+    sql(client, "INSERT INTO strategy_issues (deployment_id, key, kind, title, detail, first_at, last_at, day) "
+                "VALUES ($1::uuid, 'blocked:x', 'blocked', '“continuous 50pct trigger” has been blocked since 09:23', 'x', $2, $3, $4)",
+        d["id"], at("09:26"), at("11:26"), WED)
+    sql(client, "INSERT INTO deployment_snapshots (deployment_id, snapshot_at, cash, open_positions_value, total_value, realized_pnl_cumulative) "
+                "VALUES ($1::uuid, $2, 0, 0, 150000, 0), ($1::uuid, $3, 0, 0, 148500, 0)",
+        d["id"], at("15:30", day=date(2026, 10, 13)), at("15:30"))
+    check(client, at("15:35"))
+    assert titles(pushes, "Strangles today") == [], "not before 15:40"
+    check(client, at("15:40"))
+    [(t, body)] = [p for p in pushes if p[0].startswith("Strangles today")]
+    assert t == "Strangles today, 14 Oct"
+    assert body == "Sensex: 2 rolls, held 2 h 3 min (continuous 50pct trigger); −₹1,500 today"
+    check(client, at("15:41"))
+    assert len(titles(pushes, "Strangles today")) == 1, "once a day"
+    ev = sql(client, "SELECT message FROM deployment_events WHERE deployment_id = $1::uuid AND event_type = 'day_summary'", d["id"])
+    assert [e["message"] for e in ev] == [body], "kept on its Activity"

@@ -252,6 +252,11 @@ or an ask only) is priced at its ask: a short is bought back at the ask
 (6 Nov 2026, DTT Bankex Strangle: 64000CE held every rule 09:20-11:10).
 A hold note says what the book was (bid / ask, or one side only).
 
+UNTRADED CAP: when the strike-cross cap's strike has no price at all (no
+trade, no bid), the roll takes the nearest strike short of it that has
+one, instead of being refused (5 Nov 2026: 77600PE, refused 70 times):
+the position stays a strangle for now, and converges on a later roll.
+
 FAR PICKS (6 Nov 2026): a roll whose nearest priced strike is more than
 25% outside its band isn't made (09:15, few BSE strikes have traded:
 the Sensex call roll sold 83000CE at 100.00 for a target of about 337,
@@ -756,6 +761,8 @@ HOLD_OVER = "Every leg priced again: management resumes"
 _QUOTE_JUMP_SECOND_LOOK = timedelta(seconds=10)
 # The re-check's own note when it refuses: the day check's replay holds off
 # the rule on this exact wording (app/repair/engine.py QUOTE_REFUSED).
+# UNTRADED CAP: strikes tried short of an unpriced capped strike
+_UNTRADED_CAP_TRIES = 8
 # FAR PICKS: a roll's replacement may be this far outside its band, no further
 _BAND_SLACK = 0.25
 # THIN BOOKS: from this time a held leg with no usable mid is priced at its ask
@@ -897,6 +904,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
     quote_max_spread: Optional[tuple] = (0.10, 2.0)
     quote_jump_pct: float = 0.25
     quote_wide_spread: Optional[tuple] = (0.30, 2.0)
+    # ALERTS: a rule blocked this long by a fault is raised (pushed to the
+    # phone) — 3 minutes, not the usual 10: on 5 Nov 2026 the Sensex put roll
+    # was refused from 09:23 and the first alert came at 09:37
+    BLOCKED_ALERT_AFTER = timedelta(minutes=3)
     live_within: timedelta = timedelta(minutes=3)
     # A single cycle spans many calendar days (checkpoint-to-checkpoint,
     # potentially the better part of a month) -- "day" would be
@@ -2012,10 +2023,44 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 if without is not None and without["strike"] == opposite_strike:
                     raise SameStrike(f"{side} {opposite_strike:g}")
                 leg = await self.resolver.get_leg(self.instrument, self.contract_expiry, opposite_strike, side)
-                price = await self._forced_sell_price(leg)
+                try:
+                    price = await self._forced_sell_price(leg)
+                except ValueError:
+                    # UNTRADED CAP: the other side's strike has no price (no
+                    # trade, no bid); the nearest that has one, short of it
+                    leg, price = await self._nearest_priced_short_of(side, opposite_strike, without)
                 self._picked_capped = True
 
         return leg, price
+
+    async def _nearest_priced_short_of(self, side: str, cap: float, without: Optional[dict]) -> tuple:
+        """(leg, price) of the nearest strike short of `cap` that can be sold
+        now (_forced_sell_price), stepping away from the other side: a put
+        below the call's strike, a call above the put's (UNTRADED CAP). 5
+        Nov 2026, DTT Sensex Strangle: the put roll capped onto 77600PE,
+        which never traded that day and had no bid; it was refused 70
+        times. The far strikes rule holds; the strike being closed is never
+        sold again (SameStrike). ValueError when none of the next few has a
+        price."""
+        strikes = await self.resolver.list_strikes(self.instrument, self.contract_expiry, side)
+        m = self._far_multiple()
+        held = {l["strike"] for l in self.legs[side]}
+        near = sorted((k for k in strikes if (k < cap if side == "PE" else k > cap) and (not m or is_multiple(k, m))),
+                      key=lambda k: abs(k - cap))
+        for k in near[:_UNTRADED_CAP_TRIES]:
+            if without is not None and k == without["strike"]:
+                raise SameStrike(f"{side} {k:g}")
+            if k in held:
+                continue
+            leg = await self.resolver.get_leg(self.instrument, self.contract_expiry, k, side)
+            try:
+                price = await self._forced_sell_price(leg)
+            except ValueError:
+                continue
+            logger.info("%s strike %g has no price; rolling to %s at %.2f, the nearest short of it that has one",
+                        side, cap, leg.tradingsymbol, price)
+            return leg, price
+        raise ValueError(f"No live price for {side} {cap:g} or the {_UNTRADED_CAP_TRIES} strikes short of it")
 
     async def _forced_sell_price(self, leg) -> float:
         """What the one strike a roll may take (the strike-cross cap) sells

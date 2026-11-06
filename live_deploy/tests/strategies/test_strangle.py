@@ -3,6 +3,8 @@ sizing, the continuous 50% roll, the 15:13 EOD check, checkpoint
 re-entry, the expiry backstop, the stale-price guard, hedging, restart."""
 
 import dataclasses
+
+import pytest
 from datetime import date, timedelta
 
 from tests.sim import Sim, find_spot, leg_prices, side_sum
@@ -880,12 +882,19 @@ def test_the_strike_a_roll_is_forced_onto_sells_at_its_bid_when_its_book_is_wide
         strat = _capped(sim, monkeypatch, {"buy": [{"price": 450.0, "quantity": 20}], "sell": []})
         _, price = await strat._pick_leg(sim.runner, "PE", 2000)
         assert price == 450.0, "only a bid: the bid"
+        # UNTRADED CAP: no trade and no bid on the capped strike: the nearest
+        # strike short of it that has a price, instead of no roll at all
         strat = _capped(sim, monkeypatch, {"buy": [], "sell": []})
+        leg, price = await strat._pick_leg(sim.runner, "PE", 2000)
+        assert leg.strike < 25000.0 and price > 0, "a put below the call's strike, at its own price"
+        assert strat._picked_capped, "the band check doesn't apply to it"
+        # the nearest priced one is the strike being closed: nothing to change
+        old = {"strike": leg.strike}
         try:
-            await strat._pick_leg(sim.runner, "PE", 2000)
-            raise AssertionError("no trade and no bid is still no price")
-        except ValueError:
-            pass
+            await strat._pick_leg(sim.runner, "PE", 2000, without=old)
+            raise AssertionError("re-selling the strike it closes changes nothing")
+        except Exception as e:
+            assert type(e).__name__ == "SameStrike"
     pool_run(go)
 
 
@@ -938,4 +947,52 @@ def test_a_roll_isnt_made_onto_a_strike_far_outside_its_band(pool_run, monkeypat
         assert done is False and strat.legs["CE"][0] is old and closes(await sim.fills()) == []
         assert any("far outside the band" in r["summary"] for r in await decisions(sim))
         monkeypatch.setattr(strat.resolver, "get_leg_by_premium", real)
+    pool_run(go)
+
+
+def test_a_rule_held_by_a_fault_is_raised_after_3_minutes_not_10(pool_run, monkeypatch):
+    """5 Nov 2026: the Sensex put roll was refused from 09:23; the first
+    alert came at 09:37. A strangle's blocked rule is raised (pushed to the
+    phone through the health monitor) after 3 minutes."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        assert sim.runner.blocked.AFTER == timedelta(minutes=3)
+        d2, tok = await next_day_untraded_call(sim)
+        await sim.tick(ist_at(sim, d2, "09:15"), spot=25000)
+        await sim.tick(ist_at(sim, d2, "09:17"), spot=25000)
+        n = await pool.fetchval("SELECT count(*) FROM strategy_issues WHERE deployment_id = $1 AND kind = 'blocked'", sim.dep_id)
+        assert n == 0, "2 minutes: not yet"
+        await sim.tick(ist_at(sim, d2, "09:18"), spot=25000)
+        n = await pool.fetchval("SELECT count(*) FROM strategy_issues WHERE deployment_id = $1 AND kind = 'blocked'", sim.dep_id)
+        assert n == 1, "3 minutes held: raised"
+    pool_run(go)
+
+
+def test_a_straddles_trailing_low_moves_on_quoted_prices_too(pool_run, monkeypatch):
+    """5 Nov 2026, DTT BankNifty Strangle: converged at 13:20 at 1,406.80;
+    the new put never had a tick, so the trailing stop's low stayed at
+    1,406.80 while the straddle traded as low as 1,391.90. The low follows
+    whatever price the strangle manages on: a leg priced from its quote
+    (no ticks for 2 minutes) moves it like a ticked one."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch, convergence_mode="trailing_stop")
+        strat = sim.runner.strategy
+        strat.converged, strat.convergence_premium, strat._trailing_floor = True, 10_000.0, 10_000.0
+        tok = int(strat.legs["PE"][0]["token"])
+        orig = sim.dispatcher.publish
+
+        def publish():   # the put never ticks
+            orig()
+            sim.dispatcher.last_prices.pop(tok, None)
+            sim.dispatcher.last_price_times.pop(tok, None)
+        sim.dispatcher.publish = publish
+        t0 = ist_at(sim, sim.market.today + timedelta(days=1), "10:00")
+        sim.market.now = sim.market.now.replace(day=t0.day)
+        strat._no_tick_since.clear()
+        await sim.tick(t0, spot=25000)
+        assert strat._trailing_floor == 10_000.0, "no price for the put yet: no decision, the low stays"
+        await sim.tick(t0 + timedelta(seconds=130), spot=25000)
+        quoted = strat._stale_quotes[tok][0]
+        ce = sim.dispatcher.last_prices[int(strat.legs["CE"][0]["token"])]
+        assert strat._trailing_floor == pytest.approx(ce + quoted, abs=0.05), "the low is the straddle at the put's quote"
     pool_run(go)

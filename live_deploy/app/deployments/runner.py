@@ -146,6 +146,10 @@ class DeploymentRunner:
         self.issues = Issues(pool, self.deployment_id, self._record_event, self.deployment_name)
         self.breaker = Breaker()
         self.blocked = BlockedWatch()
+        # a strategy can ask to be told sooner (the strangle: 3 minutes)
+        after = getattr(type(strategy), "BLOCKED_ALERT_AFTER", None) if strategy is not None else None
+        if after is not None:
+            self.blocked.AFTER = after
         self.filter_ticks = True        # the repair engine's replays turn these off (app/repair/engine.py)
         self.use_breaker = True
         self.resync_enabled = True

@@ -198,6 +198,7 @@ class LiveDataDispatcher:
         # the latest full-mode tick that carried a non-empty book. Used
         # only to estimate slippage (app/slippage.py), never to fill.
         self.last_depths: dict[int, tuple[dict, datetime]] = {}
+        self.last_seen: dict[int, datetime] = {}   # FEED WATCHDOG: token -> when a tick for it last arrived
 
         self._pending_initial_token = initial_access_token
 
@@ -360,6 +361,23 @@ class LiveDataDispatcher:
                 len(newly_live), [self.token_labels[t] for t in newly_live],
             )
         return newly_live
+
+    def resubscribe(self, tokens: list[int]) -> bool:
+        """FEED WATCHDOG: subscribe these again on the live connection (a
+        held contract that's had no tick at all). Harmless for one already
+        subscribed. False when there's no connection to send it on."""
+        tokens = [int(t) for t in tokens]
+        if not tokens or self._kws is None:
+            return False
+        for t in tokens:
+            if t not in self.instrument_tokens:
+                self.instrument_tokens.append(t)
+            self.token_labels.setdefault(t, str(t))
+        self._schedule_on_ticker_thread(self._kws.subscribe, tokens)
+        self._schedule_on_ticker_thread(self._kws.set_mode, self._kite_mode, tokens)
+        logger.warning("Subscribed again %d contract(s) with no ticks: %s", len(tokens),
+                       [self.token_labels.get(t, t) for t in tokens])
+        return True
 
     def release_instruments(self, tokens: list[dict] | list[int]) -> list[int]:
         """
@@ -625,6 +643,8 @@ class LiveDataDispatcher:
         self.last_tick_at = datetime.now(timezone.utc)
         for t in ticks:
             token = t.get("instrument_token")
+            if token is not None:
+                self.last_seen[token] = self.last_tick_at   # FEED WATCHDOG: when a tick for it last arrived
             price = t.get("last_price")
             if token is not None and price is not None:
                 self.last_prices[token] = price
@@ -650,7 +670,7 @@ class LiveDataDispatcher:
             "subscribed_tokens": [
                 {
                     "instrument_token": t,
-                    "symbol": self.token_labels[t],
+                    "symbol": self.token_labels.get(t, str(t)),
                     "static": t in self._static_tokens,
                 }
                 for t in self.instrument_tokens

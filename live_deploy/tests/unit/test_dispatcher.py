@@ -222,3 +222,17 @@ def test_ticks_on_a_connection_marked_down_mark_it_up_and_subscribe_what_was_wai
     d._on_ticks(kws, [{"instrument_token": 256265, "last_price": 24500.0}])   # ... but its ticks still come
     assert d.connected is True
     assert 777 in kws.subscribed[-1], "what was waiting goes out with the first tick"
+
+
+def test_a_quiet_contract_can_be_subscribed_again_on_the_live_connection():
+    """FEED WATCHDOG: the health monitor subscribes again a held contract
+    that's had no tick; each tick's arrival is noted per contract."""
+    d, _ = make(token="tok")
+    d.bind_loop(asyncio.new_event_loop())
+    kws = FakeTicker.made[0]
+    d._on_connect(kws, None)
+    assert d.resubscribe([777]) is True
+    assert [777] in kws.subscribed and 777 in d.instrument_tokens
+    assert any(t["instrument_token"] == 777 for t in d.status["subscribed_tokens"]), "listed, with no label known"
+    d._on_ticks(kws, [{"instrument_token": 777, "last_price": 12.5}])
+    assert d.last_seen[777] == d.last_tick_at

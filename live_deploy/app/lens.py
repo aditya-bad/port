@@ -29,6 +29,7 @@ import math
 import re
 import time
 from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from typing import Any, Callable, Optional
 from zoneinfo import ZoneInfo
 
@@ -587,6 +588,32 @@ def inspect_answer(trades: list[dict], h: Optional[dict], err: Optional[str], ca
     }
 
 
+LT_ALERT_FROM = dtime(9, 30)
+LT_ALERT_DAYS = (1, 7)                      # said 7 days before, and again the day before
+LT_ALERT_KEY = "lens_long_term_alerts"
+
+
+def long_term_lines(o: Optional[dict], sent: set) -> tuple[list[str], list[str]]:
+    """(lines, their keys) for lots in "wait before selling" (lens_inspect
+    opportunities) 7 days or 1 day from long term, not said yet at that
+    stage. Each: what, how many, when, and roughly what selling first
+    would cost in tax."""
+    wait = next((c for c in (o or {}).get("cards", []) if c["key"] == "wait"), None)
+    lines, keys = [], []
+    for i in (wait or {}).get("items", []):
+        stage = next((d for d in LT_ALERT_DAYS if i["days"] <= d), None)
+        k = f"{i['symbol']}|{i.get('bought')}|{stage}"
+        if stage is None or k in sent:
+            continue
+        on = date.fromisoformat(i["long_term_on"]) if i.get("long_term_on") else None
+        q = f"{i['qty']:,.3f}".rstrip("0").rstrip(".")
+        when = "tomorrow" if i["days"] <= 1 else f"in {i['days']} days"
+        lines.append(f"{i['symbol']}: {q} turn long term {when}" + (f", on {on:%d %b}" if on else "")
+                     + f". Selling before then costs about ₹{i['save']:,.0f} more tax.")
+        keys.append(k)
+    return lines, keys
+
+
 class Lens:
     """Reads the account from Kite. `call(name, *args)` makes one Kite
     call (the app's: kite.<name>(*args) through the throttle). pool: the
@@ -594,8 +621,11 @@ class Lens:
     live prices (None: Kite's holdings prices as read)."""
 
     def __init__(self, dispatcher, call: Optional[Callable[..., Any]] = None, today: Optional[Callable[[], date]] = None,
-                 *, pool=None, feed=None, now: Optional[Callable[[], datetime]] = None):
+                 *, pool=None, feed=None, now: Optional[Callable[[], datetime]] = None,
+                 push: Optional[Callable[[str, str], Any]] = None):
         self.dispatcher, self.pool, self.feed = dispatcher, pool, feed
+        self.push = push                          # (title, body) to every phone: LONG-TERM ALERTS
+        self._lt_day: Optional[date] = None
         self.call = call or self._kite
         self.now = now or (lambda: datetime.now(IST))
         self.today = today or (lambda: self.now().astimezone(IST).date())
@@ -701,10 +731,38 @@ class Lens:
                 stale = self._raw is None or self._raw["day"] != self.today()
                 if logged_in and stale and time.monotonic() >= retry_at:
                     await self.holdings()
+                if logged_in and self._lt_day != self.today() and self.now().astimezone(IST).time() >= LT_ALERT_FROM:
+                    self._lt_day = self.today()
+                    await self.send_long_term_alerts()
             except Exception as e:
                 logger.warning("LinckLens: reading the account failed (%s); trying again in 10 minutes", e)
                 retry_at = time.monotonic() + RETRY_FAILED_S
             await asyncio.sleep(every)
+
+    # ── LONG-TERM ALERTS ───────────────────────────────────────────────
+
+    async def send_long_term_alerts(self) -> list[str]:
+        """Once a day (from 09:30, Kite logged in): each lot in profit about
+        to turn long term — 7 days before and again the day before — pushed
+        once, with roughly what selling before then would cost in tax
+        (lens_inspect's "wait before selling"). Lines sent, kept so each is
+        said once (app_scratch "lens_long_term_alerts")."""
+        from . import lens_inspect as I
+        from .db import queries
+        trades = await self._trades()
+        if not trades or self.pool is None:
+            return []
+        h = await self.holdings()
+        o = I.opportunities(trades, self._held_by_isin(h), self.today())
+        sent = list(await queries.get_app_scratch(self.pool, LT_ALERT_KEY, []) or [])
+        lines, keys = long_term_lines(o, set(sent))
+        if not lines:
+            return []
+        await queries.set_app_scratch(self.pool, LT_ALERT_KEY, (sent + keys)[-400:])
+        if self.push is not None:
+            body = "\n".join(lines[:4]) + (f"\nand {len(lines) - 4} more: see the Inspector" if len(lines) > 4 else "")
+            await self.push("Lots turning long term", body)
+        return lines
 
     # ── the year of prices ─────────────────────────────────────────────
 

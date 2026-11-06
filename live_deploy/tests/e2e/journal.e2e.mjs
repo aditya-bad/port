@@ -4,7 +4,7 @@
 // P&L tooltip. Each note sits next to what was booked that day.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BASE, IDS, browser, context } from './helper.mjs';
+import { BASE, IDS, browser, context, until } from './helper.mjs';
 
 let b;
 test.before(async () => { b = await browser(); });
@@ -67,7 +67,10 @@ for (const [width, label] of [[1440, 'desktop'], [390, 'phone']]) {
     await p.fill('[data-edit-tags]', 'kite down');
     await p.click('[data-act="jrSave"]');
     await p.waitForSelector(`.jr-note:has-text("back at 11:20")`);
-    assert.deepEqual(await p.locator('.jr-note', { hasText: text }).locator('.jr-tag').allInnerTexts(), ['kite down']);
+    // the saved note redraws with its tag: wait for it rather than read once (flaked under load)
+    const tags = () => p.locator('.jr-note', { hasText: text }).locator('.jr-tag').allInnerTexts();
+    await until(async () => JSON.stringify(await tags()) === JSON.stringify(['kite down']));
+    assert.deepEqual(await tags(), ['kite down']);
     // delete asks once more
     await p.locator('.jr-note', { hasText: text }).locator('[data-act="jrAsk"]').click();
     await p.locator('.jr-note', { hasText: text }).locator('[data-act="jrDelete"]').click();

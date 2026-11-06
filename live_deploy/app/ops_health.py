@@ -58,6 +58,15 @@ ERRORS_WITHIN = timedelta(minutes=5)
 STALE_LEGS_FROM = time(9, 45)
 EXPORT_LATE = time(17, 30)
 KITE_FROM, MARKET_OPEN, MARKET_CLOSE = time(9, 5), time(9, 15), time(15, 30)
+SUMMARY_AT = time(15, 40)                    # STRANGLE SUMMARY: once a market day, after the close
+SUMMARY_KEY = "strangle_summary_sent"
+ROLLS = ("continuous_50pct_trigger", "eod_gap_check", "eod_rollout")
+EXITS = ("checkpoint_target", "convergence_stop", "contract_expiry_backstop")
+READY_FROM = time(9, 10)                     # STRANGLE READY: checked from before the open
+QUIET_FROM = time(9, 17)                     # FEED WATCHDOG: once the first ticks are in
+QUIET_RESUBSCRIBE = timedelta(minutes=2)     # a held contract with no tick this long: subscribed again
+QUIET_RAISE = timedelta(minutes=10)          # with no tick at all this long: raised
+QUIET_RETRY = timedelta(minutes=5)           # not subscribed again more often than this
 
 
 @dataclass
@@ -165,6 +174,169 @@ class OpsMonitor:
                                deployment_id=did, data={"minutes": ago}))
         return out
 
+    def _quiet_legs(self, now: datetime, holiday: bool) -> list[Problem]:
+        """FEED WATCHDOG: a held option that's had no tick for 2 minutes
+        while others are ticking is subscribed again (every 5 minutes at
+        most); one with no tick at all since the app started, 10 minutes on,
+        is raised. 5 Nov 2026: the feed was wrongly marked down at 11:43 and
+        every contract sold after it was never subscribed; ten deployments
+        held all management on legs with no price to the close."""
+        d = self.dispatcher
+        if not hasattr(self, "_quiet"):
+            self._quiet: dict[int, dict] = {}
+        last_tick = getattr(d, "last_tick_at", None)
+        connected = bool(getattr(d, "connected", False)) and not d.status.get("needs_login")
+        flowing = connected and last_tick is not None and now - last_tick < timedelta(seconds=60)
+        if holiday or not flowing or not in_market(now, QUIET_FROM):
+            return []
+        seen = getattr(d, "last_seen", {}) or {}
+        held: dict[int, list] = {}
+        for did, r in list(self.manager.runners.items()):
+            for tok, p in (getattr(r, "open_positions", {}) or {}).items():
+                sym = str(p.get("symbol") or "")
+                if sym.endswith(("CE", "PE")):
+                    held.setdefault(int(tok), []).append((did, r.deployment_name, sym, r.strategy_name))
+        for tok in list(self._quiet):
+            if tok not in held:
+                self._quiet.pop(tok)
+        again, out = [], []
+        for tok, who in held.items():
+            t = seen.get(tok)
+            if t is not None and now - t < QUIET_RESUBSCRIBE:
+                self._quiet.pop(tok, None)
+                continue
+            q = self._quiet.setdefault(tok, {"since": now, "retried": None, "never": t is None})
+            q["never"] = t is None
+            if q["retried"] is None or now - q["retried"] >= QUIET_RETRY:
+                q["retried"] = now
+                again.append(tok)
+        if again and getattr(d, "resubscribe", None) is not None:
+            try:
+                d.resubscribe(again)
+            except Exception:
+                logger.exception("Subscribing quiet contracts again failed")
+        for tok, q in self._quiet.items():
+            if not q["never"] or now - q["since"] < QUIET_RAISE:
+                continue
+            for did, name, sym, strat in held.get(tok, []):
+                mins = int((now - q["since"]).total_seconds() // 60)
+                out.append(Problem(f"dep:{did}:noticks:{tok}", "no_ticks", f"{name}: no price for {sym}",
+                                   f"Kite hasn't sent a single price for {sym} in {mins} min while other contracts tick, "
+                                   "even after subscribing it again. A strategy that needs its price won't adjust or exit "
+                                   "on it. Restart the app if it doesn't clear.",
+                                   severity="critical" if strat == "strangle_monthly_v2" else "warning",
+                                   deployment_id=did, data={"symbol": sym, "token": tok, "minutes": mins},
+                                   repeat=strat == "strangle_monthly_v2"))
+        return out
+
+    def _strangles_ready(self, now: datetime, holiday: bool) -> list[Problem]:
+        """STRANGLE READY: from 09:10 to the close, each strangle is running,
+        its strategy has loaded, holds the legs the book does, and every one
+        of them is subscribed to Kite's feed — said before the open, while
+        there's time to restart. (Kite not connected is its own alert.)"""
+        d = self.dispatcher
+        connected = bool(getattr(d, "connected", False)) and not d.status.get("needs_login")
+        if holiday or not connected or not market_day(now) or not (READY_FROM <= _ist(now).time() < MARKET_CLOSE):
+            return []
+        subscribed = set(getattr(d, "instrument_tokens", []) or [])
+        out = []
+        for did, r in list(self.manager.runners.items()):
+            if r.strategy_name != "strangle_monthly_v2":
+                continue
+            why = []
+            if not self.manager._is_running(did):
+                why.append("its strategy isn't running")
+            elif not getattr(r, "started", True):
+                why.append("its strategy hasn't finished starting")
+            book = {int(t) for t, p in (getattr(r, "open_positions", {}) or {}).items() if str(p.get("symbol") or "").endswith(("CE", "PE"))}
+            legs = getattr(getattr(r, "strategy", None), "legs", None) or {}
+            mine = {int(l["token"]) for side in legs.values() for l in side}
+            if getattr(r, "started", True) and book != mine:
+                sym = {int(t): p.get("symbol") for t, p in (getattr(r, "open_positions", {}) or {}).items()}
+                gone = sorted(sym.get(t, str(t)) for t in book - mine)
+                why.append(f"its strategy doesn't hold {', '.join(gone)} that the book does" if gone
+                           else "its strategy holds legs the book doesn't")
+            missing = sorted(str((getattr(r, "open_positions", {}) or {}).get(t, {}).get("symbol") or t) for t in book if t not in subscribed)
+            if missing:
+                why.append(f"{', '.join(missing)} not subscribed to Kite's feed")
+            if why:
+                pre = _ist(now).time() < MARKET_OPEN
+                out.append(Problem(f"dep:{did}:ready", "strangle_ready", f"{r.deployment_name} isn't ready" + (" for the open" if pre else ""),
+                                   (lambda w: w[:1].upper() + w[1:])("; ".join(why)) + ". It can't manage its position like this: restart the app"
+                                   + (" before 09:15." if pre else "."), deployment_id=did, data={"why": why}))
+        return out
+
+    async def strangle_day(self, day) -> list[dict]:
+        """STRANGLE SUMMARY: each strangle's day — its rolls, exits and
+        entries, how long a rule was held for a fault (and which), and the
+        day's P&L from its value at the close against the day before's."""
+        start = datetime.combine(day, time(0), IST)
+        end = start + timedelta(days=1)
+        deps = await self.pool.fetch("SELECT id, deployment_name FROM deployments WHERE strategy_name = 'strangle_monthly_v2' "
+                                     "AND status IN ('active', 'paused') ORDER BY deployment_name")
+        out = []
+        for dep in deps:
+            fills = await self.pool.fetch("SELECT action, reason FROM position_lots WHERE deployment_id = $1 "
+                                          "AND executed_at >= $2 AND executed_at < $3", dep["id"], start, end)
+            rolls = sum(1 for f in fills if f["action"] == "sell" and f["reason"] in ROLLS)
+            exits = sorted({f["reason"] for f in fills if f["reason"] in EXITS})
+            entries = sum(1 for f in fills if f["action"] == "sell" and (f["reason"] or "").startswith(("reentry", "initial")))
+            held = await self.pool.fetch("SELECT title, first_at, last_at FROM strategy_issues WHERE deployment_id = $1 "
+                                         "AND kind = 'blocked' AND first_at < $3 AND last_at >= $2", dep["id"], start, end)
+            mins = sum(int(((h["last_at"] - h["first_at"]).total_seconds() + 180) // 60) for h in held)   # raised 3 minutes in
+            rules = sorted({h["title"].split("”")[0].lstrip("“") for h in held})
+            close = await self.pool.fetchval("SELECT total_value FROM deployment_snapshots WHERE deployment_id = $1 "
+                                             "AND snapshot_at < $2 ORDER BY snapshot_at DESC LIMIT 1", dep["id"], end)
+            before = await self.pool.fetchval("SELECT total_value FROM deployment_snapshots WHERE deployment_id = $1 "
+                                              "AND snapshot_at < $2 ORDER BY snapshot_at DESC LIMIT 1", dep["id"], start)
+            pnl = float(close) - float(before) if close is not None and before is not None else None
+            out.append({"deployment_id": str(dep["id"]), "name": dep["deployment_name"], "rolls": rolls, "exits": exits,
+                        "entries": entries, "held_minutes": mins, "held_rules": rules,
+                        "pnl": round(pnl, 2) if pnl is not None else None})
+        return out
+
+    async def _strangle_summary(self, now: datetime) -> None:
+        n = _ist(now)
+        if not market_day(now) or n.time() < SUMMARY_AT:
+            return
+        if await queries.get_app_scratch(self.pool, SUMMARY_KEY) == n.date().isoformat():
+            return
+        await queries.set_app_scratch(self.pool, SUMMARY_KEY, n.date().isoformat())   # once, whatever happens next
+        try:
+            rows = await self.strangle_day(n.date())
+        except Exception:
+            logger.exception("The strangles' day summary failed")
+            return
+        if not rows:
+            return
+
+        def line(r):
+            bits = [f"{r['rolls']} roll{'' if r['rolls'] == 1 else 's'}"]
+            if r["exits"]:
+                bits.append("closed by " + ", ".join(x.replace("_", " ") for x in r["exits"]))
+            if r["held_minutes"]:
+                h, m = divmod(r["held_minutes"], 60)
+                bits.append(f"held {f'{h} h ' if h else ''}{m} min ({', '.join(r['held_rules'])})")
+            pnl = "P&L —" if r["pnl"] is None else f"{'+' if r['pnl'] >= 0 else '−'}₹{abs(r['pnl']):,.0f} today"
+            return f"{r['name'].replace('DTT ', '').replace(' Strangle', '')}: {', '.join(bits)}; {pnl}"
+        body = "\n".join(line(r) for r in rows)
+        title = f"Strangles today, {n:%d %b}"
+        for r in rows:
+            try:
+                await queries.record_event(self.pool, UUID(r["deployment_id"]), "day_summary", line(r), r)
+            except Exception:
+                logger.exception("Recording a strangle's day summary failed")
+        if not await self.muted():
+            await self.manager._push(title, body)
+        if self.event_broadcaster is not None:
+            try:
+                await self.event_broadcaster.broadcast({
+                    "deployment_id": None, "deployment_name": None, "strategy_name": "strangle_monthly_v2",
+                    "event_type": "strangle_summary", "message": f"{title} — {body}", "metadata": {"rows": rows},
+                    "created_at": datetime.now(timezone.utc).isoformat()})
+            except Exception:
+                logger.exception("Broadcasting the strangles' day summary failed")
+
     async def _errors(self, now: datetime) -> list[Problem]:
         rows = await self.pool.fetch(
             "SELECT e.deployment_id, d.deployment_name, count(*) AS n, max(e.created_at) AS last, "
@@ -249,6 +421,8 @@ class OpsMonitor:
         problems += self._runners(now, holiday)
         problems += await self._errors(now)
         problems += self._stale_legs(now, holiday)
+        problems += self._quiet_legs(now, holiday)
+        problems += self._strangles_ready(now, holiday)
         exp, success = await self._export(now)
         problems += exp
         if success is not None:
@@ -257,6 +431,8 @@ class OpsMonitor:
         problems += await self._day_check_problems(now)
         problems += await self._strategy_issues(now)
         await self._sync(now, problems)
+        if not holiday:
+            await self._strangle_summary(now)
         return self.open
 
     # ── what the deployments report about themselves ───────────────────
