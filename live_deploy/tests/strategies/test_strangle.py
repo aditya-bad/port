@@ -996,3 +996,30 @@ def test_a_straddles_trailing_low_moves_on_quoted_prices_too(pool_run, monkeypat
         ce = sim.dispatcher.last_prices[int(strat.legs["CE"][0]["token"])]
         assert strat._trailing_floor == pytest.approx(ce + quoted, abs=0.05), "the low is the straddle at the put's quote"
     pool_run(go)
+
+
+def test_muhurat_manages_and_exits_but_opens_nothing_new(pool_run, monkeypatch):
+    """8 Nov 2026, Muhurat trading (app/market_calendar.py): no new
+    positions. The checkpoint closes the cycle as on any day, but the
+    fresh pair waits for the next normal session's entry time."""
+    async def go(pool):
+        from datetime import datetime as dt
+        from app import market_calendar
+        sim = await start(pool, monkeypatch)
+        muhurat = dt(2026, 10, 18, 14, 30)   # the sim's own Sunday, made a Muhurat day
+        monkeypatch.setitem(market_calendar.SPECIAL, muhurat.date(), market_calendar.SPECIAL[date(2026, 11, 8)])
+        sim.market.now = sim.market.now.replace(day=muhurat.day)
+        sim.market.vol = 0.13          # premiums fall: the checkpoint is met
+        await sim.tick(muhurat, spot=25000)
+        assert "checkpoint_target" in {f["reason"] for f in closes(await sim.fills())}, "it exits as on any day"
+        assert await shorts(sim) == [], "and opens nothing new"
+        await sim.tick(muhurat.replace(minute=45), spot=25000)
+        assert await shorts(sim) == []
+        said = [r["summary"] for r in await decisions(sim) if r["rule"] == "entry"]
+        assert said and "Muhurat trading" in said[0] and "no new positions" in said[0]
+        nxt = dt(2026, 10, 19, 10, 0)    # Monday's entry time
+        sim.market.now = sim.market.now.replace(day=nxt.day)
+        await sim.tick(nxt, spot=25000)
+        legs = await shorts(sim)
+        assert len(legs) == 2 and {int(p["metadata"]["cycle_id"]) for p in legs} == {2}, "the next normal session re-enters"
+    pool_run(go)

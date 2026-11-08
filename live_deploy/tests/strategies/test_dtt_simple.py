@@ -132,3 +132,20 @@ def test_legs_missed_at_square_off_are_closed_next_morning_and_the_day_trades_no
         assert len(legs) == 2, "the strategy must trade the new day after its carried legs were closed"
         await assert_book_consistent(pool, sim.dep_id)
     pool_run(go)
+
+
+def test_an_intraday_strategy_doesnt_trade_in_muhurat(pool_run, monkeypatch):
+    """8 Nov 2026, Muhurat trading (app/market_calendar.py): no intraday
+    trading. Only a strategy that says it manages what it holds there (the
+    strangle) runs; this one sees the ticks and does nothing, said once."""
+    async def go(pool):
+        from datetime import date as d_, datetime as dt
+        from app import market_calendar
+        sim = await sim_for(pool, monkeypatch)
+        monkeypatch.setitem(market_calendar.SPECIAL, sim.market.today, market_calendar.SPECIAL[d_(2026, 11, 8)])
+        for hhmm in ("10:00", "14:25", "14:30"):
+            await sim.tick(hhmm)
+        assert await sim.open_positions() == [] and await sim.fills() == [], "nothing entered"
+        said = await pool.fetch("SELECT message FROM deployment_events WHERE deployment_id = $1 AND event_type = 'session_skipped'", sim.dep_id)
+        assert len(said) == 1 and "Muhurat trading" in said[0]["message"]
+    pool_run(go)

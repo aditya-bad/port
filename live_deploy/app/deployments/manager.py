@@ -43,6 +43,7 @@ from zoneinfo import ZoneInfo
 
 import asyncpg
 
+from .. import market_calendar
 from ..db import queries
 from ..prices import open_prices
 from ..slippage import resolve_book_price
@@ -622,9 +623,10 @@ class DeploymentManager:
 
     async def record_marks_once(self, now: datetime) -> int:
         marked_at = now.replace(second=0, microsecond=0)
-        if marked_at.weekday() >= 5 or not (_MARKS_OPEN <= marked_at.time() <= _MARKS_CLOSE):
+        sess = market_calendar.session(marked_at.date())
+        if sess is None or not (sess.open <= marked_at.time() <= sess.close):
             return 0
-        session_open = datetime.combine(marked_at.date(), _MARKS_OPEN, _IST)
+        session_open = datetime.combine(marked_at.date(), sess.open, _IST)
         rows = []
         for runner in list(self.runners.values()):
             if runner.mode != "intraday" and marked_at.minute % 5 != 0:
@@ -681,7 +683,8 @@ class DeploymentManager:
                         await queries.record_index_candles(
                             self.pool, [(tok, *building.pop(tok)) for tok in done],
                         )
-                    if not ticks or now.weekday() >= 5 or not (_MARKS_OPEN <= now.time() < _MARKS_CLOSE):
+                    sess = market_calendar.session(now.date())
+                    if not ticks or sess is None or not (sess.open <= now.time() < sess.close):
                         continue
                     watch = self.watched_tokens(static_tokens)
                     for t in ticks if isinstance(ticks, list) else []:
@@ -894,10 +897,11 @@ class DeploymentManager:
         if last is None or not getattr(d, "connected", False) or d.status.get("needs_login"):
             return None
         now_ist = now.astimezone(_IST)
-        if now_ist.weekday() >= 5 or not (time(9, 15) <= now_ist.time() < time(15, 30)):
+        sess = market_calendar.session(now_ist.date())
+        if sess is None or not (sess.open <= now_ist.time() < sess.close):
             return None
         last_ist = last.astimezone(_IST)
-        if last_ist.date() != now_ist.date() or last_ist.time() < time(9, 15):
+        if last_ist.date() != now_ist.date() or last_ist.time() < sess.open:
             return None   # nothing yet today (a holiday, a late open): not a stall
         age = (now_ist - last_ist).total_seconds()
         return age if age >= self.TICK_STALL_S else None

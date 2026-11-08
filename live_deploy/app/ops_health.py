@@ -47,6 +47,7 @@ from typing import Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from . import market_calendar
 from .db import queries
 
 logger = logging.getLogger("live_deploy.ops_health")
@@ -86,12 +87,19 @@ def _ist(dt: datetime) -> datetime:
 
 
 def market_day(now: datetime) -> bool:
-    return _ist(now).weekday() < 5
+    """A day with a session: a weekday, or a special one (app/market_calendar.py:
+    8 Nov 2026, Sunday, Muhurat trading)."""
+    return market_calendar.session(_ist(now).date()) is not None
+
+
+def at(now: datetime, t: time) -> time:
+    """A normal day's time moved to today's session (Muhurat: 09:15 is 14:20)."""
+    return market_calendar.shifted(_ist(now).date(), t)
 
 
 def in_market(now: datetime, start: time = MARKET_OPEN) -> bool:
     t = _ist(now).time()
-    return market_day(now) and start <= t < MARKET_CLOSE
+    return market_day(now) and at(now, start) <= t < at(now, MARKET_CLOSE)
 
 
 class OpsMonitor:
@@ -236,7 +244,7 @@ class OpsMonitor:
         there's time to restart. (Kite not connected is its own alert.)"""
         d = self.dispatcher
         connected = bool(getattr(d, "connected", False)) and not d.status.get("needs_login")
-        if holiday or not connected or not market_day(now) or not (READY_FROM <= _ist(now).time() < MARKET_CLOSE):
+        if holiday or not connected or not market_day(now) or not (at(now, READY_FROM) <= _ist(now).time() < at(now, MARKET_CLOSE)):
             return []
         subscribed = set(getattr(d, "instrument_tokens", []) or [])
         out = []
@@ -260,10 +268,10 @@ class OpsMonitor:
             if missing:
                 why.append(f"{', '.join(missing)} not subscribed to Kite's feed")
             if why:
-                pre = _ist(now).time() < MARKET_OPEN
+                pre = _ist(now).time() < at(now, MARKET_OPEN)
                 out.append(Problem(f"dep:{did}:ready", "strangle_ready", f"{r.deployment_name} isn't ready" + (" for the open" if pre else ""),
                                    (lambda w: w[:1].upper() + w[1:])("; ".join(why)) + ". It can't manage its position like this: restart the app"
-                                   + (" before 09:15." if pre else "."), deployment_id=did, data={"why": why}))
+                                   + (f" before {at(now, MARKET_OPEN):%H:%M}." if pre else "."), deployment_id=did, data={"why": why}))
         return out
 
     async def strangle_day(self, day) -> list[dict]:
@@ -297,7 +305,7 @@ class OpsMonitor:
 
     async def _strangle_summary(self, now: datetime) -> None:
         n = _ist(now)
-        if not market_day(now) or n.time() < SUMMARY_AT:
+        if not market_day(now) or n.time() < at(now, SUMMARY_AT):
             return
         if await queries.get_app_scratch(self.pool, SUMMARY_KEY) == n.date().isoformat():
             return
@@ -355,7 +363,7 @@ class OpsMonitor:
         connected = bool(getattr(d, "connected", False)) and not d.status.get("needs_login")
         if holiday or not connected or not in_market(now, STALE_LEGS_FROM) or self.manager.tick_stall(now):
             return []
-        today_open = datetime.combine(_ist(now).date(), MARKET_OPEN, IST)
+        today_open = datetime.combine(_ist(now).date(), at(now, MARKET_OPEN), IST)
         prices = getattr(d, "last_prices", {}) or {}
         times = getattr(d, "last_price_times", {}) or {}
         out = []
@@ -461,7 +469,9 @@ class OpsMonitor:
     async def _keep_day(self, now: datetime, export_done: Optional[dict]) -> None:
         from .repair import daycheck
         n = _ist(now)
-        if not market_day(now):
+        # no day check for a special session (Muhurat): its replay plays a
+        # normal day's minutes
+        if not market_day(now) or market_calendar.special(n.date()) is not None:
             return
         try:
             if time(9, 0) <= n.time() < MARKET_OPEN:

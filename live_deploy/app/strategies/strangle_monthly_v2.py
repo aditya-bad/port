@@ -725,7 +725,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
 
-from .. import clock
+from .. import clock, market_calendar
 from ..deployments.strategy_base import StrategyBase
 from ..options import NoKiteSession, OptionsResolver
 from ..options.resolver import is_multiple, live_price, spread_ok
@@ -908,6 +908,9 @@ class StrangleMonthlyV2Strategy(StrategyBase):
     # phone) — 3 minutes, not the usual 10: on 5 Nov 2026 the Sensex put roll
     # was refused from 09:23 and the first alert came at 09:37
     BLOCKED_ALERT_AFTER = timedelta(minutes=3)
+    # MUHURAT: runs in a manage-only session (app/market_calendar.py) —
+    # adjusts and exits what it holds, never opens a fresh position there
+    MANAGE_ONLY_SESSION = True
     live_within: timedelta = timedelta(minutes=3)
     # A single cycle spans many calendar days (checkpoint-to-checkpoint,
     # potentially the better part of a month) -- "day" would be
@@ -1163,6 +1166,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
     async def _maybe_enter(self, runner, ts) -> None:
         if self.legs["CE"] or self.legs["PE"]:
             return
+        if market_calendar.manage_only(_naive_ist(ts).date()):
+            await self._decide_once_a_day(runner, ts, "entry", "blocked", market_calendar.note(_naive_ist(ts).date())
+                                          + ": flat, so nothing to do until the next normal session")
+            return
         if runner.open_positions:
             # Flat by our own tracking but the database still holds
             # positions (left over from a close that failed earlier):
@@ -1187,6 +1194,12 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         await self._enter(runner, ts, trigger=trigger)
 
     async def _enter(self, runner, ts, trigger: str) -> None:
+        if market_calendar.manage_only(_naive_ist(ts).date()):
+            # MUHURAT: no new positions — a checkpoint or stop that closes the
+            # cycle today re-enters at the next normal session's entry time
+            await self._decide_once_a_day(runner, ts, "entry", "blocked", market_calendar.note(_naive_ist(ts).date())
+                                          + f": the {trigger.replace('_', ' ')} re-entry waits for the next normal session")
+            return
         try:
             selector = "THIS_MONTH" if ts.date().day <= 10 else "NEXT_MONTH"
             expiry = await self.resolver.resolve_expiry(self.instrument, selector, reference_date=ts.date())
@@ -1539,7 +1552,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 p = runner.dispatcher.last_prices.get(leg["token"])
                 if p is None:
                     since = self._no_tick_since.setdefault(leg["token"], ts)
-                    if ts - since >= _NO_TICK_QUOTE_AFTER and _naive_ist(ts).time() >= _QUOTE_STALE_FROM:
+                    if ts - since >= _NO_TICK_QUOTE_AFTER and _naive_ist(ts).time() >= market_calendar.shifted(_naive_ist(ts).date(), _QUOTE_STALE_FROM):
                         # NO TICKS: priced from its quote like a leg not
                         # traded today (5 Nov 2026: no tick ever came for the
                         # legs sold after the feed was wrongly marked down)
@@ -1598,7 +1611,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         two-sided quote is left out (its last trade, from today, stands).
         Every price quoted is recorded (runner.record_quote) for the day
         check, which has no order book from the day."""
-        if stale and _naive_ist(ts).time() < _QUOTE_STALE_FROM:
+        if stale and _naive_ist(ts).time() < market_calendar.shifted(_naive_ist(ts).date(), _QUOTE_STALE_FROM):
             return None
         want = set(stale) | set(aged)
         legs = [leg for side_legs in self.legs.values() for leg in side_legs if leg["symbol"] in want]
@@ -1622,7 +1635,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             q = quotes.get(key) or {}
             mid = _quote_mid(q, self.quote_wide_spread)
             bid, ask = _book_top(q)
-            if mid is None and ask and _naive_ist(ts).time() >= _ASK_FROM:
+            if mid is None and ask and _naive_ist(ts).time() >= market_calendar.shifted(_naive_ist(ts).date(), _ASK_FROM):
                 # THIN BOOKS: a short leg is bought back at the ask, so with no
                 # usable mid that's its price (6 Nov 2026, DTT Bankex Strangle:
                 # 64000CE untraded with no usable mid, every rule held to 11:10)

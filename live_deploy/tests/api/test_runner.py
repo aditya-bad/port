@@ -10,6 +10,17 @@ import pytest
 from tests.conftest import make_deployment, sql
 
 
+@pytest.fixture(autouse=True)
+def any_day_is_a_normal_session(monkeypatch):
+    """These ticks carry the real clock: whatever day the tests run on (a
+    weekend, a special session like Muhurat), it reads as a normal weekday
+    here; the calendar's own rules have their own tests
+    (tests/unit/test_market_calendar.py)."""
+    from app import market_calendar
+    monkeypatch.setattr(market_calendar, "SPECIAL", {})
+    monkeypatch.setattr(market_calendar, "session", lambda day: market_calendar.NORMAL)
+
+
 def runner_of(client, dep_id):
     return client.app.state.deployment_manager.runners[dep_id]
 

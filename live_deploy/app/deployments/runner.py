@@ -27,6 +27,7 @@ from zoneinfo import ZoneInfo
 import asyncpg
 
 from ..db import queries
+from .. import market_calendar
 from ..slippage import resolve_book_price
 from .. import shadow
 from .health import DROP_WORDS, BlockedWatch, Breaker, Issues, TickFilter, describe
@@ -645,8 +646,19 @@ class DeploymentRunner:
             return True
         if (datetime.now() - ts) > self._STALE_TICK_MAX_AGE:
             return True
-        t = ts.time()
-        return t < self._MARKET_OPEN_TIME or t > self._MARKET_CLOSE_TIME
+        return not self._in_session(ts)
+
+    def _in_session(self, ts: datetime) -> bool:
+        """Within the day's session (app/market_calendar.py): a normal day
+        09:15-15:40; a special one at its own times (8 Nov 2026, Muhurat:
+        14:20-15:40, so the 14:05-14:20 pre-open is never a signal); no
+        session on a weekend."""
+        s = market_calendar.session(ts.date())
+        if s is None:
+            return False
+        if market_calendar.special(ts.date()) is None:
+            return self._MARKET_OPEN_TIME <= ts.time() <= self._MARKET_CLOSE_TIME
+        return s.open <= ts.time() <= market_calendar.shifted(ts.date(), self._MARKET_CLOSE_TIME)
 
     def _stale_tick_reason(self, tick: dict) -> str:
         """Human-readable version of whichever _is_stale_tick condition
@@ -664,8 +676,13 @@ class DeploymentRunner:
             return "older than this deployment's own creation"
         if (datetime.now() - ts) > self._STALE_TICK_MAX_AGE:
             return "older than the current wall clock by more than %s" % self._STALE_TICK_MAX_AGE
-        t = ts.time()
-        if t < self._MARKET_OPEN_TIME or t > self._MARKET_CLOSE_TIME:
+        if not self._in_session(ts):
+            s = market_calendar.session(ts.date())
+            if s is None:
+                return "timestamped on a day with no session"
+            if market_calendar.special(ts.date()) is not None:
+                return (f"timestamped outside the day's session ({s.name}: {s.open}-"
+                        f"{market_calendar.shifted(ts.date(), self._MARKET_CLOSE_TIME)} IST)")
             return f"timestamped outside real trading hours ({self._MARKET_OPEN_TIME}-{self._MARKET_CLOSE_TIME} IST)"
         return "unknown"   # unreachable in practice — _is_stale_tick already returned True to get here
 
@@ -715,6 +732,19 @@ class DeploymentRunner:
         if self.strategy is None:
             return
         if not self.started:
+            return
+        ts0 = t.get("exchange_timestamp")
+        if isinstance(ts0, datetime) and market_calendar.manage_only(ts0.date()) \
+                and not getattr(type(self.strategy), "MANAGE_ONLY_SESSION", False):
+            # MUHURAT: a manage-only session runs only the strategies that
+            # say they manage what they hold there (the strangle); the rest
+            # don't trade at all that day
+            if getattr(self, "_manage_only_noted", None) != ts0.date():
+                self._manage_only_noted = ts0.date()
+                try:
+                    await self._record_event("session_skipped", market_calendar.note(ts0.date()), {"day": ts0.date().isoformat()})
+                except Exception:
+                    logger.exception("%s: noting the session skip failed", self.deployment_name)
             return
         now = self.clock_now()
         if self.use_breaker and not self.breaker.allow(now):
