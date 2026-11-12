@@ -668,6 +668,24 @@ a.cell-name:hover b { text-decoration: underline; }
 .mf-row { grid-template-columns: minmax(240px, 2.6fr) 84px 80px 90px 96px 96px 108px 64px 104px; min-width: 1040px; padding: 6px 0; }
 .sip-row { grid-template-columns: minmax(220px, 2fr) 96px 150px 100px 64px 90px; min-width: 760px; }
 .sip-row.off { color: var(--mute); }
+/* EXITER: the exit list, and everything held to pick from */
+.xl-tbl, .xh-tbl { overflow-x: auto; }
+.xl-row { grid-template-columns: minmax(180px, 1.8fr) 84px 128px 84px 84px 100px 100px 108px 108px 108px 86px; min-width: 1240px; padding: 6px 0; align-items: center; }
+.xh-row { grid-template-columns: 34px minmax(200px, 2fr) 120px 88px 84px 84px 100px 100px 108px 84px 64px; min-width: 1130px; padding: 4px 0; }
+.xl-row .num small, .xh-row .num small { display: block; font-size: 11px; color: var(--mute); }
+.xl-row .num.pos small, .xl-row .num.neg small, .xh-row .num.pos small, .xh-row .num.neg small { color: inherit; opacity: .8; }
+.xl-row .cell-name > b .tag { font-size: 10px; padding: 0 4px; vertical-align: 1px; }
+.xl-q .input { width: 100%; height: 32px; text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.xl-q small, .xl-q .xl-all { display: block; font-size: 11px; color: var(--mute); background: none; border: 0; padding: 2px 0 0; margin-left: auto; }
+.xl-x { text-align: right; }
+.xl-row.gone { color: var(--mute); }
+.xh-c { display: flex; align-items: center; justify-content: center; }
+.xh-c input { width: 16px; height: 16px; accent-color: var(--ink); pointer-events: none; }
+.xh-row.sel { background: var(--soft); }
+.xt-tools { margin-top: 6px; }
+.xt-save { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+.xt-save.bad { color: var(--r); font-weight: 600; }
+.xt-empty { padding: 10px 0; }
 .ls-row .num small, .mf-row .num small { display: block; font-size: 11px; color: var(--mute); }
 .ls-row .num.pos small, .ls-row .num.neg small { color: inherit; opacity: .8; }
 .ls-row .cell-name > b .tag { font-size: 10px; padding: 0 4px; vertical-align: 1px; }
@@ -758,6 +776,19 @@ a.cell-name:hover b { text-decoration: underline; }
   .ls-row.tot > span:not([data-l]), .mf-row.tot > span:not([data-l]) { grid-column: 1 / -1; }
   .ls-detail { grid-template-columns: 1fr; min-width: 0; }
   .lens-tools .input.search { width: 100%; }
+  .xl-tbl, .xh-tbl { overflow: visible; }
+  .xl-row, .xh-row { min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; padding: 10px 0; }
+  .xl-row .cell-name { grid-column: 1 / -1; }
+  .xh-row .cell-name { grid-column: 2 / -1; }
+  .xh-row .xh-c { grid-column: 1; justify-content: flex-start; }
+  .xl-row .num, .xh-row .num { text-align: left; }
+  .xl-q .input { text-align: left; }
+  .xl-q .xl-all { margin-left: 0; }
+  .xl-x { grid-column: 1 / -1; text-align: left; }
+  .xl-row > [data-l]::before, .xh-row > [data-l]::before { content: attr(data-l); display: block; font-family: var(--f-body); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--mute); }
+  .xl-row.th, .xh-row.th { display: none; }
+  .xl-row.tot > span:empty, .xh-row.tot > span:empty { display: none; }
+  .xl-row.tot > span:not([data-l]), .xh-row.tot > span:not([data-l]) { grid-column: 1 / -1; }
   .fy-tbl, .ltr-tbl { overflow: visible; }
   .trd-row { min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; padding: 10px 0; }
   .trd-row .num { text-align: left; }

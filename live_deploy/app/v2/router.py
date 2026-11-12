@@ -168,6 +168,41 @@ async def get_lens_whatif(request: Request, without: str = ""):
     return await _lens(request).whatif({x.strip() for x in without.split(",") if x.strip()})
 
 
+# EXITER: the holdings you've picked to sell, kept on the server (app_scratch
+# "lens_exiter") so no filter, refresh or other device loses them. qty
+# None: all you hold, whatever that is when you sell.
+EXITER_KEY = "lens_exiter"
+
+
+class ExitPick(BaseModel):
+    key: str = Field(pattern=r"^(eq|mf):.{1,120}$")
+    kind: Literal["share", "fund"]
+    symbol: str = Field("", max_length=80)
+    name: str = Field("", max_length=200)
+    isin: str = Field("", max_length=20)
+    qty: Optional[float] = Field(None, gt=0, le=1e9)
+    added: Optional[str] = Field(None, max_length=40)
+
+
+class ExitList(BaseModel):
+    items: list[ExitPick] = Field(max_length=1000)
+
+
+@router.get("/lens/exiter")
+async def get_lens_exiter(request: Request):
+    """The Exiter's list: what you've picked to sell, and how much."""
+    return {"items": list(await queries.get_app_scratch(request.app.state.db_pool, EXITER_KEY, []) or [])}
+
+
+@router.put("/lens/exiter")
+async def put_lens_exiter(payload: ExitList, request: Request):
+    """The Exiter's whole list, replaced (a key twice: the last one)."""
+    by = {x.key: x.model_dump() for x in payload.items}
+    items = list(by.values())
+    await queries.set_app_scratch(request.app.state.db_pool, EXITER_KEY, items)
+    return {"items": items}
+
+
 @router.get("/vix")
 async def get_vix(request: Request, start: Optional[datetime] = None, end: Optional[datetime] = None,
                   interval: str = "5minute"):

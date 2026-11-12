@@ -5,20 +5,22 @@ import { html, mount, actions, on, $ } from '../../core/dom.js';
 import { hhmm } from '../../core/format.js';
 import { empty, loading } from '../../ui/components.js';
 import { say, fail } from '../../ui/toast.js';
-import { lens, onLens, loadHoldings, startLive, stopLive, loadTrades, importFiles, removeImport, dismissImportNote } from '../../data/lens.js';
+import { lens, onLens, loadHoldings, startLive, stopLive, loadTrades, importFiles, removeImport, dismissImportNote, loadExiter, setExiter, retryExiter } from '../../data/lens.js';
 import * as overview from './overview.js';
 import * as shares from './shares.js';
 import * as funds from './funds.js';
 import * as account from './account.js';
 import * as trades from './trades.js';
 import * as habits from './habits.js';
+import * as exiter from './exiter.js';
 import { enterInspector } from './inspect.js';
 
-export const TABS = [['overview', 'Overview', overview], ['shares', 'Shares', shares], ['funds', 'Funds', funds], ['trades', 'Trades', trades], ['habits', 'Habits', habits], ['account', 'Account', account]];
+export const TABS = [['overview', 'Overview', overview], ['shares', 'Shares', shares], ['funds', 'Funds', funds], ['exiter', 'Exiter', exiter], ['trades', 'Trades', trades], ['habits', 'Habits', habits], ['account', 'Account', account]];
 const HEAD = {
   overview: ['Overview', 'Everything in your Kite account, and what it’s done.'],
   shares: ['Shares', 'Stocks, ETFs, gold and REITs in your demat.'],
   funds: ['Funds', 'Mutual funds and the SIPs feeding them.'],
+  exiter: ['Exiter', 'Pick the shares and funds you mean to sell, and see what they come to.'],
   trades: ['Trades', 'Every buy and sell from your Console tradebook, and what they add up to.'],
   habits: ['Habits', 'How you trade, from your tradebook: in rupees, naming the stocks.'],
   account: ['Account', 'The money in the trading account, and how these pages are read.'],
@@ -96,10 +98,12 @@ export default {
         say(lens.importNote.title);
       } catch (err) { fail(err, 'Upload failed: nothing was imported'); }
     });
+    const offMod = mod.wire ? mod.wire(main, ui, paint, { on, actions, lens, setExiter, retryExiter, loadExiter, say }) : null;
     paint();
     loadHoldings();
-    if (['trades', 'habits', 'shares', 'funds'].includes(tab)) loadTrades();   // shares and funds show what the tradebook says of each
+    if (tab === 'exiter') loadExiter();
+    if (['trades', 'habits', 'shares', 'funds', 'exiter'].includes(tab)) loadTrades();   // shares and funds show what the tradebook says of each
     startLive();
-    return () => { off(); offActs(); offIn(); offSort(); offFiles(); stopLive(); };
+    return () => { off(); offActs(); offIn(); offSort(); offFiles(); if (offMod) offMod(); stopLive(); };
   },
 };

@@ -49,7 +49,7 @@ test('the logo switches between LinckTrade and LinckLens; without Kite it says s
   await p.waitForSelector('.hdr.is-lens');
   assert.match(p.url(), /#\/lens$/);
   assert.equal((await p.textContent('.hdr .prod-name')).trim(), 'Lens');
-  assert.deepEqual(await p.locator('.hdr .nav a').allInnerTexts(), ['Overview', 'Shares', 'Funds', 'Trades', 'Habits', 'Account'], 'Lens has its own pages');
+  assert.deepEqual(await p.locator('.hdr .nav a').allInnerTexts(), ['Overview', 'Shares', 'Funds', 'Exiter', 'Trades', 'Habits', 'Account'], 'Lens has its own pages');
   assert.equal(await p.locator('.hdr .basis-seg').count(), 0, 'no P&L basis: that is LinckTrade’s');
   // no Kite session on this server: it says so, on every page
   await p.waitForSelector('.lens .empty');
@@ -570,3 +570,75 @@ for (const [width, label] of [[390, 'phone'], [320, 'small phone']]) {
     await ctx.close();
   });
 }
+
+// EXITER: pick what to sell from everything held, whole by default, the
+// quantity editable; the picks are kept on the server, so no filter and
+// no reload loses them.
+test('Exiter: picks survive filters and a reload; a quantity is edited; long and short term from the tradebook', async () => {
+  const { ctx, p } = await lensPage();
+  await ctx.route('**/v2/lens/trades', r => r.fulfill({ json: FX.trades }));
+  await ctx.request.put(`${BASE}/v2/lens/exiter`, { data: { items: [] } });
+  await p.goto(`${BASE}/linck/#/lens/exiter`);
+  await p.waitForSelector('[data-exit="empty"]');
+  assert.equal(await p.locator('.hdr .nav a.on').innerText(), 'Exiter');
+  const holdings = p.locator('[data-exit="holdings"] .tr[data-key]');
+  assert.equal(await holdings.count(), FX.holdings.equity.length + FX.holdings.mf.length, 'shares and funds, all of them');
+  // pick INFY: all 140 of it
+  await p.click('[data-exit="holdings"] [data-key="eq:INE002A01011"]');
+  const infy = p.locator('[data-exit="list"] [data-pick="eq:INE002A01011"]');
+  await infy.waitFor();
+  assert.equal(await infy.locator('input').inputValue(), '140');
+  assert.match(await infy.locator('[data-l="Sell"]').innerText(), /all/);
+  assert.match(await infy.locator('[data-l="Put in"]').innerText(), /₹1,94,600/);
+  await p.waitForSelector('[data-save="saved"]');
+  // a filter that hides INFY: it stays picked, and a fund is picked too
+  await p.fill('[data-f="xsearch"]', 'UTI');
+  await until(async () => (await holdings.count()) === 1);
+  assert.equal(await p.locator('[data-exit="holdings"] [data-key="eq:INE002A01011"]').count(), 0, 'hidden by the search');
+  assert.equal(await infy.count(), 1, 'still in the exit list');
+  await p.click('[data-exit="holdings"] [data-key^="mf:INF789F01XA0"]');
+  await p.waitForSelector('[data-exit="list"] [data-pick^="mf:INF789F01XA0"]');
+  await p.fill('[data-f="xsearch"]', '');
+  await p.click('[data-filter="pnl"] [data-v="loss"]');
+  await p.click('[data-filter="show"] [data-v="picked"]');
+  assert.deepEqual(await holdings.evaluateAll(rs => rs.map(r => r.dataset.key)), ['eq:INE002A01011'], 'picked and in loss: INFY');
+  await p.click('[data-filter="show"] [data-v="all"]');
+  await p.click('[data-filter="pnl"] [data-v="any"]');
+  // sell 46 of INFY: the oldest 46 are its long-term lot
+  await infy.locator('input').fill('46');
+  await infy.locator('input').press('Enter');
+  await until(async () => /sell all/.test(await infy.locator('[data-l="Sell"]').innerText()));
+  assert.match(await infy.locator('[data-l="Put in"]').innerText(), /₹63,940/);
+  assert.match(await infy.locator('[data-l="Long term"]').innerText(), /46 qty/);
+  assert.equal((await infy.locator('[data-l="Short term"]').innerText()).trim(), '—');
+  // not a quantity: refused, nothing changes
+  await infy.locator('input').fill('abc');
+  await infy.locator('input').press('Enter');
+  await until(async () => (await infy.locator('input').inputValue()) === '46');
+  await p.waitForSelector('[data-save="saved"]');
+  // a reload: all of it still there
+  await p.reload();
+  await p.waitForSelector('[data-exit="list"] [data-pick="eq:INE002A01011"]');
+  assert.equal(await p.locator('[data-exit="list"] .tr[data-pick]').count(), 2);
+  assert.equal(await infy.locator('input').inputValue(), '46');
+  const saved = await (await ctx.request.get(`${BASE}/v2/lens/exiter`)).json();
+  assert.deepEqual(saved.items.map(x => [x.key, x.qty]).sort(), [['eq:INE002A01011', 46], ['mf:INF789F01XA0:9102/5', null]]);
+  assert.match(await p.locator('[data-exit="strip"]').innerText(), /Picked to sell\s+2\s+1 share · 1 fund/);
+  // back to all of it
+  await infy.locator('[data-act="xall"]').click();
+  await until(async () => (await infy.locator('input').inputValue()) === '140');
+  // phone width
+  await p.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await noSideways(p), 0);
+  await p.setViewportSize({ width: 1440, height: 900 });
+  // clear, and undo
+  await p.click('[data-act="xclear"]');
+  await p.waitForSelector('[data-exit="empty"]');
+  await p.click('.toast [data-undo]');
+  await until(async () => (await p.locator('[data-exit="list"] .tr[data-pick]').count()) === 2);
+  await p.waitForSelector('[data-save="saved"]');
+  assert.equal((await (await ctx.request.get(`${BASE}/v2/lens/exiter`)).json()).items.length, 2);
+  await ctx.request.put(`${BASE}/v2/lens/exiter`, { data: { items: [] } });
+  assert.deepEqual(ctx.errors, []);
+  await ctx.close();
+});

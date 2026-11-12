@@ -10,7 +10,8 @@ import { importSummary } from './lensimport.js';
 
 const STALE_MS = 60000;
 const st = { h: null, hErr: null, hAt: 0, busy: false, y: null, yErr: null, following: false, live: false, liveAt: null,
-  t: null, tErr: null, tBusy: false, tFollowing: false, imported: null, importNote: null };
+  t: null, tErr: null, tBusy: false, tFollowing: false, imported: null, importNote: null,
+  x: null, xErr: null, xSaving: false };
 const subs = new Set();
 
 export const lens = st;
@@ -135,4 +136,39 @@ export async function removeImport(id) {
   await api.lensRemoveImport(id);
   st.imported = null;
   await loadTrades();
+}
+
+// ── EXITER: what you've picked to sell ────────────────────────────────
+// Kept on the server (/v2/lens/exiter), so no filter, refresh or other
+// device loses it. Each change shows at once and is saved behind it, one
+// save at a time, always the newest list; a failed save stays shown
+// (st.xErr) and goes again with the next change, or Save again.
+export async function loadExiter() {
+  if (pending || saving) { emit(); return; }   // a change not yet saved is newer than what the server has
+  try {
+    const r = await api.lensExiter();
+    if (!pending && !saving) { st.x = r.items; st.xErr = null; }
+  } catch (e) { if (st.x == null) st.xErr = e; }
+  emit();
+}
+
+let pending = null, saving = null;
+export function setExiter(items) {
+  st.x = items;
+  pending = items;
+  emit();
+  if (!saving) saving = flush();
+  return saving;
+}
+export const retryExiter = () => setExiter(st.x || []);
+
+async function flush() {
+  st.xSaving = true; emit();
+  try {
+    while (pending) {
+      const items = pending;
+      pending = null;
+      try { await api.lensSaveExiter(items); st.xErr = null; } catch (e) { st.xErr = e; break; }
+    }
+  } finally { st.xSaving = false; saving = null; emit(); }
 }

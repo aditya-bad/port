@@ -454,3 +454,23 @@ def test_lens_holdings_and_history_from_kite_and_when_kite_isnt_connected(client
     for path in ("/v2/lens/holdings", "/v2/lens/history"):
         r = client.get(path)
         assert r.status_code == 409 and "Kite isn’t connected" in r.json()["detail"]
+
+
+# EXITER: what you've picked to sell is kept on the server, whatever the page does.
+def test_lens_exiter_keeps_the_list_and_refuses_what_isnt_a_pick(client):
+    assert client.get("/v2/lens/exiter").json() == {"items": []}
+    picks = [
+        {"key": "eq:INE002A01011", "kind": "share", "symbol": "INFY", "name": "INFOSYS", "isin": "INE002A01011", "qty": None, "added": "2026-11-12T10:00:00"},
+        {"key": "mf:INF789F01XA0:9102/5", "kind": "fund", "symbol": "UTI NIFTY 50", "isin": "INF789F01XA0", "qty": 120.5},
+        {"key": "eq:INE002A01011", "kind": "share", "symbol": "INFY", "qty": 40},   # the same key again: the last one wins
+    ]
+    r = client.put("/v2/lens/exiter", json={"items": picks})
+    assert r.status_code == 200
+    got = client.get("/v2/lens/exiter").json()["items"]
+    assert [(x["key"], x["qty"]) for x in got] == [("eq:INE002A01011", 40), ("mf:INF789F01XA0:9102/5", 120.5)]
+    for bad in ({"key": "x:1", "kind": "share"}, {"key": "eq:A", "kind": "bond"}, {"key": "eq:A", "kind": "share", "qty": 0},
+                {"key": "eq:A", "kind": "share", "qty": -3}):
+        assert client.put("/v2/lens/exiter", json={"items": [bad]}).status_code == 422
+    assert len(client.get("/v2/lens/exiter").json()["items"]) == 2, "a refused list changes nothing"
+    assert client.put("/v2/lens/exiter", json={"items": []}).json() == {"items": []}
+    assert client.get("/v2/lens/exiter").json() == {"items": []}

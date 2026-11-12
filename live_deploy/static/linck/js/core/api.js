@@ -53,6 +53,9 @@ export const api = {
   lensWhatif: without => req(`/v2/lens/inspect/whatif?without=${encodeURIComponent(without)}`),
   lensImport: files => post('/v2/lens/trades/import', { files }),
   lensRemoveImport: id => req(`/v2/lens/trades/imports/${id}`, { method: 'DELETE' }),
+  // EXITER: what you've picked to sell, kept on the server
+  lensExiter: () => req('/v2/lens/exiter'),
+  lensSaveExiter: items => req('/v2/lens/exiter', { method: 'PUT', body: { items } }),
   dayChecks: day => req(`/v2/day-checks${day ? `?day=${enc(day)}` : ''}`),
   runDayCheck: body => post('/v2/day-checks/run', body || {}),
   // repairing a flagged day (app/repair/dayrepair.py)
