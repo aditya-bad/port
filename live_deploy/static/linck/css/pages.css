@@ -941,6 +941,10 @@ a.cell-name:hover b { text-decoration: underline; }
 .trk-r span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .trk-r:hover, .trk-r:focus-visible { border-color: var(--ink); }
 .trk-r.on { background: var(--soft); border-color: var(--ink); }
+.trk-wins { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.trk-win { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border: 1.5px solid var(--ink); background: var(--card); }
+.trk-win-who { font-size: 22px; font-family: var(--f-mono); line-height: 1.2; overflow-wrap: anywhere; }
+.trk-row .cell-name b .tag { font-size: 10px; padding: 0 5px; margin-left: 6px; }
 .trk-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; }
 .trk-plot { position: relative; }
 .trk-y { position: absolute; left: 0; z-index: 1; pointer-events: none; background: var(--paper); padding: 0 4px 0 0; }

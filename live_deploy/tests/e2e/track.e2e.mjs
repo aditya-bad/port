@@ -50,6 +50,13 @@ test('Compare with underlying: pick, plot on one scale, the gap, the numbers; re
   assert.match(await p.locator('[data-token="5582849"] [data-l="Gap at the end"]').innerText(), /−2\.42 pts/);
   assert.match(await p.locator('[data-token="5582849"] [data-l="Widest gap"]').innerText(), /−3\.08 pts/);
   assert.match(await p.locator('[data-track="out"]').innerText(), /1 of the underlying’s left out/);
+  // who won: tracked closest (lowest tracking error), gained most
+  const closest = await p.locator('[data-win="closest"]').innerText();
+  assert.match(closest, /Tracked closest[\s\S]*NIFTYBEES[\s\S]*Tracking error 1\.30% a year; next SETFNIF50 at 4\.01% a year[\s\S]*Ended \+1\.45 pts against NIFTY 50/);
+  assert.match(await p.locator('[data-win="gained"]').innerText(), /Gained most[\s\S]*NIFTYBEES[\s\S]*\+21\.79% over the period; next SETFNIF50 \+17\.92%[\s\S]*\+1\.45 pts more than NIFTY 50 \(\+20\.34%\)/);
+  assert.equal(await bees.locator('[data-tag="closest"]').count(), 1);
+  assert.equal(await bees.locator('[data-tag="gained"]').count(), 1);
+  assert.equal(await p.locator('[data-token="5582849"] [data-tag]').count(), 0);
   // both charts: the underlying and two ETFs; two gap lines and the zero line
   assert.equal(await p.locator('[data-chart="levels"] svg path').count(), 3);
   assert.equal(await p.locator('[data-chart="gap"] svg path').count(), 2);
@@ -69,6 +76,8 @@ test('Compare with underlying: pick, plot on one scale, the gap, the numbers; re
   // remove one; a reload keeps the rest
   await p.click('[data-act="tdrop"][data-t="5582849"]');
   await until(async () => asked[asked.length - 1].with === '2707457');
+  await until(async () => /How closely it tracked[\s\S]*NIFTYBEES/.test(await p.locator('[data-win="closest"]').innerText()));
+  assert.equal(await p.locator('[data-tag]').count(), 0, 'one compared: no contest, no tags');
   await p.reload();
   await p.waitForSelector('[data-track="figures"]');
   assert.deepEqual(await p.locator('[data-pick="with"] .trk-w').evaluateAll(xs => xs.map(x => x.dataset.w)), ['2707457']);

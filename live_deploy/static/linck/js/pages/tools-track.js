@@ -75,12 +75,47 @@ function chartGap(r, intraday) {
     <div class="trk-axis tiny mute mono"><span>${fmtT(r.t[0], intraday)}</span><span>0 = moving exactly with the underlying</span><span>${fmtT(r.t[r.t.length - 1], intraday)}</span></div></div>`;
 }
 
+// WHO WON, two ways: tracked the underlying closest (the lowest tracking
+// error: the gap that moved least from one candle to the next), and gained
+// the most over the period. Level to the shown decimals: a tie.
+export function winners(others) {
+  const best = (xs, key, dir, dp) => {
+    const ok = xs.filter(o => o.stats[key] != null);
+    if (!ok.length) return null;
+    const sorted = [...ok].sort((a, b) => dir * (a.stats[key] - b.stats[key]));
+    const top = sorted[0].stats[key], round = v => Math.round(v * 10 ** dp);
+    return { tops: sorted.filter(o => round(o.stats[key]) === round(top)), next: sorted.find(o => round(o.stats[key]) !== round(top)) || null };
+  };
+  return { closest: best(others, 'te', 1, 3), gained: best(others, 'ret', -1, 2) };
+}
+
+function verdict(s, r, intraday) {
+  const w = winners(r.others), base = s.base.label;
+  const names = xs => xs.map(o => labelOf(o.token)).join(' and ');
+  const teOf = o => (o.stats.te_year != null ? `${o.stats.te_year.toFixed(2)}% a year` : `${o.stats.te.toFixed(3)} pts a candle`);
+  const card = (kind, title, who, line1, line2) => html`<div class="trk-win" data-win="${kind}"><span class="label tiny">${title}</span>
+    <b class="trk-win-who">${who}</b><span class="small">${line1}</span>${line2 ? html`<span class="tiny mute">${line2}</span>` : ''}</div>`;
+  const c = w.closest, g = w.gained;
+  const baseRet = r.base.ret;
+  const one = r.others.length === 1;
+  return html`<div class="trk-wins" data-track="verdict">
+    ${c ? card('closest', one ? 'How closely it tracked' : 'Tracked closest', c.tops.length > 1 ? `A tie: ${names(c.tops)}` : names(c.tops),
+      `Tracking error ${teOf(c.tops[0])}${c.next ? `; next ${labelOf(c.next.token)} at ${teOf(c.next)}` : ''}`,
+      `Ended ${pp(c.tops[0].stats.diff)} against ${base}`) : ''}
+    ${g ? card('gained', one ? 'Its gain' : 'Gained most', g.tops.length > 1 ? `A tie: ${names(g.tops)}` : names(g.tops),
+      `${pct(g.tops[0].stats.ret, 2)} over the period${g.next ? `; next ${labelOf(g.next.token)} ${pct(g.next.stats.ret, 2)}` : ''}`,
+      g.tops[0].stats.ret > baseRet ? `${pp(g.tops[0].stats.ret - baseRet)} more than ${base} (${pct(baseRet, 2)})`
+        : `None beat ${base}: it moved ${pct(baseRet, 2)}`) : ''}
+  </div>`;
+}
+
 function figures(s, r, intraday) {
+  const w = winners(r.others), isTop = (x, o) => !!(x && x.tops.length === 1 && x.tops[0] === o && r.others.length > 1);
   return html`<div class="tbl trk-tbl" role="table" data-track="figures">
     <div class="tr th trk-row" role="row"><span>Compared</span><span class="num">Its move</span><span class="num">Underlying</span><span class="num">Gap at the end</span>
       <span class="num">Tracking error</span><span class="num">Widest gap</span><span class="num">Average gap</span><span class="num">Correlation</span><span class="num">Beta</span><span class="num">Traded a ${intraday ? 'candle' : 'day'}</span></div>
     ${r.others.map((o, k) => { const x = o.stats; return html`<div class="tr trk-row" role="row" data-token="${o.token}">
-      <span class="cell-name"><b><i class="key ${dashOf(k) ? 'dash' : ''}" style="background:${COLORS[k]};border-color:${COLORS[k]}"></i>${labelOf(o.token)}</b><span>${x.candles} ${intraday ? '5-minute candles' : 'days'}</span></span>
+      <span class="cell-name"><b><i class="key ${dashOf(k) ? 'dash' : ''}" style="background:${COLORS[k]};border-color:${COLORS[k]}"></i>${labelOf(o.token)}${isTop(w.closest, o) ? html` <span class="tag" data-tag="closest">Closest</span>` : ''}${isTop(w.gained, o) ? html` <span class="tag" data-tag="gained">Gained most</span>` : ''}</b><span>${x.candles} ${intraday ? '5-minute candles' : 'days'}</span></span>
       <span class="num ${tone(x.ret * 100)}" data-l="Its move">${pct(x.ret, 2)}</span>
       <span class="num ${tone(x.base_ret * 100)}" data-l="Underlying">${pct(x.base_ret, 2)}</span>
       <span class="num ${tone(x.diff * 100)}" data-l="Gap at the end">${pp(x.diff)}</span>
@@ -135,6 +170,7 @@ export function mountTrack(root) {
         : view.loading || !r ? loading(6)
         : r.error ? html`<div data-track="error">${empty('Nothing to compare', r.error)}</div>`
         : html`<div class="stack" style="gap:22px">
+          ${verdict(S, r, intraday)}
           <div class="row wrap" style="gap:10px;align-items:center"><h3 class="t-h3" style="margin:0">On one scale</h3><span class="grow"></span>
             <div class="row" style="gap:6px" data-pick="unit">${chips([['pct', '% change'], ['pts', `${S.base.label} points`]], view.unit, 'tunit')}</div></div>
           ${legend(S, r)}${chartLevels(S, r, view.unit, intraday)}
