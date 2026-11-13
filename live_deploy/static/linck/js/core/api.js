@@ -129,6 +129,8 @@ export const api = {
   deleteTag: id => req(`/tags/${id}`, { method: 'DELETE' }),
   instruments: () => req('/instruments'),
   searchInstruments: q => req(`/instruments/search?q=${enc(q)}`),
+  // Tools › Compare with underlying (app/v2/track.py)
+  track: p => req(`/v2/track?${new URLSearchParams(p)}`),
   quotes: tokens => req(`/instruments/quotes?tokens=${tokens.join(',')}`),
   subscribe: body => post('/instruments', body),
   unsubscribe: token => req(`/instruments/${token}`, { method: 'DELETE' }),

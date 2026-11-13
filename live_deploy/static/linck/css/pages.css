@@ -928,3 +928,36 @@ a.cell-name:hover b { text-decoration: underline; }
 .var-add .sect { flex-wrap: wrap; row-gap: 4px; }
 .var-add .sect h3 { overflow-wrap: anywhere; min-width: 0; }
 @media (max-width: 760px) { .var-add { padding: 14px 12px; } }
+
+/* Tools › Compare with underlying (pages/tools-track.js) */
+.trk .key { display: inline-block; width: 14px; height: 2.5px; vertical-align: 4px; margin-right: 7px; border-top: 0 solid; }
+.trk .key.dash { background: transparent !important; height: 0; border-top: 2.5px dashed; }
+.trk-pick { display: grid; gap: 16px; }
+.trk-w { display: inline-flex; align-items: center; gap: 2px; }
+.trk-w .x { background: none; border: 0; padding: 0 0 0 6px; font-size: 15px; line-height: 1; color: inherit; cursor: pointer; }
+.trk-search .input { max-width: 460px; width: 100%; height: 40px; }
+.trk-res { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 6px; max-width: 920px; }
+.trk-r { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; padding: 7px 10px; border: 1px solid var(--line); background: var(--card); color: inherit; cursor: pointer; min-width: 0; }
+.trk-r span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trk-r:hover, .trk-r:focus-visible { border-color: var(--ink); }
+.trk-r.on { background: var(--soft); border-color: var(--ink); }
+.trk-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 22px; }
+.trk-plot { position: relative; }
+.trk-y { position: absolute; left: 0; z-index: 1; pointer-events: none; background: var(--paper); padding: 0 4px 0 0; }
+.trk-y.top { top: 0; }
+.trk-axis { display: flex; justify-content: space-between; gap: 10px; padding-top: 4px; }
+.trk-axis span:nth-child(2) { text-align: center; }
+.trk-tbl { overflow-x: auto; }
+.trk-row { grid-template-columns: minmax(150px, 1.4fr) 92px 92px 108px 118px 118px 100px 90px 72px 110px; min-width: 1100px; padding: 6px 0; }
+.trk-row .num small { display: block; font-size: 11px; color: var(--mute); }
+.trk-row .cell-name b { display: flex; align-items: center; }
+@media (max-width: 760px) {
+  .trk-tbl { overflow: visible; }
+  .trk-row { min-width: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 10px; padding: 10px 0; }
+  .trk-row .cell-name { grid-column: 1 / -1; }
+  .trk-row .num { text-align: left; }
+  .trk-row > span { min-width: 0; overflow-wrap: anywhere; }
+  .trk-row > [data-l]::before { content: attr(data-l); display: block; font-family: var(--f-body); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--mute); }
+  .trk-row.th { display: none; }
+  .trk-axis span:nth-child(2) { display: none; }
+}

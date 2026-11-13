@@ -271,7 +271,8 @@ class VixService:
                             ts = datetime.combine(ts, time(0))
                         ts = ts.replace(tzinfo=IST) if ts.tzinfo is None else ts.astimezone(IST)
                         got.setdefault(ts.date(), []).append({"t": ts, "o": float(c["open"]), "h": float(c["high"]),
-                                                              "l": float(c["low"]), "c": float(c["close"])})
+                                                              "l": float(c["low"]), "c": float(c["close"]),
+                                                              "v": float(c.get("volume") or 0)})
                     d = a
                     while d <= b:
                         if d.weekday() < 5:

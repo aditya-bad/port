@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
 from ..db import queries
@@ -230,6 +230,56 @@ async def get_vix(request: Request, start: Optional[datetime] = None, end: Optio
         error = "Kite isn't logged in, so VIX history can't be fetched."
     return {"symbol": vix.SYMBOL, "token": svc.token, "last": svc.last(), "candles": candles,
             "error": error or svc.last_error}
+
+
+@router.get("/track")
+async def get_track(request: Request, base: str, with_: str = Query("", alias="with"), interval: str = "day",
+                    start: Optional[date] = None, end: Optional[date] = None):
+    """Tools › Compare with underlying (app/v2/track.py): `base` (an
+    instrument token, or NIFTY, BANKNIFTY, SENSEX or BANKEX) against the
+    tokens in `with` (comma separated, up to 8), on one % scale, with how
+    far each strays from it. Daily candles for [start, end], or 5-minute
+    candles for up to 5 days."""
+    from .. import vix
+    from ..options import NoKiteSession
+    from . import track
+    if interval not in ("day", "5minute"):
+        raise HTTPException(422, "interval must be day or 5minute")
+    try:
+        toks = [int(x) for x in with_.split(",") if x.strip()]
+    except ValueError:
+        raise HTTPException(422, "with: instrument tokens, comma separated")
+    if not toks:
+        raise HTTPException(422, "Pick at least one thing to compare with")
+    if len(toks) > track.MAX_WITH:
+        raise HTTPException(422, f"At most {track.MAX_WITH} at a time")
+    today = datetime.now(vix.IST).date()
+    b_ = end or today
+    a = start or b_ - timedelta(days=365)
+    if a > b_:
+        raise HTTPException(422, "The start is after the end")
+    if interval == "5minute" and (b_ - a).days > 4:
+        raise HTTPException(422, "5-minute candles: at most 5 days at a time")
+    if (b_ - a).days > 3700:
+        raise HTTPException(422, "At most 10 years at a time")
+    svc = getattr(request.app.state, "vix", None)
+    if svc is None:
+        raise HTTPException(503, "Price history isn't available")
+    try:
+        if base.isdigit():
+            bt, info = int(base), None
+        else:
+            info = await track.shortcut(request.app.state.dispatcher, base.upper())
+            if info is None:
+                raise HTTPException(422, f"Unknown underlying {base}: an instrument token, or one of {', '.join(track.SHORTCUTS)}")
+            bt = info["token"]
+        bc = await svc.candles(bt, a, b_, interval)
+        others = [(t, await svc.candles(t, a, b_, interval)) for t in toks]
+    except NoKiteSession:
+        raise HTTPException(409, "Kite isn’t connected, so prices can’t be read. Reconnect at the top, then try again.")
+    as_ms = lambda cs: [{**c, "t": int(c["t"].timestamp() * 1000)} for c in cs]
+    out = track.compare(as_ms(bc), [(t, as_ms(cs)) for t, cs in others], interval)
+    return {**out, "base_token": bt, "base_info": info, "start": a.isoformat(), "end": b_.isoformat()}
 
 
 @router.get("/vix/spike")

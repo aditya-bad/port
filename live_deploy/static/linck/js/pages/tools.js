@@ -9,10 +9,11 @@ import { href } from '../core/router.js';
 import * as book from '../data/book.js';
 import { seg, empty, loading } from '../ui/components.js';
 import { say } from '../ui/toast.js';
+import { mountTrack } from './tools-track.js';
 
 // eslint-disable-next-line no-undef
 const Calc = () => Calculators;
-const TABS = [['brokerage', 'Brokerage'], ['sip', 'SIP'], ['stepup', 'Step-up SIP'], ['lumpsum', 'Lumpsum + SIP'], ['cagr', 'CAGR'], ['instruments', 'Instruments']];
+const TABS = [['brokerage', 'Brokerage'], ['sip', 'SIP'], ['stepup', 'Step-up SIP'], ['lumpsum', 'Lumpsum + SIP'], ['cagr', 'CAGR'], ['track', 'Compare with underlying'], ['instruments', 'Instruments']];
 const st = ui('tools', { seg: 'options', bp: '120', sp: '98', q: '75', sip: '10000', sr: '12', sy: '15', su: '10', ls: '500000', lr: '12', ly: '10', lsip: '5000', lsu: '10', cs: '100000', ce: '250000', cy: '5' });
 const n = k => { const x = parseFloat(String(st.get()[k]).replace(/,/g, '')); return Number.isFinite(x) ? x : 0; };
 
@@ -121,10 +122,15 @@ export default {
         <span class="tiny mute">Searching the instrument list needs Kite connected. Kite allows up to 3,000 instruments per connection.</span>
       </div>`;
     }
+    const head = () => html`
+        <div class="page-head" style="padding-bottom:0"><div class="col"><h1 class="t-h1">Tools</h1><span class="mute">Calculators, how ETFs track their index, and the live price subscriptions your deployments use.</span></div></div>
+        <nav class="tabs pad-x" style="margin-top:18px" aria-label="Tools">${TABS.map(([k, l]) => html`<a href="${href(`tools/${k}`)}" class="${k === tab ? 'on' : ''}">${l}</a>`)}</nav>`;
+    if (tab === 'track') {   // its own page: Compare with underlying (tools-track.js)
+      mount(main, html`${head()}<div class="pad-x" style="padding-top:28px;padding-bottom:var(--px)" data-tool="track"></div>`);
+      return mountTrack($('[data-tool="track"]', main));
+    }
     function paint() {
-      mount(main, html`
-        <div class="page-head" style="padding-bottom:0"><div class="col"><h1 class="t-h1">Tools</h1><span class="mute">Calculators and the live price subscriptions your deployments use.</span></div></div>
-        <nav class="tabs pad-x" style="margin-top:18px" aria-label="Tools">${TABS.map(([k, l]) => html`<a href="${href(`tools/${k}`)}" class="${k === tab ? 'on' : ''}">${l}</a>`)}</nav>
+      mount(main, html`${head()}
         <div class="pad-x" style="padding-top:28px;padding-bottom:var(--px)">${body()}</div>`);
     }
     const loadSubs = () => api.instruments().then(r => { subs = r.subscribed || []; paint(); }).catch(e => { subs = []; searchErr = e.message; paint(); });
