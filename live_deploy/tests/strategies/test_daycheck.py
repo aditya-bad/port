@@ -797,3 +797,15 @@ def test_the_replay_plays_the_session_to_15_40_as_the_app_trades():
     assert D.CLOSE == SESSION_CLOSE == time(15, 40)
     mins = E.Window(date(2026, 11, 3), time(9, 15)).minutes
     assert mins[-1].time() == time(15, 39) and any(m.time() == time(15, 30) for m in mins)
+
+
+def test_a_day_the_app_ran_away_its_fills_arent_the_days_prices():
+    """RUNAWAY CAP. 16 Nov 2026, DTT Sensex Strangle: 1,698 trades, legs sold
+    at a trade from hours before; replaying that day must not copy them."""
+    from app.repair.engine import app_fills_to_use
+    few = [{"at": None}] * 12
+    assert app_fills_to_use("strangle_monthly_v2", few) == (few, None)
+    used, note = app_fills_to_use("strangle_monthly_v2", [{"at": None}] * 1698)
+    assert used == [] and "1,698 times" in note and "40 a day" in note
+    assert app_fills_to_use("strangle_monthly_v2", None) == ([], None)
+    assert app_fills_to_use("intraday_dtt_simple", [{"at": None}] * 500)[1] is None, "no cap: all kept"

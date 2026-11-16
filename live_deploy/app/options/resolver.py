@@ -96,7 +96,8 @@ def spread_ok(bid: float, ask: float, max_spread: Optional[tuple[float, float]])
 
 
 def live_price(q: dict, now: datetime, live_within: timedelta = LIVE_WITHIN,
-               max_spread: Optional[tuple[float, float]] = None) -> tuple[Optional[float], str]:
+               max_spread: Optional[tuple[float, float]] = None,
+               wide_spread: Optional[tuple[float, float]] = None) -> tuple[Optional[float], str]:
     """(price, source) of one quote() entry, as a trade could be done now:
     its last trade if that was in the last `live_within` ("trade"); else
     the bid/ask mid when both sides are quoted ("mid"), and, with
@@ -125,6 +126,11 @@ def live_price(q: dict, now: datetime, live_within: timedelta = LIVE_WITHIN,
     ask = sell[0].get("price") if sell else None
     if bid and ask and spread_ok(bid, ask, max_spread):
         return round((bid + ask) / 2, 2), "mid"
+    # `wide_spread`: a wider book still beats a trade from hours ago (16
+    # Nov 2026, DTT Sensex Strangle: a strike search priced 83000CE at the
+    # day's ₹1,248 trade while its book's mid was ₹1,190)
+    if wide_spread is not None and bid and ask and spread_ok(bid, ask, wide_spread):
+        return round((bid + ask) / 2, 2), "mid_wide"
     if last and today:
         return float(last), "old_trade"
     return None, "none"
@@ -570,6 +576,7 @@ class OptionsResolver:
         prefer_range: Optional[tuple[float, float]] = None,
         strike_multiple: Optional[float] = None,
         max_spread: Optional[tuple[float, float]] = None,
+        wide_spread: Optional[tuple[float, float]] = None,
     ) -> OptionLeg:
         """
         The leg (of `option_type`) whose current LTP is closest to
@@ -580,7 +587,9 @@ class OptionsResolver:
         bid/ask mid), from one quote() over the window, instead of its
         last traded price however old; a strike with neither is left out.
         The returned leg's last_price is that price. `max_spread`: a mid
-        counts only when its bid/ask is no wider (spread_ok).
+        counts only when its bid/ask is no wider (spread_ok); with
+        `wide_spread`, a mid no wider than that comes next, before a trade
+        from earlier in the day.
 
         `prefer_multiple` / `prefer_range` (with `live`): a strike that's a
         multiple of `prefer_multiple` (e.g. 500 on BANKNIFTY/BANKEX/SENSEX,
@@ -678,7 +687,7 @@ class OptionsResolver:
             now = clock.now_ist()
             ltp_resp = {}
             for k in keys:
-                px, _src = live_price(quotes.get(k) or {}, now, max_spread=max_spread)
+                px, _src = live_price(quotes.get(k) or {}, now, max_spread=max_spread, wide_spread=wide_spread)
                 if px is not None:
                     ltp_resp[k] = {"last_price": px}
         else:

@@ -138,6 +138,9 @@ class ReplayRunner(DeploymentRunner):
     async def record_quote(self, ts, token, price):
         pass   # the app's own quotes are what the replay prices from, never its own
 
+    async def _count_fill(self, executed_at):
+        pass   # RUNAWAY CAP: the replay's trades aren't the live deployment's
+
     async def report(self, kind, title, detail=None, **kw):
         # once, at the minute it first came up: a problem that lasts is
         # reported on every tick (four a minute, 1,500 lines a day)
@@ -624,6 +627,20 @@ def _real_prices(app_fills: list) -> tuple[dict, dict, dict, dict]:
     return quoted, filled, picks, moments
 
 
+def app_fills_to_use(strategy_name: str, app_fills: Optional[list]) -> tuple[list, Optional[str]]:
+    """RUNAWAY CAP: (the app's fills to take the day's prices from, a note).
+    A day the app traded past its strategy's MAX_FILLS_PER_DAY was a fault
+    (16 Nov 2026, DTT Sensex Strangle: 1,698 trades, legs sold at a trade
+    from hours before), so none of them: the live quotes it logged
+    (strategy_quotes) still price the replay."""
+    fills = app_fills or []
+    cap = getattr(get_strategy_class(strategy_name), "MAX_FILLS_PER_DAY", None)
+    if cap and len(fills) > cap:
+        return [], (f"The app traded {len(fills):,} times this day, more than the strategy's {cap} a day: a fault, "
+                    "so its own fills aren't taken as the day's prices (the live quotes it logged are).")
+    return fills, None
+
+
 async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices: dict,
                  auto: bool = False, run: str = "dry-run", app_fills: Optional[list] = None) -> Outcome:
     """Replay `dep` over `window` on `conn` (already inside a transaction
@@ -643,11 +660,14 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     together for a moment, and a profit target the app took there would
     otherwise be missed."""
     out = Outcome(deployment_id=dep["id"], window=window, choices=dict(choices))
+    used, note = app_fills_to_use(dep["strategy_name"], app_fills)
+    if note:
+        out.notes.append(note)
     if book.lookup is None and real_kite is not None:
         book.lookup = kite_lookup(real_kite)   # a leg Kite has nothing for by token is asked for by name
     clock = ReplayClock(window.day)
     kite = ReplayKite(real_kite, book, clock)
-    kite.app_quotes, app_prices, kite.app_picks, app_moments = _real_prices(app_fills or [])
+    kite.app_quotes, app_prices, kite.app_picks, app_moments = _real_prices(used)
     # what was listed on the day, as far as the app knows: every contract a
     # deployment held is stored with its exact expiry, and outlives Kite's
     # list. Only expiries that have passed since: one still to come is in
@@ -660,9 +680,9 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
     disp = ReplayDispatcher(book, clock)
     strategy = get_strategy_class(dep["strategy_name"])()
     held_off: list[dict] = []
-    _honour_refusals(strategy, await _app_refusals(conn, dep["id"], window.day, app_fills or []), held_off)
+    _honour_refusals(strategy, await _app_refusals(conn, dep["id"], window.day, used), held_off)
     app_held: list[dict] = []
-    price_log = await _app_price_log(conn, dep["id"], window.day, app_fills or [])
+    price_log = await _app_price_log(conn, dep["id"], window.day, used)
     if getattr(book, "model_untraded", False):
         # the repair prices what the app couldn't (MinuteBook.model_untraded):
         # its holds for want of a price aren't copied
@@ -718,7 +738,7 @@ async def replay(conn, dep, window: Window, book: MinuteBook, real_kite, choices
                                                              runner.strategy, runner.tokens), app_candles, app_turns)
 
         app_trades = [(minute_of(f["at"]), minute_of(f.get("until") or f["at"]), f["action"], f["symbol"],
-                       round(float(f["qty"]), 6)) for f in app_fills or []]
+                       round(float(f["qty"]), 6)) for f in used]
         blind = await _app_blind(conn, dep["id"], window.day) if app_trades else []
 
         def app_made(f: dict, m: datetime) -> bool:

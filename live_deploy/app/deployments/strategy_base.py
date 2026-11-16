@@ -98,6 +98,10 @@ class StrategyBase(ABC):
 
     ENTRY_RETRY_MINUTES = 30
 
+    # RUNAWAY CAP: past this many trades in a day the deployment pauses
+    # itself, with a critical alert (DeploymentRunner._fill). None: no cap.
+    MAX_FILLS_PER_DAY: Optional[int] = None
+
     def entry_should_wait(self, ts: "Any") -> bool:
         nxt = self.__dict__.get("_entry_next_try")
         return nxt is not None and ts < nxt

@@ -941,6 +941,10 @@ def test_a_roll_isnt_made_onto_a_strike_far_outside_its_band(pool_run, monkeypat
             leg = await real(*a, **k)
             return dataclasses.replace(leg, strike=leg.strike + 1000, last_price=100.0)
         monkeypatch.setattr(strat.resolver, "get_leg_by_premium", far)
+
+        async def its_own(leg):   # and its quote says the same (OPEN PRICES)
+            return leg.last_price
+        monkeypatch.setattr(strat, "_sell_price_now", its_own)
         prices = {l["token"]: 200.0 for s_ in strat.legs.values() for l in s_}
         done = await strat._replace_leg(sim.runner, sim.market.now, "CE", old, 337.0, "continuous_50pct_trigger", {}, prices,
                                         prefer_range=(308.0, 366.0))
@@ -1023,3 +1027,97 @@ def test_muhurat_manages_and_exits_but_opens_nothing_new(pool_run, monkeypatch):
         legs = await shorts(sim)
         assert len(legs) == 2 and {int(p["metadata"]["cycle_id"]) for p in legs} == {2}, "the next normal session re-enters"
     pool_run(go)
+
+
+def test_a_new_leg_is_sold_at_what_it_is_valued_at_the_moment_after(pool_run, monkeypatch):
+    """OPEN PRICES. 16 Nov 2026, DTT Sensex Strangle: December's books were
+    wider than the strike search's 10%, so every re-entry sold 83000CE at
+    the day's ₹1,248 trade while the checkpoint valued it at the ₹1,190
+    mid a second later: ₹1,152 on paper, over the ₹750 target, every time;
+    824 checkpoint exits in a day. Here every option's book is 14% wide
+    around its price and its last trade, half an hour old, is 5% above it: a
+    re-entry sells at the mid, and the next ticks find nothing to take."""
+    async def go(pool):
+        from app.options import OptionsResolver
+        sim = await start(pool, monkeypatch)
+        strat = sim.runner.strategy
+        real = OptionsResolver.get_quotes
+
+        async def quotes(self, keys):
+            out = await real(self, keys)
+            for k, q in out.items():
+                book = (q or {}).get("depth") or {}
+                if k[-2:] in ("CE", "PE") and book.get("buy") and book.get("sell"):
+                    p = (book["buy"][0]["price"] + book["sell"][0]["price"]) / 2
+                    q.update({"last_price": round(p * 1.05, 2), "last_trade_time": sim.market.now - timedelta(minutes=30),
+                              "depth": {"buy": [{"price": round(p * 0.93, 2), "quantity": 20}],
+                                        "sell": [{"price": round(p * 1.07, 2), "quantity": 20}]}})
+            return out
+        monkeypatch.setattr(OptionsResolver, "get_quotes", quotes)
+        await sim.tick("10:05", spot=25000)
+        await strat._flatten_all(sim.runner, sim.market.now, "checkpoint_target", {})
+        await strat._enter(sim.runner, sim.market.now, "checkpoint_target")
+        legs = [l for side in strat.legs.values() for l in side]
+        assert len(legs) == 2
+        for leg in legs:
+            key = f"{strat.exchange}:{leg['symbol']}"
+            q = (await strat.resolver.get_quotes([key]))[key]
+            assert leg["entry_price"] == pytest.approx(strat._confirm_price(q, sim.market.now), abs=0.02), \
+                "sold at the price it's valued at, not the old trade 5% above it"
+            assert leg["entry_price"] < q["last_price"] * 0.97
+        n = len(await sim.fills())
+        for m in range(6, 12):
+            await sim.tick(f"10:{m:02d}", spot=25000)
+        assert len(await sim.fills()) == n, "nothing to take: no checkpoint exit, no re-entry"
+    pool_run(go)
+
+
+def test_the_checkpoint_brake_holds_after_three_a_day_and_soon_after_an_entry(monkeypatch):
+    """CHECKPOINT BRAKE: at most three checkpoint exits a day (the fourth is
+    refused, with one critical alert) and none within 10 minutes of the
+    cycle's entry; the count and the entry time survive a restart."""
+    import asyncio
+    from datetime import datetime
+    from app.strategies.strangle_monthly_v2 import StrangleMonthlyV2Strategy as St
+    s = object.__new__(St)
+    s._decision_days, s._checkpoint_day, s._checkpoints_today, s._cycle_entered_at = set(), None, 0, None
+    s.cycle_id, s.converged, s.convergence_premium, s._trailing_floor = 7, False, None, None
+    s.legs = {"CE": [], "PE": []}
+    reports, decided = [], []
+
+    class R:
+        deployment_name = "T"
+
+        async def report(self, kind, title, detail=None, **kw):
+            reports.append((kind, kw.get("severity")))
+
+        async def record_decision(self, ts, rule, outcome, summary, data):
+            decided.append((rule, outcome, summary))
+    r = R()
+    run = asyncio.run
+    t0 = datetime(2026, 11, 16, 11, 0)
+    s._cycle_entered_at = t0
+    assert "not taken before 11:10:00" in run(s._checkpoint_brake(r, t0 + timedelta(minutes=4), 930, 750))
+    assert run(s._checkpoint_brake(r, t0 + timedelta(minutes=10), 930, 750)) is None
+    for i in range(3):
+        s._count_checkpoint(t0 + timedelta(minutes=20 * i))
+    s._cycle_entered_at = t0
+    why = run(s._checkpoint_brake(r, t0 + timedelta(hours=2), 930, 750))
+    assert "already 3 checkpoint exits today" in why
+    run(s._checkpoint_brake(r, t0 + timedelta(hours=2, minutes=1), 930, 750))
+    assert reports == [("checkpoint_brake", "critical")], "one alert, not one a tick"
+    assert run(s._checkpoint_brake(r, t0 + timedelta(days=1), 930, 750)) is None, "a new day: allowed again"
+    # a restart: the saved state brings both back
+    saved = s.get_persistable_state()
+    s2 = object.__new__(St)
+    s2._decision_days, s2._checkpoint_day, s2._checkpoints_today, s2._cycle_entered_at = set(), None, 0, None
+    s2.cycle_id, s2.converged, s2.convergence_premium, s2._trailing_floor = 7, False, None, None
+    s2.legs = {"CE": [], "PE": []}
+
+    class R2(R):
+        async def load_state(self):
+            return saved
+    run(s2._resume_convergence(R2()))
+    assert (s2._checkpoint_day, s2._checkpoints_today) == (date(2026, 11, 16), 3)
+    assert s2._cycle_entered_at == t0
+    assert "already 3" in run(s2._checkpoint_brake(R2(), t0 + timedelta(hours=3), 930, 750))

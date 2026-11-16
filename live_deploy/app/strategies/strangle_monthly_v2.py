@@ -211,6 +211,18 @@ at its 11:55 last trade (342.30). So:
     hedge, or where the strike-cross cap would snap onto the other side's
     strike (an older leg's 50 strike caps to the nearest 100 short of it).
     Counted from the day being traded, so a replay counts as the day did.
+  - OPEN PRICES (16 Nov 2026): a new short leg is sold at the price it's
+    valued at the moment after (_sell_price_now): its bid/ask mid with a
+    book up to `quote_wide_spread_pct` wide, else a trade in the last
+    `live_trade_minutes`, else its bid; never a trade from earlier in the
+    day, and the strike search itself prefers a live book to one. That
+    day DTT Sensex Strangle sold 83000CE at the day's ₹1,248 trade while
+    the checkpoint valued it at the ₹1,190 mid: ₹1,152 of profit on paper
+    at every re-entry, over its ₹750 target, so it closed and re-entered
+    824 times.
+  - CHECKPOINT BRAKE: at most 3 checkpoint exits a day (then it holds, the
+    position managed as usual, with a critical alert) and none within 10
+    minutes of the cycle's entry; both kept through a restart.
   Every quoted price is kept (strategy_quotes) and a hold's end is noted
   (HOLD_OVER), so the day check's replay prices and holds as the app did.
 
@@ -779,6 +791,16 @@ FAR_STRIKES = {"NIFTY": 100}
 
 class SameStrike(Exception):
     """A replacement whose only strike is the one being closed."""
+
+
+class NoSalePrice(ValueError):
+    """OPEN PRICES: nothing a new short leg could be sold at now."""
+
+
+# CHECKPOINT BRAKE (16 Nov 2026): never more checkpoint exits a day than
+# this, and never one this soon after the cycle's entry
+_CHECKPOINT_MAX_PER_DAY = 3
+_CHECKPOINT_MIN_AFTER_ENTRY = timedelta(minutes=10)
 # A trigger that keeps being refuted is noted in the decision log at most this often.
 _REFUTE_NOTE_EVERY = timedelta(minutes=5)
 
@@ -911,6 +933,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
     # MUHURAT: runs in a manage-only session (app/market_calendar.py) —
     # adjusts and exits what it holds, never opens a fresh position there
     MANAGE_ONLY_SESSION = True
+    # RUNAWAY CAP: a strangle's normal day is a handful of trades (16 Nov 2026: 1,698)
+    MAX_FILLS_PER_DAY = 40
     live_within: timedelta = timedelta(minutes=3)
     # A single cycle spans many calendar days (checkpoint-to-checkpoint,
     # potentially the better part of a month) -- "day" would be
@@ -992,6 +1016,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self._manage_ts: Optional[datetime] = None
         self._refute_noted: dict[str, datetime] = {}
         self._decision_days: set = set()
+        # CHECKPOINT BRAKE: today's checkpoint exits, and when this cycle entered
+        self._checkpoint_day: Optional[date] = None
+        self._checkpoints_today = 0
+        self._cycle_entered_at: Optional[datetime] = None
         # Attributes named EXACTLY as intraday_dtt_adjusted's own methods
         # expect, so those methods can be called unbound against this
         # instance for convergence_mode=active_management — see module
@@ -1265,6 +1293,12 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 self.instrument, expiry, "PE", target_premium, strike_window=self.adjustment_strike_window,
                 check_liquidity=True, **self._live_pick((target_premium * (1 - tol), target_premium * (1 + tol)), expiry),
             )
+            # OPEN PRICES: sold at what they're valued at the moment after
+            sale = {"CE": await self._sell_price_now(ce_leg), "PE": await self._sell_price_now(pe_leg)}
+        except NoSalePrice as e:
+            await self._decide_once_a_day(runner, ts, "entry", "blocked",
+                                          f"Not entered yet: {e}; tried again on the next tick", {"trigger": trigger})
+            return
         except NoKiteSession:
             logger.warning(
                 "%s: entry_time reached but no Kite session yet — skipping "
@@ -1295,6 +1329,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self._trailing_floor = None
         self.adjusted_side = None
         self.adjustments_used = 0
+        self._cycle_entered_at = ts   # CHECKPOINT BRAKE
 
         trigger_values = {
             "target_premium": target_premium,
@@ -1312,7 +1347,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             "strike_multiple": self._far_multiple(expiry),
         }
         for side, leg in (("CE", ce_leg), ("PE", pe_leg)):
-            price = leg.last_price
+            price = sale[side]
             runner.dispatcher.add_instruments([{"instrument_token": leg.instrument_token, "symbol": leg.tradingsymbol}])
             self._leg_seq += 1
             leg_dict = {
@@ -1336,22 +1371,22 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 await self._open_hedge_for_short_leg(runner, ts, side, leg_dict, trigger)
 
         # Both sides on one strike is a straddle from the start (Section 7).
-        self._check_convergence(trigger, {ce_leg.instrument_token: ce_leg.last_price,
-                                          pe_leg.instrument_token: pe_leg.last_price})
+        self._check_convergence(trigger, {ce_leg.instrument_token: sale["CE"],
+                                          pe_leg.instrument_token: sale["PE"]})
 
         # ONE notification for the whole strangle (both legs + any hedges
         # opened above), not one per fill.
         await runner.notify_execution(
             "entry",
-            f"{trigger}: sold strangle — CE {ce_leg.tradingsymbol}@{ce_leg.last_price:.2f}, "
-            f"PE {pe_leg.tradingsymbol}@{pe_leg.last_price:.2f} (cycle {self.cycle_id})",
+            f"{trigger}: sold strangle — CE {ce_leg.tradingsymbol}@{sale['CE']:.2f}, "
+            f"PE {pe_leg.tradingsymbol}@{sale['PE']:.2f} (cycle {self.cycle_id})",
             metadata={"cycle_id": self.cycle_id, "contract_expiry": expiry.isoformat()},
         )
 
         logger.info(
             "%s: entered strangle (%s) — CE %s@%.2f, PE %s@%.2f, contract=%s, "
             "qty=%d, cycle_id=%d", runner.deployment_name, trigger,
-            ce_leg.tradingsymbol, ce_leg.last_price, pe_leg.tradingsymbol, pe_leg.last_price,
+            ce_leg.tradingsymbol, sale["CE"], pe_leg.tradingsymbol, sale["PE"],
             expiry, qty, self.cycle_id,
         )
 
@@ -1412,7 +1447,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 f"until {self.checkpoint_exit_not_before.strftime('%H:%M')}",
                 {"total_cycle_profit": round(total_cycle_profit, 2), "checkpoint_target": checkpoint_target},
             )
+        braked = None
         if total_cycle_profit >= checkpoint_target and not checkpoint_gated:
+            braked = await self._checkpoint_brake(runner, ts, total_cycle_profit, checkpoint_target)
+        if total_cycle_profit >= checkpoint_target and not checkpoint_gated and not braked:
             # STALE-PRICE GUARD layer 2: None = refuted by live quotes (or
             # cooling down after a refute) -- fall through as if not hit.
             confirmed = await self._confirm_trigger(
@@ -1444,6 +1482,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             # "reentry_after_checkpoint_target" via _last_flatten_trigger).
             # Only once actually flat: a leg that failed to close stays
             # tracked and is retried first (via _maybe_manage next tick).
+            self._count_checkpoint(ts)
             if ts.time() >= self.entry_time and not runner.open_positions:
                 await self._enter(runner, ts, trigger="checkpoint_target")
             return
@@ -1968,6 +2007,8 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         out = {"live": True}
         if self.quote_max_spread:
             out["max_spread"] = self.quote_max_spread
+        if self.quote_wide_spread:
+            out["wide_spread"] = self.quote_wide_spread   # OPEN PRICES: a live book before an old trade
         if self.round_strike_multiple and prefer_range and prefer_range[1] > 0:
             out.update(prefer_multiple=self.round_strike_multiple, prefer_range=(max(prefer_range[0], 0.05), prefer_range[1]))
         m = self._far_multiple(expiry)
@@ -1992,7 +2033,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             self.instrument, self.contract_expiry, side, max(target_premium, 0.5),
             strike_window=self.adjustment_strike_window, exclude_strikes=exclude, **self._live_pick(prefer_range),
         )
-        price = leg.last_price
+        price = await self._sell_price_now(leg)
         self._picked_capped = False
 
         # STRIKE-CROSS CAP (confirmed requirement — see module docstring's
@@ -2085,9 +2126,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         15:09, for a book wider than the strike-search limit."""
         q = (await self.resolver.get_quotes([leg.key])).get(leg.key) or {}
         now = clock.now_ist()
-        px, src = live_price(q, now, self.live_within, max_spread=self.quote_wide_spread)
-        if px is not None and src in ("trade", "mid"):
+        px = self._confirm_price(q, now)   # OPEN PRICES: what it's valued at the moment after
+        if px is not None:
             return px
+        px, src = live_price(q, now, self.live_within, max_spread=self.quote_wide_spread)
         buy = (q.get("depth") or {}).get("buy") or []
         bid = buy[0].get("price") if buy else None
         if bid:
@@ -2095,6 +2137,78 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         if px is not None:
             return px
         raise ValueError(f"No live price for {leg.key}: no trade today and no bid")
+
+    def _count_checkpoint(self, ts) -> None:
+        day = _naive_ist(ts).date()
+        if getattr(self, "_checkpoint_day", None) != day:
+            self._checkpoint_day, self._checkpoints_today = day, 0
+        self._checkpoints_today += 1
+
+    async def _checkpoint_brake(self, runner, ts, profit: float, target: float) -> Optional[str]:
+        """CHECKPOINT BRAKE: why the checkpoint target, reached, isn't acted
+        on now, or None. At most `_CHECKPOINT_MAX_PER_DAY` checkpoint exits
+        a day (past that it holds, raises a critical alert and waits for
+        the owner: the next day it's allowed again), and none within
+        `_CHECKPOINT_MIN_AFTER_ENTRY` of the cycle's entry (a target reached
+        that soon is the entry's own prices, not the market). Both kept
+        through a restart (get_persistable_state). 16 Nov 2026: 824
+        checkpoint exits in one day, a second apart."""
+        now = _naive_ist(ts)
+        n = self._checkpoints_today if getattr(self, "_checkpoint_day", None) == now.date() else 0
+        if n >= _CHECKPOINT_MAX_PER_DAY:
+            why = (f"Checkpoint reached (₹{profit:,.0f} ≥ ₹{target:,.0f}) but not taken: already {n} checkpoint exits today, "
+                   f"the most a day allows; the cycle stays on and is managed as usual")
+            if (("checkpoint_brake", "blocked", ts.date())) not in self._decision_days:
+                report = getattr(runner, "report", None)
+                if report is not None:
+                    await report("checkpoint_brake", f"{n} checkpoint exits today: no more until tomorrow",
+                                 f"The checkpoint target was reached again (₹{profit:,.0f} ≥ ₹{target:,.0f}). More than "
+                                 f"{_CHECKPOINT_MAX_PER_DAY} in a day is what a pricing fault looks like, so it isn't taken; "
+                                 "the position stays on and is managed as usual. Check today's trades.",
+                                 severity="critical", key="checkpoint_brake", day=ts.date(), ttl=timedelta(hours=12),
+                                 data={"checkpoints_today": n, "profit": round(profit, 2), "target": target})
+            await self._decide_once_a_day(runner, ts, "checkpoint_brake", "blocked", why,
+                                          {"checkpoints_today": n, "total_cycle_profit": round(profit, 2), "checkpoint_target": target})
+            return why
+        entered = getattr(self, "_cycle_entered_at", None)
+        if entered is not None and now - _naive_ist(entered) < _CHECKPOINT_MIN_AFTER_ENTRY:
+            ok_at = _naive_ist(entered) + _CHECKPOINT_MIN_AFTER_ENTRY
+            why = (f"Checkpoint reached (₹{profit:,.0f} ≥ ₹{target:,.0f}) {int((now - _naive_ist(entered)).total_seconds() // 60)} min "
+                   f"after the cycle's entry: not taken before {ok_at:%H:%M:%S}")
+            await self._decide_once_a_day(runner, ts, "checkpoint_wait", "no_action", why,
+                                          {"entered_at": f"{_naive_ist(entered):%H:%M:%S}", "total_cycle_profit": round(profit, 2)})
+            return why
+        return None
+
+    async def _sell_price_now(self, leg) -> float:
+        """OPEN PRICES: what a new short leg is sold at: the price it's
+        valued at the moment after (_confirm_price: the bid/ask mid, a book
+        up to `quote_wide_spread` wide, else a trade in the last
+        `live_trade_minutes`), else its bid, which a sell fills at. Never
+        a trade from earlier in the day. 16 Nov 2026, DTT Sensex Strangle:
+        every re-entry sold 83000CE at that day's ₹1,248 trade while its
+        book's mid, what the checkpoint valued it at a second later, was
+        ₹1,190; ₹1,152 of profit on paper each time, over the ₹750 target,
+        so it closed and re-entered 824 times. Raises NoSalePrice with
+        none of these. Without a quote at all (Kite down), the price the
+        strike search found."""
+        key = getattr(leg, "key", None)
+        if not key:
+            return float(leg.last_price)
+        try:
+            q = (await self.resolver.get_quotes([key])).get(key)
+        except Exception:
+            logger.warning("No quote to price %s's sale at — the strike search's %.2f", key, leg.last_price)
+            return float(leg.last_price)
+        if not q:
+            return float(leg.last_price)
+        px = self._confirm_price(q, clock.now_ist())
+        if px is not None:
+            return float(px)
+        bid, _ask = _book_top(q)
+        if bid:
+            return bid
+        raise NoSalePrice(f"No live price to sell {key.split(':', 1)[-1]} at: no bid and ask close enough, no recent trade, no bid")
 
     async def _replace_leg(
         self, runner, ts, side: str, old: dict, target_premium: float, trigger: str,
@@ -2812,6 +2926,11 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             try:
                 if not isinstance(saved, dict) or saved.get("version") != 1 or not isinstance(saved.get("cycle_id"), int):
                     raise ValueError(f"not this strategy's saved state: {str(saved)[:80]}")
+                cp = saved.get("checkpoints")
+                if cp:   # CHECKPOINT BRAKE
+                    self._checkpoint_day, self._checkpoints_today = date.fromisoformat(cp[0]), int(cp[1])
+                if saved["cycle_id"] == self.cycle_id and saved.get("cycle_entered_at"):
+                    self._cycle_entered_at = datetime.fromisoformat(saved["cycle_entered_at"])
                 if saved["cycle_id"] == self.cycle_id and saved.get("converged") and (self.legs["CE"] or self.legs["PE"]):
                     premium, floor = float(saved["convergence_premium"]), saved.get("trailing_floor")
                     self.converged, self.convergence_premium = True, premium
@@ -2856,9 +2975,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         Checkpointed by the runner after every tick that changes it."""
         if not self.cycle_id:
             return None
+        cday = getattr(self, "_checkpoint_day", None)
+        entered = getattr(self, "_cycle_entered_at", None)
         return {"version": 1, "cycle_id": self.cycle_id, "converged": self.converged,
                 "convergence_premium": self.convergence_premium,
-                "trailing_floor": self._trailing_floor if self.converged else None}
+                "trailing_floor": self._trailing_floor if self.converged else None,
+                # CHECKPOINT BRAKE: kept through a restart
+                "checkpoints": [cday.isoformat(), self._checkpoints_today] if cday else None,
+                "cycle_entered_at": _naive_ist(entered).isoformat() if entered is not None else None}
 
     # ── Trade-reason metadata (Section 12) ──────────────────────────────
 

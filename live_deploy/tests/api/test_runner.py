@@ -186,3 +186,58 @@ def test_unregistered_strategy_observes_without_trading(client):
     assert runner.strategy is None
     _run_ticks(client, runner, [tick(256265, datetime.now())])
     assert sql(client, "SELECT 1 FROM position_lots") == []
+
+
+def test_a_runaway_strategy_is_stopped_and_paused_past_its_trades_a_day():
+    """RUNAWAY CAP. 16 Nov 2026: DTT Sensex Strangle traded 1,698 times in a
+    day. Past its strategy's MAX_FILLS_PER_DAY, a deployment gets no more
+    ticks, raises one critical alert and is paused through the manager."""
+    from types import SimpleNamespace
+    from zoneinfo import ZoneInfo
+    from app.deployments.runner import DeploymentRunner
+    r = object.__new__(DeploymentRunner)
+    r.deployment_id, r.deployment_name = "d1", "T"
+    r.strategy = SimpleNamespace(MAX_FILLS_PER_DAY=4)
+    r._fills_day, r._fills_today, r.runaway = None, 0, False
+    asked, reported, events, paused = [], [], [], []
+
+    class Pool:
+        async def fetchval(self, q, dep, day):
+            asked.append(day)
+            return 2   # two already booked today, this one among them
+    r.pool = Pool()
+
+    async def report(kind, title, detail=None, **kw):
+        reported.append((kind, kw.get("severity")))
+
+    async def record_event(kind, message=None, metadata=None):
+        events.append(kind)
+
+    async def on_runaway(dep):
+        paused.append(dep)
+    r._report, r._record_event, r.on_runaway = report, record_event, on_runaway
+    at = datetime(2026, 11, 16, 6, 0, tzinfo=ZoneInfo("UTC"))
+
+    async def go():
+        await r._count_fill(at)
+        assert r._fills_today == 2 and not r.runaway and len(asked) == 1
+        await r._count_fill(at)
+        assert not r.runaway
+        await r._count_fill(at)
+        assert r.runaway and reported == [("runaway", "critical")] and events == ["runaway_paused"]
+        await asyncio.sleep(0)
+        assert paused == ["d1"]
+        await r._count_fill(at)
+        assert reported == [("runaway", "critical")], "said once"
+    asyncio.run(go())
+    # no cap: nothing counted
+    r2 = object.__new__(DeploymentRunner)
+    r2.strategy = SimpleNamespace()
+    r2._fills_day, r2._fills_today, r2.runaway = None, 0, False
+    asyncio.run(r2._count_fill(at))
+    assert r2._fills_day is None
+
+
+def test_the_strangle_caps_its_trades_a_day():
+    from app.strategies.strangle_monthly_v2 import StrangleMonthlyV2Strategy
+    assert StrangleMonthlyV2Strategy.MAX_FILLS_PER_DAY == 40

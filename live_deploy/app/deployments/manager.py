@@ -272,6 +272,13 @@ class DeploymentManager:
         await self._record_event(deployment_id, row["deployment_name"], row["strategy_name"], "paused")
         logger.info("Paused deployment %s", row["deployment_name"])
 
+    async def _on_runaway(self, deployment_id: UUID) -> None:
+        """RUNAWAY CAP (DeploymentRunner._count_fill): pause it, holding what it has."""
+        try:
+            await self.pause(deployment_id)
+        except Exception:
+            logger.exception("Pausing runaway deployment %s failed — its runner already trades nothing more", deployment_id)
+
     async def resume(self, deployment_id: UUID) -> asyncpg.Record:
         row = await queries.get_deployment(self.pool, deployment_id)
         if row is None:
@@ -1123,6 +1130,7 @@ class DeploymentManager:
             on_fill=self._on_fill_committed,
             event_broadcaster=self.event_broadcaster,
             push_config=self.push_config,
+            on_runaway=self._on_runaway,
         )
         await runner.start()
         self.runners[str(row["id"])] = runner

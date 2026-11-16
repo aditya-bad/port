@@ -47,6 +47,7 @@ class DeploymentRunner:
         on_fill: Optional[Callable[[], None]] = None,
         event_broadcaster=None,
         push_config: Optional[dict] = None,
+        on_runaway: Optional[Callable] = None,
     ):
         self.deployment_id = deployment["id"]
         self.deployment_name = deployment["deployment_name"]
@@ -69,6 +70,12 @@ class DeploymentRunner:
         # broader per-fill event recording (_record_event) never sends a
         # push notification regardless of this.
         self.push_config = push_config
+        # RUNAWAY CAP: called (as a task) with the deployment id once its
+        # strategy passes MAX_FILLS_PER_DAY trades in a day; the manager pauses it
+        self.on_runaway = on_runaway
+        self._fills_day = None
+        self._fills_today = 0
+        self.runaway = False
         # Optional, fire-and-forget: DeploymentManager passes a callback
         # here that schedules a background aggregate-cache refresh (see
         # app/cache.py) after every fill. The runner itself stays
@@ -747,6 +754,8 @@ class DeploymentRunner:
                     logger.exception("%s: noting the session skip failed", self.deployment_name)
             return
         now = self.clock_now()
+        if self.runaway:   # RUNAWAY CAP: nothing more from the strategy until the owner looks
+            return
         if self.use_breaker and not self.breaker.allow(now):
             return
         try:
@@ -823,6 +832,43 @@ class DeploymentRunner:
                 f"{' The intraday safety net still squares off at the cut-off.' if self.mode == 'intraday' else ''}",
                 severity="critical", data={"error": sig, "where": where, "in_a_row": self.breaker.fails, "total": self.breaker.total},
                 day=ts.date() if isinstance(ts, datetime) else None)
+
+    async def _count_fill(self, executed_at: datetime) -> None:
+        """RUNAWAY CAP: today's trades; past the strategy's MAX_FILLS_PER_DAY
+        the strategy gets no more ticks, it's reported (critical) and the
+        manager pauses the deployment. 16 Nov 2026: DTT Sensex Strangle
+        traded 1,698 times in a day, a pricing fault re-entering every
+        second; a strategy's own checks can't be the only stop."""
+        cap = getattr(self.strategy, "MAX_FILLS_PER_DAY", None) if self.strategy is not None else None
+        if not cap:
+            return
+        day = executed_at.astimezone(self._IST).date()
+        if self._fills_day != day:
+            try:
+                n = await self.pool.fetchval(
+                    "SELECT count(*) FROM position_lots WHERE deployment_id = $1 "
+                    "AND (executed_at AT TIME ZONE 'Asia/Kolkata')::date = $2", self.deployment_id, day)
+            except Exception:
+                logger.exception("%s: counting today's trades failed", self.deployment_name)
+                n = 1
+            self._fills_day, self._fills_today = day, int(n or 0)
+        else:
+            self._fills_today += 1
+        if self._fills_today < cap or self.runaway:
+            return
+        self.runaway = True
+        logger.error("%s: %d trades today, over the %d a day allowed — pausing", self.deployment_name, self._fills_today, cap)
+        try:
+            await self._report("runaway", f"{self._fills_today} trades today: paused",
+                               f"More than {cap} trades in a day isn't how this strategy trades; something is looping. "
+                               "It's paused with what it holds; nothing more is traded until you look and resume it.",
+                               severity="critical", key="runaway", day=day, data={"trades_today": self._fills_today, "cap": cap})
+            await self._record_event("runaway_paused", message=f"{self._fills_today} trades today, over {cap}: paused",
+                                     metadata={"trades_today": self._fills_today, "cap": cap})
+        except Exception:
+            logger.exception("%s: reporting the runaway failed", self.deployment_name)
+        if self.on_runaway is not None:
+            asyncio.get_running_loop().create_task(self.on_runaway(self.deployment_id))
 
     async def _bad_tick(self, why: str) -> None:
         if why in ("duplicate", "held"):   # a repeat carries nothing new; a held one may yet be confirmed
@@ -1238,6 +1284,7 @@ class DeploymentRunner:
             raise
         if self.issues.is_open(f"fill_failed:{symbol}"):
             await self.issues.resolve(f"fill_failed:{symbol}")
+        await self._count_fill(executed_at)
         # would Kite have taken it? checked in the background (app/shadow.py)
         shadow.submit({"lot_id": result["lot_id"], "deployment_id": self.deployment_id, "executed_at": executed_at,
                        "symbol": symbol, "instrument_token": instrument_token, "action": action,
