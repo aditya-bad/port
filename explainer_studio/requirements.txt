@@ -1,0 +1,10 @@
+# the web app
+fastapi==0.163.1
+uvicorn[standard]==0.54.0
+python-multipart==0.0.34
+# Draft with Claude (optional at run time: no key, no calls)
+anthropic==2.9.0
+# the voice: Kokoro, offline on the CPU
+kokoro-onnx==0.6.1
+soundfile==0.14.0
+numpy==2.5.5

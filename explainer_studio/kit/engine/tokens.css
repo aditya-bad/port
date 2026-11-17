@@ -1,0 +1,38 @@
+/* Colour tokens: light, dark by system setting, dark when the viewer asks. --b blue, --g green, --r red, --y yellow, --wt orange, --pu purple. */
+:root {
+  --ink: oklch(0.2 0.01 90);
+  --paper: oklch(0.968 0.006 90);
+  --card: oklch(0.985 0.004 90);
+  --soft: oklch(0.94 0.008 90);
+  --line: oklch(0.86 0.01 90);
+  --line2: oklch(0.76 0.01 90);
+  --mute: oklch(0.48 0.01 90);
+  --y: oklch(0.88 0.13 95);
+  --ys: oklch(0.95 0.05 95);
+  --g: oklch(0.5 0.14 150);
+  --r: oklch(0.55 0.2 28);
+  --b: oklch(0.6 0.13 250);
+  --wt: oklch(0.5 0.17 40);
+  --f-display: 'Funnel Display', 'Funnel Sans', system-ui, sans-serif;
+  --f-body: 'Funnel Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --f-mono: 'Martian Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: oklch(0.93 0.008 85); --paper: oklch(0.19 0.008 75); --card: oklch(0.22 0.008 75); --soft: oklch(0.255 0.01 75);
+    --line: oklch(0.32 0.01 75); --line2: oklch(0.42 0.01 75); --mute: oklch(0.7 0.01 85); --y: oklch(0.45 0.1 85); --ys: oklch(0.28 0.05 85);
+    --g: oklch(0.76 0.15 150); --r: oklch(0.72 0.17 28); --b: oklch(0.74 0.11 250); --wt: oklch(0.8 0.14 65);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --ink: oklch(0.93 0.008 85); --paper: oklch(0.19 0.008 75); --card: oklch(0.22 0.008 75); --soft: oklch(0.255 0.01 75);
+  --line: oklch(0.32 0.01 75); --line2: oklch(0.42 0.01 75); --mute: oklch(0.7 0.01 85); --y: oklch(0.45 0.1 85); --ys: oklch(0.28 0.05 85);
+  --g: oklch(0.76 0.15 150); --r: oklch(0.72 0.17 28); --b: oklch(0.74 0.11 250); --wt: oklch(0.8 0.14 65);
+  color-scheme: dark;
+}
+
+:root { --pu: oklch(0.52 0.16 305); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --pu: oklch(0.74 0.12 305); } }
+:root[data-theme="dark"] { --pu: oklch(0.74 0.12 305); }

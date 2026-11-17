@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Explainer Studio</title>
+<meta name="description" content="Turn your material into a narrated, animated explainer: HTML, MP4 and a YouTube-ready file with subtitles.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2315181b'/%3E%3Cpath d='M12 9v14l11-7z' fill='%23f2c94c'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/fonts.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <a class="brand" href="#/"><span class="mark" aria-hidden="true"></span>Explainer Studio</a>
+  <span class="grow"></span>
+  <span id="health" class="health" hidden></span>
+  <button class="btn ghost" id="open-settings" type="button">Settings</button>
+</header>
+<main id="main" tabindex="-1"></main>
+<aside id="job" class="job" hidden aria-live="polite"></aside>
+<dialog id="settings">
+  <form method="dialog" class="dlg" id="settings-form">
+    <h2>Settings</h2>
+    <p class="mute">Claude writes and fixes scripts for you. It's optional: without a key you write or upload the script yourself.</p>
+    <label class="field"><span>Claude API key</span>
+      <input type="password" name="key" autocomplete="off" placeholder="sk-ant-…">
+      <small id="key-state" class="mute"></small></label>
+    <label class="field"><span>Model</span><select name="model"></select></label>
+    <label class="field"><span>Fixing rounds after a draft</span>
+      <input type="number" name="rounds" min="0" max="5" step="1">
+      <small class="mute">After writing, the script is checked; Claude fixes what the check finds this many times at most.</small></label>
+    <div class="row end">
+      <button class="btn ghost" value="cancel" type="submit">Close</button>
+      <button class="btn" value="save" type="submit" id="save-settings">Save</button>
+    </div>
+  </form>
+</dialog>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

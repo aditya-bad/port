@@ -1,0 +1,21 @@
+# docker compose up -d --build   → http://localhost:47391
+services:
+  studio:
+    build: .
+    image: explainer-studio:latest
+    container_name: explainer-studio
+    ports:
+      # only this machine can open it; see the README to reach it from elsewhere
+      - "${STUDIO_BIND:-127.0.0.1}:${STUDIO_PORT:-47391}:47391"
+    volumes:
+      - ./data:/data
+    environment:
+      # optional: Draft with Claude. Can also be set in the app's Settings.
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # scenes recorded at once
+      - STUDIO_WORKERS=${STUDIO_WORKERS:-2}
+    # rendering uses all the CPU it's given: cap it so the machine stays usable
+    cpus: "${STUDIO_CPUS:-2}"
+    mem_limit: "${STUDIO_MEMORY:-4g}"
+    shm_size: "1gb"          # Chromium needs more shared memory than Docker's default
+    restart: unless-stopped
