@@ -1121,3 +1121,41 @@ def test_the_checkpoint_brake_holds_after_three_a_day_and_soon_after_an_entry(mo
     assert (s2._checkpoint_day, s2._checkpoints_today) == (date(2026, 11, 16), 3)
     assert s2._cycle_entered_at == t0
     assert "already 3" in run(s2._checkpoint_brake(R2(), t0 + timedelta(hours=3), 930, 750))
+
+
+def test_a_leg_is_bought_back_at_the_price_the_rule_acted_on(pool_run, monkeypatch):
+    """BUYBACK PRICES. 16 Nov 2026 09:37, DTT BankNifty Strangle: the
+    checkpoint was decided on 65200CE's first trade of the day, ₹182, and
+    the call was bought back at ₹299, the ask it had been priced from a
+    minute before. A quote kept from before the leg's latest trade isn't
+    its price any more; a leg a rule closes is bought back at the price
+    that rule acted on."""
+    async def go(pool):
+        sim = await start(pool, monkeypatch)
+        await sim.tick("10:01", spot=25000)
+        strat, runner = sim.runner.strategy, sim.runner
+        leg = strat.legs["CE"][0]
+        tok, now = leg["token"], sim.market.now
+        live = runner.dispatcher.last_prices[tok]
+        # priced from a quote (the ask) a moment ago, no trade since: that quote stands
+        strat._stale_quotes[tok] = (live + 117.0, now)
+        strat._manage_ts = now + timedelta(seconds=30)
+        runner.dispatcher.last_price_times[tok] = now - timedelta(minutes=5)
+        assert await strat.exit_price(runner, tok, leg["symbol"], leg["entry_price"]) == (live + 117.0, "quote")
+        # it has traded since: its trade, not the older quote
+        runner.dispatcher.last_price_times[tok] = now + timedelta(seconds=20)
+        px, src = await strat.exit_price(runner, tok, leg["symbol"], leg["entry_price"])
+        assert src != "quote" and px == pytest.approx(live)
+        # a rule acts on the re-check's prices: the leg is bought back at its one
+        runner.dispatcher.last_price_times[tok] = now - timedelta(minutes=5)
+        prices = {l["token"]: runner.dispatcher.last_prices[l["token"]] for s_ in strat.legs.values() for l in s_}
+        confirmed = await strat._confirm_trigger(runner, now, "checkpoint_target", prices, lambda px: True)
+        assert confirmed is not None
+        await strat._close_leg(runner, now, "CE", leg, "checkpoint_target", {})
+        bought = await sim.pool.fetchval(
+            "SELECT l.price FROM position_lots l JOIN positions p ON p.id = l.position_id "
+            "WHERE l.deployment_id = $1 AND p.instrument_token = $2 AND l.action = 'buy' ORDER BY l.executed_at DESC LIMIT 1",
+            sim.dep_id, tok)
+        assert float(bought) == pytest.approx(confirmed[tok], abs=0.01), "the price acted on, not the ask kept before"
+        assert float(bought) < live + 100
+    pool_run(go)

@@ -220,6 +220,11 @@ at its 11:55 last trade (342.30). So:
     the checkpoint valued it at the ₹1,190 mid: ₹1,152 of profit on paper
     at every re-entry, over its ₹750 target, so it closed and re-entered
     824 times.
+  - BUYBACK PRICES: a leg a rule closes is bought back at the price the
+    rule acted on (the live-quote re-check's), and a kept quote is never
+    used once the leg has traded since. 16 Nov 2026, DTT BankNifty
+    Strangle: a checkpoint decided on 65200CE's ₹182 trade bought it back
+    at ₹299, the ask quoted a minute before.
   - CHECKPOINT BRAKE: at most 3 checkpoint exits a day (then it holds, the
     position managed as usual, with a critical alert) and none within 10
     minutes of the cycle's entry; both kept through a restart.
@@ -1779,7 +1784,10 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         q = getattr(self, "_stale_quotes", {}).get(int(token))   # set by on_start
         at = getattr(self, "_manage_ts", None)
         if q is not None and at is not None and at - q[1] <= _QUOTE_STALE_KEEP:
-            return float(q[0]), "quote"
+            # BUYBACK PRICES: not once the leg has traded since that quote
+            traded = (getattr(runner.dispatcher, "last_price_times", None) or {}).get(int(token))
+            if traded is None or _naive_ist(traded) <= _naive_ist(q[1]):
+                return float(q[0]), "quote"
         return await super().exit_price(runner, token, symbol, entry)
 
     def _stale_legs(self, runner, ts) -> list[str]:
@@ -1831,7 +1839,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 "%s: %s fired but live quotes are unavailable — acting on tick prices",
                 runner.deployment_name, name,
             )
-            return prices
+            return self._acting_on(ts, prices)
         confirmed: dict[int, float] = {}
         jumped: list[str] = []
         for token, key in keys.items():
@@ -1841,7 +1849,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                     "%s: %s fired but no live quote for %s — acting on tick prices",
                     runner.deployment_name, name, key,
                 )
-                return prices
+                return self._acting_on(ts, prices)
             px = self._confirm_price(q, ts)
             managed = prices[token]
             if px is None:
@@ -1857,7 +1865,7 @@ class StrangleMonthlyV2Strategy(StrategyBase):
                 "%s: %s confirmed by live quotes (tick %s, quote %s)",
                 runner.deployment_name, name, tick_view, quote_view,
             )
-            return confirmed
+            return self._acting_on(ts, confirmed)
         self._confirm_cooldown_until[name] = ts + _CONFIRM_COOLDOWN
         noted = self._refute_noted.get(name)
         if noted is None or ts - noted >= _REFUTE_NOTE_EVERY:
@@ -1872,6 +1880,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
             tick_view, quote_view, _CONFIRM_COOLDOWN.seconds,
         )
         return None
+
+    def _acting_on(self, ts, prices: dict) -> dict:
+        """BUYBACK PRICES: the prices a rule just acted on, kept for this
+        tick so a leg it closes is bought back at the price the decision
+        was made on (_close_leg), not at another one fetched a moment
+        later."""
+        self._acted_prices = (ts, dict(prices))
+        return prices
 
     def _confirm_price(self, q: dict, ts) -> Optional[float]:
         """A leg's price from its quote, for the re-check (SPIKES): the
@@ -1902,7 +1918,6 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         for side in ("CE", "PE"):
             keep = []
             for leg in list(self.legs[side]):
-                price, _src = await self.exit_price(runner, leg["token"], leg["symbol"], leg["entry_price"])
                 try:
                     await self._close_leg(runner, ts, side, leg, trigger, trigger_values, _skip_list_remove=True)
                 except Exception:
@@ -1947,7 +1962,14 @@ class StrangleMonthlyV2Strategy(StrategyBase):
         self, runner, ts, side: str, leg: dict, trigger: str, trigger_values: dict,
         _skip_list_remove: bool = False,
     ) -> None:
-        price, _src = await self.exit_price(runner, leg["token"], leg["symbol"], leg["entry_price"])
+        acted = getattr(self, "_acted_prices", None)
+        if acted is not None and acted[0] == ts and acted[1].get(leg["token"]):
+            # BUYBACK PRICES: at what the rule acting now priced it at (16 Nov
+            # 2026, DTT BankNifty Strangle: a checkpoint decided on 65200CE's
+            # ₹182 trade bought it back at ₹299, the ask quoted before it)
+            price = float(acted[1][leg["token"]])
+        else:
+            price, _src = await self.exit_price(runner, leg["token"], leg["symbol"], leg["entry_price"])
         pos = runner.open_positions.get(leg["token"])
         if pos is not None:
             if not _skip_list_remove:
