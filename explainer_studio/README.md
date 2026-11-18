@@ -119,7 +119,7 @@ and pacing rules. `kit/example/scenes.js` is a complete two-scene example.
 ## Without Docker (development)
 
 ```bash
-bash scripts/setup-local.sh     # Python env, voice model, Playwright Chromium (needs python3, node, ffmpeg)
+bash scripts/setup-local.sh     # Python env, voice model, Playwright Chromium (needs Python 3.12+, node, ffmpeg)
 bash scripts/run-local.sh       # http://127.0.0.1:47391
 ~/.cache/explainer-video/venv/bin/python -m pytest tests   # the full suite, including a real render (about 2 min)
 ```

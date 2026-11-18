@@ -1,7 +1,15 @@
 # Explainer Studio: one image with everything a render needs: the web app,
 # the voice (Kokoro, offline), a browser to record with (Chromium via
 # Playwright) and ffmpeg. Projects live in /data (mount a volume there).
-FROM node:22-bookworm-slim
+# Python 3.13 (numpy 2.5 needs 3.12 or later; Debian 12's own python3 is 3.11),
+# on Debian 12, which Playwright's browser install supports; Node 22 copied in.
+FROM node:22-bookworm-slim AS node
+FROM python:3.13-slim-bookworm
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && node --version && npm --version && python3 --version
 
 ENV DEBIAN_FRONTEND=noninteractive \
     EV_HOME=/opt/ev \
@@ -16,7 +24,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-venv ffmpeg curl ca-certificates \
+ && apt-get install -y --no-install-recommends ffmpeg curl ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
 # Python: the app and the voice, one environment
