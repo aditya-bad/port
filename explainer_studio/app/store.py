@@ -24,7 +24,7 @@ from . import config
 OUTPUTS = ["html", "mp4", "scenes", "youtube", "srt", "vtt", "chapters", "thumbnail"]
 # The PowerPoint is made on its own (the "deck" job), with its own settings
 DECK = {
-    "per": ("step", "scene"),                 # a slide per step, or per scene
+    "per": ("step", "scene", "whole"),        # a slide per step, per scene, or one continuous video
     "captions": ("text", "picture", "none"),  # editable text on the slide, drawn into the animation, or none
     "start": ("auto", "click"),               # the animation plays when the slide opens, or on a click
     "resolution": ("720p", "1080p"),

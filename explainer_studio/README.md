@@ -79,8 +79,8 @@ somewhere else:
 
    | Setting | Choices |
    |---|---|
-   | A slide for each | **Step** (one sentence and its piece of the animation) or **scene** (the whole scene on one slide) |
-   | Captions | **As text** (an editable text box at the bottom), **in the picture**, or **none**. With a slide per scene, "as text" goes in the picture, since the sentences change while it plays |
+   | Slides | **A slide per step** (one sentence and its piece of the animation), **a slide per scene**, or **one continuous video** (the whole explainer on one slide, playing like the MP4) |
+   | Captions | **As text** (an editable text box at the bottom), **in the picture**, or **none**. With a slide per scene or one continuous video, "as text" goes in the picture, since the sentences change while it plays |
    | Sound | The voice plays with each slide's animation, or silent (to talk over) |
    | Animation starts | **When the slide opens**, or **on a click** |
    | Move on by itself | The next slide follows when the animation ends; a click still moves on sooner. Only when the animation starts by itself |
@@ -89,7 +89,8 @@ somewhere else:
    | Size, frame rate, look | 720p or 1080p, 25 or 30 fps, light or dark |
 
    The animations are video clips, exactly as in the MP4, not PowerPoint's own
-   animation effects, so they can't be edited inside PowerPoint. Each slide's
+   animation effects, so they can't be edited inside PowerPoint. They start by
+   themselves only in the slide show (F5); in the editing view, click play. Each slide's
    picture under the clip is its last frame, which is what a PDF export shows.
    It plays in PowerPoint 2016 or later (Windows and Mac) and Keynote. Google
    Slides drops the videos and shows only the pictures.

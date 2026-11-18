@@ -6,7 +6,8 @@
 //         sound: bool, start: 'auto'|'click', advance: bool, notes: bool,
 //         slides: [{ video, poster, dur, caption, notes }] }
 //   sound    the clips carry the voice (otherwise they're silent and muted)
-//   start    auto: the animation plays when the slide opens; click: on a click
+//   start    auto: the animation plays when the slide opens; click: on the
+//            presenter's click (the next click plays it, the one after moves on)
 //   advance  go to the next slide by itself when the animation ends
 //   caption  editable text over the bottom of the slide ('' for none)
 import fs from 'node:fs';
@@ -40,10 +41,10 @@ if (spec.titleCard) {
 for (const [i, st] of spec.slides.entries()) {
   const s = pres.addSlide();
   s.background = { color: PAPER };
-  s.addImage({ path: st.poster, x: 0, y: 0, w: W, h: H, altText: st.caption || `Step ${i + 1}`, objectName: `Step ${i + 1} picture` });
-  s.addMedia({ type: 'video', path: st.video, x: 0, y: 0, w: W, h: H, cover: b64(st.poster), objectName: `Step ${i + 1} animation` });
+  s.addImage({ path: st.poster, x: 0, y: 0, w: W, h: H, altText: st.caption || `Step ${i + 1}`, objectName: `${st.label || `Step ${i + 1}`} picture` });
+  s.addMedia({ type: 'video', path: st.video, x: 0, y: 0, w: W, h: H, cover: b64(st.poster), objectName: `${st.label || `Step ${i + 1}`} animation` });
   if (st.caption) {
-    s.addText(st.caption, { x: 0.9, y: H - 1.0, w: W - 1.8, h: 0.72, isTextBox: true, objectName: `Step ${i + 1} caption`,
+    s.addText(st.caption, { x: 0.9, y: H - 1.0, w: W - 1.8, h: 0.72, isTextBox: true, objectName: `${st.label || `Step ${i + 1}`} caption`,
       fontFace: 'Calibri', fontSize: 18, color: INK, align: 'center', valign: 'middle', fit: 'shrink', margin: 6,
       fill: { color: PAPER, transparency: 12 } });
   }
@@ -56,11 +57,11 @@ const buf = await pres.write({ outputType: 'nodebuffer' });
 // For "start: auto" add PowerPoint's "Start: Automatically" (a timing tree that
 // plays the video as the slide begins); for "advance" a transition that moves
 // on when the animation has played. Both go after clrMapOvr, before extLst.
-const playTiming = (id, mute) => `<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst>`
+const playTiming = (id, mute, click) => `<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst>`
   + `<p:seq concurrent="1" nextAc="seek"><p:cTn id="2" dur="indefinite" nodeType="mainSeq"><p:childTnLst>`
-  + `<p:par><p:cTn id="3" fill="hold"><p:stCondLst><p:cond delay="indefinite"/><p:cond evt="onBegin" delay="0"><p:tn val="2"/></p:cond></p:stCondLst><p:childTnLst>`
+  + `<p:par><p:cTn id="3" fill="hold"><p:stCondLst><p:cond delay="indefinite"/>${click ? '' : '<p:cond evt="onBegin" delay="0"><p:tn val="2"/></p:cond>'}</p:stCondLst><p:childTnLst>`
   + `<p:par><p:cTn id="4" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>`
-  + `<p:par><p:cTn id="5" presetID="1" presetClass="mediacall" presetSubtype="0" fill="hold" nodeType="afterEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>`
+  + `<p:par><p:cTn id="5" presetID="1" presetClass="mediacall" presetSubtype="0" fill="hold" nodeType="${click ? 'clickEffect' : 'afterEffect'}"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst>`
   + `<p:cmd type="call" cmd="playFrom(0.0)"><p:cBhvr><p:cTn id="6" dur="1" fill="hold"/><p:tgtEl><p:spTgt spid="${id}"/></p:tgtEl></p:cBhvr></p:cmd>`
   + `</p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn>`
   + `<p:prevCondLst><p:cond evt="onPrev" delay="0"><p:tgtEl><p:sldTgt/></p:tgtEl></p:cond></p:prevCondLst>`
@@ -72,10 +73,22 @@ const playTiming = (id, mute) => `<p:timing><p:tnLst><p:par><p:cTn id="1" dur="i
 const zip = await JSZip.loadAsync(buf);
 const num = n => +n.match(/slide(\d+)\.xml$/)[1];
 const names = Object.keys(zip.files).filter(n => /^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a, b) => num(a) - num(b));
-let auto = 0, adv = 0;
+// Every shape on a slide gets its own id (pptxgenjs can give two the same:
+// the video and the caption), then the timing points at the shape that IS the
+// video: the <p:pic> holding <a:videoFile>, not the still picture under it.
+const renumber = xml => { let id = 1; return xml.replace(/<p:cNvPr id="\d+"/g, () => `<p:cNvPr id="${id++}"`); };
+const videoShape = xml => {
+  for (const pic of xml.match(/<p:pic>[\s\S]*?<\/p:pic>/g) || []) {
+    if (pic.includes('<a:videoFile')) return pic.match(/<p:cNvPr id="(\d+)"/)[1];
+  }
+  return null;
+};
+let auto = 0, onClick = 0, adv = 0;
 for (const n of names) {
   const m = meta[num(n) - 1];
-  let xml = await zip.file(n).async('string');
+  let xml = renumber(await zip.file(n).async('string'));
+  const ids = [...xml.matchAll(/<p:cNvPr id="(\d+)"/g)].map(x => x[1]);
+  if (new Set(ids).size !== ids.length) throw new Error(`${n}: two shapes share an id`);
   let add = '';
   // after the clip has played (4 s on the title slide); a click still moves on
   // sooner. A clip that waits for a click doesn't move on by itself.
@@ -83,9 +96,14 @@ for (const n of names) {
     add += `<p:transition spd="med" advTm="${Math.round((m.dur + 0.6) * 1000)}"><p:fade/></p:transition>`;
     adv++;
   }
-  const pic = xml.match(/<p:pic>\s*<p:nvPicPr>\s*<p:cNvPr id="(\d+)"[^>]*>[\s\S]*?<a:videoFile/);
-  if (pic && spec.start !== 'click' && !xml.includes('<p:timing>')) { add += playTiming(pic[1], !spec.sound); auto++; }
-  if (!add) continue;
+  const vid = videoShape(xml);
+  if (m && m.video) {
+    if (!vid) throw new Error(`${n}: no video shape`);
+    const name = xml.match(new RegExp(`<p:cNvPr id="${vid}" name="([^"]*)"`))[1];
+    if (!/animation$/.test(name)) throw new Error(`${n}: the timing would play "${name}", not the animation`);
+    add += playTiming(vid, !spec.sound, spec.start === 'click');
+    spec.start === 'click' ? onClick++ : auto++;
+  }
   xml = xml.includes('<p:extLst>') && xml.lastIndexOf('<p:extLst>') > xml.lastIndexOf('</p:cSld>')
     ? xml.replace(/<p:extLst>(?![\s\S]*<p:extLst>)/, `${add}<p:extLst>`)
     : xml.replace('</p:sld>', `${add}</p:sld>`);
@@ -95,4 +113,4 @@ for (const n of names) {
 const flat = new JSZip();
 for (const [n, e] of Object.entries(zip.files)) if (!e.dir) flat.file(n, await e.async('nodebuffer'), { createFolders: false });
 fs.writeFileSync(spec.out, await flat.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }));
-console.log(`${spec.out}: ${meta.length} slides, ${auto} playing by themselves, ${adv} moving on by themselves`);
+console.log(`${spec.out}: ${meta.length} slides, ${auto} playing by themselves, ${onClick} playing on a click, ${adv} moving on by themselves`);

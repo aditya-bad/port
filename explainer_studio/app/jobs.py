@@ -337,8 +337,8 @@ async def run_deck(j: Job) -> None:
     j.at("Building the page", 0.2)
     html = await build(j, voice=True)
     w, _h = store.RESOLUTIONS[ds["resolution"]]
-    per_scene = ds["per"] == "scene"
-    # a scene slide's sentences change while it plays, so its captions go in the picture
+    per_scene = ds["per"] in ("scene", "whole")      # "whole": the scenes' clips joined into one
+    # a scene's (or the whole video's) sentences change while it plays, so its captions go in the picture
     burn = ds["captions"] == "picture" or (per_scene and ds["captions"] == "text")
     vid = p / "out" / "deck-vid"
     env = config.tool_env() | {"FPS": str(ds["fps"]), "SCALE": str(w / 1600), "SCHEME": ds["theme"],
@@ -389,9 +389,21 @@ async def run_deck(j: Job) -> None:
                     "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart", clip)
         await j.run(config.FF, "-loglevel", "error", "-y", "-sseof", "-0.25", "-i", clip, "-update", "1", "-frames:v", "1", poster)
         slides.append({"video": str(clip), "poster": str(poster), "dur": round(b - a, 3), "scene": si,
+                       "label": f"Scene {si}" if per_scene else f"Step {i}",
                        "caption": caption if ds["captions"] == "text" and not per_scene else "",
                        "notes": notes if ds["notes"] else ""})
         j.progress = 0.8 + 0.15 * i / max(1, len(pieces))
+    if ds["per"] == "whole":
+        # one continuous video: the scene clips (same encoding) joined without re-encoding
+        (work / "list.txt").write_text("".join(f"file '{Path(x['video']).name}'\n" for x in slides))
+        whole, poster = work / "whole.mp4", work / "whole.png"
+        await j.run(config.FF, "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", work / "list.txt",
+                    "-c", "copy", "-movflags", "+faststart", whole)
+        first = float(plans[0]["total"])     # its picture: the first scene, well under way
+        await j.run(config.FF, "-loglevel", "error", "-y", "-ss", f"{first * 0.6:.2f}", "-i", whole, "-frames:v", "1", poster)
+        notes = "\n\n".join(f"{x['caption'] or plans[x['scene'] - 1].get('title', '')}\n{x['notes']}".strip() for x in slides)
+        slides = [{"video": str(whole), "poster": str(poster), "dur": round(sum(x["dur"] for x in slides), 3), "scene": 1,
+                   "label": "Explainer", "caption": "", "notes": notes if ds["notes"] else ""}]
     card_png = None
     if ds["title_slide"]:
         card_png = work / "title.png"

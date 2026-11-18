@@ -86,11 +86,43 @@ def test_a_powerpoint_with_sound_a_slide_per_step(client):
     slides = [x for x in z.namelist() if x.startswith("ppt/slides/slide") and x.endswith(".xml")]
     assert len(slides) == n + 1 == r["result"]["slides"]
     assert not [x for x in z.namelist() if x.endswith("/")], "no folder entries"
+    import re
+    for name in slides:
+        x = z.read(name).decode()
+        ids = re.findall(r'<p:cNvPr id="(\d+)" name="([^"]*)"', x)
+        assert len({i for i, _ in ids}) == len(ids), f"{name}: two shapes share an id"
+        targets = set(re.findall(r'spTgt spid="(\d+)"', x))
+        assert [nm for i, nm in ids if i in targets] == ([] if name.endswith("slide1.xml") else [next(nm for _, nm in ids if nm.endswith("animation"))]), \
+            f"{name}: the timing plays the animation, not the picture under it"
     two = z.read("ppt/slides/slide2.xml").decode()
-    assert "<p:timing>" in two and "mute=" not in two and "advTm=" in two
+    assert "<p:timing>" in two and "mute=" not in two and "advTm=" in two and 'evt="onBegin"' in two
     assert "Here is your phone" in two
     notes = [x for x in z.namelist() if x.startswith("ppt/notesSlides/") and x.endswith(".xml")]
     assert any("Here is your phone" in z.read(x).decode() for x in notes)
     clip = config.PROJECTS / pid / "out" / "deck" / "001.mp4"
     c = probe(clip)
     assert (c["video"]["width"], c["video"]["height"]) == (1280, 720) and "audio" in c
+
+
+def test_one_continuous_video(client):
+    """per = whole: the explainer on one slide after the title, as long as the
+    scenes together, with the scenes' sentences in the notes."""
+    import zipfile
+    from app import config
+    pid = client.post("/api/projects", json={"title": "How the example works", "brief": "demo"}).json()["id"]
+    client.post(f"/api/projects/{pid}/script/example")
+    client.patch(f"/api/projects/{pid}", json={"settings": {"deck": {"per": "whole", "resolution": "720p", "start": "click"}}})
+    r = wait(client, client.post(f"/api/projects/{pid}/jobs", json={"kind": "deck"}).json()["id"])
+    assert r["state"] == "done", (r["error"], r["log"][-20:])
+    z = zipfile.ZipFile(config.PROJECTS / pid / "outputs" / "how-the-example-works.pptx")
+    assert sorted(x for x in z.namelist() if x.startswith("ppt/slides/slide") and x.endswith(".xml")) == \
+        ["ppt/slides/slide1.xml", "ppt/slides/slide2.xml"]
+    two = z.read("ppt/slides/slide2.xml").decode()
+    assert 'name="Explainer animation"' in two and "clickEffect" in two and 'mute="1"' in two
+    plans = json.loads((config.PROJECTS / pid / "out" / "plans.json").read_text())
+    whole = config.PROJECTS / pid / "out" / "deck" / "whole.mp4"
+    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(whole)],
+                               capture_output=True, text=True, check=True).stdout)
+    assert abs(dur - sum(float(p["total"]) for p in plans)) < 1.0
+    notes = "".join(z.read(x).decode() for x in z.namelist() if x.startswith("ppt/notesSlides/") and x.endswith(".xml"))
+    assert "Here is your phone" in notes and "Two copies" in notes

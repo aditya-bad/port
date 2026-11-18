@@ -365,10 +365,10 @@ function deck(el) {
       <section class="card stack">
         <h2>Slides</h2>
         <div class="grid2">
-          <div class="field"><span>A slide for each</span>${seg('d_per', [['step', 'Step'], ['scene', 'Scene']], d.per)}
-            <small class="mute">Step: one sentence and its animation per slide. Scene: the whole scene plays on one slide.</small></div>
+          <div class="field"><span>Slides</span>${seg('d_per', [['step', 'A slide per step'], ['scene', 'A slide per scene'], ['whole', 'One continuous video']], d.per)}
+            <small class="mute">Per step: one sentence and its animation on each slide. Per scene: each scene plays through on its own slide. One continuous video: the whole explainer on one slide, playing like the MP4.</small></div>
           <div class="field"><span>Captions</span>${seg('d_captions', [['text', 'As text'], ['picture', 'In the picture'], ['none', 'None']], d.captions)}
-            <small class="mute">As text: an editable text box at the bottom of the slide. With a slide per scene the sentences change while it plays, so “As text” draws them in the picture.</small></div>
+            <small class="mute">As text: an editable text box at the bottom of the slide. With a slide per scene or one continuous video the sentences change while it plays, so “As text” draws them in the picture.</small></div>
           ${tick('d_title_slide', d.title_slide, 'Title slide', 'The title and description first')}
           ${tick('d_notes', d.notes, 'Speaker notes', 'What the narrator says, in each slide’s notes')}
         </div>
