@@ -3,7 +3,8 @@
 //   FF=<ffmpeg> node render.mjs <project>/out/<slug>.html [scenes e.g. 1,3]
 // Explainer Studio settings, from the environment: FPS (25), SCALE (1:
 // 1600x900; 1.2 is 1920x1080, 2.4 is 3840x2160), SCHEME (light or dark),
-// WORKERS (scenes recorded at once, 4), NOCAP (leave the captions out of the picture).
+// WORKERS (scenes recorded at once, 4), NOCAP (leave the captions out of the picture),
+// VID (where the videos go; out/vid by default).
 // → <project>/out/vid/NN-v.mp4 (picture only) and NN.json (the scene's plan).
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -15,7 +16,7 @@ const html = path.resolve(process.argv[2]), FF = process.env.FF, FPS = +(process
 const SCALE = +(process.env.SCALE || 1), SCHEME = process.env.SCHEME === 'dark' ? 'dark' : 'light';
 const WORKERS = Math.max(1, +(process.env.WORKERS || 4));
 if (!FF) { console.error('render.mjs: FF is not set. Run: eval "$(bash $S/tools/setup.sh | grep =)"; export EV_HOME FF'); process.exit(2); }
-const dir = path.join(path.dirname(html), 'vid');
+const dir = process.env.VID ? path.resolve(process.env.VID) : path.join(path.dirname(html), 'vid');
 fs.mkdirSync(dir, { recursive: true });
 const b = await chromium.launch(process.env.CHROMIUM ? { executablePath: process.env.CHROMIUM } : {});
 const probe = await b.newPage();

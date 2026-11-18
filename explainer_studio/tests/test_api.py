@@ -83,3 +83,17 @@ def test_a_job_needs_a_script_and_one_at_a_time(client):
             break
         time.sleep(0.1)
     assert v["state"] == "failed" and "No Claude API key" in v["error"]
+
+
+def test_the_powerpoint_has_its_own_settings(client):
+    pid = client.post("/api/projects", json={"title": "Café"}).json()["id"]
+    d = client.get(f"/api/projects/{pid}").json()["settings"]["deck"]
+    assert d == {"per": "step", "captions": "text", "start": "auto", "resolution": "1080p", "fps": 25, "theme": "light",
+                 "sound": False, "advance": False, "notes": True, "title_slide": True}
+    s = client.patch(f"/api/projects/{pid}", json={"settings": {"deck": {"sound": True, "start": "click"}, "sound": False}}).json()["settings"]
+    assert (s["deck"]["sound"], s["deck"]["start"], s["deck"]["captions"], s["sound"]) == (True, "click", "text", False)
+    for bad in ({"per": "page"}, {"captions": "burned"}, {"fps": 60}, {"resolution": "4k"}):
+        assert client.patch(f"/api/projects/{pid}", json={"settings": {"deck": bad}}).status_code == 422, bad
+    assert "pptx" not in client.get("/api/options").json()["outputs"], "made on its own tab, not with the video"
+    from app import store
+    assert store.slugify("How a café works") == "how-a-cafe-works"

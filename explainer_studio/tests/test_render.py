@@ -62,3 +62,35 @@ def test_a_vertical_youtube_file_with_everything(client):
     assert "Here is your phone" in srt and (out / "how-the-example-works.vtt").read_text().startswith("WEBVTT")
     assert (out / "how-the-example-works-chapters.txt").read_text().startswith("0:00 A message, from your phone to the server")
     assert client.get(f"/api/projects/{pid}/outputs.zip").headers["content-type"] == "application/zip"
+
+
+def test_a_powerpoint_with_sound_a_slide_per_step(client):
+    """The deck job: recorded at its own size, a slide per step plus a title
+    slide, the voice in each clip, playing by itself and moving on; the video
+    files made before are kept."""
+    import zipfile
+    from app import config
+    pid = client.post("/api/projects", json={"title": "How the example works", "brief": "demo"}).json()["id"]
+    client.post(f"/api/projects/{pid}/script/example")
+    out = config.PROJECTS / pid / "outputs"
+    out.mkdir(exist_ok=True)
+    (out / "how-the-example-works.mp4").write_bytes(b"made earlier")
+    client.patch(f"/api/projects/{pid}", json={"settings": {"deck": {
+        "sound": True, "advance": True, "resolution": "720p", "captions": "text", "per": "step"}}})
+    r = wait(client, client.post(f"/api/projects/{pid}/jobs", json={"kind": "deck"}).json()["id"])
+    assert r["state"] == "done", (r["error"], r["log"][-20:])
+    assert (out / "how-the-example-works.mp4").read_bytes() == b"made earlier", "the video stays"
+    steps = json.loads((config.PROJECTS / pid / "steps.json").read_text())
+    n = sum(len(s["steps"]) for s in steps)
+    z = zipfile.ZipFile(out / "how-the-example-works.pptx")
+    slides = [x for x in z.namelist() if x.startswith("ppt/slides/slide") and x.endswith(".xml")]
+    assert len(slides) == n + 1 == r["result"]["slides"]
+    assert not [x for x in z.namelist() if x.endswith("/")], "no folder entries"
+    two = z.read("ppt/slides/slide2.xml").decode()
+    assert "<p:timing>" in two and "mute=" not in two and "advTm=" in two
+    assert "Here is your phone" in two
+    notes = [x for x in z.namelist() if x.startswith("ppt/notesSlides/") and x.endswith(".xml")]
+    assert any("Here is your phone" in z.read(x).decode() for x in notes)
+    clip = config.PROJECTS / pid / "out" / "deck" / "001.mp4"
+    c = probe(clip)
+    assert (c["video"]["width"], c["video"]["height"]) == (1280, 720) and "audio" in c

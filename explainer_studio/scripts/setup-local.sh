@@ -17,6 +17,6 @@ for f in kokoro-v1.0.int8.onnx voices-v1.0.bin; do
 done
 cd "$EV_HOME/node"
 [ -f package.json ] || echo '{"private":true,"type":"module"}' > package.json
-[ -f node_modules/playwright/index.mjs ] || npm install --silent --no-audit --no-fund playwright@1.56.1
+[ -f node_modules/pptxgenjs/package.json ] || npm install --silent --no-audit --no-fund playwright@1.56.1 pptxgenjs@3.12.0
 npx playwright install chromium
 echo "ready: bash scripts/run-local.sh"

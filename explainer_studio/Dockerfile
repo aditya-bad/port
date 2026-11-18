@@ -30,10 +30,11 @@ RUN mkdir -p /opt/ev/models \
  && curl -fsSL -o /opt/ev/models/kokoro-v1.0.int8.onnx "$KOKORO/kokoro-v1.0.int8.onnx" \
  && curl -fsSL -o /opt/ev/models/voices-v1.0.bin "$KOKORO/voices-v1.0.bin"
 
-# the recorder: Playwright and its Chromium, with the system libraries it needs
+# the recorder: Playwright and its Chromium, with the system libraries it needs;
+# pptxgenjs for the PowerPoint
 RUN mkdir -p /opt/ev/node && cd /opt/ev/node \
  && echo '{"private":true,"type":"module"}' > package.json \
- && npm install --no-audit --no-fund --silent playwright@1.56.1 \
+ && npm install --no-audit --no-fund --silent playwright@1.56.1 pptxgenjs@3.12.0 \
  && npx playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/* /root/.npm
 

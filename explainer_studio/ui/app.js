@@ -39,7 +39,7 @@ const ago = t => { const s = Date.now() / 1000 - t; return s < 90 ? 'just now' :
 const fileUrl = (rel, dl) => `/api/projects/${P.id}/files/${rel.split('/').map(encodeURIComponent).join('/')}${dl ? '?download=1' : ''}`;
 
 // ── routing ───────────────────────────────────────────────────────────
-const TABS = [['material', 'Material'], ['script', 'Script'], ['check', 'Voice & check'], ['render', 'Render'], ['outputs', 'Files']];
+const TABS = [['material', 'Material'], ['script', 'Script'], ['check', 'Voice & check'], ['render', 'Video'], ['deck', 'PowerPoint'], ['outputs', 'Files']];
 function route() {
   const m = location.hash.match(/^#\/p\/([a-z0-9]+)(?:\/(\w+))?/);
   if (dirty && !confirm('The script has unsaved changes. Leave without saving?')) return;
@@ -110,7 +110,7 @@ async function openProject(id, tab) {
     if (!confirm(`Delete “${P.title}” and everything made from it? This can't be undone.`)) return;
     try { await api(`/api/projects/${P.id}`, { method: 'DELETE' }); location.hash = '#/'; } catch (err) { fail(err); }
   });
-  ({ material, script, check, render, outputs }[tab] || material)($('#tab'));
+  ({ material, script, check, render, deck, outputs }[tab] || material)($('#tab'));
   const live = (P.jobs || []).find(j => j.state === 'queued' || j.state === 'running');
   if (live && (!watching || watching.id !== live.id)) watch(live.id);
 }
@@ -265,10 +265,11 @@ function check(el) {
   $('#go', el).addEventListener('click', () => run('check'));
 }
 
-// Render: how it looks and sounds, and which files to make
+// Video and PowerPoint: two forms over the same project settings. The voice
+// card is on both (one voice for the project); everything else is each one's own.
 const OUT_INFO = {
   html: ['HTML player', 'One file that plays offline in any browser, with voice and captions'],
-  mp4: ['MP4', 'The whole explainer with its voice'],
+  mp4: ['MP4', 'The whole explainer'],
   scenes: ['One MP4 per scene', 'Each scene on its own'],
   youtube: ['YouTube-ready MP4', 'H.264 + AAC 48 kHz, your size and frame rate, title cards, its own .srt'],
   srt: ['Subtitles (.srt)', 'For YouTube, players and editors'],
@@ -276,13 +277,11 @@ const OUT_INFO = {
   chapters: ['Chapters', 'Timestamps to paste into the video description'],
   thumbnail: ['Thumbnail', '1280×720 JPEG from the first scene'],
 };
-function render(el) {
-  const s = P.settings;
-  const seg = (name, items, cur) => `<div class="seg" role="radiogroup">${items.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}" ${String(v) === String(cur) ? 'checked' : ''}>${l}</label>`).join('')}</div>`;
-  el.innerHTML = `
-    <form id="rs" class="stack">
+const seg = (name, items, cur) => `<div class="seg" role="radiogroup">${items.map(([v, l]) => `<label><input type="radio" name="${name}" value="${v}" ${String(v) === String(cur) ? 'checked' : ''}>${l}</label>`).join('')}</div>`;
+const tick = (name, on, title, sub) => `<label class="opt"><input type="checkbox" name="${name}" ${on ? 'checked' : ''}><div><b>${title}</b><span>${sub}</span></div></label>`;
+const voiceCard = s => `
       <section class="card stack">
-        <h2>Voice</h2>
+        <div class="row"><h2 class="grow">Voice</h2><span class="small mute">Shared by the video and the PowerPoint</span></div>
         <div class="grid2">
           <label class="field"><span>Voice</span><select name="voice">${OPT.voices.map(v => `<option value="${v.id}" ${v.id === s.voice ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select></label>
           <label class="field"><span>Speed <b id="spd">${s.speed.toFixed(2)}×</b></span><input type="range" name="speed" min="0.7" max="1.3" step="0.05" value="${s.speed}"></label>
@@ -291,27 +290,12 @@ function render(el) {
           <small class="mute">How to say a spelling: “P&amp;L” → “P and L”. Captions keep the spelling.</small>
           <div id="say" class="stack" style="gap:6px"></div>
           <button class="btn ghost small" type="button" id="add-say" style="justify-self:start">Add one</button></div>
-      </section>
-      <section class="card stack">
-        <h2>Picture</h2>
-        <div class="grid2">
-          <div class="field"><span>Size</span>${seg('resolution', [['720p', '720p'], ['1080p', '1080p'], ['4k', '4K'], ['vertical', 'Vertical 9:16']], s.resolution)}
-            <small class="mute">Vertical (for Shorts) applies to the YouTube file; the other files stay 16:9 at 1080p. 4K takes about four times as long.</small></div>
-          <div class="field"><span>Frame rate</span>${seg('fps', [[25, '25'], [30, '30'], [60, '60']], s.fps)}</div>
-          <div class="field"><span>Look</span>${seg('theme', [['light', 'Light'], ['dark', 'Dark']], s.theme)}</div>
-          <label class="opt"><input type="checkbox" name="burn_captions" ${s.burn_captions ? 'checked' : ''}><div><b>Captions in the picture</b><span>Off: a clean picture, with the captions only in the subtitle files</span></div></label>
-          <label class="opt"><input type="checkbox" name="intro" ${s.intro ? 'checked' : ''}><div><b>Title card at the start</b><span>3 seconds: the title and description (YouTube file)</span></div></label>
-          <div class="stack" style="gap:6px"><label class="opt"><input type="checkbox" name="outro" ${s.outro ? 'checked' : ''}><div><b>Card at the end</b><span>3 seconds (YouTube file)</span></div></label>
-            <input name="outro_text" maxlength="120" value="${esc(s.outro_text)}" aria-label="End card text"></div>
-        </div>
-      </section>
-      <section class="card stack">
-        <div class="row"><h2 class="grow">Files to make</h2><span class="small mute">Remembered for next time</span></div>
-        <div class="opts">${OPT.outputs.map(o => `<label class="opt"><input type="checkbox" name="outputs" value="${o}" ${s.outputs.includes(o) ? 'checked' : ''}><div><b>${OUT_INFO[o][0]}</b><span>${OUT_INFO[o][1]}</span></div></label>`).join('')}</div>
-      </section>
-      <div class="row end"><span class="small mute grow">${P.has_script ? 'Speaks, builds, records every frame and encodes: a few minutes for a few minutes of video.' : 'Write or upload a script first.'}</span>
-        <button class="btn" id="go" type="submit" ${P.has_script ? '' : 'disabled'}>Render</button></div>
-    </form>`;
+      </section>`;
+
+// One settings form: draws it, saves each change, and on submit saves and runs the job.
+function settingsForm(el, body, collect, submit) {
+  const s = P.settings;
+  el.innerHTML = `<form id="rs" class="stack">${voiceCard(s)}${body}</form>`;
   const form = $('#rs', el);
   let say = s.say.map(x => [...x]);
   const drawSay = () => {
@@ -319,15 +303,10 @@ function render(el) {
       || '<p class="small mute">None.</p>';
   };
   drawSay();
-  const collect = () => {
-    const f = new FormData(form);
-    return { voice: f.get('voice'), speed: +f.get('speed'), resolution: f.get('resolution'), fps: +f.get('fps'), theme: f.get('theme'),
-      burn_captions: !!f.get('burn_captions'), intro: !!f.get('intro'), outro: !!f.get('outro'), outro_text: f.get('outro_text') || '',
-      outputs: f.getAll('outputs'), say: say.filter(([a]) => a.trim()) };
-  };
+  const all = () => { const f = new FormData(form); return { voice: f.get('voice'), speed: +f.get('speed'), say: say.filter(([a]) => a.trim()), ...collect(f) }; };
   let t;
   const persist = () => { clearTimeout(t); t = setTimeout(async () => {
-    try { P = { ...P, ...(await api(`/api/projects/${P.id}`, { method: 'PATCH', json: { settings: collect() } })) }; } catch (e) { fail(e); }
+    try { P = { ...P, ...(await api(`/api/projects/${P.id}`, { method: 'PATCH', json: { settings: all() } })) }; } catch (e) { fail(e); }
   }, 350); };
   form.addEventListener('input', e => {
     if (e.target.dataset.say !== undefined) say[+e.target.dataset.say][+e.target.dataset.k] = e.target.value;
@@ -339,30 +318,106 @@ function render(el) {
   el.addEventListener('click', e => { const b = e.target.closest('[data-unsay]'); if (b) { say.splice(+b.dataset.unsay, 1); drawSay(); persist(); } });
   form.addEventListener('submit', async e => {
     e.preventDefault();
-    const st = collect();
-    if (!st.outputs.length) { toast('Pick at least one file to make'); return; }
+    const st = all();
     clearTimeout(t);
-    try { await api(`/api/projects/${P.id}`, { method: 'PATCH', json: { settings: st } }); run('render', { outputs: st.outputs }); } catch (err) { fail(err); }
+    try { await api(`/api/projects/${P.id}`, { method: 'PATCH', json: { settings: st } }); submit(st); } catch (err) { fail(err); }
   });
+  return form;
+}
+
+function render(el) {
+  const s = P.settings;
+  settingsForm(el, `
+      <section class="card stack">
+        <h2>Sound</h2>
+        <div class="grid2">
+          ${tick('sound', s.sound, 'Voice in the video', 'Off: the MP4s are silent (a silent track, so players and YouTube accept them). The HTML player always has the voice')}
+        </div>
+      </section>
+      <section class="card stack">
+        <h2>Picture</h2>
+        <div class="grid2">
+          <div class="field"><span>Size</span>${seg('resolution', [['720p', '720p'], ['1080p', '1080p'], ['4k', '4K'], ['vertical', 'Vertical 9:16']], s.resolution)}
+            <small class="mute">Vertical (for Shorts) applies to the YouTube file; the other files stay 16:9 at 1080p. 4K takes about four times as long.</small></div>
+          <div class="field"><span>Frame rate</span>${seg('fps', [[25, '25'], [30, '30'], [60, '60']], s.fps)}</div>
+          <div class="field"><span>Look</span>${seg('theme', [['light', 'Light'], ['dark', 'Dark']], s.theme)}</div>
+          ${tick('burn_captions', s.burn_captions, 'Captions in the picture', 'Off: a clean picture, with the captions only in the subtitle files')}
+          ${tick('intro', s.intro, 'Title card at the start', '3 seconds: the title and description (YouTube file)')}
+          <div class="stack" style="gap:6px">${tick('outro', s.outro, 'Card at the end', '3 seconds (YouTube file)')}
+            <input name="outro_text" maxlength="120" value="${esc(s.outro_text)}" aria-label="End card text"></div>
+        </div>
+      </section>
+      <section class="card stack">
+        <div class="row"><h2 class="grow">Files to make</h2><span class="small mute">Remembered for next time</span></div>
+        <div class="opts">${OPT.outputs.map(o => `<label class="opt"><input type="checkbox" name="outputs" value="${o}" ${s.outputs.includes(o) ? 'checked' : ''}><div><b>${OUT_INFO[o][0]}</b><span>${OUT_INFO[o][1]}</span></div></label>`).join('')}</div>
+      </section>
+      <div class="row end"><span class="small mute grow">${P.has_script ? 'Speaks, builds, records every frame and encodes: a few minutes for a few minutes of video. A PowerPoint already made is kept.' : 'Write or upload a script first.'}</span>
+        <button class="btn" id="go" type="submit" ${P.has_script ? '' : 'disabled'}>Make the video</button></div>`,
+  f => ({ sound: !!f.get('sound'), resolution: f.get('resolution'), fps: +f.get('fps'), theme: f.get('theme'),
+    burn_captions: !!f.get('burn_captions'), intro: !!f.get('intro'), outro: !!f.get('outro'), outro_text: f.get('outro_text') || '',
+    outputs: f.getAll('outputs') }),
+  st => { if (!st.outputs.length) { toast('Pick at least one file to make'); return; } run('render', { outputs: st.outputs }); });
+}
+
+function deck(el) {
+  const d = P.settings.deck;
+  const form = settingsForm(el, `
+      <section class="card stack">
+        <h2>Slides</h2>
+        <div class="grid2">
+          <div class="field"><span>A slide for each</span>${seg('d_per', [['step', 'Step'], ['scene', 'Scene']], d.per)}
+            <small class="mute">Step: one sentence and its animation per slide. Scene: the whole scene plays on one slide.</small></div>
+          <div class="field"><span>Captions</span>${seg('d_captions', [['text', 'As text'], ['picture', 'In the picture'], ['none', 'None']], d.captions)}
+            <small class="mute">As text: an editable text box at the bottom of the slide. With a slide per scene the sentences change while it plays, so “As text” draws them in the picture.</small></div>
+          ${tick('d_title_slide', d.title_slide, 'Title slide', 'The title and description first')}
+          ${tick('d_notes', d.notes, 'Speaker notes', 'What the narrator says, in each slide’s notes')}
+        </div>
+      </section>
+      <section class="card stack">
+        <h2>Playing</h2>
+        <div class="grid2">
+          ${tick('d_sound', d.sound, 'Sound', 'The voice plays with each slide’s animation. Off: silent, for you to talk over')}
+          <div class="field"><span>Animation starts</span>${seg('d_start', [['auto', 'When the slide opens'], ['click', 'On a click']], d.start)}</div>
+          ${tick('d_advance', d.advance, 'Move on by itself', 'The next slide follows when the animation ends (a click still moves on sooner). Not with “On a click”')}
+        </div>
+      </section>
+      <section class="card stack">
+        <h2>Picture</h2>
+        <div class="grid2">
+          <div class="field"><span>Size</span>${seg('d_resolution', [['720p', '720p (smaller file)'], ['1080p', '1080p']], d.resolution)}</div>
+          <div class="field"><span>Frame rate</span>${seg('d_fps', [[25, '25'], [30, '30']], d.fps)}</div>
+          <div class="field"><span>Look</span>${seg('d_theme', [['light', 'Light'], ['dark', 'Dark']], d.theme)}</div>
+        </div>
+      </section>
+      <div class="row end"><span class="small mute grow">${P.has_script ? 'Records the animation for the slides and builds the .pptx. Plays in PowerPoint 2016 or later and Keynote; Google Slides shows the still pictures only. Videos already made are kept.' : 'Write or upload a script first.'}</span>
+        <button class="btn" id="go" type="submit" ${P.has_script ? '' : 'disabled'}>Make the PowerPoint</button></div>`,
+  f => ({ deck: { per: f.get('d_per'), captions: f.get('d_captions'), title_slide: !!f.get('d_title_slide'), notes: !!f.get('d_notes'),
+    sound: !!f.get('d_sound'), start: f.get('d_start'), advance: !!f.get('d_advance'),
+    resolution: f.get('d_resolution'), fps: +f.get('d_fps'), theme: f.get('d_theme') } }),
+  () => run('deck'));
+  // "Move on by itself" doesn't apply when the animation waits for a click: dimmed, but kept as chosen
+  const sync = () => { const off = $('[name=d_start]:checked', form).value === 'click'; $('[name=d_advance]', form).closest('.opt').style.opacity = off ? .5 : 1; };
+  form.addEventListener('change', sync);
+  sync();
 }
 
 // Files: watch it, download it
-const KIND = n => n.endsWith('-youtube.mp4') ? 'YouTube' : n.endsWith('-youtube.srt') ? 'YT subs' : /-scene-\d\d/.test(n) ? 'Scene' : n.endsWith('-chapters.txt') ? 'Chapters'
+const KIND = n => n.endsWith('.pptx') ? 'PowerPoint' : n.endsWith('-youtube.mp4') ? 'YouTube' : n.endsWith('-youtube.srt') ? 'YT subs' : /-scene-\d\d/.test(n) ? 'Scene' : n.endsWith('-chapters.txt') ? 'Chapters'
   : n.endsWith('-thumbnail.jpg') ? 'Thumbnail' : n.split('.').pop().toUpperCase();
 async function outputs(el) {
   const files = P.outputs;
-  if (!files.length) { el.innerHTML = '<div class="empty">Nothing rendered yet. Pick the files to make on the Render tab.</div>'; return; }
+  if (!files.length) { el.innerHTML = '<div class="empty">Nothing made yet. Make a video on the Video tab, or slides on the PowerPoint tab.</div>'; return; }
   const by = n => files.find(f => f.name.endsWith(n));
   const yt = files.find(f => f.name.endsWith('-youtube.mp4')), mp4 = files.find(f => /\.mp4$/.test(f.name) && !/-scene-|-youtube/.test(f.name));
   const vtt = by('.vtt'), chap = by('-chapters.txt'), thumb = by('-thumbnail.jpg');
   const vid = yt || mp4;
   const chapText = chap ? await fetch(fileUrl(`outputs/${chap.name}`)).then(r => r.text()) : '';
-  const r = lastJob('render');
+  const r = lastJob('render') || lastJob('deck');
   el.innerHTML = `
     <div class="cols">
       <section class="stack">
         ${vid ? `<video controls preload="metadata" ${thumb ? `poster="${fileUrl(`outputs/${thumb.name}`)}"` : ''} src="${fileUrl(`outputs/${vid.name}`)}">
-          ${vtt && vid === mp4 ? `<track kind="captions" srclang="en" label="English" src="${fileUrl(`outputs/${vtt.name}`)}">` : ''}</video>` : '<div class="empty">No video in this render.</div>'}
+          ${vtt && vid === mp4 ? `<track kind="captions" srclang="en" label="English" src="${fileUrl(`outputs/${vtt.name}`)}">` : ''}</video>` : '<div class="empty">No video made yet.</div>'}
         ${chapText ? `<div class="stack" style="gap:8px"><div class="row"><h3 class="grow">Chapters</h3><button class="btn ghost small" id="copy" type="button">Copy</button></div>
           <pre class="chapters">${esc(chapText)}</pre>${r && r.result && r.result.notes && r.result.notes.length ? `<p class="small mute">${esc(r.result.notes.join('. '))}.</p>` : ''}</div>` : ''}
       </section>
@@ -378,7 +433,7 @@ async function outputs(el) {
 }
 
 // ── jobs ──────────────────────────────────────────────────────────────
-const JOB_NAME = { preview: 'Preview', check: 'Voice & check', render: 'Render', draft: 'Claude' };
+const JOB_NAME = { preview: 'Preview', check: 'Voice & check', render: 'Video', deck: 'PowerPoint', draft: 'Claude' };
 async function run(kind, opts = {}) {
   try { const j = await api(`/api/projects/${P.id}/jobs`, { method: 'POST', json: { kind, ...opts } }); watch(j.id); }
   catch (e) { fail(e); }
@@ -408,7 +463,7 @@ function watch(id) {
     if (live) { setTimeout(tick, 1500); return; }
     if (j.state === 'done' && !watching.open && j.kind !== 'draft') setTimeout(() => { if (watching && watching.id === id && !watching.open) { box.hidden = true; watching = null; } }, 5000);
     if (P && P.id === j.project) {
-      const go = { preview: 'script', draft: 'script', check: 'check', render: j.state === 'done' ? 'outputs' : 'render' }[j.kind];
+      const go = { preview: 'script', draft: 'script', check: 'check', render: j.state === 'done' ? 'outputs' : 'render', deck: j.state === 'done' ? 'outputs' : 'deck' }[j.kind];
       toast(j.state === 'done' ? `${JOB_NAME[j.kind]}: done` : `${JOB_NAME[j.kind]}: ${j.state}`);
       dirty = false;
       if (location.hash === `#/p/${P.id}/${go}`) openProject(P.id, go); else location.hash = `#/p/${P.id}/${go}`;

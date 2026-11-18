@@ -2,8 +2,9 @@
 
 Turn your material into a narrated, animated explainer: scenes drawn as
 moving diagrams, a natural voice reading the narration, and captions. You
-get an HTML player, MP4s, and a YouTube-ready file with subtitles,
-chapters and a thumbnail.
+get an HTML player, MP4s, a YouTube-ready file with subtitles, chapters and
+a thumbnail, and, made separately, a PowerPoint whose slides play the
+animation.
 
 Everything runs on your machine in one Docker container. The voice
 (Kokoro) runs offline. Claude is optional: it can write the script from
@@ -58,9 +59,10 @@ somewhere else:
 4. **Voice & check:** speaks the narration and plays every scene through. It looks
    for scenes that stall, labels that collide, and steps with no caption. It shows
    a frame from the middle of every step; look at them before rendering.
-5. **Render:** pick the voice and speed, pronunciations (`P&L` → `P and L`),
-   size (720p, 1080p, 4K, or vertical 9:16 for Shorts), frame rate, light or dark,
-   captions in the picture or not, title cards, and the files you want:
+5. **Video:** pick the voice and speed, pronunciations (`P&L` → `P and L`),
+   voice in the video or silent, size (720p, 1080p, 4K, or vertical 9:16 for
+   Shorts), frame rate, light or dark, captions in the picture or not, title
+   cards, and the files you want:
 
    | File | What it is |
    |---|---|
@@ -72,7 +74,26 @@ somewhere else:
    | Chapters | `0:00 Scene title` lines to paste into the description. The page says if YouTube won't show them (it needs three or more, each 10 s or longer) |
    | Thumbnail | 1280×720 JPEG from the first scene |
 
-6. **Files:** watch the result, copy the chapters, and download the files one by one
+6. **PowerPoint:** a .pptx made on its own, with its own settings. Making it
+   keeps the videos already made, and making a video keeps the PowerPoint.
+
+   | Setting | Choices |
+   |---|---|
+   | A slide for each | **Step** (one sentence and its piece of the animation) or **scene** (the whole scene on one slide) |
+   | Captions | **As text** (an editable text box at the bottom), **in the picture**, or **none**. With a slide per scene, "as text" goes in the picture, since the sentences change while it plays |
+   | Sound | The voice plays with each slide's animation, or silent (to talk over) |
+   | Animation starts | **When the slide opens**, or **on a click** |
+   | Move on by itself | The next slide follows when the animation ends; a click still moves on sooner. Only when the animation starts by itself |
+   | Speaker notes | What the narrator says, in each slide's notes |
+   | Title slide | The title and description first |
+   | Size, frame rate, look | 720p or 1080p, 25 or 30 fps, light or dark |
+
+   The animations are video clips, exactly as in the MP4, not PowerPoint's own
+   animation effects, so they can't be edited inside PowerPoint. Each slide's
+   picture under the clip is its last frame, which is what a PDF export shows.
+   It plays in PowerPoint 2016 or later (Windows and Mac) and Keynote. Google
+   Slides drops the videos and shows only the pictures.
+7. **Files:** watch the result, copy the chapters, and download the files one by one
    or as a zip.
 
 **For YouTube:** upload the `-youtube.mp4`, add `-youtube.srt` under
@@ -111,9 +132,11 @@ kit/        the explainer engine and its tools:
   engine/   the player: drawing helpers, effects, the clock, camera, captions (JS/CSS)
   tools/    steps.mjs (read a script), narr.py (the voice), build.py (one HTML file),
             check.mjs (play it through, find problems), render.mjs (record frames),
-            mux.py (voice under picture), plans.mjs and card.mjs (timings and title cards)
+            mux.py (voice under picture), plans.mjs and card.mjs (timings and title cards),
+            deck.mjs (the PowerPoint)
   WRITING.md  how to write a script; also what Claude is given
-tests/      API, subtitles and chapters, Claude drafting (with a stand-in API), and a full render
+samples/    cafe-order: a ready project to try the studio with (see its README)
+tests/      API, subtitles and chapters, Claude drafting (with a stand-in API), a full render and a PowerPoint
 ```
 
 ## Good to know

@@ -1,0 +1,14 @@
+Title: How a café gets your coffee to you
+
+Who it's for: anyone, no background needed.
+
+What they should come away knowing:
+- An order becomes a ticket on the kitchen screen and joins a queue.
+- Tickets are made first in, first out, so yours waits for the ones ahead.
+- One drink takes about a minute. The espresso and the milk are done at the
+  same time, which saves about twenty seconds.
+- Your name is called, you pick it up, and many systems work the same way:
+  requests wait in a queue and are served in turn.
+
+Length: about a minute and a half, three scenes.
+Tone: friendly and plain. Say that the times are typical estimates.

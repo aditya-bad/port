@@ -15,12 +15,25 @@ import re
 import secrets
 import shutil
 import time
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
 from . import config
 
 OUTPUTS = ["html", "mp4", "scenes", "youtube", "srt", "vtt", "chapters", "thumbnail"]
+# The PowerPoint is made on its own (the "deck" job), with its own settings
+DECK = {
+    "per": ("step", "scene"),                 # a slide per step, or per scene
+    "captions": ("text", "picture", "none"),  # editable text on the slide, drawn into the animation, or none
+    "start": ("auto", "click"),               # the animation plays when the slide opens, or on a click
+    "resolution": ("720p", "1080p"),
+    "fps": (25, 30),
+    "theme": ("light", "dark"),
+}
+DECK_FLAGS = ("sound", "advance", "notes", "title_slide")
+DECK_DEFAULTS = {"per": "step", "captions": "text", "start": "auto", "resolution": "1080p", "fps": 25, "theme": "light",
+                 "sound": False, "advance": False, "notes": True, "title_slide": True}
 RESOLUTIONS = {"720p": (1280, 720), "1080p": (1920, 1080), "4k": (3840, 2160), "vertical": (1080, 1920)}
 VOICES = [
     ("af_heart", "Heart (US, female)"), ("af_bella", "Bella (US, female)"), ("af_nicole", "Nicole (US, female)"),
@@ -32,7 +45,7 @@ DEFAULTS = {
     "voice": "af_heart", "speed": 0.95, "theme": "light", "resolution": "1080p", "fps": 30,
     "outputs": ["html", "mp4", "youtube", "srt", "chapters", "thumbnail"],
     "burn_captions": False, "intro": True, "outro": False, "outro_text": "Thanks for watching",
-    "say": [],
+    "sound": True, "say": [], "deck": dict(DECK_DEFAULTS),
 }
 ID = re.compile(r"^[a-z0-9]{10}$")
 UPLOAD_MAX = 50 * 1024 * 1024
@@ -43,7 +56,8 @@ class NotFound(Exception):
 
 
 def slugify(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")[:48] or "explainer"
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()     # café → cafe
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")[:48] or "explainer"
 
 
 def root(pid: str) -> Path:
@@ -78,7 +92,9 @@ def clean_settings(s: dict, base: Optional[dict] = None) -> dict:
             v = [o for o in OUTPUTS if o in set(v or [])]
             if not v:
                 raise ValueError("Pick at least one output")
-        if k in ("burn_captions", "intro", "outro"):
+        if k == "deck":
+            v = clean_deck(v, out.get("deck"))
+        if k in ("burn_captions", "intro", "outro", "sound"):
             v = bool(v)
         if k == "outro_text":
             v = str(v)[:120]
@@ -88,10 +104,26 @@ def clean_settings(s: dict, base: Optional[dict] = None) -> dict:
     return out
 
 
+def clean_deck(v: dict, base: Optional[dict] = None) -> dict:
+    out = {**DECK_DEFAULTS, **(base or {})}
+    for k, x in (v or {}).items():
+        if k in DECK:
+            if k == "fps":
+                x = int(x)
+            if x not in DECK[k]:
+                raise ValueError(f"PowerPoint {k} is one of {', '.join(map(str, DECK[k]))}")
+            out[k] = x
+        elif k in DECK_FLAGS:
+            out[k] = bool(x)
+    return out
+
+
 def read(pid: str) -> dict:
     p = root(pid)
     d = json.loads((p / "project.json").read_text())
     d["settings"] = clean_settings({}, {**DEFAULTS, **d.get("settings", {})})
+    d["settings"]["outputs"] = [o for o in d["settings"]["outputs"] if o in OUTPUTS] or list(DEFAULTS["outputs"])
+    d["settings"]["deck"] = clean_deck({}, d["settings"].get("deck"))
     d["has_script"] = (p / "scenes.js").exists() and bool((p / "scenes.js").read_text().strip())
     d["uploads"] = uploads(pid)
     d["outputs"] = outputs(pid)

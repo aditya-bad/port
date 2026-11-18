@@ -19,7 +19,7 @@ from typing import Awaitable, Callable, Optional
 
 from . import captions, config, store
 
-KINDS = ("preview", "check", "render", "draft")
+KINDS = ("preview", "check", "render", "deck", "draft")
 
 
 class Cancelled(Exception):
@@ -247,9 +247,7 @@ async def run_render(j: Job) -> None:
     await speak(j, steps, 0.04, 0.2)
     j.at("Building the page", 0.2)
     html = await build(j, voice=True)
-    out = p / "outputs"
-    shutil.rmtree(out, ignore_errors=True)
-    out.mkdir()
+    out = clear_outputs(p, keep=lambda f: f.suffix == ".pptx")    # the PowerPoint is made on its own
     made: list[str] = []
     if "html" in want:
         shutil.copy(html, out / f"{slug}.html")
@@ -276,7 +274,7 @@ async def run_render(j: Job) -> None:
         shutil.rmtree(p / "out" / "vid", ignore_errors=True)
         await j.run(config.NODE, _tool("render.mjs"), html, env=env | {"PROGRESS": str(prog)}, on_line=line)
         j.at("Putting the voice under the picture", 0.76)
-        await j.run(config.PY, _tool("mux.py"), p, env=env)
+        await j.run(config.PY, _tool("mux.py"), p, env=env | ({} if s["sound"] else {"MUTE": "1"}))
         if "mp4" in want:
             shutil.copy(main, out / f"{slug}.mp4")
             made.append(f"{slug}.mp4")
@@ -310,6 +308,103 @@ async def run_render(j: Job) -> None:
                     "-vf", "scale=1280:720", "-q:v", "3", out / f"{slug}-thumbnail.jpg")
         made.append(f"{slug}-thumbnail.jpg")
     j.result = {"files": made, "notes": notes, "minutes": round(sum(float(x["total"]) for x in plans) / 60, 2)}
+
+
+def clear_outputs(p: Path, keep: Callable[[Path], bool]) -> Path:
+    """Empty outputs/ of what this job remakes, keeping what the other one made."""
+    out = p / "outputs"
+    out.mkdir(exist_ok=True)
+    for f in out.iterdir():
+        if f.is_file() and not keep(f):
+            f.unlink()
+    return out
+
+
+async def run_deck(j: Job) -> None:
+    """The PowerPoint, with its own settings (settings.deck): a slide per step
+    (or per scene) playing its animation, recorded for the deck at its own size
+    and look, with or without the voice; the sentence as an editable caption,
+    in the picture, or not at all; speaker notes; a title slide; the animation
+    starting by itself or on a click, and the next slide following when it ends."""
+    p = store.root(j.pid)
+    d = store.read(j.pid)
+    s, ds = d["settings"], d["settings"]["deck"]
+    slug = store.slugify(d["title"])
+    j.at("Reading the script", 0.02)
+    steps = await outline(j)
+    j.at("Speaking the narration", 0.04)
+    await speak(j, steps, 0.04, 0.2)       # even without sound: the slides keep the narrated pacing
+    j.at("Building the page", 0.2)
+    html = await build(j, voice=True)
+    w, _h = store.RESOLUTIONS[ds["resolution"]]
+    per_scene = ds["per"] == "scene"
+    # a scene slide's sentences change while it plays, so its captions go in the picture
+    burn = ds["captions"] == "picture" or (per_scene and ds["captions"] == "text")
+    vid = p / "out" / "deck-vid"
+    env = config.tool_env() | {"FPS": str(ds["fps"]), "SCALE": str(w / 1600), "SCHEME": ds["theme"],
+                               "WORKERS": str(config.WORKERS), "VID": str(vid)}
+    if not burn:
+        env["NOCAP"] = "1"
+    j.at("Timing the scenes", 0.22)
+    plans = json.loads(await j.run(config.NODE, _tool("plans.mjs"), html, env=env, out=p / "out" / "plans.json"))
+    prog = p / "out" / "progress.txt"
+    prog.write_text("")
+    n = len(plans)
+
+    def line(_s: str) -> None:
+        j.progress = 0.25 + 0.5 * len(prog.read_text().split()) / max(1, n)
+    j.at(f"Recording {n} scene(s) at {ds['resolution']}, {ds['fps']} fps", 0.25)
+    shutil.rmtree(vid, ignore_errors=True)
+    await j.run(config.NODE, _tool("render.mjs"), html, env=env | {"PROGRESS": str(prog)}, on_line=line)
+    if ds["sound"]:
+        j.at("Laying the voice under each scene", 0.76)
+        await j.run(config.PY, _tool("mux.py"), p, env=env | {"WAV_ONLY": "1"})
+    j.at("Cutting the slides' clips", 0.8)
+    work = p / "out" / "deck"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True)
+    pieces = []      # (scene no., from, to, caption, notes)
+    for si, plan in enumerate(plans, 1):
+        sts, total = plan["steps"], float(plan["total"])
+        said = [x.get("text", "") for x in (steps[si - 1]["steps"] if si - 1 < len(steps) else [])]
+        if per_scene:
+            pieces.append((si, 0.0, total, plan.get("title", ""), "\n\n".join(t for t in said if t)))
+            continue
+        for k in range(len(sts)):
+            a = 0.0 if k == 0 else float(sts[k]["T0"])
+            b = float(sts[k + 1]["T0"]) if k + 1 < len(sts) else total
+            if b - a >= 0.2:
+                text = said[k] if k < len(said) else ""
+                pieces.append((si, a, b, text, text))
+    slides = []
+    for i, (si, a, b, caption, notes) in enumerate(pieces, 1):
+        clip, poster = work / f"{i:03d}.mp4", work / f"{i:03d}.png"
+        src = ["-ss", f"{a:.3f}", "-t", f"{b - a:.3f}", "-i", str(vid / f"{si:02d}-v.mp4")]
+        if ds["sound"]:
+            src += ["-ss", f"{a:.3f}", "-t", f"{b - a:.3f}", "-i", str(vid / f"{si:02d}.wav")]
+            audio = ["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"]
+        else:
+            audio = ["-an"]
+        await j.run(config.FF, "-loglevel", "error", "-y", *src, *audio, "-c:v", "libx264", "-preset", "medium",
+                    "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart", clip)
+        await j.run(config.FF, "-loglevel", "error", "-y", "-sseof", "-0.25", "-i", clip, "-update", "1", "-frames:v", "1", poster)
+        slides.append({"video": str(clip), "poster": str(poster), "dur": round(b - a, 3), "scene": si,
+                       "caption": caption if ds["captions"] == "text" and not per_scene else "",
+                       "notes": notes if ds["notes"] else ""})
+        j.progress = 0.8 + 0.15 * i / max(1, len(pieces))
+    card_png = None
+    if ds["title_slide"]:
+        card_png = work / "title.png"
+        await j.run(config.NODE, _tool("card.mjs"), card_png, d["title"], d.get("description") or "", env=env)
+    j.at("Making the PowerPoint", 0.96)
+    out = clear_outputs(p, keep=lambda f: f.suffix != ".pptx")
+    spec = {"out": str(out / f"{slug}.pptx"), "title": d["title"], "titleCard": str(card_png) if card_png else None,
+            "theme": ds["theme"], "sound": ds["sound"], "start": ds["start"], "advance": ds["advance"],
+            "notes": ds["notes"], "slides": slides}
+    (work / "spec.json").write_text(json.dumps(spec, ensure_ascii=False))
+    await j.run(config.NODE, _tool("deck.mjs"), work / "spec.json", env=env)
+    j.result = {"files": [f"{slug}.pptx"], "slides": len(slides) + (1 if card_png else 0),
+                "minutes": round(sum(float(x["total"]) for x in plans) / 60, 2)}
 
 
 CARD_SECONDS = 3.0
@@ -380,5 +475,5 @@ async def youtube(j: Job, p: Path, d: dict, s: dict, slug: str, main: Path, plan
     return intro
 
 
-RUNNERS.update({"preview": run_preview, "check": run_check, "render": run_render})
+RUNNERS.update({"preview": run_preview, "check": run_check, "render": run_render, "deck": run_deck})
 

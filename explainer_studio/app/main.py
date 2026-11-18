@@ -56,7 +56,8 @@ async def health():
 @app.get("/api/options")
 async def options():
     return {"voices": [{"id": v, "label": l} for v, l in store.VOICES], "resolutions": list(store.RESOLUTIONS),
-            "outputs": store.OUTPUTS, "defaults": store.DEFAULTS, "claude": draft.public_settings()}
+            "outputs": store.OUTPUTS, "defaults": store.DEFAULTS, "deck": {k: list(v) for k, v in store.DECK.items()},
+            "claude": draft.public_settings()}
 
 
 class SettingsIn(BaseModel):
